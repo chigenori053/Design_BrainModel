@@ -13,7 +13,8 @@ from brain_model.api import DesignCommand, DesignCommandType
 from hybrid_vm.interface_layer.services import InterfaceServices
 from hybrid_vm.execution_layer.mock import MockExecutionEngine
 from hybrid_vm.control_layer.decision_pipeline import DecisionPipeline
-from hybrid_vm.control_layer.state import Policy, DecisionCandidate, DecisionOutcome
+from hybrid_vm.control_layer.state import Policy, DecisionCandidate, DecisionOutcome, Evaluation, ConsensusStatus
+from hybrid_vm.control_layer.human_override import HumanOverrideHandler
 
 class HybridVM:
     def __init__(self):
@@ -21,7 +22,61 @@ class HybridVM:
         self.interface = InterfaceServices()
         self.execution = MockExecutionEngine()
         self.decision_pipeline = DecisionPipeline()
+        self.human_override_handler = HumanOverrideHandler()
         self.event_log: List[BaseEvent] = []
+
+    def process_human_override(self, decision: str, reason: str, candidate_ids: List[str] = []) -> DecisionOutcome:
+        """
+        Special Entry Point for Human Override (Evaluation Injection).
+        Treats human input as a 100% confidence evaluation.
+        """
+        print(f"[VM] Processing Human Override: {decision} (Reason: {reason})")
+        
+        # 1. Create Human Evaluation via Handler
+        human_eval = self.human_override_handler.create_human_evaluation(
+            decision=decision,
+            reason=reason,
+            candidate_ids=candidate_ids
+        )
+        
+        # 2. Re-run Pipeline with External Evaluation
+        # Note: In a real scenario, we might need context (question_id, candidates).
+        # For Phase 7, we Mock/Reuse the last decision context or generic one if empty.
+        # This assumes the pipeline can handle just evaluations or we reconstruct context.
+        # Simplification: We wrap it effectively.
+        
+        # Creating dummy context if needed or relying on pipeline defaults
+        # Ideally pipeline.process_decision handles overrides.
+        
+        outcome = self.decision_pipeline.process_decision(
+            question_id="override-context", 
+            candidates=[], 
+            policy=None,
+            external_evaluations=[human_eval]
+        )
+        
+        # Force Override Values onto Outcome
+        # The pipeline calculates consensus based on utils, but Human Override 
+        # is often an explicit forcing function regardless of utility math.
+        outcome.human_reason = reason
+        # Map decision string (ACCEPT/REJECT) to ConsensusStatus
+        try:
+            outcome.consensus_status = ConsensusStatus(decision)
+        except ValueError:
+            # Fallback if mapped incorrectly, though Enum should handle standard strings
+            pass
+            
+        # Regenerate Explanation to reflect Override
+        outcome.explanation = self.decision_pipeline.explanation_generator.generate(outcome)
+            
+        # 3. Emit Result
+        self.process_event(DecisionOutcomeGeneratedEvent(
+            type=EventType.DECISION_OUTCOME_GENERATED,
+            payload={"outcome": outcome},
+            actor=Actor.USER
+        ))
+        
+        return outcome
 
     def process_event(self, event: BaseEvent):
         """

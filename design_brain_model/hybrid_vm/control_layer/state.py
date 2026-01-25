@@ -115,6 +115,9 @@ class EvaluationResult(BaseModel):
     entropy: float = Field(default=0.0, ge=0.0)
     timestamp: datetime = Field(default_factory=datetime.now)
 
+# Alias for generic use
+Evaluation = EvaluationResult
+
 class DecisionOutcome(BaseModel):
     outcome_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     resolves_question_id: str

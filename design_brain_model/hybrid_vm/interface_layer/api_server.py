@@ -107,9 +107,20 @@ def get_decision_history():
 @app.post("/event")
 def send_event(event: EventRequest):
     logger.info(f"Received Event: {event.type} Payload: {event.payload}")
+    
+    # 1. Special Handling for Human Override (Evaluation Injection)
+    if event.type == "HUMAN_OVERRIDE":
+        payload = event.payload or {}
+        outcome = vm.process_human_override(
+            decision=str(payload.get("decision", "ACCEPT")), # Default if missing
+            reason=str(payload.get("reason", "Manual Override")),
+            candidate_ids=payload.get("candidate_ids", [])
+        )
+        return {"accepted": True, "outcome_id": outcome.outcome_id}
+
+    # 2. Generic Event Handling
     vm_event = None
     
-    # Simple mapping
     if event.type == "USER_INPUT":
          payload = event.payload or {}
          vm_event = UserInputEvent(
@@ -122,13 +133,6 @@ def send_event(event: EventRequest):
          vm_event = BaseEvent(
              type=EventType.SIMULATION_REQUEST, # Re-using Sim Request or define new
              payload={},
-             actor=Actor.USER
-         )
-    elif event.type == "HUMAN_OVERRIDE":
-         # Fallback to generic
-         vm_event = BaseEvent(
-             type=EventType.USER_INPUT, # Temporary mapping
-             payload=event.payload or {},
              actor=Actor.USER
          )
     else:
