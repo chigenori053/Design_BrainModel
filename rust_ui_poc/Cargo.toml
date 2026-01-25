@@ -6,5 +6,10 @@ edition = "2021"
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-# In a real scenario, we might add reqwest or similar for HTTP if Interface Layer was HTTP.
-# For now, we keep it minimal as per "Dumb Client" spec.
+reqwest = { version = "0.11", features = ["json", "blocking"] }
+ratatui = "0.26"
+crossterm = "0.27"
+log = "0.4"
+simplelog = "0.12"
+
+

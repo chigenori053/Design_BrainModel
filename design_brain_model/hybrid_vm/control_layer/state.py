@@ -99,6 +99,22 @@ class RankedCandidate(BaseModel):
     final_score: float
     utility_vector_snapshot: UtilityVector
 
+# --- Phase 3: Consensus & Re-evaluation ---
+
+class ConsensusStatus(str, Enum):
+    ACCEPT = "ACCEPT"
+    REVIEW = "REVIEW"
+    REJECT = "REJECT"
+    ESCALATE = "ESCALATE"
+
+class EvaluationResult(BaseModel):
+    evaluator_id: str
+    candidates: List[str] # List of candidate IDs
+    utility_vector: UtilityVector
+    confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    entropy: float = Field(default=0.0, ge=0.0)
+    timestamp: datetime = Field(default_factory=datetime.now)
+
 class DecisionOutcome(BaseModel):
     outcome_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     resolves_question_id: str
@@ -106,6 +122,12 @@ class DecisionOutcome(BaseModel):
     # Phase 2.1: Traceability Fields
     policy_id: Optional[str] = None # UUID if Policy has one, or transient ID
     policy_snapshot: Dict[str, float] = {}
+    
+    # Phase 3: Concensus Fields
+    evaluations: List[EvaluationResult] = []
+    consensus_status: Optional[ConsensusStatus] = None
+    lineage: Optional[str] = None # Parent DecisionOutcome ID (if re-evaluated)
+    human_reason: Optional[str] = None # If HITL
     
     ranked_candidates: List[RankedCandidate]
     explanation: str

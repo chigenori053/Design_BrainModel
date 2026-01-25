@@ -4,8 +4,10 @@ from datetime import datetime
 
 from hybrid_vm.control_layer.state import (
     DecisionCandidate, UtilityVector, Policy, DecisionOutcome, Role,
-    DecisionState, RankedCandidate
+    DecisionState, RankedCandidate, EvaluationResult, ConsensusStatus
 )
+from hybrid_vm.control_layer.consensus_engine import ConsensusEngine
+from hybrid_vm.control_layer.explanation_generator import ExplanationGenerator
 
 class Evaluator:
     """
@@ -26,12 +28,15 @@ class SimpleEvaluator(Evaluator):
             cost=((seed * 2) % 10) / 10.0,
             maintainability=((seed * 3) % 10) / 10.0,
             scalability=((seed * 4) % 10) / 10.0,
-            risk=((seed * 5) % 10) / 10.0
+            risk=((seed * 5) % 10) / 10.0,
+            evaluated_by=Role.BRAIN
         )
 
 class DecisionPipeline:
     def __init__(self):
         self.evaluator = SimpleEvaluator()
+        self.consensus_engine = ConsensusEngine() # Phase 3
+        self.explanation_generator = ExplanationGenerator() # Phase 4
 
     def compute_utility(self, candidate: DecisionCandidate, context: Dict = None) -> UtilityVector:
         """
@@ -64,20 +69,14 @@ class DecisionPipeline:
         score += utility.cost * policy.weights.get("cost", 0.0)
         score += utility.maintainability * policy.weights.get("maintainability", 0.0)
         score += utility.scalability * policy.weights.get("scalability", 0.0)
-        score += utility.risk * policy.weights.get("risk", 0.0) # Usually risk is negative, but here we treat it as 0-1 score where 1 is good (low risk)? Or 1 is high risk?
-        # Specification says "risk: 0.1" in policy. 
-        # Usually risk is a penalty. Let's assume for this Phase 2 MVP that 
-        # UtilityVector dimensions are "Goodness" (1.0 is best). 
-        # So "Risk" dimension should be "Safety" or "LowRisk". 
-        # PROPOSAL: Let's assume the UtilityVector values are all "benefit" oriented for now.
-        # If Risk is "High Risk", then the policy weight should be negative? 
-        # Let's keep it simple: UtilityVector.risk means "Safety Score" (1.0 = Safe, 0.0 = Risky).
+        score += utility.risk * policy.weights.get("risk", 0.0) 
         
         return score / total_weight
 
     def rank_candidates(self, candidates: List[DecisionCandidate], policy: Policy) -> List[DecisionCandidate]:
         """
         Ranks candidates by applying the policy to their utility vectors.
+        This is essentially a "Single Evaluator" ranking.
         """
         # Ensure all have utility computed
         for cand in candidates:
@@ -92,72 +91,88 @@ class DecisionPipeline:
         )
         return ranked
 
-    def aggregate_opinions(self, evaluations: List[Dict[str, UtilityVector]]) -> UtilityVector:
+    def process_decision(self, question_id: str, candidates: List[DecisionCandidate], policy: Policy, external_evaluations: List[EvaluationResult] = None) -> DecisionOutcome:
         """
-        Consensus Model: Variable implementations.
-        MVP: Average the vectors.
-        evaluations: List of {"role": Role, "vector": UtilityVector}
-        """
-        if not evaluations:
-            return UtilityVector() # Zeros
-
-        avg_perf, avg_cost, avg_maint, avg_scale, avg_risk = 0.0, 0.0, 0.0, 0.0, 0.0
-        count = len(evaluations)
-
-        for admission in evaluations:
-            vec = admission["vector"]
-            avg_perf += vec.performance
-            avg_cost += vec.cost
-            avg_maint += vec.maintainability
-            avg_scale += vec.scalability
-            avg_risk += vec.risk
-
-        return UtilityVector(
-            performance=avg_perf / count,
-            cost=avg_cost / count,
-            maintainability=avg_maint / count,
-            scalability=avg_scale / count,
-            risk=avg_risk / count
-        )
-
-    def process_decision(self, question_id: str, candidates: List[DecisionCandidate], policy: Policy) -> DecisionOutcome:
-        """
-        Full pipeline execution with Phase 2.1 Traceability.
+        Full pipeline execution with Phase 3 Consensus.
         """
         # 1. Rank candidates (Side effect: computes utility if missing)
-        # Note: rank_candidates returns List[DecisionCandidate]
+        # We still do this to have base utilities on candidates.
         sorted_candidates = self.rank_candidates(candidates, policy)
         
-        # 2. Convert to RankedCandidate (Snapshotting)
+        # 2. Generate EvaluationResult(s)
+        # In Phase 3, we treat the "SimpleEvaluator" result as ONE EvaluationResult.
+        # We assume it supports the top-ranked candidate strongly? 
+        # Or rather, it provides a utility vector that we used for ranking.
+        
+        # Let's create an EvaluationResult for the top candidate (or all?).
+        # The ConsensusEngine aggregates inputs.
+        # For this MVP, let's say the SimpleEvaluator provides ONE opinion on the winner.
+        
+        evaluations = external_evaluations or []
+        
+        # Create EvaluationResult for each candidate? 
+        # No, EvaluationResult usually represents an evaluator's view on the SET or the CHOICES.
+        # But our schema says `candidates: List[str]`.
+        # Let's say the Evaluator provides vectors for all.
+        # But ConsensusEngine.aggregate expects ONE vector per EvaluationResult.
+        # So maybe EvaluationResult is "Here is my Utility Vector assessment of the PROPOSAL X".
+        # If we have multiple candidates, do we have multiple vectors?
+        # Typically consensus is on the "Selected Option".
+        
+        # Current Logic: We identified a Winner (Sort 0).
+        winner = sorted_candidates[0] if sorted_candidates else None
+        
+        if winner and winner.utility:
+             # Wrap the logic as a "Brain Evaluation"
+             ev_result = EvaluationResult(
+                 evaluator_id="simple_evaluator_v1",
+                 candidates=[winner.candidate_id],
+                 utility_vector=winner.utility,
+                 confidence=0.8, # Mock confidence
+                 entropy=0.2     # Mock entropy
+             )
+             evaluations.append(ev_result)
+
+        # 3. Consensus
+        # (If we had other evaluators, e.g. SafetyChecker, we would add them here)
+        aggregated = self.consensus_engine.aggregate(evaluations)
+        status = self.consensus_engine.decide(evaluations, policy)
+
+        # 4. Create Outcome (Snapshot)
         ranked_snapshots = []
         for cand in sorted_candidates:
-            # Ensure utility is set (rank_candidates guarantees this, but type check safe)
-            if not cand.utility:
-                 continue
-                 
-            # Apply Policy Score again for the record (or we could return it from rank_candidates)
+            if not cand.utility: continue
             score = self.apply_policy(cand.utility, policy)
-            
-            # Phase 2.1: Create Snapshot
             snapshot = RankedCandidate(
                 candidate_id=cand.candidate_id,
                 content=cand.content,
                 final_score=score,
-                utility_vector_snapshot=cand.utility.model_copy() # Deep copy utility
+                utility_vector_snapshot=cand.utility.model_copy()
             )
             ranked_snapshots.append(snapshot)
 
-        # Explain the winner
-        winner = ranked_snapshots[0] if ranked_snapshots else None
-        explanation = f"Selected candidate {winner.candidate_id} based on policy '{policy.name}'." if winner else "No candidates available."
+        # Phase 4: Generate Explanation
+        # Construct a temporary outcome to pass to generator (or just populate everything then call generate)
+        # To avoid circular dependency or partial object, we construct the object first with empty explanation
+        # then update it.
         
-        # Phase 2.1: Policy Snapshot
-        policy_id = str(uuid.uuid4()) # In real system, Policy would have an ID.
+        policy_id = str(uuid.uuid4())
         
-        return DecisionOutcome(
+        outcome = DecisionOutcome(
             resolves_question_id=question_id,
             policy_id=policy_id,
-            policy_snapshot=policy.weights.copy(), # Snapshot weights
+            policy_snapshot=policy.weights.copy(),
+            
+            # Phase 3 Fields
+            evaluations=evaluations,
+            consensus_status=status,
+            lineage=None, # Initial decision
+            
             ranked_candidates=ranked_snapshots,
-            explanation=explanation
+            explanation="" # Placeholder
         )
+        
+        outcome.explanation = self.explanation_generator.generate(outcome)
+        
+        return outcome
+

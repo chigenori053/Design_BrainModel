@@ -1,14 +1,22 @@
-fn main() {
-    println!("=== Rust UI PoC for HybridVM ===");
-    println!("Status: Dumb Client Mode");
-    println!("Design Principle: No direct logic, only display and input forwarding.");
-    
-    // Simulate connection attempt
-    println!("Connecting to HybridVM Interface...");
-    
-    // In Phase 3, this would connect to the Python process via Socket/HTTP/IPC.
-    // For now, we just demonstrate independent execution.
-    println!("Connection check: Simulated Success.");
-    
-    println!("Ready to receive Snapshot...");
+mod model;
+mod view;
+mod event;
+mod vm_client;
+mod app;
+mod tui;
+
+use crate::app::AppRoot;
+use simplelog::*;
+use std::fs::File;
+
+fn main() -> std::io::Result<()> {
+    // Initialize Logging
+    let _ = WriteLogger::init(
+        LevelFilter::Info,
+        Config::default(),
+        File::create("client.log").unwrap(),
+    );
+
+    let mut app = AppRoot::new();
+    app.run()
 }
