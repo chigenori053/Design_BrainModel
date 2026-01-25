@@ -33,7 +33,7 @@ def test_vm_loop():
     units = state.semantic_units.units
     print(f"Extracted Units: {len(units)}")
     for uid, unit in units.items():
-        print(f" - {unit.type}: {unit.content}")
+        print(f" - {unit.kind}: {unit.content}")
         
     assert len(units) >= 1
     print("\n[Passed] Semantic Units extracted.")

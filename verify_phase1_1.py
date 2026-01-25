@@ -1,6 +1,6 @@
 import uuid
 from hybrid_vm.core import HybridVM
-from hybrid_vm.state import SemanticUnit, SemanticUnitKind, SemanticUnitStatus
+from hybrid_vm.control_layer.state import SemanticUnit, SemanticUnitKind, SemanticUnitStatus
 from hybrid_vm.events import SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, EventType, Actor
 
 def verify_phase1_1():

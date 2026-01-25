@@ -2,22 +2,23 @@ import uuid
 from datetime import datetime
 from typing import Optional, List, Set, Dict
 
-from hybrid_vm.state import VMState, Message, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
+from hybrid_vm.control_layer.state import VMState, Message, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
 from hybrid_vm.events import (
     BaseEvent, EventType, UserInputEvent, ExecutionResultEvent, 
     SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, SemanticConflictDetectedEvent,
     DecisionOutcomeGeneratedEvent,
     Actor
 )
-from design_brain.api import DesignBrainModel, DesignCommand, DesignCommandType
-from execution_layer.mock import MockExecutionEngine
-from hybrid_vm.decision_pipeline import DecisionPipeline
-from hybrid_vm.state import Policy, DecisionCandidate, DecisionOutcome
+from design_brain.api import DesignCommand, DesignCommandType
+from hybrid_vm.interface_layer.services import InterfaceServices
+from hybrid_vm.execution_layer.mock import MockExecutionEngine
+from hybrid_vm.control_layer.decision_pipeline import DecisionPipeline
+from hybrid_vm.control_layer.state import Policy, DecisionCandidate, DecisionOutcome
 
 class HybridVM:
     def __init__(self):
         self.state = VMState()
-        self.brain = DesignBrainModel()
+        self.interface = InterfaceServices()
         self.execution = MockExecutionEngine()
         self.decision_pipeline = DecisionPipeline()
         self.event_log: List[BaseEvent] = []
@@ -89,7 +90,7 @@ class HybridVM:
             type=DesignCommandType.EXTRACT_SEMANTICS,
             payload={"content": content, "message_id": msg_id}
         )
-        result = self.brain.handle_design_command(cmd)
+        result = self.interface.brain.handle_design_command(cmd)
         
         if result.success:
             units_data = result.data.get("units", [])

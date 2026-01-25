@@ -5,7 +5,7 @@ import uuid
 sys.path.append(os.getcwd())
 
 from hybrid_vm.core import HybridVM
-from hybrid_vm.state import DecisionCandidate, Policy, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
+from hybrid_vm.control_layer.state import DecisionCandidate, Policy, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
 
 def test_phase_2_decision():
     print("=== Starting Phase 2 Decision Verification ===")

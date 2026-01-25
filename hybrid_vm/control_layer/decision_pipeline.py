@@ -2,7 +2,7 @@ from typing import List, Dict, Optional
 import uuid
 from datetime import datetime
 
-from hybrid_vm.state import (
+from hybrid_vm.control_layer.state import (
     DecisionCandidate, UtilityVector, Policy, DecisionOutcome, Role,
     DecisionState, RankedCandidate
 )
