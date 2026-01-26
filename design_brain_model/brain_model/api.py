@@ -1,5 +1,9 @@
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel
+from .memory.space import MemorySpace
+from .memory.gate import MemoryGate
+from .core.a_cycle import ExplorationCore
+from .core.b_cycle import ValidationCore
 
 class DesignCommandType(str):
     EXTRACT_SEMANTICS = "extract_semantics"
@@ -17,45 +21,37 @@ class DesignResult(BaseModel):
 class DesignBrainModel:
     """
     Stateless Design Intelligence Engine.
-    Phase 0: Mock implementation using heuristics.
+    Phase 9: Internal Refactoring for MemorySpace and Core Separation.
     """
+    def __init__(self):
+        # 1. Initialize Memory Infrastructure
+        self.memory_space = MemorySpace()
+        self.memory_gate = MemoryGate(self.memory_space)
+        
+        # 2. Initialize Cores
+        self.core_a = ExplorationCore()
+        self.core_b = ValidationCore(self.memory_gate)
     
     def handle_design_command(self, command: DesignCommand) -> DesignResult:
         if command.type == DesignCommandType.EXTRACT_SEMANTICS:
-            return self._extract_semantics(command.payload)
+            return self._run_extraction_pipeline(command.payload)
         elif command.type == DesignCommandType.PROPOSE_STRUCTURE:
-            return self._propose_structure(command.payload)
+             return self._run_structure_pipeline() # Simplified for now
         else:
             return DesignResult(success=False, data={}, message=f"Unknown command type: {command.type}")
 
-    def _extract_semantics(self, payload: Dict[str, Any]) -> DesignResult:
-        """
-        Mock: Extract semantic units from user text.
-        Simple heuristic: Lines starting with '*' are Constraints.
-        """
-        text = payload.get("content", "")
-        message_id = payload.get("message_id")
+    def _run_extraction_pipeline(self, payload: Dict[str, Any]) -> DesignResult:
+        # 1. Core-A Generates Hypotheses
+        candidates = self.core_a.generate_hypotheses(payload)
         
-        extracted_units = []
-        
-        # Simple Mock Logic
-        if "database" in text.lower():
-            extracted_units.append({
-                "id": f"unit_{len(text)}",
-                "type": "concept",
-                "content": "Database",
-                "source_message_id": message_id
-            })
+        processed_units = []
+        for unit in candidates:
+            # 2. Core-B Evaluates and (Try) Store
+            evaluated_unit = self.core_b.evaluate(unit)
+            processed_units.append(evaluated_unit.model_dump())
             
-        if "must" in text.lower():
-             extracted_units.append({
-                "id": f"unit_cons_{len(text)}",
-                "type": "constraint",
-                "content": text, # In reality, we'd extract the constraint phrase
-                "source_message_id": message_id
-            })
+        return DesignResult(success=True, data={"units": processed_units})
 
-        return DesignResult(success=True, data={"units": extracted_units})
-
-    def _propose_structure(self, payload: Dict[str, Any]) -> DesignResult:
-        return DesignResult(success=True, data={"components": ["App", "DB"]})
+    def _run_structure_pipeline(self) -> DesignResult:
+        # Placeholder for structure proposal logic
+        return DesignResult(success=True, data={"components": ["App", "DB (Placeholder)"]})
