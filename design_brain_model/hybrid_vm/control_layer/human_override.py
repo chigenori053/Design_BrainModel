@@ -1,7 +1,7 @@
 from typing import Dict, Optional
 import uuid
 from datetime import datetime
-from hybrid_vm.control_layer.state import (
+from design_brain_model.hybrid_vm.control_layer.state import (
     EvaluationResult, UtilityVector, Role
 )
 
@@ -12,7 +12,7 @@ class HumanOverrideHandler:
     that the Consensus Engine can process (usually forcing an outcome).
     """
     
-    def create_human_evaluation(self, decision: str, reason: str, candidate_ids: list[str]) -> EvaluationResult:
+    def create_human_evaluation(self, decision: str, reason: str, candidate_ids: list[str], timestamp: datetime) -> EvaluationResult:
         """
         Creates an EvaluationResult representing a Human Override.
         
@@ -45,7 +45,7 @@ class HumanOverrideHandler:
             utility_vector=utility,
             confidence=1.0, # Absolute certainty
             entropy=0.0,    # Zero entropy (no confusion)
-            timestamp=datetime.now()
+            timestamp=timestamp
         )
 
     def is_human_override(self, input_data: Dict) -> bool:

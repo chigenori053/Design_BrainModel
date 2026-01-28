@@ -3,8 +3,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field
 
-from brain_model.memory.types import SemanticUnit
-from hybrid_vm.control_layer.state import DecisionOutcome
+from design_brain_model.brain_model.memory.types import SemanticUnit
+from design_brain_model.hybrid_vm.control_layer.state import DecisionOutcome
 
 
 class ExplanationLevel(str, Enum):

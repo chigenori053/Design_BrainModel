@@ -5,14 +5,14 @@ import unittest
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'design_brain_model')))
 
-from brain_model.language_engine import (
+from design_brain_model.brain_model.language_engine import (
     LanguageEngine,
     LanguageInput,
     Constraint,
     CausalSummary,
 )
-from brain_model.memory.types import SemanticUnit
-from hybrid_vm.control_layer.state import (
+from design_brain_model.brain_model.memory.types import SemanticUnit
+from design_brain_model.hybrid_vm.control_layer.state import (
     DecisionOutcome,
     RankedCandidate,
     UtilityVector,

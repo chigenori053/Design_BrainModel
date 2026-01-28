@@ -1,4 +1,4 @@
-from brain_model.api import DesignBrainModel
+from design_brain_model.brain_model.api import DesignBrainModel
 
 class InterfaceServices:
     """

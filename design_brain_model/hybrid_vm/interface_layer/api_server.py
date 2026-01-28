@@ -1,12 +1,12 @@
 import uvicorn
+import json
 import logging
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 
-from hybrid_vm.core import HybridVM
-from hybrid_vm.events import BaseEvent, EventType, UserInputEvent, Actor
-from hybrid_vm.control_layer.state import ConsensusStatus
+from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.events import BaseEvent, EventType, UserInputEvent, Actor
 
 # Configure Logging
 logging.basicConfig(
@@ -17,10 +17,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
-
-# Global VM Instance
-# In a real production app, we'd manage lifecycle better, but for this POC global is fine.
-vm = HybridVM()
 
 class DecisionDto(BaseModel):
     id: str
@@ -40,11 +36,29 @@ class DecisionSummaryDto(BaseModel):
 class EventRequest(BaseModel):
     type: str # USER_INPUT, REQUEST_REEVALUATION, HUMAN_OVERRIDE
     payload: Optional[Dict[str, Any]] = None
+    snapshot: Optional[Dict[str, Any]] = None
 
 @app.get("/decision/latest", response_model=DecisionDto)
-def get_latest_decision():
-    # Fetch from VM State
-    outcomes = vm.state.decision_state.outcomes
+def get_latest_decision(snapshot: Optional[str] = Query(default=None)):
+    if not snapshot:
+        return DecisionDto(
+            id="waiting",
+            status="WAITING",
+            selected_candidate=None,
+            evaluator_count=0,
+            confidence="LOW",
+            entropy="HIGH",
+            explanation="Waiting for input...",
+            human_override=False
+        )
+
+    try:
+        snapshot_dict = json.loads(snapshot)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid snapshot JSON")
+
+    vm = HybridVM.from_snapshot(snapshot_dict)
+    outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
     if not outcomes:
         # Return a default "Wait" state if no decision yet
         return DecisionDto(
@@ -61,52 +75,62 @@ def get_latest_decision():
     last = outcomes[-1]
     
     # Map consensus status to string
-    status_str = last.consensus_status.value if last.consensus_status else "UNKNOWN"
+    status_str = last.get("consensus_status") or "UNKNOWN"
     
     # Get selected candidate (Top 1)
     selected_candidate = None
-    if last.ranked_candidates:
-        selected_candidate = last.ranked_candidates[0].content
+    if last.get("ranked_candidates"):
+        selected_candidate = last["ranked_candidates"][0]["content"]
         
     # Confidence aggregation (Mock logic or average)
     confidence_val = "MEDIUM"
-    if last.evaluations:
+    if last.get("evaluations"):
         # Simple average or take first
-        avg_conf = sum(e.confidence for e in last.evaluations) / len(last.evaluations)
+        avg_conf = sum(e["confidence"] for e in last["evaluations"]) / len(last["evaluations"])
         if avg_conf > 0.8:
             confidence_val = "HIGH"
         elif avg_conf < 0.4:
             confidence_val = "LOW"
             
-    is_human_override = last.human_reason is not None
+    is_human_override = last.get("human_reason") is not None
     
     return DecisionDto(
-        id=last.outcome_id,
+        id=last["outcome_id"],
         status=status_str,
         selected_candidate=selected_candidate,
-        evaluator_count=len(last.evaluations),
+        evaluator_count=len(last.get("evaluations", [])),
         confidence=confidence_val,
         entropy="LOW", # Placeholder
-        explanation=last.explanation,
+        explanation=last["explanation"],
         human_override=is_human_override
     )
 
 @app.get("/decision/history", response_model=List[DecisionSummaryDto])
-def get_decision_history():
-    outcomes = vm.state.decision_state.outcomes
+def get_decision_history(snapshot: Optional[str] = Query(default=None)):
+    if not snapshot:
+        return []
+
+    try:
+        snapshot_dict = json.loads(snapshot)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid snapshot JSON")
+
+    vm = HybridVM.from_snapshot(snapshot_dict)
+    outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
     history = []
     for o in outcomes:
-        status_str = o.consensus_status.value if o.consensus_status else "UNKNOWN"
+        status_str = o.get("consensus_status") or "UNKNOWN"
         history.append(DecisionSummaryDto(
-            id=o.outcome_id,
+            id=o["outcome_id"],
             status=status_str,
-            is_reevaluation=o.lineage is not None
+            is_reevaluation=o.get("lineage") is not None
         ))
     return history
 
 @app.post("/event")
 def send_event(event: EventRequest):
     logger.info(f"Received Event: {event.type} Payload: {event.payload}")
+    vm = HybridVM.from_snapshot(event.snapshot) if event.snapshot else HybridVM.create()
     
     # 1. Special Handling for Human Override (Evaluation Injection)
     if event.type == "HUMAN_OVERRIDE":
@@ -116,7 +140,11 @@ def send_event(event: EventRequest):
             reason=str(payload.get("reason", "Manual Override")),
             candidate_ids=payload.get("candidate_ids", [])
         )
-        return {"accepted": True, "outcome_id": outcome.outcome_id}
+        return {
+            "accepted": True,
+            "outcome_id": outcome.outcome_id,
+            "snapshot": vm.get_state_snapshot()
+        }
 
     # 2. Generic Event Handling
     vm_event = None
@@ -146,7 +174,7 @@ def send_event(event: EventRequest):
     if vm_event:
         logger.info(f"Processing VM Event: {vm_event}")
         vm.process_event(vm_event)
-        return {"accepted": True}
+        return {"accepted": True, "snapshot": vm.get_state_snapshot()}
     else:
         logger.error(f"Invalid Event Type: {event.type}")
         raise HTTPException(status_code=400, detail="Invalid Event Type")

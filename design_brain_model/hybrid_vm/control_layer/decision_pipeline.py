@@ -2,12 +2,12 @@ from typing import List, Dict, Optional
 import uuid
 from datetime import datetime
 
-from hybrid_vm.control_layer.state import (
+from design_brain_model.hybrid_vm.control_layer.state import (
     DecisionCandidate, UtilityVector, Policy, DecisionOutcome, Role,
     DecisionState, RankedCandidate, EvaluationResult, ConsensusStatus
 )
-from hybrid_vm.control_layer.consensus_engine import ConsensusEngine
-from hybrid_vm.control_layer.explanation_generator import ExplanationGenerator
+from design_brain_model.hybrid_vm.control_layer.consensus_engine import ConsensusEngine
+from design_brain_model.hybrid_vm.control_layer.explanation_generator import ExplanationGenerator
 
 class Evaluator:
     """
@@ -104,7 +104,7 @@ class DecisionPipeline:
         sorted_candidates = self.rank_candidates(candidates, safe_policy)
         
         # 2. Generate EvaluationResult(s)
-        evaluations = external_evaluations or []
+        evaluations = list(external_evaluations) if external_evaluations else []
         
         # If we have candidates, we try to evaluate them automatically unless overridden strictly
         if sorted_candidates:
@@ -132,7 +132,7 @@ class DecisionPipeline:
                 candidate_id=cand.candidate_id,
                 content=cand.content,
                 final_score=score,
-                utility_vector_snapshot=cand.utility.model_copy()
+                utility_vector_snapshot=cand.utility.model_copy(deep=True)
             )
             ranked_snapshots.append(snapshot)
         
@@ -188,6 +188,7 @@ class DecisionPipeline:
         )
         
         outcome.explanation = self.explanation_generator.generate(outcome)
+        if not outcome.outcome_id:
+            outcome.outcome_id = outcome.compute_deterministic_id()
         
         return outcome
-

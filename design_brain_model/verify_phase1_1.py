@@ -1,11 +1,11 @@
 import uuid
-from hybrid_vm.core import HybridVM
-from hybrid_vm.control_layer.state import SemanticUnit, SemanticUnitKind, SemanticUnitStatus
-from hybrid_vm.events import SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, EventType, Actor
+from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.control_layer.state import VMState, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
+from design_brain_model.hybrid_vm.events import SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, EventType, Actor
 
 def verify_phase1_1():
     print("=== STARTING PHASE 1.1 VERIFICATION ===")
-    vm = HybridVM()
+    vm = HybridVM.create()
     
     # 1. Terminal State Safety (Stable -> No-Op)
     print("\n--- Test 1: Terminal State Safety (Stable Locked) ---")
@@ -24,7 +24,8 @@ def verify_phase1_1():
     print("Attempting to Confirm STABLE unit...")
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unit1_id}, actor=Actor.USER))
     
-    u1 = vm.state.semantic_units.units[unit1_id]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    u1 = state.semantic_units.units[unit1_id]
     assert u1.status == SemanticUnitStatus.STABLE
     print("Verified: Unit remains STABLE (No-Op)")
 
@@ -45,7 +46,8 @@ def verify_phase1_1():
     print("Attempting to Confirm REJECTED unit...")
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unit2_id}, actor=Actor.USER))
     
-    u2 = vm.state.semantic_units.units[unit2_id]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    u2 = state.semantic_units.units[unit2_id]
     assert u2.status == SemanticUnitStatus.REJECTED
     print("Verified: Unit remains REJECTED (No-Op)")
 
@@ -72,23 +74,27 @@ def verify_phase1_1():
 
     # Move B to REVIEW (OK)
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unitB_id}, actor=Actor.USER))
-    assert vm.state.semantic_units.units[unitB_id].status == SemanticUnitStatus.REVIEW
+    state = VMState.model_validate(vm.get_state_snapshot())
+    assert state.semantic_units.units[unitB_id].status == SemanticUnitStatus.REVIEW
     
     # Try moving B to STABLE (Fail -> Conflict)
     print("Attempting B -> STABLE (Should Fail due to A Unstable)...")
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unitB_id}, actor=Actor.USER))
-    assert vm.state.semantic_units.units[unitB_id].status == SemanticUnitStatus.REVIEW # Stuck
+    state = VMState.model_validate(vm.get_state_snapshot())
+    assert state.semantic_units.units[unitB_id].status == SemanticUnitStatus.REVIEW # Stuck
     
     # Stabilize A (Unstable -> Review -> Stable)
     print("Stabilizing A...")
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unitA_id}, actor=Actor.USER)) # -> Review
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unitA_id}, actor=Actor.USER)) # -> Stable
-    assert vm.state.semantic_units.units[unitA_id].status == SemanticUnitStatus.STABLE
+    state = VMState.model_validate(vm.get_state_snapshot())
+    assert state.semantic_units.units[unitA_id].status == SemanticUnitStatus.STABLE
     
     # Try moving B to STABLE again (Success)
     print("Attempting B -> STABLE (Should Success)...")
     vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unitB_id}, actor=Actor.USER))
-    assert vm.state.semantic_units.units[unitB_id].status == SemanticUnitStatus.STABLE
+    state = VMState.model_validate(vm.get_state_snapshot())
+    assert state.semantic_units.units[unitB_id].status == SemanticUnitStatus.STABLE
     print("Verified: Dependency Resolution Flow Successful")
 
     print("\n=== PHASE 1.1 VERIFICATION COMPLETE ===")

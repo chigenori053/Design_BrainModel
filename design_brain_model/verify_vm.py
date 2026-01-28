@@ -4,12 +4,13 @@ import os
 # Ensure project root is in path
 sys.path.append(os.getcwd())
 
-from hybrid_vm.core import HybridVM
-from hybrid_vm.events import UserInputEvent
+from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.control_layer.state import VMState
+from design_brain_model.hybrid_vm.events import UserInputEvent
 
 def test_vm_loop():
     print("Initializing Hybrid VM...")
-    vm = HybridVM()
+    vm = HybridVM.create()
     
     print("Initial State:", vm.get_state_snapshot())
     
@@ -21,7 +22,7 @@ def test_vm_loop():
     vm.process_event(event)
     
     # Verify State Update
-    state = vm.state
+    state = VMState.model_validate(vm.get_state_snapshot())
     
     # Check Message
     assert len(state.conversation.history) == 1
@@ -39,17 +40,18 @@ def test_vm_loop():
     print("\n[Passed] Semantic Units extracted.")
 
     # --- Test Simulation ---
-    from hybrid_vm.events import BaseEvent, EventType
+    from design_brain_model.hybrid_vm.events import BaseEvent, EventType
     print("\nRequesting Simulation...")
     sim_event = BaseEvent(type=EventType.SIMULATION_REQUEST, payload={})
     vm.process_event(sim_event)
     
     # Check Simulation State
-    assert vm.state.simulation.last_result is not None
-    print(f"Simulation Result: {vm.state.simulation.last_result}")
+    state = VMState.model_validate(vm.get_state_snapshot())
+    assert state.simulation.last_result is not None
+    print(f"Simulation Result: {state.simulation.last_result}")
     
-    if vm.state.execution_feedback.last_error:
-        print(f"Feedback Type: {vm.state.execution_feedback.error_type}")
+    if state.execution_feedback.last_error:
+        print(f"Feedback Type: {state.execution_feedback.error_type}")
     
     print("\n[Passed] Simulation executed.")
     

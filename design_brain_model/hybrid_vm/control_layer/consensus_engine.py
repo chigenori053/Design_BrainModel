@@ -1,6 +1,6 @@
 from typing import List, Dict, Optional
 import math
-from hybrid_vm.control_layer.state import (
+from design_brain_model.hybrid_vm.control_layer.state import (
     EvaluationResult, UtilityVector, ConsensusStatus, Policy, Role
 )
 

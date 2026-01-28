@@ -4,13 +4,13 @@ import os
 # Add project root to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'design_brain_model')))
 
-from hybrid_vm.core import HybridVM
-from hybrid_vm.control_layer.state import ConsensusStatus
+from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.control_layer.state import ConsensusStatus
 
 def test_human_override():
     print("=== Testing Human Override Logic ===")
     
-    vm = HybridVM()
+    vm = HybridVM.create()
     
     # 1. Simulate Human Override
     # Scenario: Human forces REJECT for a decision

@@ -1,5 +1,5 @@
 from typing import List, Optional
-from hybrid_vm.control_layer.state import DecisionOutcome, ConsensusStatus, EvaluationResult, Role
+from design_brain_model.hybrid_vm.control_layer.state import DecisionOutcome, ConsensusStatus, EvaluationResult, Role
 
 class ExplanationGenerator:
     """

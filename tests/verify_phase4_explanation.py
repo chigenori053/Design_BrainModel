@@ -1,10 +1,10 @@
 import unittest
 import uuid
 import re
-from hybrid_vm.control_layer.state import (
+from design_brain_model.hybrid_vm.control_layer.state import (
     DecisionOutcome, ConsensusStatus, EvaluationResult, UtilityVector, Role, RankedCandidate
 )
-from hybrid_vm.control_layer.explanation_generator import ExplanationGenerator
+from design_brain_model.hybrid_vm.control_layer.explanation_generator import ExplanationGenerator
 
 class TestPhase4Explanation(unittest.TestCase):
     

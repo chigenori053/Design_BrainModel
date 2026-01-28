@@ -4,19 +4,21 @@ import uuid
 # Ensure we can import modules from PWD
 sys.path.append(os.getcwd())
 
-from hybrid_vm.core import HybridVM
-from hybrid_vm.control_layer.state import DecisionCandidate, Policy, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
+from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.control_layer.state import VMState, DecisionCandidate, Policy, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
 
 def test_phase_2_decision():
     print("=== Starting Phase 2 Decision Verification ===")
-    vm = HybridVM()
+    vm = HybridVM.create()
     
     # Setup Context: A Question Unit
     question_unit = SemanticUnit(
         kind=SemanticUnitKind.QUESTION,
         content="Which database sharding strategy should we use?"
     )
-    vm.state.semantic_units.units[question_unit.id] = question_unit
+    state = VMState.model_validate(vm.get_state_snapshot())
+    state.semantic_units.units[question_unit.id] = question_unit
+    vm = HybridVM.from_snapshot(state.model_dump(), vm_id=vm.vm_id)
     
     # 1. Create Candidates
     # Candidate A: High Performance, High Cost
@@ -54,7 +56,8 @@ def test_phase_2_decision():
     vm.evaluate_decision(question_unit.id, candidates, perf_policy)
     
     # Check Outcome
-    outcome_1 = vm.state.decision_state.outcomes[-1]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    outcome_1 = state.decision_state.outcomes[-1]
     winner_1 = outcome_1.ranked_candidates[0]
     print(f"Winner 1: {winner_1.content}")
     # Phase 2.1: Use utility_vector_snapshot
@@ -72,14 +75,16 @@ def test_phase_2_decision():
     # But policies weight them differently.
     vm.evaluate_decision(question_unit.id, candidates, cost_policy)
     
-    outcome_2 = vm.state.decision_state.outcomes[-1]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    outcome_2 = state.decision_state.outcomes[-1]
     winner_2 = outcome_2.ranked_candidates[0]
     print(f"Winner 2: {winner_2.content}")
     
     # Phase 2.1: Determinism Check
     print("\n--- Test Case 3: Verify Determinism ---")
     vm.evaluate_decision(question_unit.id, candidates, cost_policy)
-    outcome_3 = vm.state.decision_state.outcomes[-1]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    outcome_3 = state.decision_state.outcomes[-1]
     
     # Check if Outcome 2 and Outcome 3 are identical in content (ignoring IDs/timestamps)
     assert outcome_2.outcome_id != outcome_3.outcome_id
@@ -90,17 +95,19 @@ def test_phase_2_decision():
     # 3. Verify Non-Destructive Nature (State Safety)
     print("\n--- Test Case 4: Verify State Safety ---")
     # The Question Unit should still be UNSTABLE (or whatever it started as), NOT changed by decision
-    current_q_unit = vm.state.semantic_units.units[question_unit.id]
+    state = VMState.model_validate(vm.get_state_snapshot())
+    current_q_unit = state.semantic_units.units[question_unit.id]
     if current_q_unit.status == SemanticUnitStatus.UNSTABLE:
         print("PASS: Question Unit status remains UNSTABLE.")
     else:
         print(f"FAIL: Question Unit status changed to {current_q_unit.status}")
 
     # Check that no new SemanticUnits were created (candidates are NOT semantic units in this design, they are distinct)
-    if len(vm.state.semantic_units.units) == 1:
+    state = VMState.model_validate(vm.get_state_snapshot())
+    if len(state.semantic_units.units) == 1:
         print("PASS: No new SemanticUnits created (DecisionCandidate != SemanticUnit).")
     else:
-        print(f"FAIL: Logic created new SemanticUnits: {len(vm.state.semantic_units.units)}")
+        print(f"FAIL: Logic created new SemanticUnits: {len(state.semantic_units.units)}")
 
     print("\n=== Verification Complete ===")
 

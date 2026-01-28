@@ -1,4 +1,5 @@
-import random
+import hashlib
+import json
 from typing import Dict, Any, Tuple
 
 class MockExecutionEngine:
@@ -11,8 +12,10 @@ class MockExecutionEngine:
         Runs the system defined by 'structure'.
         Returns: (success, result_message, error_type)
         """
-        # Mock Logic: Randomly fail to test error feedback loop
-        outcome = random.random()
+        # Mock Logic: Deterministic outcome based on structure hash
+        payload = json.dumps(structure, sort_keys=True, separators=(",", ":"))
+        digest = hashlib.sha256(payload.encode("utf-8")).hexdigest()
+        outcome = int(digest[:8], 16) / 0xFFFFFFFF
         
         if outcome > 0.7:
             return True, "System running successfully. Throughput: 1000 req/s", None

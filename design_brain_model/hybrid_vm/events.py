@@ -24,6 +24,7 @@ class BaseEvent(BaseModel):
     type: EventType
     payload: Dict[str, Any]
     actor: Optional[Actor] = None
+    event_id: Optional[str] = None
 
 class UserInputEvent(BaseEvent):
     type: EventType = EventType.USER_INPUT

@@ -1,13 +1,12 @@
 import unittest
-import uuid
-from datetime import datetime
-from hybrid_vm.control_layer.state import (
+from datetime import datetime, timezone
+from design_brain_model.hybrid_vm.control_layer.state import (
     EvaluationResult, UtilityVector, ConsensusStatus, Policy, DecisionCandidate, Role
 )
-from hybrid_vm.control_layer.consensus_engine import ConsensusEngine
-from hybrid_vm.control_layer.reevaluation import ReevaluationLoop
-from hybrid_vm.control_layer.decision_pipeline import DecisionPipeline
-from hybrid_vm.control_layer.human_override import HumanOverrideHandler
+from design_brain_model.hybrid_vm.control_layer.consensus_engine import ConsensusEngine
+from design_brain_model.hybrid_vm.control_layer.reevaluation import ReevaluationLoop
+from design_brain_model.hybrid_vm.control_layer.decision_pipeline import DecisionPipeline
+from design_brain_model.hybrid_vm.control_layer.human_override import HumanOverrideHandler
 
 class TestPhase3Consensus(unittest.TestCase):
     
@@ -65,7 +64,8 @@ class TestPhase3Consensus(unittest.TestCase):
         human_ev = self.human_handler.create_human_evaluation(
             decision="ACCEPT",
             reason="I say so",
-            candidate_ids=[self.candidate.candidate_id]
+            candidate_ids=[self.candidate.candidate_id],
+            timestamp=datetime(1970, 1, 1, tzinfo=timezone.utc)
         )
         
         result = self.pipeline.process_decision(

@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Dict, Any, Optional, Set
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 import uuid
 
 class MemoryType(str, Enum):
@@ -33,5 +33,4 @@ class SemanticUnit(BaseModel):
     # Relationships
     related_unit_ids: Set[str] = Field(default_factory=set)
 
-    class Config:
-        frozen = False # Allow updates within safe boundaries
+    model_config = ConfigDict(frozen=False)  # Allow updates within safe boundaries

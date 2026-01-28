@@ -1,10 +1,10 @@
 from typing import List, Optional
 import uuid
 from datetime import datetime
-from hybrid_vm.control_layer.state import (
+from design_brain_model.hybrid_vm.control_layer.state import (
     DecisionOutcome, ConsensusStatus, EvaluationResult, Policy
 )
-from hybrid_vm.control_layer.consensus_engine import ConsensusEngine
+from design_brain_model.hybrid_vm.control_layer.consensus_engine import ConsensusEngine
 
 class ReevaluationLoop:
     """
@@ -57,8 +57,8 @@ class ReevaluationLoop:
         # Note: In a real implementation, we would re-rank candidates here.
         # For this MVP step, we will return a minimal structure to be enriched by the pipeline.
         
-        return DecisionOutcome(
-            outcome_id=str(uuid.uuid4()),
+        outcome = DecisionOutcome(
+            outcome_id="",
             resolves_question_id=previous_outcome.resolves_question_id,
             policy_id=previous_outcome.policy_id, # Reuse policy ID or new one?
             policy_snapshot=policy.weights.copy(),
@@ -68,3 +68,6 @@ class ReevaluationLoop:
             explanation=new_explanation,
             ranked_candidates=[] # Caller must populate this!
         )
+        if not outcome.outcome_id:
+            outcome.outcome_id = outcome.compute_deterministic_id()
+        return outcome
