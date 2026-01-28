@@ -30,6 +30,7 @@ class HybridVM:
         self.sink_log: List[Dict[str, str]] = []
         self._event_counter = 0
         self._clock_counter = 0
+        self._logical_index = 0
         self._entity_counter: Dict[str, int] = {}
 
     @classmethod
@@ -41,16 +42,16 @@ class HybridVM:
         state = VMState.model_validate(snapshot)
         return cls(vm_id=vm_id, initial_state=state)
 
-    def process_human_override(self, decision: str, reason: str, candidate_ids: Optional[List[str]] = None) -> DecisionOutcome:
+    def process_human_override(self, override_action: str, reason: str, target_decision_id: str, candidate_ids: Optional[List[str]] = None, override_event_id: Optional[str] = None) -> DecisionOutcome:
         """
         Special Entry Point for Human Override (Evaluation Injection).
         Treats human input as a 100% confidence evaluation.
         """
-        print(f"[VM] Processing Human Override: {decision} (Reason: {reason})")
+        print(f"[VM] Processing Human Override: {override_action} (Reason: {reason})")
         
         # 1. Create Human Evaluation via Handler
         human_eval = self.human_override_handler.create_human_evaluation(
-            decision=decision,
+            decision=override_action,
             reason=reason,
             candidate_ids=candidate_ids or [],
             timestamp=self._next_timestamp()
@@ -65,26 +66,28 @@ class HybridVM:
         # Creating dummy context if needed or relying on pipeline defaults
         # Ideally pipeline.process_decision handles overrides.
         
-        outcome = self.decision_pipeline.process_decision(
-            question_id="override-context", 
-            candidates=[], 
-            policy=None,
-            external_evaluations=[human_eval]
+        # Do not run decision pipeline on override: human decision is final
+        outcome = DecisionOutcome(
+            resolves_question_id="override-context",
+            policy_id=None,
+            policy_snapshot={},
+            evaluations=[human_eval],
+            consensus_status=self._map_override_action(override_action),
+            lineage=None,
+            ranked_candidates=[],
+            explanation="",
+            human_reason=reason,
+            override_event_id=override_event_id,
+            overridden_decision_id=target_decision_id,
         )
         
         # Force Override Values onto Outcome
         # The pipeline calculates consensus based on utils, but Human Override 
         # is often an explicit forcing function regardless of utility math.
-        outcome.human_reason = reason
-        # Map decision string (ACCEPT/REJECT) to ConsensusStatus
-        try:
-            outcome.consensus_status = ConsensusStatus(decision)
-        except ValueError:
-            # Fallback if mapped incorrectly, though Enum should handle standard strings
-            pass
-            
         # Regenerate Explanation to reflect Override
         outcome.explanation = self.decision_pipeline.explanation_generator.generate(outcome)
+        if not outcome.outcome_id:
+            outcome.outcome_id = outcome.compute_deterministic_id()
             
         # 3. Emit Result
         self.process_event(DecisionMadeEvent(
@@ -107,8 +110,10 @@ class HybridVM:
             event.event_id = self._next_event_id()
         if not getattr(event, "vm_id", None):
             event.vm_id = self.vm_id
-        if not getattr(event, "timestamp", None):
-            event.timestamp = self._next_timestamp()
+        if not getattr(event, "logical_index", None):
+            event.logical_index = self._next_logical_index()
+        if not getattr(event, "wall_timestamp", None):
+            event.wall_timestamp = datetime.now(timezone.utc)
         if not getattr(event, "parent_event_id", None) and self.event_log:
             event.parent_event_id = self.event_log[-1].event_id
         self.event_log.append(event)
@@ -345,20 +350,44 @@ class HybridVM:
         self._clock_counter += 1
         return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(microseconds=self._clock_counter)
 
+    def _next_logical_index(self) -> int:
+        self._logical_index += 1
+        return self._logical_index
+
     def _next_entity_id(self, prefix: str) -> str:
         self._entity_counter[prefix] = self._entity_counter.get(prefix, 0) + 1
         return f"{self.vm_id}:{prefix}:{self._entity_counter[prefix]}"
 
     def _handle_human_override_event(self, event: BaseEvent):
         payload = event.payload or {}
+        target_decision_id = payload.get("target_decision_id")
+        if not target_decision_id:
+            self._sink_event(event, error="Missing target_decision_id for human override")
+            return
         self.process_human_override(
-            decision=str(payload.get("decision", "ACCEPT")),
+            override_action=str(payload.get("override_action", "ACCEPT")),
             reason=str(payload.get("reason", "Manual Override")),
+            target_decision_id=target_decision_id,
             candidate_ids=payload.get("candidate_ids", []),
+            override_event_id=event.event_id,
         )
 
     def _handle_request_reevaluation(self, event: BaseEvent):
-        self._sink_event(event, error="Reevaluation not implemented in Phase12")
+        if self._state.decision_state.outcomes:
+            last = self._state.decision_state.outcomes[-1]
+            if last.override_event_id or last.overridden_decision_id:
+                self._sink_event(event, error="Reevaluation blocked after human override")
+                return
+        self._sink_event(event, error="Reevaluation not implemented in Phase13")
 
     def _handle_vm_terminate(self, event: BaseEvent):
         print(f"[VM] Terminate requested for vm_id={self.vm_id}")
+
+    def _map_override_action(self, action: str) -> ConsensusStatus:
+        if action == "ACCEPT":
+            return ConsensusStatus.ACCEPT
+        if action == "REJECT":
+            return ConsensusStatus.REJECT
+        if action == "FORCE_REVIEW":
+            return ConsensusStatus.REVIEW
+        return ConsensusStatus.REVIEW

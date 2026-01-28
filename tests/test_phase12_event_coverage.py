@@ -11,7 +11,7 @@ def test_event_coverage_and_termination():
         if event_type == EventType.USER_INPUT:
             payload = {"content": "test"}
         if event_type == EventType.HUMAN_OVERRIDE:
-            payload = {"decision": "ACCEPT", "reason": "test", "candidate_ids": []}
+            payload = {"override_action": "ACCEPT", "reason": "test", "target_decision_id": "d1", "candidate_ids": []}
         ev = BaseEvent(type=event_type, payload=payload)
         vm.process_event(ev)
 
@@ -39,5 +39,7 @@ def test_event_lineage_metadata():
     assert second_event.parent_event_id == first_event.event_id
     assert first_event.vm_id == vm.vm_id
     assert second_event.vm_id == vm.vm_id
-    assert first_event.timestamp is not None
-    assert second_event.timestamp is not None
+    assert first_event.logical_index == 1
+    assert second_event.logical_index == 2
+    assert first_event.wall_timestamp is not None
+    assert second_event.wall_timestamp is not None

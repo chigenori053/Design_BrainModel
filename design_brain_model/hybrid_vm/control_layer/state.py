@@ -131,6 +131,8 @@ class DecisionOutcome(BaseModel):
     consensus_status: Optional[ConsensusStatus] = None
     lineage: Optional[str] = None # Parent DecisionOutcome ID (if re-evaluated)
     human_reason: Optional[str] = None # If HITL
+    override_event_id: Optional[str] = None
+    overridden_decision_id: Optional[str] = None
     
     ranked_candidates: List[RankedCandidate]
     explanation: str
@@ -161,6 +163,8 @@ class DecisionOutcome(BaseModel):
                 for e in self.evaluations
             ],
             "explanation": self.explanation,
+            "override_event_id": self.override_event_id,
+            "overridden_decision_id": self.overridden_decision_id,
             "lineage": self.lineage,
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")

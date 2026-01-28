@@ -24,7 +24,8 @@ class BaseEvent(BaseModel):
     event_id: Optional[str] = None
     parent_event_id: Optional[str] = None
     vm_id: Optional[str] = None
-    timestamp: Optional[datetime] = None
+    logical_index: Optional[int] = None
+    wall_timestamp: Optional[datetime] = None
 
 class UserInputEvent(BaseEvent):
     type: EventType = EventType.USER_INPUT

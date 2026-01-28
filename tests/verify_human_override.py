@@ -17,8 +17,9 @@ def test_human_override():
     print("1. Injecting Human Override (Decision: REJECT, Reason: 'Security Risk')...")
     
     outcome = vm.process_human_override(
-        decision="REJECT",
+        override_action="REJECT",
         reason="Security Risk detected by Admin",
+        target_decision_id="decision-001",
         candidate_ids=["cand-001"]
     )
     

@@ -147,8 +147,9 @@ def send_event(event: EventRequest):
         vm_event = HumanOverrideEvent(
             type=EventType.HUMAN_OVERRIDE,
             payload={
-                "decision": str(payload.get("decision", "ACCEPT")),
+                "override_action": str(payload.get("override_action", "ACCEPT")),
                 "reason": str(payload.get("reason", "Manual Override")),
+                "target_decision_id": payload.get("target_decision_id"),
                 "candidate_ids": payload.get("candidate_ids", []),
             },
             actor=Actor.USER,
