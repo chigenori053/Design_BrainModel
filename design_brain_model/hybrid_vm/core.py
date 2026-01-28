@@ -4,10 +4,9 @@ from typing import Optional, List, Set, Dict
 
 from design_brain_model.hybrid_vm.control_layer.state import VMState, Message, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
 from design_brain_model.hybrid_vm.events import (
-    BaseEvent, EventType, UserInputEvent, ExecutionResultEvent, 
-    SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, SemanticConflictDetectedEvent,
-    DecisionOutcomeGeneratedEvent,
-    Actor
+    BaseEvent, EventType, UserInputEvent, ExecutionResultEvent,
+    DecisionMadeEvent, ExecutionRequestEvent, HumanOverrideEvent,
+    RequestReevaluationEvent, VmTerminateEvent, Actor
 )
 from design_brain_model.brain_model.api import DesignCommand, DesignCommandType
 from design_brain_model.hybrid_vm.interface_layer.services import InterfaceServices
@@ -18,13 +17,17 @@ from design_brain_model.hybrid_vm.control_layer.human_override import HumanOverr
 
 class HybridVM:
     def __init__(self, vm_id: Optional[str] = None, initial_state: Optional[VMState] = None):
-        self.vm_id = vm_id or str(uuid.uuid4())
+        if vm_id:
+            self.vm_id = str(uuid.UUID(vm_id))
+        else:
+            self.vm_id = str(uuid.uuid4())
         self._state = initial_state or VMState()
         self.interface = InterfaceServices()
         self.execution = MockExecutionEngine()
         self.decision_pipeline = DecisionPipeline()
         self.human_override_handler = HumanOverrideHandler()
         self.event_log: List[BaseEvent] = []
+        self.sink_log: List[Dict[str, str]] = []
         self._event_counter = 0
         self._clock_counter = 0
         self._entity_counter: Dict[str, int] = {}
@@ -84,8 +87,8 @@ class HybridVM:
         outcome.explanation = self.decision_pipeline.explanation_generator.generate(outcome)
             
         # 3. Emit Result
-        self.process_event(DecisionOutcomeGeneratedEvent(
-            type=EventType.DECISION_OUTCOME_GENERATED,
+        self.process_event(DecisionMadeEvent(
+            type=EventType.DECISION_MADE,
             payload={"outcome": outcome},
             actor=Actor.USER
         ))
@@ -102,23 +105,29 @@ class HybridVM:
         print(f"[VM] Processing Event: {event.type} by {event.actor}")
         if not getattr(event, "event_id", None):
             event.event_id = self._next_event_id()
+        if not getattr(event, "vm_id", None):
+            event.vm_id = self.vm_id
+        if not getattr(event, "timestamp", None):
+            event.timestamp = self._next_timestamp()
+        if not getattr(event, "parent_event_id", None) and self.event_log:
+            event.parent_event_id = self.event_log[-1].event_id
         self.event_log.append(event)
-        
-        if event.type == EventType.USER_INPUT:
-            self._handle_user_input(event)
-        elif event.type == EventType.SEMANTIC_UNIT_CREATED:
-            self._handle_semantic_unit_created(event)
-        elif event.type == EventType.SEMANTIC_UNIT_CONFIRMED:
-            self._handle_semantic_unit_confirmed(event)
-        elif event.type == EventType.SEMANTIC_CONFLICT_DETECTED:
-             self._handle_conflict_detected(event)
-        elif event.type == EventType.SIMULATION_REQUEST:
-            self._handle_simulation_request(event)
-        elif event.type == EventType.DECISION_OUTCOME_GENERATED:
-            self._handle_decision_outcome(event)
-        elif event.type == EventType.EXECUTION_RESULT:
-            self._handle_execution_result(event)
-        # ... handle other events
+
+        dispatch = {
+            EventType.USER_INPUT: self._handle_user_input,
+            EventType.EXECUTION_REQUEST: self._handle_execution_request,
+            EventType.EXECUTION_RESULT: self._handle_execution_result,
+            EventType.DECISION_MADE: self._handle_decision_outcome,
+            EventType.HUMAN_OVERRIDE: self._handle_human_override_event,
+            EventType.REQUEST_REEVALUATION: self._handle_request_reevaluation,
+            EventType.VM_TERMINATE: self._handle_vm_terminate,
+        }
+
+        handler = dispatch.get(event.type)
+        if handler:
+            handler(event)
+        else:
+            self._sink_event(event, error="Unhandled event type")
 
     def evaluate_decision(self, question_id: str, candidates: List[DecisionCandidate], policy: Policy):
         """
@@ -128,14 +137,17 @@ class HybridVM:
         outcome = self.decision_pipeline.process_decision(question_id, candidates, policy)
         
         # Emit the outcome event
-        self.process_event(DecisionOutcomeGeneratedEvent(
-            type=EventType.DECISION_OUTCOME_GENERATED,
+        self.process_event(DecisionMadeEvent(
+            type=EventType.DECISION_MADE,
             payload={"outcome": outcome},
             actor=Actor.DESIGN_BRAIN
         ))
         
     def _handle_decision_outcome(self, event: BaseEvent):
         outcome_data = event.payload.get("outcome")
+        if outcome_data is None:
+            self._sink_event(event, error="Missing outcome for decision")
+            return
         # Ensure it's a dict or object handling
         if isinstance(outcome_data, dict):
             outcome = DecisionOutcome(**outcome_data)
@@ -146,6 +158,22 @@ class HybridVM:
         print(f"[VM] Decision Reached for {outcome.resolves_question_id}: {outcome.explanation}")
 
     def _handle_user_input(self, event: BaseEvent):
+        action = event.payload.get("action")
+        if action == "create_unit":
+            unit_data = event.payload.get("unit")
+            if not unit_data:
+                self._sink_event(event, error="Missing unit data for create_unit")
+                return
+            self._apply_semantic_unit_created(unit_data, event.event_id)
+            return
+        if action == "confirm_unit":
+            unit_id = event.payload.get("unit_id")
+            if not unit_id:
+                self._sink_event(event, error="Missing unit_id for confirm_unit")
+                return
+            self._apply_semantic_unit_confirmed(unit_id, event.event_id)
+            return
+
         content = event.payload.get("content")
         msg_id = self._next_entity_id("msg")
         
@@ -192,24 +220,18 @@ class HybridVM:
                     }
                 }
                 
-                # Emit Creation Event
-                self.process_event(SemanticUnitCreatedEvent(
-                    type=EventType.SEMANTIC_UNIT_CREATED,
-                    payload=payload,
-                    actor=Actor.DESIGN_BRAIN
-                ))
+                # Directly apply creation within handler to keep event types fixed
+                self._apply_semantic_unit_created(payload["unit"], event.event_id)
 
-    def _handle_semantic_unit_created(self, event: BaseEvent):
-        unit_data = event.payload.get("unit")
+    def _apply_semantic_unit_created(self, unit_data: Dict, event_id: Optional[str]):
         unit = SemanticUnit(**unit_data)
         if unit.origin_event_id is None:
-            unit.origin_event_id = event.event_id
-        unit.last_updated_event_id = event.event_id
+            unit.origin_event_id = event_id
+        unit.last_updated_event_id = event_id
         self._state.semantic_units.units[unit.id] = unit
         print(f"[VM] Created Unit: {unit.content} ({unit.kind}) - Status: {unit.status}")
 
-    def _handle_semantic_unit_confirmed(self, event: BaseEvent):
-        unit_id = event.payload.get("unit_id")
+    def _apply_semantic_unit_confirmed(self, unit_id: str, event_id: Optional[str]):
         unit = self._state.semantic_units.units.get(unit_id)
         
         if not unit:
@@ -238,17 +260,13 @@ class HybridVM:
         conflicts = self._check_conflicts(unit, next_status)
         if conflicts:
             for c in conflicts:
-                 self.process_event(SemanticConflictDetectedEvent(
-                     type=EventType.SEMANTIC_CONFLICT_DETECTED,
-                     payload=c,
-                     actor=Actor.EXECUTION_LAYER 
-                 ))
+                self._sink_event(BaseEvent(type=EventType.USER_INPUT, payload=c, actor=Actor.EXECUTION_LAYER), error="Semantic conflict")
             return
 
         # Apply Transition
         old_status = unit.status
         unit.status = next_status
-        unit.last_updated_event_id = event.event_id
+        unit.last_updated_event_id = event_id
         print(f"[VM] Transitioned Unit {unit.id}: {old_status} -> {unit.status}")
 
     def _check_conflicts(self, unit: SemanticUnit, target_status: SemanticUnitStatus) -> List[Dict]:
@@ -273,14 +291,12 @@ class HybridVM:
 
         return conflicts
 
-    def _handle_conflict_detected(self, event: BaseEvent):
-        payload = event.payload
-        # Optional: Append to an explicit audit log if we add one to VMState
-        # For now, print to console as per "read-only and intended for debugging"
-        print(f"[VM] CONFLICT DETECTED: {payload.get('conflict_type')} - {payload.get('reason')}")
+    def _sink_event(self, event: BaseEvent, error: str):
+        self.sink_log.append({"event_id": event.event_id or "", "type": event.type.value, "error": error})
+        print(f"[VM] EVENT SINK: {error} -> {event.type}")
 
 
-    def _handle_simulation_request(self, event: BaseEvent):
+    def _handle_execution_request(self, event: BaseEvent):
         print("[VM] Requesting Simulation...")
         self._state.simulation.is_running = True
         
@@ -296,7 +312,7 @@ class HybridVM:
             "success_message": message if success else None,
             "error_type": error_type
         }
-        self.process_event(BaseEvent(type=EventType.EXECUTION_RESULT, payload=result_payload))
+        self.process_event(ExecutionResultEvent(type=EventType.EXECUTION_RESULT, payload=result_payload))
         self._state.simulation.is_running = False
 
     def _handle_execution_result(self, event: BaseEvent):
@@ -317,9 +333,13 @@ class HybridVM:
     def get_state_snapshot(self) -> dict:
         return self._state.model_copy(deep=True).model_dump()
 
+    def terminate(self) -> dict:
+        self.process_event(VmTerminateEvent(type=EventType.VM_TERMINATE, payload={}, actor=Actor.USER))
+        return self.get_state_snapshot()
+
     def _next_event_id(self) -> str:
         self._event_counter += 1
-        return f"{self.vm_id}:{self._event_counter}"
+        return str(uuid.uuid5(uuid.UUID(self.vm_id), f"event:{self._event_counter}"))
 
     def _next_timestamp(self) -> datetime:
         self._clock_counter += 1
@@ -328,3 +348,17 @@ class HybridVM:
     def _next_entity_id(self, prefix: str) -> str:
         self._entity_counter[prefix] = self._entity_counter.get(prefix, 0) + 1
         return f"{self.vm_id}:{prefix}:{self._entity_counter[prefix]}"
+
+    def _handle_human_override_event(self, event: BaseEvent):
+        payload = event.payload or {}
+        self.process_human_override(
+            decision=str(payload.get("decision", "ACCEPT")),
+            reason=str(payload.get("reason", "Manual Override")),
+            candidate_ids=payload.get("candidate_ids", []),
+        )
+
+    def _handle_request_reevaluation(self, event: BaseEvent):
+        self._sink_event(event, error="Reevaluation not implemented in Phase12")
+
+    def _handle_vm_terminate(self, event: BaseEvent):
+        print(f"[VM] Terminate requested for vm_id={self.vm_id}")

@@ -1,4 +1,5 @@
 from enum import Enum
+from datetime import datetime
 from pydantic import BaseModel
 from typing import Optional, Dict, Any
 
@@ -9,55 +10,47 @@ class Actor(str, Enum):
 
 class EventType(str, Enum):
     USER_INPUT = "user_input"
-    SEMANTIC_EXTRACT = "semantic_extract"
-    STRUCTURE_EDIT = "structure_edit"
-    SIMULATION_REQUEST = "simulation_request"
+    EXECUTION_REQUEST = "execution_request"
     EXECUTION_RESULT = "execution_result"
-    
-    # Phase 1 Events
-    SEMANTIC_UNIT_CREATED = "semantic_unit_created"
-    SEMANTIC_UNIT_CONFIRMED = "semantic_unit_confirmed"
-    SEMANTIC_CONFLICT_DETECTED = "semantic_conflict_detected"
-    DECISION_OUTCOME_GENERATED = "decision_outcome_generated"
+    DECISION_MADE = "decision_made"
+    HUMAN_OVERRIDE = "human_override"
+    REQUEST_REEVALUATION = "request_reevaluation"
+    VM_TERMINATE = "vm_terminate"
 
 class BaseEvent(BaseModel):
     type: EventType
     payload: Dict[str, Any]
     actor: Optional[Actor] = None
     event_id: Optional[str] = None
+    parent_event_id: Optional[str] = None
+    vm_id: Optional[str] = None
+    timestamp: Optional[datetime] = None
 
 class UserInputEvent(BaseEvent):
     type: EventType = EventType.USER_INPUT
     actor: Actor = Actor.USER
     # payload: {"content": str}
 
-class SemanticUnitCreatedEvent(BaseEvent):
-    type: EventType = EventType.SEMANTIC_UNIT_CREATED
-    # payload: {"unit": SemanticUnit (dict)}
-
-class SemanticUnitConfirmedEvent(BaseEvent):
-    type: EventType = EventType.SEMANTIC_UNIT_CONFIRMED
-    # payload: {"unit_id": str}
-
-class SemanticConflictDetectedEvent(BaseEvent):
-    type: EventType = EventType.SEMANTIC_CONFLICT_DETECTED
-    # payload: {"conflict_type": str, "unit_ids": List[str], "reason": str}
-
-class SemanticExtractEvent(BaseEvent):
-    type: EventType = EventType.SEMANTIC_EXTRACT
-    # payload: {"units": List[SemanticUnit]}
-
-class StructureEditEvent(BaseEvent):
-    type: EventType = EventType.STRUCTURE_EDIT
-    # payload: {"action": "add|remove", "component": str}
-
-    # payload: {"action": "add|remove", "component": str}
-
 class ExecutionResultEvent(BaseEvent):
     type: EventType = EventType.EXECUTION_RESULT
     # payload: {"success": bool, "error": str, "error_type": "implementation|design"} 
 
-class DecisionOutcomeGeneratedEvent(BaseEvent):
-    type: EventType = EventType.DECISION_OUTCOME_GENERATED
-    # payload: {"outcome": DecisionOutcome (dict)}
-    actor: Actor = Actor.DESIGN_BRAIN # Usually produced by the brain or consensus engine
+class ExecutionRequestEvent(BaseEvent):
+    type: EventType = EventType.EXECUTION_REQUEST
+    actor: Actor = Actor.USER
+
+class DecisionMadeEvent(BaseEvent):
+    type: EventType = EventType.DECISION_MADE
+    actor: Actor = Actor.DESIGN_BRAIN
+
+class HumanOverrideEvent(BaseEvent):
+    type: EventType = EventType.HUMAN_OVERRIDE
+    actor: Actor = Actor.USER
+
+class RequestReevaluationEvent(BaseEvent):
+    type: EventType = EventType.REQUEST_REEVALUATION
+    actor: Actor = Actor.USER
+
+class VmTerminateEvent(BaseEvent):
+    type: EventType = EventType.VM_TERMINATE
+    actor: Actor = Actor.USER

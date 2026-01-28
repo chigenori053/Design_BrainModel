@@ -89,7 +89,7 @@ class DecisionCandidate(BaseModel):
 
     def model_post_init(self, __context):
         if not self.candidate_id:
-            base = f"{self.resolves_question_id}|{self.proposed_by}|{self.content}"
+            base = f"{self.resolves_question_id}|{self.proposed_by.value}|{self.content}"
             self.candidate_id = hashlib.sha256(base.encode("utf-8")).hexdigest()
 
 # Phase 2.1: Traceability Record

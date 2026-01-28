@@ -86,8 +86,8 @@ def test_phase_2_decision():
     state = VMState.model_validate(vm.get_state_snapshot())
     outcome_3 = state.decision_state.outcomes[-1]
     
-    # Check if Outcome 2 and Outcome 3 are identical in content (ignoring IDs/timestamps)
-    assert outcome_2.outcome_id != outcome_3.outcome_id
+    # Check if Outcome 2 and Outcome 3 are identical in content (including deterministic IDs)
+    assert outcome_2.outcome_id == outcome_3.outcome_id
     assert outcome_2.ranked_candidates == outcome_3.ranked_candidates
     assert outcome_2.explanation == outcome_3.explanation
     print("PASS: Same input produced identical ranked output.")

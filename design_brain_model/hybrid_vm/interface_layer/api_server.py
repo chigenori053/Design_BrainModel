@@ -6,7 +6,16 @@ from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 
 from design_brain_model.hybrid_vm.core import HybridVM
-from design_brain_model.hybrid_vm.events import BaseEvent, EventType, UserInputEvent, Actor
+from design_brain_model.hybrid_vm.events import (
+    BaseEvent,
+    EventType,
+    UserInputEvent,
+    ExecutionRequestEvent,
+    HumanOverrideEvent,
+    RequestReevaluationEvent,
+    VmTerminateEvent,
+    Actor,
+)
 
 # Configure Logging
 logging.basicConfig(
@@ -34,7 +43,7 @@ class DecisionSummaryDto(BaseModel):
     is_reevaluation: bool
 
 class EventRequest(BaseModel):
-    type: str # USER_INPUT, REQUEST_REEVALUATION, HUMAN_OVERRIDE
+    type: str # USER_INPUT, EXECUTION_REQUEST, REQUEST_REEVALUATION, HUMAN_OVERRIDE, VM_TERMINATE
     payload: Optional[Dict[str, Any]] = None
     snapshot: Optional[Dict[str, Any]] = None
 
@@ -135,16 +144,19 @@ def send_event(event: EventRequest):
     # 1. Special Handling for Human Override (Evaluation Injection)
     if event.type == "HUMAN_OVERRIDE":
         payload = event.payload or {}
-        outcome = vm.process_human_override(
-            decision=str(payload.get("decision", "ACCEPT")), # Default if missing
-            reason=str(payload.get("reason", "Manual Override")),
-            candidate_ids=payload.get("candidate_ids", [])
+        vm_event = HumanOverrideEvent(
+            type=EventType.HUMAN_OVERRIDE,
+            payload={
+                "decision": str(payload.get("decision", "ACCEPT")),
+                "reason": str(payload.get("reason", "Manual Override")),
+                "candidate_ids": payload.get("candidate_ids", []),
+            },
+            actor=Actor.USER,
         )
-        return {
-            "accepted": True,
-            "outcome_id": outcome.outcome_id,
-            "snapshot": vm.get_state_snapshot()
-        }
+        vm.process_event(vm_event)
+        outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
+        outcome_id = outcomes[-1]["outcome_id"] if outcomes else None
+        return {"accepted": True, "outcome_id": outcome_id, "snapshot": vm.get_state_snapshot()}
 
     # 2. Generic Event Handling
     vm_event = None
@@ -156,12 +168,23 @@ def send_event(event: EventRequest):
              payload={"content": payload.get("text", "")},
              actor=Actor.USER
          )
+    elif event.type == "EXECUTION_REQUEST":
+         vm_event = ExecutionRequestEvent(
+             type=EventType.EXECUTION_REQUEST,
+             payload=event.payload or {},
+             actor=Actor.USER,
+         )
     elif event.type == "REQUEST_REEVALUATION":
-         # Use generic BaseEvent if specific class not defined/imported
-         vm_event = BaseEvent(
-             type=EventType.SIMULATION_REQUEST, # Re-using Sim Request or define new
-             payload={},
-             actor=Actor.USER
+         vm_event = RequestReevaluationEvent(
+             type=EventType.REQUEST_REEVALUATION,
+             payload=event.payload or {},
+             actor=Actor.USER,
+         )
+    elif event.type == "VM_TERMINATE":
+         vm_event = VmTerminateEvent(
+             type=EventType.VM_TERMINATE,
+             payload=event.payload or {},
+             actor=Actor.USER,
          )
     else:
         # Generic fallback

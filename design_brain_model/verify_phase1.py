@@ -1,7 +1,7 @@
 import uuid
 from design_brain_model.hybrid_vm.core import HybridVM
 from design_brain_model.hybrid_vm.control_layer.state import VMState, SemanticUnit, SemanticUnitKind, SemanticUnitStatus
-from design_brain_model.hybrid_vm.events import SemanticUnitCreatedEvent, SemanticUnitConfirmedEvent, EventType, Actor
+from design_brain_model.hybrid_vm.events import UserInputEvent, EventType, Actor
 
 def verify_phase1():
     print("=== STARTING PHASE 1 VERIFICATION ===")
@@ -20,10 +20,10 @@ def verify_phase1():
     }
     
     # Create
-    vm.process_event(SemanticUnitCreatedEvent(
-        type=EventType.SEMANTIC_UNIT_CREATED, 
-        payload=unit1_payload, 
-        actor=Actor.DESIGN_BRAIN
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "create_unit", **unit1_payload},
+        actor=Actor.DESIGN_BRAIN,
     ))
     
     state = VMState.model_validate(vm.get_state_snapshot())
@@ -32,10 +32,10 @@ def verify_phase1():
     print("Creation Verified: UNSTABLE")
 
     # Confirm (-> Review)
-    vm.process_event(SemanticUnitConfirmedEvent(
-        type=EventType.SEMANTIC_UNIT_CONFIRMED,
-        payload={"unit_id": unit1_id},
-        actor=Actor.USER
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "confirm_unit", "unit_id": unit1_id},
+        actor=Actor.USER,
     ))
     state = VMState.model_validate(vm.get_state_snapshot())
     u1 = state.semantic_units.units[unit1_id]
@@ -43,10 +43,10 @@ def verify_phase1():
     print("Transition 1 Verified: REVIEW")
 
     # Confirm (-> Stable)
-    vm.process_event(SemanticUnitConfirmedEvent(
-        type=EventType.SEMANTIC_UNIT_CONFIRMED,
-        payload={"unit_id": unit1_id},
-        actor=Actor.USER
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "confirm_unit", "unit_id": unit1_id},
+        actor=Actor.USER,
     ))
     state = VMState.model_validate(vm.get_state_snapshot())
     u1 = state.semantic_units.units[unit1_id]
@@ -66,7 +66,11 @@ def verify_phase1():
             "status": SemanticUnitStatus.UNSTABLE
         }
     }
-    vm.process_event(SemanticUnitCreatedEvent(payload=unit2_payload, actor=Actor.DESIGN_BRAIN))
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "create_unit", **unit2_payload},
+        actor=Actor.DESIGN_BRAIN,
+    ))
     
     # Unit 3 (Unstable) depends on Unit 2 (which is Unstable)
     unit3_id = str(uuid.uuid4())
@@ -79,13 +83,21 @@ def verify_phase1():
             "dependencies": {unit2_id} # Set of UUIDs
         }
     }
-    vm.process_event(SemanticUnitCreatedEvent(payload=unit3_payload, actor=Actor.DESIGN_BRAIN))
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "create_unit", **unit3_payload},
+        actor=Actor.DESIGN_BRAIN,
+    ))
     
     # Move Unit 3 to Review (Should work, dependencies only checked for Stable transition?)
     # Spec says: "Dependency Violation" -> "A unit cannot be Stable if its dependencies are not Stable."
     # So Unstable -> Review should be fine.
     
-    vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unit3_id}, actor=Actor.USER))
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "confirm_unit", "unit_id": unit3_id},
+        actor=Actor.USER,
+    ))
     state = VMState.model_validate(vm.get_state_snapshot())
     u3 = state.semantic_units.units[unit3_id]
     print(f"Unit 3 Status: {u3.status} (Expected: REVIEW)")
@@ -93,16 +105,20 @@ def verify_phase1():
     
     # Move Unit 3 to Stable (Should Fail because Unit 2 is UNSTABLE)
     print("Attempting to move Unit 3 to STABLE (Expect Conflict)...")
-    vm.process_event(SemanticUnitConfirmedEvent(payload={"unit_id": unit3_id}, actor=Actor.USER))
+    vm.process_event(UserInputEvent(
+        type=EventType.USER_INPUT,
+        payload={"action": "confirm_unit", "unit_id": unit3_id},
+        actor=Actor.USER,
+    ))
     
     state = VMState.model_validate(vm.get_state_snapshot())
     u3 = state.semantic_units.units[unit3_id]
     print(f"Unit 3 Status: {u3.status}")
     
     # Check if conflict event was emitted
-    conflict_events = [e for e in vm.event_log if e.type == EventType.SEMANTIC_CONFLICT_DETECTED]
+    conflict_events = [e for e in vm.sink_log if e.get("error") == "Semantic conflict"]
     if conflict_events:
-        print("Conflict Event Detected:", conflict_events[-1].payload)
+        print("Conflict Event Detected:", conflict_events[-1])
         assert u3.status == SemanticUnitStatus.REVIEW # Should NOT have changed
         print("Dependency Conflict Verified: Correctly Blocked.")
     else:

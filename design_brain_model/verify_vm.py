@@ -40,9 +40,9 @@ def test_vm_loop():
     print("\n[Passed] Semantic Units extracted.")
 
     # --- Test Simulation ---
-    from design_brain_model.hybrid_vm.events import BaseEvent, EventType
+    from design_brain_model.hybrid_vm.events import ExecutionRequestEvent, EventType
     print("\nRequesting Simulation...")
-    sim_event = BaseEvent(type=EventType.SIMULATION_REQUEST, payload={})
+    sim_event = ExecutionRequestEvent(type=EventType.EXECUTION_REQUEST, payload={})
     vm.process_event(sim_event)
     
     # Check Simulation State
