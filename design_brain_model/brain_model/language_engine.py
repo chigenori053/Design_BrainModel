@@ -1,9 +1,11 @@
+import hashlib
 from enum import Enum
 from typing import List, Optional, Dict, Any
 
+import numpy as np
 from pydantic import BaseModel, Field
 
-from design_brain_model.brain_model.memory.types import SemanticUnit
+from design_brain_model.brain_model.memory.types import SemanticUnit, SemanticRepresentation, OriginContext
 from design_brain_model.hybrid_vm.control_layer.state import DecisionOutcome
 
 
@@ -36,8 +38,8 @@ class LanguageOutput(BaseModel):
 
 class LanguageEngine:
     """
-    Phase10: Language Engine (stateless, deterministic).
-    Converts meaning structures into language without mutating memory.
+    Phase10 & Phase16: Language Engine (stateless, deterministic).
+    Converts meaning structures into language and vice-versa.
     """
 
     def generate(self, input_data: LanguageInput) -> LanguageOutput:
@@ -48,70 +50,66 @@ class LanguageEngine:
         level = self._determine_level(input_data)
         return LanguageOutput(text=text, explanation_level=level)
 
-    def _linearize(self, input_data: LanguageInput) -> List[dict]:
-        items: List[dict] = []
+    def create_representations_from_text(self, text: str) -> List[SemanticRepresentation]:
+        """
+        Analyzes input text, decomposes it into semantic parts, and generates
+        a list of SemanticRepresentation objects for each part.
+        (Implements Phase16 specification)
+        """
+        if not text.strip():
+            return []
+            
+        decomposed_result = decompose_text(text)
+        semantic_blocks = decomposed_result.get("semantic_blocks", [])
 
-        if input_data.decision is not None:
-            items.append({"type": "decision", "value": input_data.decision})
+        representations = []
+        for block in semantic_blocks:
+            holographic_rep = self._generate_holographic_representation(block['content'])
+            structure_sig = block
+            confidence, entropy = self._calculate_metrics(block['content'])
 
-        for constraint in input_data.constraints:
-            items.append({"type": "constraint", "value": constraint})
-
-        for unit in sorted(
-            input_data.semantic_units,
-            key=lambda u: (u.type, u.content, u.id),
-        ):
-            items.append({"type": "semantic_unit", "value": unit})
-
-        if input_data.causal_summary is not None:
-            items.append({"type": "causal_summary", "value": input_data.causal_summary})
-
-        return items
-
-    def _order_by_priority(self, items: List[dict]) -> List[dict]:
-        priority = {
-            "decision": 0,
-            "constraint": 1,
-            "semantic_unit": 2,
-            "causal_summary": 3,
-        }
-        return sorted(items, key=lambda item: priority.get(item["type"], 99))
-
-    def _map_to_sentence(self, item: dict) -> str:
-        item_type = item["type"]
-        value = item["value"]
-
-        if item_type == "decision":
-            status = value.consensus_status.value if value.consensus_status else "UNKNOWN"
-            winner = value.ranked_candidates[0].content if value.ranked_candidates else "None"
-            return f"Decision status: {status}. Selected candidate: {winner}."
-
-        if item_type == "constraint":
-            scope = f" Scope: {value.scope}." if value.scope else ""
-            return f"Constraint: {value.content}.{scope}"
-
-        if item_type == "semantic_unit":
-            return f"Semantic unit ({value.type}): {value.content}."
-
-        if item_type == "causal_summary":
-            return (
-                "This decision considered the following factors: "
-                f"{value.summary}"
+            sr = SemanticRepresentation(
+                semantic_representation=holographic_rep,
+                structure_signature=structure_sig,
+                origin_context=OriginContext.TEXT,
+                confidence=confidence,
+                entropy=entropy,
             )
+            representations.append(sr)
 
-        return "Unrecognized item."
+        return representations
 
-    def _assemble(self, sentences: List[str]) -> str:
-        if not sentences:
-            return "No language output available."
-        return "\n".join(sentences)
+    def _generate_holographic_representation(self, content: str) -> np.ndarray:
+        """
+        Generates a deterministic, content-dependent holographic representation.
+        Uses the SHA256 hash of the content as a seed for a random number generator
+        to create a complex vector.
+        """
+        if not content:
+            return np.zeros(1024, dtype=np.complex128)
 
-    def _determine_level(self, input_data: LanguageInput) -> ExplanationLevel:
-        if input_data.causal_summary or input_data.constraints:
-            return ExplanationLevel.DETAIL
-        if len(input_data.semantic_units) > 3:
-            return ExplanationLevel.DETAIL
-        return ExplanationLevel.BASIC
+        # Use a cryptographic hash to get a deterministic seed from the content
+        seed_hash = hashlib.sha256(content.encode('utf-8')).digest()
+        seed = int.from_bytes(seed_hash, 'big')
+
+        # Create a random number generator with the seed
+        rng = np.random.default_rng(seed)
+
+        # Generate a vector with random phases
+        real_part = rng.standard_normal(1024)
+        imag_part = rng.standard_normal(1024)
+        
+        # Create the complex vector and return it (it will be normalized later)
+        vector = real_part + 1j * imag_part
+        return vector
+
+    def _calculate_metrics(self, content: str) -> tuple[float, float]:
+        """Placeholder for calculating confidence and entropy."""
+        if not content:
+            return 0.0, 0.0
+        confidence = 1.0 - (content.count(" ") / len(content)) if len(content) > 0 else 0.0
+        entropy = (content.count("e") / len(content)) if len(content) > 0 else 0.0
+        return confidence, entropy
 
 
 def _get_block_type(chunk: str) -> str:

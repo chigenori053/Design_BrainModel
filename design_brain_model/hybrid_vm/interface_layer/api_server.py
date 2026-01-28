@@ -1,19 +1,18 @@
 import uvicorn
-import json
 import logging
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, Body, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Optional, Any, Dict
 
-from design_brain_model.hybrid_vm.core import HybridVM
+from design_brain_model.hybrid_vm.core import (
+    HybridVM, DecisionNotFoundError, InvalidOverridePayloadError
+)
+from design_brain_model.hybrid_vm.control_layer.state import VMState
 from design_brain_model.hybrid_vm.events import (
-    BaseEvent,
     EventType,
     UserInputEvent,
-    ExecutionRequestEvent,
     HumanOverrideEvent,
-    RequestReevaluationEvent,
-    VmTerminateEvent,
     Actor,
 )
 
@@ -26,6 +25,26 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 app = FastAPI()
+
+class ApiError(Exception):
+    def __init__(self, status_code: int, error: str):
+        self.status_code = status_code
+        self.error = error
+
+@app.exception_handler(ApiError)
+def api_error_handler(_: Request, exc: ApiError):
+    return JSONResponse(status_code=exc.status_code, content={"error": exc.error})
+
+class EventPayload(BaseModel):
+    action: str
+    data: Optional[Dict[str, Any]] = None
+
+class EventRequest(BaseModel):
+    snapshot: Optional[Dict[str, Any]] = None
+    payload: Optional[EventPayload] = None
+
+class SnapshotResponse(BaseModel):
+    snapshot: Dict[str, Any]
 
 class DecisionDto(BaseModel):
     id: str
@@ -42,31 +61,28 @@ class DecisionSummaryDto(BaseModel):
     status: str
     is_reevaluation: bool
 
-class EventRequest(BaseModel):
-    type: str # USER_INPUT, EXECUTION_REQUEST, REQUEST_REEVALUATION, HUMAN_OVERRIDE, VM_TERMINATE
-    payload: Optional[Dict[str, Any]] = None
-    snapshot: Optional[Dict[str, Any]] = None
+def require_snapshot(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if snapshot is None:
+        raise ApiError(status_code=400, error="SNAPSHOT_REQUIRED")
+    if not isinstance(snapshot, dict):
+        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
+    if "snapshot_id" not in snapshot or "vm_state" not in snapshot:
+        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
+    try:
+        VMState.model_validate(snapshot.get("vm_state"))
+    except Exception:
+        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
+    return snapshot
+
+@app.post("/snapshot/create", response_model=SnapshotResponse)
+def create_snapshot():
+    vm = HybridVM.create()
+    return SnapshotResponse(snapshot=vm.build_snapshot())
 
 @app.get("/decision/latest", response_model=DecisionDto)
-def get_latest_decision(snapshot: Optional[str] = Query(default=None)):
-    if not snapshot:
-        return DecisionDto(
-            id="waiting",
-            status="WAITING",
-            selected_candidate=None,
-            evaluator_count=0,
-            confidence="LOW",
-            entropy="HIGH",
-            explanation="Waiting for input...",
-            human_override=False
-        )
-
-    try:
-        snapshot_dict = json.loads(snapshot)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid snapshot JSON")
-
-    vm = HybridVM.from_snapshot(snapshot_dict)
+def get_latest_decision(snapshot: Optional[Dict[str, Any]] = Body(default=None, embed=True)):
+    snapshot_dict = require_snapshot(snapshot)
+    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
     outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
     if not outcomes:
         # Return a default "Wait" state if no decision yet
@@ -115,16 +131,9 @@ def get_latest_decision(snapshot: Optional[str] = Query(default=None)):
     )
 
 @app.get("/decision/history", response_model=List[DecisionSummaryDto])
-def get_decision_history(snapshot: Optional[str] = Query(default=None)):
-    if not snapshot:
-        return []
-
-    try:
-        snapshot_dict = json.loads(snapshot)
-    except json.JSONDecodeError:
-        raise HTTPException(status_code=400, detail="Invalid snapshot JSON")
-
-    vm = HybridVM.from_snapshot(snapshot_dict)
+def get_decision_history(snapshot: Optional[Dict[str, Any]] = Body(default=None, embed=True)):
+    snapshot_dict = require_snapshot(snapshot)
+    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
     outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
     history = []
     for o in outcomes:
@@ -138,70 +147,52 @@ def get_decision_history(snapshot: Optional[str] = Query(default=None)):
 
 @app.post("/event")
 def send_event(event: EventRequest):
-    logger.info(f"Received Event: {event.type} Payload: {event.payload}")
-    vm = HybridVM.from_snapshot(event.snapshot) if event.snapshot else HybridVM.create()
-    
-    # 1. Special Handling for Human Override (Evaluation Injection)
-    if event.type == "HUMAN_OVERRIDE":
-        payload = event.payload or {}
-        vm_event = HumanOverrideEvent(
-            type=EventType.HUMAN_OVERRIDE,
-            payload={
-                "override_action": str(payload.get("override_action", "ACCEPT")),
-                "reason": str(payload.get("reason", "Manual Override")),
-                "target_decision_id": payload.get("target_decision_id"),
-                "candidate_ids": payload.get("candidate_ids", []),
-            },
-            actor=Actor.USER,
-        )
-        vm.process_event(vm_event)
-        outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
-        outcome_id = outcomes[-1]["outcome_id"] if outcomes else None
-        return {"accepted": True, "outcome_id": outcome_id, "snapshot": vm.get_state_snapshot()}
+    logger.info("Received Event")
+    snapshot_dict = require_snapshot(event.snapshot)
+    if not event.payload or not event.payload.action:
+        raise ApiError(status_code=400, error="INVALID_PAYLOAD")
 
-    # 2. Generic Event Handling
+    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
+    action = event.payload.action
+    data = event.payload.data or {}
+
     vm_event = None
-    
-    if event.type == "USER_INPUT":
-         payload = event.payload or {}
-         vm_event = UserInputEvent(
-             type=EventType.USER_INPUT,
-             payload={"content": payload.get("text", "")},
-             actor=Actor.USER
-         )
-    elif event.type == "EXECUTION_REQUEST":
-         vm_event = ExecutionRequestEvent(
-             type=EventType.EXECUTION_REQUEST,
-             payload=event.payload or {},
-             actor=Actor.USER,
-         )
-    elif event.type == "REQUEST_REEVALUATION":
-         vm_event = RequestReevaluationEvent(
-             type=EventType.REQUEST_REEVALUATION,
-             payload=event.payload or {},
-             actor=Actor.USER,
-         )
-    elif event.type == "VM_TERMINATE":
-         vm_event = VmTerminateEvent(
-             type=EventType.VM_TERMINATE,
-             payload=event.payload or {},
-             actor=Actor.USER,
-         )
-    else:
-        # Generic fallback
-        vm_event = BaseEvent(
+    if action == "USER_INPUT":
+        vm_event = UserInputEvent(
             type=EventType.USER_INPUT,
-            payload=event.payload or {},
+            payload={"content": data.get("content", "")},
             actor=Actor.USER
         )
-
-    if vm_event:
-        logger.info(f"Processing VM Event: {vm_event}")
-        vm.process_event(vm_event)
-        return {"accepted": True, "snapshot": vm.get_state_snapshot()}
+    elif action == "CREATE_UNIT":
+        vm_event = UserInputEvent(
+            type=EventType.USER_INPUT,
+            payload={"action": "create_unit", "unit": data.get("unit")},
+            actor=Actor.USER
+        )
+    elif action == "CONFIRM_UNIT":
+        vm_event = UserInputEvent(
+            type=EventType.USER_INPUT,
+            payload={"action": "confirm_unit", "unit_id": data.get("unit_id")},
+            actor=Actor.USER
+        )
+    elif action == "HUMAN_OVERRIDE":
+        vm_event = HumanOverrideEvent(
+            type=EventType.HUMAN_OVERRIDE,
+            payload=data, # Pass the whole data dict as payload
+            actor=Actor.USER
+        )
     else:
-        logger.error(f"Invalid Event Type: {event.type}")
-        raise HTTPException(status_code=400, detail="Invalid Event Type")
+        raise ApiError(status_code=400, error="INVALID_ACTION")
+
+    logger.info(f"Processing VM Event: {vm_event}")
+    try:
+        vm.process_event(vm_event)
+    except DecisionNotFoundError:
+        raise ApiError(status_code=404, error="DECISION_NOT_FOUND")
+    except InvalidOverridePayloadError:
+        raise ApiError(status_code=400, error="INVALID_OVERRIDE_PAYLOAD")
+        
+    return SnapshotResponse(snapshot=vm.build_snapshot())
 
 if __name__ == "__main__":
     logger.info("Starting HybridVM API Server...")

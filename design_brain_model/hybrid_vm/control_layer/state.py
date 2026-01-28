@@ -1,4 +1,4 @@
-from typing import List, Optional, Dict, Set
+from typing import List, Optional, Dict, Set, Literal
 import hashlib
 import json
 import uuid
@@ -177,6 +177,21 @@ class DecisionState(BaseModel):
     # History of outcomes
     outcomes: List[DecisionOutcome] = Field(default_factory=list)
 
+# --- Phase 17-2: Human Override Contract ---
+
+class HumanOverrideAction(str, Enum):
+    ACCEPT = "OVERRIDE_ACCEPT"
+    REJECT = "OVERRIDE_REJECT"
+    REVIEW = "OVERRIDE_REVIEW"
+
+class OverrideRecord(BaseModel):
+    decision_id: str
+    original_status: ConsensusStatus
+    override_status: HumanOverrideAction
+    overridden_by: Literal["HUMAN"] = "HUMAN"
+    reason: Optional[str] = None
+    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
 class VMState(BaseModel):
     conversation: ConversationState = Field(default_factory=ConversationState)
     semantic_units: SemanticUnitState = Field(default_factory=SemanticUnitState)
@@ -184,3 +199,4 @@ class VMState(BaseModel):
     simulation: SimulationState = Field(default_factory=SimulationState)
     execution_feedback: ExecutionFeedbackState = Field(default_factory=ExecutionFeedbackState)
     decision_state: DecisionState = Field(default_factory=DecisionState)
+    override_history: List[OverrideRecord] = Field(default_factory=list)
