@@ -1,14 +1,27 @@
 # design_brain_model/hybrid_vm/interface_layer/api_server.py
 import uvicorn
 import logging
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field, ConfigDict
 from typing import Any, Dict
 from dataclasses import asdict
 
 # --- Domain, ViewModel, and Command Imports ---
 # Note: Adjusting relative paths to be robust from the project root.
 from design_brain_model.brain_model.memory.space import MemorySpace
+from design_brain_model.hybrid_vm.core import (
+    HybridVM,
+    DecisionNotFoundError,
+    InvalidOverridePayloadError,
+    HumanOverrideError,
+)
+from design_brain_model.hybrid_vm.events import (
+    UserInputEvent,
+    HumanOverrideEvent,
+    EventType,
+    Actor,
+)
 from design_brain_model.command import (
     CreateL1AtomCommand,
     CreateL1ClusterCommand,
@@ -29,6 +42,7 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="DesignBrainModel API - Phase 17-4")
 memory_space = MemorySpace()  # Singleton instance for the application's lifecycle
 logger.info("MemorySpace initialized.")
+snapshot_store: Dict[str, Dict[str, Any]] = {}
 
 # --- API Models ---
 class CommandRequest(BaseModel):
@@ -36,8 +50,7 @@ class CommandRequest(BaseModel):
     command_type: str = Field(..., alias="commandType", description="The type of the command to execute.")
     payload: Dict[str, Any] = Field(..., description="The data required to execute the command.")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 # Dictionary to map command type strings from the API to their Python classes.
 COMMAND_MAP = {
@@ -47,6 +60,15 @@ COMMAND_MAP = {
     "ConfirmDecision": ConfirmDecisionCommand,
     "UpdateDecision": UpdateDecisionCommand,
 }
+
+def _get_snapshot_or_error(payload: Dict[str, Any]):
+    snapshot = payload.get("snapshot")
+    if not snapshot:
+        return None, JSONResponse(status_code=400, content={"error": "SNAPSHOT_REQUIRED"})
+    snapshot_id = snapshot.get("snapshot_id")
+    if not snapshot_id or snapshot_id not in snapshot_store:
+        return None, JSONResponse(status_code=409, content={"error": "SNAPSHOT_MISMATCH"})
+    return snapshot, None
 
 # --- Endpoints ---
 
@@ -104,6 +126,82 @@ def execute_command_endpoint(request: CommandRequest):
     except Exception as e:
         logger.error(f"An unexpected error occurred during command execution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+
+@app.post("/snapshot/create", tags=["Snapshot"])
+def create_snapshot():
+    vm = HybridVM.create()
+    snapshot = vm.build_snapshot()
+    snapshot_store[snapshot["snapshot_id"]] = snapshot
+    return {"snapshot": snapshot}
+
+@app.post("/event", tags=["Event"])
+async def process_event(request: Request):
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    snapshot, error_response = _get_snapshot_or_error(body)
+    if error_response:
+        return error_response
+    event_payload = body.get("payload") or {}
+    action = event_payload.get("action")
+    data = event_payload.get("data") or {}
+
+    vm = HybridVM.from_snapshot(snapshot["vm_state"])
+    try:
+        if action == "USER_INPUT":
+            event = UserInputEvent(type=EventType.USER_INPUT, payload=data, actor=Actor.USER)
+            vm.process_event(event)
+        elif action == "HUMAN_OVERRIDE":
+            event = HumanOverrideEvent(type=EventType.HUMAN_OVERRIDE, payload=data, actor=Actor.USER)
+            vm.process_event(event)
+        else:
+            return JSONResponse(status_code=400, content={"error": "INVALID_EVENT_ACTION"})
+    except DecisionNotFoundError:
+        return JSONResponse(status_code=404, content={"error": "DECISION_NOT_FOUND"})
+    except (InvalidOverridePayloadError, HumanOverrideError):
+        return JSONResponse(status_code=400, content={"error": "INVALID_OVERRIDE_PAYLOAD"})
+
+    new_snapshot = vm.build_snapshot()
+    snapshot_store[new_snapshot["snapshot_id"]] = new_snapshot
+    return {"snapshot": new_snapshot}
+
+@app.get("/decision/latest", tags=["Decision"])
+async def get_latest_decision(request: Request):
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    snapshot, error_response = _get_snapshot_or_error(body)
+    if error_response:
+        return error_response
+    decision_nodes = snapshot.get("vm_state", {}).get("decision_state", {}).get("decision_nodes", {})
+    if decision_nodes:
+        node = decision_nodes[sorted(decision_nodes.keys())[-1]]
+        status = node.get("status", "UNKNOWN")
+    else:
+        status = "WAITING"
+    return {"status": status}
+
+@app.get("/decision/history", tags=["Decision"])
+async def get_decision_history(request: Request):
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    snapshot, error_response = _get_snapshot_or_error(body)
+    if error_response:
+        return error_response
+    decision_nodes = snapshot.get("vm_state", {}).get("decision_state", {}).get("decision_nodes", {})
+    history = [
+        {"decision_id": node_id, "status": node.get("status", "UNKNOWN")}
+        for node_id, node in decision_nodes.items()
+    ]
+    return {"history": history}
 
 if __name__ == "__main__":
     logger.info("Starting DesignBrainModel API Server (Phase 17-4)...")

@@ -21,6 +21,8 @@ impl VmClient {
             base_url: API_BASE_URL.to_string(),
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
+                // Avoid macOS system proxy lookup panic in blocking client.
+                .no_proxy()
                 .build()
                 .expect("Failed to build reqwest client"),
         }
@@ -73,7 +75,7 @@ impl VmClient {
     pub fn execute_command<T: Serialize>(&self, command_type: &str, payload: &T) -> Result<Value, String> {
         let url = format!("{}/command", self.base_url);
         let body = serde_json::json!({
-            "commandType": command_type,
+            "command_type": command_type,
             "payload": payload
         });
 

@@ -24,6 +24,7 @@ class ReconstructionFeedbackGenerator:
     def generate(self, l2_id: str, snapshot_id: str, report: ExecutionReport) -> L2ReconstructionFeedback:
         
         observations = [log for log in report.logs if "Error" in log or "Failed" in log]
+        observations.extend(report.errors)
         conflicts = report.l2_alignment_diff
         
         feedback = L2ReconstructionFeedback(

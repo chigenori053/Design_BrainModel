@@ -37,8 +37,8 @@ class Agent:
             # As per the spec, Agent output is treated as an L1 Atom.
             # We generate a command to create this atom.
             return CreateL1AtomCommand(
+                l1_type="OBSERVATION",
                 content=content,
-                type="OBSERVATION",
                 source=self.name
             )
 
@@ -46,8 +46,8 @@ class Agent:
         if snapshot.entropy_summary > 0.7:
              content = f"Question: The context entropy is high ({snapshot.entropy_summary:.2f}). Should we focus on clustering existing atoms to reduce uncertainty?"
              return CreateL1AtomCommand(
+                l1_type="QUESTION",
                 content=content,
-                type="QUESTION",
                 source=self.name
              )
 

@@ -34,7 +34,7 @@ fn main() -> Result<()> {
         tui.draw(&mut app)?;
         
         // Handle events
-        let action = event_handler.next()?;
+        let action = event_handler.next(app.state.input_mode)?;
         app.dispatch(action)?;
     }
 

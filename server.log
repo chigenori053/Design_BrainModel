@@ -1,0 +1,108 @@
+2026-01-31 14:40:01,291 - __main__ - INFO - MemorySpace initialized.
+2026-01-31 14:40:01,301 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-01-31 14:40:01,429 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 14:40:01,452 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 14:42:15,992 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemoryと生化学検査情報と患者情報を組み合わせた医療診断支援AIを構築したい', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 14:42:15,992 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 1b5a8f04-b4de-4976-8adc-79135eb57fc4
+2026-01-31 14:42:15,993 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 1b5a8f04-b4de-4976-8adc-79135eb57fc4
+2026-01-31 14:44:43,981 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'i', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 14:44:43,981 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 2652807d-3088-48ef-b773-3c45e3f56e43
+2026-01-31 14:44:43,981 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 2652807d-3088-48ef-b773-3c45e3f56e43
+2026-01-31 14:44:50,402 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '現在、HolographicMemoryを用いた推論モデルの医療応用事例は研究段階に留まっている。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:44:50,402 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 21107984-c1be-4e46-a6bd-c98cf3189a6c
+2026-01-31 14:44:50,403 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 21107984-c1be-4e46-a6bd-c98cf3189a6c
+2026-01-31 14:45:17,373 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '生化学検査データと患者の年齢・性別・既往歴を組み合わせることで、疾患予測精度が向上するという報告がある。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:45:17,373 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 97df4560-bc10-4d12-af0f-5e19a0efc3a3
+2026-01-31 14:45:17,374 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 97df4560-bc10-4d12-af0f-5e19a0efc3a3
+2026-01-31 14:45:39,947 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemoryは時系列性の強い医療データに対して有効に機能するのか。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:45:39,947 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 7c12bfb2-4e85-452f-9481-25d240c43a48
+2026-01-31 14:45:39,948 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 7c12bfb2-4e85-452f-9481-25d240c43a48
+2026-01-31 14:46:10,907 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '本システムは医師の診断を代替するものではなく、診断支援に限定する必要がある。', 'l1_type': 'REQUIREMENT', 'source': 'human_text_ui'}
+2026-01-31 14:46:10,908 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 6ae031a0-456b-4e41-883d-231d3952a660
+2026-01-31 14:46:10,910 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 6ae031a0-456b-4e41-883d-231d3952a660
+2026-01-31 14:46:20,625 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'i', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:46:20,626 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 8d3ba846-ff2a-433c-87c6-141815c24c0c
+2026-01-31 14:46:20,626 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 8d3ba846-ff2a-433c-87c6-141815c24c0c
+2026-01-31 14:47:49,262 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemoryは時系列性の強い医療データに対して有効に機能するのか。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:47:49,262 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 8b9c3f68-fada-4ec2-9d8c-5c57d7b838d7
+2026-01-31 14:47:49,263 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 8b9c3f68-fada-4ec2-9d8c-5c57d7b838d7
+2026-01-31 14:48:05,237 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '本システムは医師の診断を代替するものではなく、診断支援に限定する必要がある。', 'l1_type': 'REQUIREMENT', 'source': 'human_text_ui'}
+2026-01-31 14:48:05,237 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: a1f17cfc-c3cf-4703-94f7-3dd98ce07efe
+2026-01-31 14:48:05,238 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: a1f17cfc-c3cf-4703-94f7-3dd98ce07efe
+2026-01-31 14:49:02,634 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemoryを用いることで、患者の検査履歴全体を保持・参照でき、従来手法よりも早期に疾患リスクを検出できる可能性がある。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:49:02,634 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 2dda83a5-d43a-4964-b359-ed9f4748be96
+2026-01-31 14:49:02,635 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 2dda83a5-d43a-4964-b359-ed9f4748be96
+2026-01-31 14:50:11,635 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'このアプローチは既存の機械学習モデルと比較して、臨床的に有意な改善を示せるだろうか。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 14:50:11,635 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 68b089bf-1a7d-4d6c-87f9-165d49dc0dc3
+2026-01-31 14:50:11,636 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 68b089bf-1a7d-4d6c-87f9-165d49dc0dc3
+2026-01-31 15:00:56,112 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'これまでに整理された観測・制約・仮説・問いを総合すると、', 'l1_type': 'CONSTRAINT', 'source': 'human_text_ui'}
+2026-01-31 15:00:56,112 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 2aeeba54-5fc4-4105-9ea5-2325f501d411
+2026-01-31 15:00:56,113 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 2aeeba54-5fc4-4105-9ea5-2325f501d411
+2026-01-31 15:00:56,321 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemory、生化学検査情報、患者背景情報を統合した', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 15:00:56,321 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: ac1c0e79-ca02-4a2f-ac92-1b8642f393ec
+2026-01-31 15:00:56,322 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: ac1c0e79-ca02-4a2f-ac92-1b8642f393ec
+2026-01-31 15:00:56,474 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '医療診断支援AIの設計を進める価値があると判断する。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 15:00:56,474 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: de39370a-bac9-44b3-b914-8b703d17f240
+2026-01-31 15:00:56,475 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: de39370a-bac9-44b3-b914-8b703d17f240
+2026-01-31 15:00:56,616 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '本システムは医師の診断を代替するものではなく、', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 15:00:56,616 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: dc45f9f2-c36a-4bf4-8eef-a5be75477913
+2026-01-31 15:00:56,616 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: dc45f9f2-c36a-4bf4-8eef-a5be75477913
+2026-01-31 15:00:56,767 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '診断の質向上を支援する目的に限定して設計を進める。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 15:00:56,767 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 186fdec0-fb58-4559-a29d-aa703b92bf7a
+2026-01-31 15:00:56,768 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 186fdec0-fb58-4559-a29d-aa703b92bf7a
+2026-01-31 15:02:48,173 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'i', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 15:02:48,173 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 37440f10-7f89-4a97-bcc4-0c47eab41a11
+2026-01-31 15:02:48,174 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 37440f10-7f89-4a97-bcc4-0c47eab41a11
+2026-01-31 15:03:58,254 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'これまでに整理された観測・制約・仮説・問いを総合すると、', 'l1_type': 'CONSTRAINT', 'source': 'human_text_ui'}
+2026-01-31 15:03:58,254 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 4147aa42-a213-469d-9e61-3435a3625b60
+2026-01-31 15:03:58,255 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 4147aa42-a213-469d-9e61-3435a3625b60
+2026-01-31 15:04:29,181 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemory、生化学検査情報、患者背景情報を統合した', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-01-31 15:04:29,182 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: d867bc2b-6169-4953-8a3d-92c996093aab
+2026-01-31 15:04:29,183 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: d867bc2b-6169-4953-8a3d-92c996093aab
+2026-01-31 15:05:23,459 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'この構成で進めても良さそうだと思う。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-01-31 15:05:23,459 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: da3284e5-7b97-4077-bf53-3e299fb955ff
+2026-01-31 15:05:23,460 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: da3284e5-7b97-4077-bf53-3e299fb955ff
+2026-01-31 15:14:29,992 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:14:30,009 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:15:19,870 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:15:19,880 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:15:23,260 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:15:23,271 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:15:31,602 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:15:31,612 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:15:42,770 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:15:42,780 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:15:50,305 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:15:50,315 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:16:08,446 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:16:08,456 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:16:14,664 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:16:14,674 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:16:22,605 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:16:22,615 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:16:53,878 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:16:53,889 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:16:58,079 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:16:58,089 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:18:08,665 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:18:08,675 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:18:33,793 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:18:33,804 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:18:39,623 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:18:39,634 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:19:02,618 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:19:02,628 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:19:37,933 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:19:37,944 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:20:47,597 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:20:47,607 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:26:04,862 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:26:04,873 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:26:59,276 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:26:59,286 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:38:37,066 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:38:37,083 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:39:05,517 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:39:05,527 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-01-31 15:39:30,233 - __mp_main__ - INFO - MemorySpace initialized.
+2026-01-31 15:39:30,243 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.

@@ -107,6 +107,47 @@ class ConsensusStatus(str, Enum):
     REJECT = "REJECT"
     ESCALATE = "ESCALATE"
 
+class DecisionNodeStatus(str, Enum):
+    WAITING = "WAITING"
+    REVIEW = "REVIEW"
+    DECIDED = "DECIDED"
+    OVERRIDDEN_L2 = "OVERRIDDEN_L2"
+
+class ConfidenceLevel(str, Enum):
+    LOW = "LOW"
+    MID = "MID"
+    HIGH = "HIGH"
+
+class EntropyLevel(str, Enum):
+    LOW = "LOW"
+    MID = "MID"
+    HIGH = "HIGH"
+
+class DecisionNodeCandidate(BaseModel):
+    candidate_id: str
+    content: str
+
+class DecisionNodeSnapshot(BaseModel):
+    decision_node_id: str
+    all_candidates: List[DecisionNodeCandidate]
+    selected_candidate: Optional[DecisionNodeCandidate]
+    confidence: ConfidenceLevel
+    entropy: EntropyLevel
+    timestamp: datetime = Field(default_factory=lambda: datetime(1970, 1, 1, tzinfo=timezone.utc))
+    system_version: str = "Phase17"
+
+class DecisionNode(BaseModel):
+    id: str
+    status: DecisionNodeStatus = DecisionNodeStatus.WAITING
+    all_candidates: List[DecisionNodeCandidate] = Field(default_factory=list)
+    selected_candidate: Optional[DecisionNodeCandidate] = None
+    confidence: ConfidenceLevel = ConfidenceLevel.LOW
+    entropy: EntropyLevel = EntropyLevel.HIGH
+    human_override: bool = False
+    override_target_l2: Optional[str] = None
+    snapshot_before_override: Optional[DecisionNodeSnapshot] = None
+    snapshot_after_override: Optional[DecisionNodeSnapshot] = None
+
 class EvaluationResult(BaseModel):
     evaluator_id: str
     candidates: List[str] # List of candidate IDs
@@ -176,6 +217,9 @@ class DecisionState(BaseModel):
     
     # History of outcomes
     outcomes: List[DecisionOutcome] = Field(default_factory=list)
+
+    # Decision nodes (Phase17 explicit contract)
+    decision_nodes: Dict[str, DecisionNode] = Field(default_factory=dict)
 
 # --- Phase 17-2: Human Override Contract ---
 

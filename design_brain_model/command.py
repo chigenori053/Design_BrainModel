@@ -7,7 +7,7 @@ into these explicit, verifiable commands.
 """
 
 from dataclasses import dataclass
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any, Union, Optional
 
 # --- Base Command ---
 
@@ -21,9 +21,10 @@ class Command:
 @dataclass
 class CreateL1AtomCommand(Command):
     """Command to create a new SemanticUnitL1."""
+    l1_type: str
     content: str
-    type: str
-    source: str # e.g., "HumanInput", "Agent-XYZ"
+    source: str # e.g., "human_text_ui", "Agent-XYZ"
+    context_id: Optional[str] = None
 
 @dataclass
 class CreateL1ClusterCommand(Command):

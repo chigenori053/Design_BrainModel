@@ -2,22 +2,29 @@ import uuid
 
 from design_brain_model.hybrid_vm.core import HybridVM
 from design_brain_model.hybrid_vm.events import BaseEvent, EventType
-from design_brain_model.hybrid_vm.control_layer.state import SemanticUnit, SemanticUnitKind
+from design_brain_model.hybrid_vm.control_layer.state import DecisionNode, DecisionNodeStatus
 
 
 def test_event_coverage_and_termination():
     vm = HybridVM.create()
 
-    # Create a dummy decision unit for the HUMAN_OVERRIDE event to target
-    dummy_decision_unit = SemanticUnit(id="d1", kind=SemanticUnitKind.DECISION, content="dummy")
-    vm._state.semantic_units.units["d1"] = dummy_decision_unit
+    # Create a dummy decision node for the HUMAN_OVERRIDE event to target
+    vm._state.decision_state.decision_nodes["d1"] = DecisionNode(
+        id="d1",
+        status=DecisionNodeStatus.REVIEW,
+    )
 
     for event_type in EventType:
         payload = {}
         if event_type == EventType.USER_INPUT:
             payload = {"content": "test"}
         if event_type == EventType.HUMAN_OVERRIDE:
-            payload = {"override_action": "OVERRIDE_ACCEPT", "reason": "test", "target_decision_id": "d1"}
+            payload = {
+                "override_action": "OVERRIDE_ACCEPT",
+                "reason": "test",
+                "target_decision_id": "d1",
+                "override_target_l2": "l2-1",
+            }
         ev = BaseEvent(type=event_type, payload=payload)
         vm.process_event(ev)
 

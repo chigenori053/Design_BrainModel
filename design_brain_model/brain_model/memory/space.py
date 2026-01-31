@@ -144,11 +144,17 @@ class MemorySpace:
         This is the sole entry point for writes.
         """
         if isinstance(command, CreateL1AtomCommand):
+            content = (command.content or "").strip()
+            if not content:
+                raise ValueError("L1 content cannot be empty.")
+            allowed_types = {"OBSERVATION", "REQUIREMENT", "CONSTRAINT", "HYPOTHESIS", "QUESTION"}
+            if command.l1_type not in allowed_types:
+                raise ValueError(f"Invalid L1 type: {command.l1_type}")
             new_id = str(uuid.uuid4())
             new_unit = SemanticUnitL1(
                 id=new_id,
-                content=command.content,
-                type=command.type,
+                content=content,
+                type=command.l1_type,
                 source=command.source,
                 timestamp=time.time()
             )

@@ -23,6 +23,22 @@ pub enum DecisionPolarityVm {
     Reject,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub enum L1Type {
+    Observation,
+    Requirement,
+    Constraint,
+    Hypothesis,
+    Question,
+}
+
+impl Default for L1Type {
+    fn default() -> Self {
+        Self::Question
+    }
+}
+
 // --- ViewModels (mirroring Python definitions) ---
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -61,9 +77,11 @@ pub struct DecisionChipVm {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CreateL1AtomPayload {
+    pub l1_type: String,
     pub content: String,
-    pub r#type: String,
     pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -82,6 +100,10 @@ pub struct AppState {
     pub selected_decision: Option<DecisionChipVm>,
     pub logs: Vec<String>,
     pub input_buffer: String,
+    pub input_mode: bool,
+    pub input_l1_type: L1Type,
+    pub input_l1_type_manual: bool,
+    pub l1_atoms: Vec<L1AtomVm>,
     pub is_running: bool,
 }
 
@@ -98,6 +120,10 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             is_running: true,
+            input_mode: false,
+            input_l1_type: L1Type::default(),
+            input_l1_type_manual: false,
+            l1_atoms: Vec::new(),
             ..Self::default()
         }
     }
