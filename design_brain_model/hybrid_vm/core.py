@@ -6,7 +6,8 @@ from pydantic import ValidationError, BaseModel
 
 from design_brain_model.hybrid_vm.control_layer.state import (
     VMState, Message, Role, SemanticUnit, SemanticUnitKind, SemanticUnitStatus,
-    HumanOverrideAction, OverrideRecord
+    HumanOverrideAction, OverrideRecord, DecisionNode, DecisionNodeStatus,
+    DecisionNodeCandidate, DecisionNodeSnapshot, ConfidenceLevel, EntropyLevel
 )
 from design_brain_model.hybrid_vm.events import (
     BaseEvent, EventType, UserInputEvent, ExecutionResultEvent,
@@ -36,7 +37,8 @@ class UserInputError(Exception):
 # --- Phase 17-2: Pydantic model for API Payload validation ---
 class HumanOverridePayload(BaseModel):
     target_decision_id: str
-    override_action: HumanOverrideAction
+    override_target_l2: str
+    override_action: Optional[HumanOverrideAction] = None
     reason: Optional[str] = None
 
 
@@ -121,6 +123,10 @@ class HybridVM:
             event.parent_event_id = self.event_log[-1].event_id
         self.event_log.append(event)
 
+        if self._is_system_halted() and event.type != EventType.VM_TERMINATE:
+            self._sink_event(event, error="System halted after OVERRIDDEN_L2")
+            return
+
         dispatch = {
             EventType.USER_INPUT: self._handle_user_input,
             EventType.EXECUTION_REQUEST: self._handle_execution_request,
@@ -142,6 +148,9 @@ class HybridVM:
         Public API to trigger a decision evaluation flow.
         Likely called by the Brain or Manually.
         """
+        if self._is_system_halted():
+            print("[VM] Decision evaluation blocked after OVERRIDDEN_L2")
+            return
         outcome = self.decision_pipeline.process_decision(question_id, candidates, policy)
         
         # Emit the outcome event
@@ -164,6 +173,28 @@ class HybridVM:
             
         self._state.decision_state.outcomes.append(outcome.model_copy(deep=True))
         print(f"[VM] Decision Reached for {outcome.resolves_question_id}: {outcome.explanation}")
+
+        decision_node = self._state.decision_state.decision_nodes.get(outcome.resolves_question_id)
+        if decision_node and decision_node.status == DecisionNodeStatus.OVERRIDDEN_L2:
+            return
+
+        decision_node = decision_node or DecisionNode(id=outcome.resolves_question_id)
+        decision_node.all_candidates = [
+            DecisionNodeCandidate(candidate_id=c.candidate_id, content=c.content)
+            for c in outcome.ranked_candidates
+        ]
+        decision_node.selected_candidate = decision_node.all_candidates[0] if decision_node.all_candidates else None
+
+        confidence, entropy = self._compute_snapshot_metrics(outcome)
+        decision_node.confidence = ConfidenceLevel(confidence)
+        decision_node.entropy = EntropyLevel(entropy)
+
+        if outcome.consensus_status in (ConsensusStatus.REVIEW, ConsensusStatus.ESCALATE):
+            decision_node.status = DecisionNodeStatus.REVIEW
+        else:
+            decision_node.status = DecisionNodeStatus.DECIDED
+
+        self._state.decision_state.decision_nodes[decision_node.id] = decision_node
 
     def _handle_user_input(self, event: BaseEvent):
         action = event.payload.get("action")
@@ -346,14 +377,20 @@ class HybridVM:
 
     def build_snapshot(self) -> dict:
         state = self.get_state_snapshot()
-        outcomes = state.get("decision_state", {}).get("outcomes", [])
-        last = outcomes[-1] if outcomes else None
-        confidence, entropy = self._compute_snapshot_metrics(last)
+        # Use actual objects for computation
+        outcomes_objs = self._state.decision_state.outcomes
+        last_obj = outcomes_objs[-1] if outcomes_objs else None
+        
+        confidence, entropy = self._compute_snapshot_metrics(last_obj)
+        
+        outcomes_data = state.get("decision_state", {}).get("outcomes", [])
+        last_data = outcomes_data[-1] if outcomes_data else None
+        
         return {
             "snapshot_id": str(uuid.uuid4()),
             "vm_state": state,
-            "decision_history": outcomes,
-            "current_decision_id": last.get("outcome_id") if last else None,
+            "decision_history": outcomes_data,
+            "current_decision_id": last_data.get("outcome_id") if last_data else None,
             "confidence": confidence,
             "entropy": entropy,
             "timestamp": datetime.now(timezone.utc).isoformat(),
@@ -395,13 +432,13 @@ class HybridVM:
         elif avg_conf < 0.4:
             confidence = "LOW"
         else:
-            confidence = "MEDIUM"
+            confidence = "MID"
         if avg_entropy > 0.6:
             entropy = "HIGH"
         elif avg_entropy < 0.3:
             entropy = "LOW"
         else:
-            entropy = "MEDIUM"
+            entropy = "MID"
         return (confidence, entropy)
 
     def _handle_human_override_event(self, event: BaseEvent):
@@ -425,50 +462,43 @@ class HybridVM:
             raise InvalidOverridePayloadError(str(e)) from e
 
         # 2. Find Target Decision Node
-        target_node = self._state.semantic_units.units.get(payload.target_decision_id)
-        if not target_node or target_node.kind != SemanticUnitKind.DECISION:
-            raise DecisionNotFoundError(f"Decision unit with ID {payload.target_decision_id} not found.")
+        decision_node = self._state.decision_state.decision_nodes.get(payload.target_decision_id)
+        if not decision_node:
+            raise DecisionNotFoundError(f"Decision node with ID {payload.target_decision_id} not found.")
 
-        if not target_node.resolves:
-            raise HumanOverrideError("No override target available")
-        if len(target_node.resolves) != 1:
-            raise HumanOverrideError("Ambiguous override target. Explicit decision_id required.")
+        if not payload.override_target_l2:
+            raise HumanOverrideError("override_target_l2 is required")
 
-        # 3. Determine new status and record original status
-        original_status = target_node.status
-        new_status = None
-        if payload.override_action == HumanOverrideAction.ACCEPT:
-            new_status = SemanticUnitStatus.STABLE
-        elif payload.override_action == HumanOverrideAction.REJECT:
-            new_status = SemanticUnitStatus.REJECTED
-        elif payload.override_action == HumanOverrideAction.REVIEW:
-            new_status = SemanticUnitStatus.REVIEW
-        
-        if new_status is None:
-            raise InvalidOverridePayloadError(f"Unknown override action: {payload.override_action}")
+        if decision_node.status == DecisionNodeStatus.OVERRIDDEN_L2:
+            raise HumanOverrideError("Decision node already overridden")
 
-        # 4. Apply Override
-        target_node.status = new_status
-        target_node.last_updated_event_id = event_id
-        
-        # 5. Record Override in History
-        # Find the original consensus status from the decision outcomes
-        # This is a simplification; a real system might need a more direct link.
-        original_consensus = ConsensusStatus.REVIEW # Default
+        # 3. Snapshot before override
+        decision_node.snapshot_before_override = self._build_decision_node_snapshot(decision_node)
+
+        # 4. Apply Override (freeze confidence/entropy)
+        decision_node.human_override = True
+        decision_node.override_target_l2 = payload.override_target_l2
+        decision_node.status = DecisionNodeStatus.OVERRIDDEN_L2
+
+        # 5. Snapshot after override
+        decision_node.snapshot_after_override = self._build_decision_node_snapshot(decision_node)
+
+        # 6. Record Override in History (legacy audit trail)
+        original_consensus = ConsensusStatus.REVIEW
         for outcome in self._state.decision_state.outcomes:
-            if outcome.resolves_question_id == target_node.resolves.copy().pop(): # Simplistic link
-                original_consensus = outcome.consensus_status
+            if outcome.resolves_question_id == payload.target_decision_id:
+                original_consensus = outcome.consensus_status or ConsensusStatus.REVIEW
                 break
 
         record = OverrideRecord(
             decision_id=payload.target_decision_id,
             original_status=original_consensus,
-            override_status=payload.override_action,
+            override_status=payload.override_action or HumanOverrideAction.REVIEW,
             reason=payload.reason
         )
         self._state.override_history.append(record)
 
-        print(f"[VM] Human Override Applied to {target_node.id}. Status: {original_status} -> {new_status}")
+        print(f"[VM] Human Override Applied to {decision_node.id}. Status: {decision_node.status}")
 
 
     def _handle_request_reevaluation(self, event: BaseEvent):
@@ -482,6 +512,23 @@ class HybridVM:
     def _handle_vm_terminate(self, event: BaseEvent):
         print(f"[VM] Terminate requested for vm_id={self.vm_id}")
 
+    def _is_system_halted(self) -> bool:
+        return any(
+            node.status == DecisionNodeStatus.OVERRIDDEN_L2
+            for node in self._state.decision_state.decision_nodes.values()
+        )
+
+    def _build_decision_node_snapshot(self, decision_node: DecisionNode) -> DecisionNodeSnapshot:
+        return DecisionNodeSnapshot(
+            decision_node_id=decision_node.id,
+            all_candidates=list(decision_node.all_candidates),
+            selected_candidate=decision_node.selected_candidate,
+            confidence=decision_node.confidence,
+            entropy=decision_node.entropy,
+            timestamp=self._next_timestamp(),
+            system_version="Phase17"
+        )
+
     # def _map_override_action(self, action: str) -> ConsensusStatus:
     #     DEPRECATED in Phase 17-2
     #     if action == "ACCEPT":
@@ -491,4 +538,3 @@ class HybridVM:
     #     if action == "FORCE_REVIEW":
     #         return ConsensusStatus.REVIEW
     #     return ConsensusStatus.REVIEW
-

@@ -71,4 +71,4 @@ def test_latest_uses_snapshot_body():
     resp = client.request("GET", "/decision/latest", json={"snapshot": snapshot})
     assert resp.status_code == 200
     body = resp.json()
-    assert body["status"] in {"WAITING", "UNKNOWN", "ACCEPT", "REVIEW", "REJECT"}
+    assert body["status"] in {"WAITING", "UNKNOWN", "DECIDED", "REVIEW", "OVERRIDDEN_L2"}

@@ -3,16 +3,16 @@ from fastapi.testclient import TestClient
 import uuid
 
 from design_brain_model.hybrid_vm.interface_layer.api_server import app
-from design_brain_model.hybrid_vm.core import HybridVM
-from design_brain_model.hybrid_vm.control_layer.state import SemanticUnit, SemanticUnitKind, SemanticUnitStatus, HumanOverrideAction
+from design_brain_model.hybrid_vm.control_layer.state import HumanOverrideAction
 
 client = TestClient(app)
 
 @pytest.fixture
 def initial_snapshot() -> dict:
-    """Creates a VM and returns its initial snapshot."""
-    vm = HybridVM.create()
-    return vm.build_snapshot()
+    """Creates a snapshot via API."""
+    resp = client.post("/snapshot/create")
+    assert resp.status_code == 200
+    return resp.json()["snapshot"]
 
 @pytest.fixture
 def snapshot_with_decision(initial_snapshot) -> tuple[dict, str]:
@@ -20,30 +20,23 @@ def snapshot_with_decision(initial_snapshot) -> tuple[dict, str]:
     Creates a snapshot containing a DECISION semantic unit to be targeted.
     Returns the snapshot and the ID of the decision unit.
     """
-    vm = HybridVM.from_snapshot(initial_snapshot["vm_state"])
-    
-    # Create a Question and a Decision unit that resolves it
-    question_id = str(uuid.uuid4())
     decision_id = str(uuid.uuid4())
-
-    question_unit = SemanticUnit(
-        id=question_id,
-        kind=SemanticUnitKind.QUESTION,
-        content="Which framework to use?",
-        status=SemanticUnitStatus.STABLE
-    )
-    decision_unit = SemanticUnit(
-        id=decision_id,
-        kind=SemanticUnitKind.DECISION,
-        content="Decision about framework.",
-        status=SemanticUnitStatus.REVIEW, # Initial state to be overridden
-        resolves={question_id}
-    )
-
-    vm._state.semantic_units.units[question_id] = question_unit
-    vm._state.semantic_units.units[decision_id] = decision_unit
-    
-    return vm.build_snapshot(), decision_id
+    snapshot = initial_snapshot
+    snapshot["vm_state"]["decision_state"]["decision_nodes"] = {
+        decision_id: {
+            "id": decision_id,
+            "status": "REVIEW",
+            "all_candidates": [{"candidate_id": "c1", "content": "Option A"}],
+            "selected_candidate": {"candidate_id": "c1", "content": "Option A"},
+            "confidence": "MID",
+            "entropy": "MID",
+            "human_override": False,
+            "override_target_l2": None,
+            "snapshot_before_override": None,
+            "snapshot_after_override": None,
+        }
+    }
+    return snapshot, decision_id
 
 
 def test_override_success(snapshot_with_decision):
@@ -58,6 +51,7 @@ def test_override_success(snapshot_with_decision):
             "action": "HUMAN_OVERRIDE",
             "data": {
                 "target_decision_id": decision_id,
+                "override_target_l2": "l2-fixed-1",
                 "override_action": "OVERRIDE_ACCEPT",
                 "reason": "Team consensus."
             }
@@ -74,8 +68,8 @@ def test_override_success(snapshot_with_decision):
     
     # Verify the state change in the new snapshot
     vm_state = new_snapshot["vm_state"]
-    overridden_unit = vm_state["semantic_units"]["units"][decision_id]
-    assert overridden_unit["status"] == "stable" # Corresponds to SemanticUnitStatus.STABLE
+    decision_node = vm_state["decision_state"]["decision_nodes"][decision_id]
+    assert decision_node["status"] == "OVERRIDDEN_L2"
     
     # Verify the override history
     override_history = vm_state["override_history"]
@@ -98,6 +92,7 @@ def test_override_decision_not_found(initial_snapshot):
             "action": "HUMAN_OVERRIDE",
             "data": {
                 "target_decision_id": non_existent_id,
+                "override_target_l2": "l2-fixed-1",
                 "override_action": "OVERRIDE_ACCEPT"
             }
         }
@@ -120,6 +115,7 @@ def test_override_invalid_payload_action(snapshot_with_decision):
             "action": "HUMAN_OVERRIDE",
             "data": {
                 "target_decision_id": decision_id,
+                "override_target_l2": "l2-fixed-1",
                 "override_action": "INVALID_ACTION_VALUE" 
             }
         }
@@ -143,6 +139,7 @@ def test_override_invalid_payload_missing_id(snapshot_with_decision):
             "action": "HUMAN_OVERRIDE",
             "data": {
                 # target_decision_id is missing
+                "override_target_l2": "l2-fixed-1",
                 "override_action": "OVERRIDE_ACCEPT"
             }
         }
