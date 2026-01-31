@@ -15,6 +15,11 @@ class MemoryType(str, Enum):
     CHM = "CHM" # Causal Holographic Memory
     DHM = "DHM" # Dynamic Holographic Memory
 
+class StoreType(str, Enum):
+    CANONICAL = "CanonicalStore"
+    QUARANTINE = "QuarantineStore"
+    WORKING = "WorkingMemory"
+
 class Classification(str, Enum):
     GENERALIZABLE = "GENERALIZABLE"
     UNIQUE = "UNIQUE"

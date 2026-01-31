@@ -3,12 +3,16 @@
 from typing import Dict, List, Optional
 import uuid
 import time
+from pathlib import Path
 
 # Import domain types from this level
 from .types import SemanticUnitL1, SemanticUnitL2, L1Cluster
 
+# Import stores
+from .store import CanonicalStore, QuarantineStore, WorkingMemory
+
 # Import commands
-from ...command import (
+from command import (
     AnyCommand,
     CreateL1AtomCommand,
     CreateL1ClusterCommand,
@@ -33,14 +37,26 @@ class MemorySpace:
     """
     The container for all semantic units and their clusters.
     Refactored for Phase 17-3 to manage L1/L2 units and project them to ViewModels.
+    Also holds the physical Memory Stores (Spec-01).
     """
-    def __init__(self):
+    def __init__(self, persistence_root: str = "memory_store"):
         self.l1_units: Dict[str, SemanticUnitL1] = {}
         self.l2_units: Dict[str, SemanticUnitL2] = {}
         self.l1_clusters: Dict[str, L1Cluster] = {}
         # A simplified representation of L2 Decisions. A full implementation
         # would group L2 units by a shared `decision_id`.
         self.l2_decisions: Dict[str, List[SemanticUnitL2]] = {}
+
+        # Spec-01 Stores
+        root = Path(persistence_root)
+        self.canonical = CanonicalStore(root)
+        self.quarantine = QuarantineStore(root)
+        self.working = WorkingMemory()
+        
+        # Backward compatibility for gate.py (temporary)
+        # gate.py uses self.phs.store(unit)
+        # We'll map phs to canonical for now, but gate.py needs logic update.
+        self.phs = self.canonical 
 
     # --- Domain Object Management (for setup and internal logic) ---
 
