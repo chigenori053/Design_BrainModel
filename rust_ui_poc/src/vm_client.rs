@@ -1,157 +1,105 @@
-use crate::model::{DecisionDto, DecisionSummaryDto, ConsensusStatus, ConfidenceLevel, EntropyLevel};
-use crate::event::UiEvent;
+use crate::model::{CreateL1AtomPayload, L1AtomVm, L1ClusterVm, DecisionChipVm};
 use reqwest::blocking::Client;
-use serde::{Deserialize, Serialize};
-use log::{info, error};
+use serde::Serialize;
+use serde_json::Value;
+use log::{error, info};
 
-pub struct HybridVmClient {
+const API_BASE_URL: &str = "http://localhost:8000";
+
+/// A synchronous client to interact with the DesignBrainModel backend API.
+#[derive(Debug, Clone)]
+pub struct VmClient {
     base_url: String,
     client: Client,
 }
 
-#[derive(Deserialize)]
-struct RawDecisionDto {
-    id: String,
-    status: String,
-    selected_candidate: Option<String>,
-    evaluator_count: usize,
-    confidence: String,
-    entropy: String,
-    explanation: String,
-    human_override: bool,
-}
-
-#[derive(Deserialize)]
-struct RawDecisionSummaryDto {
-    id: String,
-    status: String,
-    is_reevaluation: bool,
-}
-
-#[derive(Serialize)]
-struct EventRequest {
-    #[serde(rename = "type")]
-    event_type: String,
-    payload: serde_json::Value,
-}
-
-impl HybridVmClient {
+impl VmClient {
+    /// Creates a new client instance.
     pub fn new() -> Self {
+        info!("Initializing VmClient for base URL: {}", API_BASE_URL);
         Self {
-            base_url: "http://localhost:8000".to_string(),
+            base_url: API_BASE_URL.to_string(),
             client: Client::builder()
-                .timeout(std::time::Duration::from_secs(1))
+                .timeout(std::time::Duration::from_secs(5))
                 .build()
-                .unwrap_or_default(),
+                .expect("Failed to build reqwest client"),
         }
     }
 
-    pub fn fetch_latest_decision(&self) -> DecisionDto {
-        let url = format!("{}/decision/latest", self.base_url);
-        match self.client.get(&url).send() {
+    // --- ViewModel Getters ---
+
+    pub fn get_cluster(&self, cluster_id: &str) -> Result<L1ClusterVm, String> {
+        let url = format!("{}/viewmodel/cluster/{}", self.base_url, cluster_id);
+        info!("Fetching from URL: {}", url);
+        
+        self.client.get(&url)
+            .send()
+            .map_err(|e| {
+                error!("Request failed for get_cluster({}): {}", cluster_id, e);
+                e.to_string()
+            })?
+            .json::<L1ClusterVm>()
+            .map_err(|e| {
+                error!("Failed to parse JSON for get_cluster({}): {}", cluster_id, e);
+                e.to_string()
+            })
+    }
+
+    pub fn get_atom(&self, atom_id: &str) -> Result<L1AtomVm, String> {
+        let url = format!("{}/viewmodel/atom/{}", self.base_url, atom_id);
+        info!("Fetching from URL: {}", url);
+
+        self.client.get(&url)
+            .send()
+            .map_err(|e| e.to_string())?
+            .json::<L1AtomVm>()
+            .map_err(|e| e.to_string())
+    }
+
+    pub fn get_decision(&self, decision_id: &str) -> Result<DecisionChipVm, String> {
+        let url = format!("{}/viewmodel/decision/{}", self.base_url, decision_id);
+        info!("Fetching from URL: {}", url);
+
+        self.client.get(&url)
+            .send()
+            .map_err(|e| e.to_string())?
+            .json::<DecisionChipVm>()
+            .map_err(|e| e.to_string())
+    }
+
+    // --- Command Executor ---
+
+    /// Executes a command on the backend.
+    pub fn execute_command<T: Serialize>(&self, command_type: &str, payload: &T) -> Result<Value, String> {
+        let url = format!("{}/command", self.base_url);
+        let body = serde_json::json!({
+            "commandType": command_type,
+            "payload": payload
+        });
+
+        info!("Executing command '{}' with payload: {}", command_type, serde_json::to_string(payload).unwrap_or_default());
+
+        match self.client.post(&url).json(&body).send() {
             Ok(resp) => {
-                if let Ok(raw) = resp.json::<RawDecisionDto>() {
-                    return DecisionDto {
-                        id: raw.id,
-                        status: map_status(&raw.status),
-                        selected_candidate: raw.selected_candidate,
-                        evaluator_count: raw.evaluator_count,
-                        confidence: map_confidence(&raw.confidence),
-                        entropy: map_entropy(&raw.entropy),
-                        explanation: raw.explanation,
-                        human_override: raw.human_override,
-                    };
+                let status = resp.status();
+                if status.is_success() {
+                    resp.json::<Value>().map_err(|e| format!("Failed to parse successful response: {}", e))
+                } else {
+                    let text = resp.text().unwrap_or_else(|_| "Failed to read error body".to_string());
+                    error!("API Error ({}): {}", status, text);
+                    Err(format!("API Error ({}): {}", status, text))
                 }
-            }
-            Err(e) => {
-                error!("Failed to fetch decision: {}", e);
-            }
-        }
-
-        // Default / Error State
-        DecisionDto {
-            id: "conn-err".to_string(),
-            status: ConsensusStatus::Pending,
-            selected_candidate: None,
-            evaluator_count: 0,
-            confidence: ConfidenceLevel::Low,
-            entropy: EntropyLevel::High,
-            explanation: "Connecting to HybridVM...".to_string(),
-            human_override: false,
-        }
-    }
-
-    pub fn fetch_history(&self) -> Vec<DecisionSummaryDto> {
-        let url = format!("{}/decision/history", self.base_url);
-        match self.client.get(&url).send() {
-            Ok(resp) => {
-                 if let Ok(raw_list) = resp.json::<Vec<RawDecisionSummaryDto>>() {
-                     return raw_list.into_iter().map(|raw| DecisionSummaryDto {
-                         id: raw.id,
-                         status: map_status(&raw.status),
-                         is_reevaluation: raw.is_reevaluation,
-                     }).collect();
-                 }
             },
-            Err(_) => {}
-        }
-        vec![]
-    }
-
-    pub fn send_event(&self, event: UiEvent) {
-        let url = format!("{}/event", self.base_url);
-        
-        let (type_str, payload) = match &event {
-            UiEvent::UserInput(text) => (
-                "USER_INPUT", 
-                serde_json::json!({ "text": text })
-            ),
-            UiEvent::RequestReevaluation => (
-                "REQUEST_REEVALUATION",
-                serde_json::json!({})
-            ),
-            UiEvent::HumanOverride { decision, reason } => (
-                "HUMAN_OVERRIDE",
-                serde_json::json!({ "decision": format!("{:?}", decision), "reason": reason })
-            ),
-        };
-        
-        let req = EventRequest {
-            event_type: type_str.to_string(),
-            payload,
-        };
-        
-        info!("Sending Event: {:?}", req.event_type);
-        if let Err(e) = self.client.post(&url).json(&req).send() {
-            error!("Failed to send event: {}", e);
+            Err(e) => {
+                error!("Failed to send command to server: {}", e);
+                Err(e.to_string())
+            }
         }
     }
 }
 
-fn map_status(s: &str) -> ConsensusStatus {
-    match s {
-        "ACCEPT" => ConsensusStatus::Reached,
-        "REVIEW" => ConsensusStatus::Reevaluating,
-        "REJECT" => ConsensusStatus::Failed,
-        "WAITING" => ConsensusStatus::Pending,
-        _ => ConsensusStatus::Pending,
-    }
-}
-
-fn map_confidence(s: &str) -> ConfidenceLevel {
-    match s {
-        "HIGH" => ConfidenceLevel::High,
-        "MEDIUM" => ConfidenceLevel::Medium,
-        "LOW" => ConfidenceLevel::Low,
-        _ => ConfidenceLevel::Low,
-    }
-}
-
-fn map_entropy(s: &str) -> EntropyLevel {
-    match s {
-        "HIGH" => EntropyLevel::High,
-        "MEDIUM" => EntropyLevel::Medium,
-        "LOW" => EntropyLevel::Low,
-        _ => EntropyLevel::High,
+impl Default for VmClient {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -1,8 +1,8 @@
 from enum import Enum
-from typing import Dict, Any, Optional, Set, List
+from typing import Dict, Any, Optional, Set, List, Union
 from pydantic import BaseModel, Field, ConfigDict
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import numpy as np
 
 # Assuming interface.py is in the same directory
@@ -145,4 +145,42 @@ class SemanticUnit(BaseModel):
     # Relationships
     related_unit_ids: Set[str] = Field(default_factory=set)
 
-    model_config = ConfigDict(frozen=False)  # Allow updates within safe boundaries
+# --- Phase17-3 Gate Specification Types ---
+
+@dataclass(slots=True)
+class SemanticUnitL1:
+    """
+    Represents an "undecided semantic unit."
+    Structurally prohibits judgment, evaluation, and code links.
+    """
+    id: str
+    type: str  # Fixed set
+    content: str
+    source: str
+    timestamp: float
+    used_in_l2_ids: List[str] = field(default_factory=list)
+
+@dataclass(frozen=True)
+class SemanticUnitL2:
+    """
+    Represents a decision with history, ensuring immutability.
+    This corresponds to an L2-Atom-GEN.
+    """
+    id: str
+    decision_polarity: bool
+    evaluation: Dict[str, float]
+    scope: Dict[str, Any]
+    source_cluster_id: str
+    source_l1_ids: List[str]
+
+    def __post_init__(self):
+        if not self.source_l1_ids:
+            raise ValueError("source_l1_ids cannot be empty for an L2 unit.")
+
+@dataclass(slots=True)
+class L1Cluster:
+    """
+    Represents a cluster of L1 units.
+    """
+    id: str
+    l1_ids: List[str]

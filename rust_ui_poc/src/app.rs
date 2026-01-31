@@ -1,115 +1,80 @@
-use crate::model::UiState;
-use crate::tui;
-use crate::vm_client::HybridVmClient;
-use crate::view::{
-    HeaderView, HeaderProps,
-    CurrentDecisionView, CurrentDecisionProps,
-    ExplanationView, ExplanationProps,
-    DecisionHistoryView, HistoryProps,
-    EventInputView, EventInputProps
-};
-use std::time::{Duration, Instant};
-use crossterm::event::{self, Event, KeyCode};
-use ratatui::layout::{Constraint, Direction, Layout};
+use anyhow::Result;
+use log::{info, error};
 
-pub struct AppRoot {
-    vm_client: HybridVmClient,
-    ui_state: UiState,
+use crate::model::{AppState, CreateL1AtomPayload, L1ClusterVm};
+use crate::vm_client::VmClient;
+
+/// Represents actions that can be dispatched to the App.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Action {
+    /// Quit the application.
+    Quit,
+    /// Placeholder for future use.
+    Tick,
+    /// Create a new L1 Atom with the given content.
+    CreateL1Atom(String),
+    // Add other actions like SelectNextCluster, EnterInputMode, etc.
 }
 
-impl AppRoot {
+/// The main application structure, responsible for state management and logic.
+pub struct App {
+    pub state: AppState,
+    vm_client: VmClient,
+}
+
+impl App {
+    /// Creates a new App instance.
     pub fn new() -> Self {
         Self {
-            vm_client: HybridVmClient::new(),
-            ui_state: UiState::new(),
+            state: AppState::new(),
+            vm_client: VmClient::new(),
         }
     }
 
-    pub fn run(&mut self) -> std::io::Result<()> {
-        let mut terminal = tui::init()?;
-        let tick_rate = Duration::from_millis(250);
-        let mut last_tick = Instant::now();
+    /// Called once on startup.
+    pub fn init(&mut self) -> Result<()> {
+        self.state.logs.push("Application initialized.".to_string());
 
-        loop {
-            // Draw
-            terminal.draw(|f| {
-                let chunks = Layout::default()
-                    .direction(Direction::Vertical)
-                    .constraints([
-                        Constraint::Length(1), // Header
-                        Constraint::Length(10), // Current Decision
-                        Constraint::Min(5),    // Explanation (Flexible)
-                        Constraint::Length(8), // History
-                        Constraint::Length(3), // Input
-                    ])
-                    .split(f.size());
-
-                if let Some(decision) = &self.ui_state.latest_decision {
-                     HeaderView::render(f, chunks[0], &HeaderProps {
-                         system_status: "Online".to_string(), // In real app, derived from connection success
-                         decision_status: decision.status.clone(),
-                         human_override: decision.human_override,
-                     });
-
-                     CurrentDecisionView::render(f, chunks[1], &CurrentDecisionProps {
-                         decision: decision.clone(),
-                     });
-
-                     ExplanationView::render(f, chunks[2], &ExplanationProps {
-                         explanation_text: decision.explanation.clone(),
-                     });
-                } else {
-                    // Fallback if no decision yet (should be covered by "Connecting..." mock in client)
-                }
-
-                DecisionHistoryView::render(f, chunks[3], &HistoryProps {
-                    history: self.ui_state.decision_history.clone(),
-                });
-
-                EventInputView::render(f, chunks[4], &EventInputProps {
-                    input_buffer: self.ui_state.input_buffer.clone(),
-                });
-            })?;
-
-            // Handle Input
-            let timeout = tick_rate
-                .checked_sub(last_tick.elapsed())
-                .unwrap_or_else(|| Duration::from_secs(0));
-
-            if crossterm::event::poll(timeout)? {
-                if let Event::Key(key) = event::read()? {
-                    match key.code {
-                        KeyCode::Esc => break,
-                        KeyCode::Char(c) => self.ui_state.input_buffer.push(c),
-                        KeyCode::Backspace => {
-                            self.ui_state.input_buffer.pop();
-                        }
-                        KeyCode::Enter => {
-                            let input = self.ui_state.input_buffer.drain(..).collect::<String>();
-                            log::info!("User Input: {}", input);
-                            if let Some(event) = EventInputView::parse_command(&input) {
-                                self.vm_client.send_event(event);
-                                // Trigger immediate refresh potentially
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-
-            // Periodic Updates
-            if last_tick.elapsed() >= tick_rate {
-                self.refresh_state();
-                last_tick = Instant::now();
-            }
-        }
-
-        tui::restore()?;
+        // For now, we won't create data on init, but we could.
+        // Instead, we might want to fetch an initial list of clusters.
+        // Let's assume an endpoint `/viewmodel/clusters` exists for this.
+        // Since it doesn't, we'll log it and proceed with an empty list.
+        self.state.logs.push("Skipping initial data fetch (endpoint not implemented).".to_string());
+        
         Ok(())
     }
 
-    fn refresh_state(&mut self) {
-        self.ui_state.latest_decision = Some(self.vm_client.fetch_latest_decision());
-        self.ui_state.decision_history = self.vm_client.fetch_history();
+    /// Dispatches an action to be processed, modifying the app's state.
+    pub fn dispatch(&mut self, action: Action) -> Result<()> {
+        match action {
+            Action::Quit => {
+                self.state.quit();
+            }
+            Action::CreateL1Atom(content) => {
+                self.state.logs.push(format!("Dispatching CreateL1Atom with content: {}", content));
+                let payload = CreateL1AtomPayload {
+                    content,
+                    r#type: "ManualInput".to_string(),
+                    source: "RustUI-Client".to_string(),
+                };
+                match self.vm_client.execute_command("CreateL1Atom", &payload) {
+                    Ok(result) => {
+                        self.state.logs.push(format!("Successfully created L1 Atom: {:?}", result));
+                        // In a real app, we would now refresh the relevant view models.
+                    }
+                    Err(e) => {
+                        let error_msg = format!("Error creating L1 Atom: {}", e);
+                        error!("{}", error_msg);
+                        self.state.logs.push(error_msg);
+                    }
+                }
+            }
+            Action::Tick => {
+                // This action can be used for periodic updates, e.g., fetching data.
+                // For now, we'll just log it.
+                // info!("Tick received");
+            }
+        }
+        Ok(())
     }
 }

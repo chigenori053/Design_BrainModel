@@ -16,3 +16,17 @@ This repository hosts the **Phase 0** implementation of the Design_BrainModel sy
 
 ## 概要
 意図と言語構造を統合した、自律的な思考・設計モデルの開発プロジェクトです。
+
+## Tests (venv)
+全テストを `.venv_phase17` の仮想環境で実行する手順:
+
+```bash
+tools/setup_test_env.sh
+tools/run_tests_venv.sh
+```
+
+特定のテストのみ実行する場合:
+
+```bash
+tools/run_tests_venv.sh tests/test_phase17_snapshot_contract.py
+```

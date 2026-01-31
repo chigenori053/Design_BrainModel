@@ -1,19 +1,20 @@
+# design_brain_model/hybrid_vm/interface_layer/api_server.py
 import uvicorn
 import logging
-from fastapi import FastAPI, Body, Request
-from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import List, Optional, Any, Dict
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+from typing import Any, Dict
+from dataclasses import asdict
 
-from design_brain_model.hybrid_vm.core import (
-    HybridVM, DecisionNotFoundError, InvalidOverridePayloadError
-)
-from design_brain_model.hybrid_vm.control_layer.state import VMState
-from design_brain_model.hybrid_vm.events import (
-    EventType,
-    UserInputEvent,
-    HumanOverrideEvent,
-    Actor,
+# --- Domain, ViewModel, and Command Imports ---
+# Note: Adjusting relative paths to be robust from the project root.
+from design_brain_model.brain_model.memory.space import MemorySpace
+from design_brain_model.command import (
+    CreateL1AtomCommand,
+    CreateL1ClusterCommand,
+    ArchiveL1ClusterCommand,
+    ConfirmDecisionCommand,
+    UpdateDecisionCommand,
 )
 
 # Configure Logging
@@ -24,176 +25,85 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI()
+# --- FastAPI App and Global Domain Instance ---
+app = FastAPI(title="DesignBrainModel API - Phase 17-4")
+memory_space = MemorySpace()  # Singleton instance for the application's lifecycle
+logger.info("MemorySpace initialized.")
 
-class ApiError(Exception):
-    def __init__(self, status_code: int, error: str):
-        self.status_code = status_code
-        self.error = error
+# --- API Models ---
+class CommandRequest(BaseModel):
+    """Defines the structure for an incoming command request."""
+    command_type: str = Field(..., description="The type of the command to execute.")
+    payload: Dict[str, Any] = Field(..., description="The data required to execute the command.")
 
-@app.exception_handler(ApiError)
-def api_error_handler(_: Request, exc: ApiError):
-    return JSONResponse(status_code=exc.status_code, content={"error": exc.error})
+# Dictionary to map command type strings from the API to their Python classes.
+COMMAND_MAP = {
+    "CreateL1Atom": CreateL1AtomCommand,
+    "CreateL1Cluster": CreateL1ClusterCommand,
+    "ArchiveL1Cluster": ArchiveL1ClusterCommand,
+    "ConfirmDecision": ConfirmDecisionCommand,
+    "UpdateDecision": UpdateDecisionCommand,
+}
 
-class EventPayload(BaseModel):
-    action: str
-    data: Optional[Dict[str, Any]] = None
+# --- Endpoints ---
 
-class EventRequest(BaseModel):
-    snapshot: Optional[Dict[str, Any]] = None
-    payload: Optional[EventPayload] = None
+@app.get("/viewmodel/cluster/{cluster_id}", tags=["ViewModel"])
+def get_cluster_viewmodel(cluster_id: str):
+    """Retrieves the ViewModel for a specific L1 Cluster."""
+    logger.info(f"Requesting ViewModel for cluster: {cluster_id}")
+    vm = memory_space.project_to_l1_cluster_vm(cluster_id)
+    if vm is None:
+        raise HTTPException(status_code=404, detail=f"Cluster with id '{cluster_id}' not found.")
+    return asdict(vm)
 
-class SnapshotResponse(BaseModel):
-    snapshot: Dict[str, Any]
+@app.get("/viewmodel/atom/{atom_id}", tags=["ViewModel"])
+def get_atom_viewmodel(atom_id: str):
+    """Retrieves the ViewModel for a specific L1 Atom."""
+    logger.info(f"Requesting ViewModel for atom: {atom_id}")
+    vm = memory_space.project_to_l1_atom_vm(atom_id)
+    if vm is None:
+        raise HTTPException(status_code=404, detail=f"Atom with id '{atom_id}' not found.")
+    return asdict(vm)
 
-class DecisionDto(BaseModel):
-    id: str
-    status: str
-    selected_candidate: Optional[str] = None
-    evaluator_count: int
-    confidence: str
-    entropy: str
-    explanation: str
-    human_override: bool
+@app.get("/viewmodel/decision/{decision_id}", tags=["ViewModel"])
+def get_decision_viewmodel(decision_id: str):
+    """Retrieves the ViewModel for a specific L2 Decision."""
+    logger.info(f"Requesting ViewModel for decision: {decision_id}")
+    vm = memory_space.project_to_decision_chip_vm(decision_id)
+    if vm is None:
+        raise HTTPException(status_code=404, detail=f"Decision with id '{decision_id}' not found.")
+    return asdict(vm)
 
-class DecisionSummaryDto(BaseModel):
-    id: str
-    status: str
-    is_reevaluation: bool
-
-def require_snapshot(snapshot: Optional[Dict[str, Any]]) -> Dict[str, Any]:
-    if snapshot is None:
-        raise ApiError(status_code=400, error="SNAPSHOT_REQUIRED")
-    if not isinstance(snapshot, dict):
-        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
-    if "snapshot_id" not in snapshot or "vm_state" not in snapshot:
-        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
+@app.post("/command", tags=["Command"])
+def execute_command_endpoint(request: CommandRequest):
+    """The sole endpoint for mutating the domain state by executing a command."""
+    logger.info(f"Received command: {request.command_type} with payload {request.payload}")
+    
+    command_class = COMMAND_MAP.get(request.command_type)
+    if not command_class:
+        raise HTTPException(status_code=400, detail=f"Unknown command type: '{request.command_type}'")
+    
     try:
-        VMState.model_validate(snapshot.get("vm_state"))
-    except Exception:
-        raise ApiError(status_code=409, error="SNAPSHOT_MISMATCH")
-    return snapshot
+        # Create a command instance from the payload dictionary.
+        # This relies on the payload's keys matching the dataclass field names.
+        command_instance = command_class(**request.payload)
+    except TypeError as e:
+        # This can happen if payload keys are wrong or a required key is missing.
+        raise HTTPException(status_code=400, detail=f"Invalid payload for '{request.command_type}': {e}")
 
-@app.post("/snapshot/create", response_model=SnapshotResponse)
-def create_snapshot():
-    vm = HybridVM.create()
-    return SnapshotResponse(snapshot=vm.build_snapshot())
-
-@app.get("/decision/latest", response_model=DecisionDto)
-def get_latest_decision(snapshot: Optional[Dict[str, Any]] = Body(default=None, embed=True)):
-    snapshot_dict = require_snapshot(snapshot)
-    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
-    outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
-    if not outcomes:
-        # Return a default "Wait" state if no decision yet
-        return DecisionDto(
-            id="waiting",
-            status="WAITING",
-            selected_candidate=None,
-            evaluator_count=0,
-            confidence="LOW",
-            entropy="HIGH",
-            explanation="Waiting for input...",
-            human_override=False
-        )
-    
-    last = outcomes[-1]
-    
-    # Map consensus status to string
-    status_str = last.get("consensus_status") or "UNKNOWN"
-    
-    # Get selected candidate (Top 1)
-    selected_candidate = None
-    if last.get("ranked_candidates"):
-        selected_candidate = last["ranked_candidates"][0]["content"]
-        
-    # Confidence aggregation (Mock logic or average)
-    confidence_val = "MEDIUM"
-    if last.get("evaluations"):
-        # Simple average or take first
-        avg_conf = sum(e["confidence"] for e in last["evaluations"]) / len(last["evaluations"])
-        if avg_conf > 0.8:
-            confidence_val = "HIGH"
-        elif avg_conf < 0.4:
-            confidence_val = "LOW"
-            
-    is_human_override = last.get("human_reason") is not None
-    
-    return DecisionDto(
-        id=last["outcome_id"],
-        status=status_str,
-        selected_candidate=selected_candidate,
-        evaluator_count=len(last.get("evaluations", [])),
-        confidence=confidence_val,
-        entropy="LOW", # Placeholder
-        explanation=last["explanation"],
-        human_override=is_human_override
-    )
-
-@app.get("/decision/history", response_model=List[DecisionSummaryDto])
-def get_decision_history(snapshot: Optional[Dict[str, Any]] = Body(default=None, embed=True)):
-    snapshot_dict = require_snapshot(snapshot)
-    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
-    outcomes = vm.get_state_snapshot().get("decision_state", {}).get("outcomes", [])
-    history = []
-    for o in outcomes:
-        status_str = o.get("consensus_status") or "UNKNOWN"
-        history.append(DecisionSummaryDto(
-            id=o["outcome_id"],
-            status=status_str,
-            is_reevaluation=o.get("lineage") is not None
-        ))
-    return history
-
-@app.post("/event")
-def send_event(event: EventRequest):
-    logger.info("Received Event")
-    snapshot_dict = require_snapshot(event.snapshot)
-    if not event.payload or not event.payload.action:
-        raise ApiError(status_code=400, error="INVALID_PAYLOAD")
-
-    vm = HybridVM.from_snapshot(snapshot_dict.get("vm_state", {}))
-    action = event.payload.action
-    data = event.payload.data or {}
-
-    vm_event = None
-    if action == "USER_INPUT":
-        vm_event = UserInputEvent(
-            type=EventType.USER_INPUT,
-            payload={"content": data.get("content", "")},
-            actor=Actor.USER
-        )
-    elif action == "CREATE_UNIT":
-        vm_event = UserInputEvent(
-            type=EventType.USER_INPUT,
-            payload={"action": "create_unit", "unit": data.get("unit")},
-            actor=Actor.USER
-        )
-    elif action == "CONFIRM_UNIT":
-        vm_event = UserInputEvent(
-            type=EventType.USER_INPUT,
-            payload={"action": "confirm_unit", "unit_id": data.get("unit_id")},
-            actor=Actor.USER
-        )
-    elif action == "HUMAN_OVERRIDE":
-        vm_event = HumanOverrideEvent(
-            type=EventType.HUMAN_OVERRIDE,
-            payload=data, # Pass the whole data dict as payload
-            actor=Actor.USER
-        )
-    else:
-        raise ApiError(status_code=400, error="INVALID_ACTION")
-
-    logger.info(f"Processing VM Event: {vm_event}")
     try:
-        vm.process_event(vm_event)
-    except DecisionNotFoundError:
-        raise ApiError(status_code=404, error="DECISION_NOT_FOUND")
-    except InvalidOverridePayloadError:
-        raise ApiError(status_code=400, error="INVALID_OVERRIDE_PAYLOAD")
-        
-    return SnapshotResponse(snapshot=vm.build_snapshot())
+        result = memory_space.execute_command(command_instance)
+        logger.info(f"Command '{request.command_type}' executed successfully. Result: {result}")
+        return {"status": "success", "result": result}
+    except (ValueError, TypeError) as e:
+        logger.error(f"Command execution failed due to bad request: {e}")
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"An unexpected error occurred during command execution: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="An internal server error occurred.")
 
 if __name__ == "__main__":
-    logger.info("Starting HybridVM API Server...")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    logger.info("Starting DesignBrainModel API Server (Phase 17-4)...")
+    # To run this server, execute: `python -m design_brain_model.hybrid_vm.interface_layer.api_server`
+    # from the root of the project, ensuring PYTHONPATH is set correctly.
+    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
