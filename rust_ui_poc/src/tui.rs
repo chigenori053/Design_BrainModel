@@ -40,3 +40,11 @@ impl Tui {
         Ok(())
     }
 }
+
+impl Drop for Tui {
+    fn drop(&mut self) {
+        if let Err(e) = Self::restore_terminal() {
+            eprintln!("Failed to restore terminal: {}", e);
+        }
+    }
+}

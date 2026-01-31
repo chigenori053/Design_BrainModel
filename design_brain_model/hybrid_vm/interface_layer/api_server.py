@@ -33,8 +33,11 @@ logger.info("MemorySpace initialized.")
 # --- API Models ---
 class CommandRequest(BaseModel):
     """Defines the structure for an incoming command request."""
-    command_type: str = Field(..., description="The type of the command to execute.")
+    command_type: str = Field(..., alias="commandType", description="The type of the command to execute.")
     payload: Dict[str, Any] = Field(..., description="The data required to execute the command.")
+
+    class Config:
+        populate_by_name = True
 
 # Dictionary to map command type strings from the API to their Python classes.
 COMMAND_MAP = {
@@ -106,4 +109,4 @@ if __name__ == "__main__":
     logger.info("Starting DesignBrainModel API Server (Phase 17-4)...")
     # To run this server, execute: `python -m design_brain_model.hybrid_vm.interface_layer.api_server`
     # from the root of the project, ensuring PYTHONPATH is set correctly.
-    uvicorn.run("api_server:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run("design_brain_model.hybrid_vm.interface_layer.api_server:app", host="0.0.0.0", port=8000, reload=True)

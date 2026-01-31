@@ -27,6 +27,12 @@ class DecisionNotFoundError(Exception):
 class InvalidOverridePayloadError(Exception):
     pass
 
+class HumanOverrideError(Exception):
+    pass
+
+class UserInputError(Exception):
+    pass
+
 # --- Phase 17-2: Pydantic model for API Payload validation ---
 class HumanOverridePayload(BaseModel):
     target_decision_id: str
@@ -177,6 +183,9 @@ class HybridVM:
             return
 
         content = event.payload.get("content")
+        if content is None or (isinstance(content, str) and not content.strip()):
+            raise UserInputError("Empty input is not allowed")
+
         msg_id = self._next_entity_id("msg")
         
         # 1. Update State: Add Message
@@ -419,6 +428,11 @@ class HybridVM:
         target_node = self._state.semantic_units.units.get(payload.target_decision_id)
         if not target_node or target_node.kind != SemanticUnitKind.DECISION:
             raise DecisionNotFoundError(f"Decision unit with ID {payload.target_decision_id} not found.")
+
+        if not target_node.resolves:
+            raise HumanOverrideError("No override target available")
+        if len(target_node.resolves) != 1:
+            raise HumanOverrideError("Ambiguous override target. Explicit decision_id required.")
 
         # 3. Determine new status and record original status
         original_status = target_node.status
