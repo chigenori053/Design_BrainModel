@@ -1,18 +1,20 @@
 # design_brain_model/brain_model/memory/space.py
 
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 import uuid
 import time
 from pathlib import Path
+import numpy as np
 
 # Import domain types from this level
 from .types import SemanticUnitL1, SemanticUnitL2, L1Cluster
 
 # Import stores
 from .store import CanonicalStore, QuarantineStore, WorkingMemory
+from .strategy import RecallStrategy, RecallPhase
 
 # Import commands
-from command import (
+from ...command import (
     AnyCommand,
     CreateL1AtomCommand,
     CreateL1ClusterCommand,
@@ -53,10 +55,32 @@ class MemorySpace:
         self.quarantine = QuarantineStore(root)
         self.working = WorkingMemory()
         
+        # Spec-05 Recall Strategy
+        self.recall_strategy = RecallStrategy()
+
         # Backward compatibility for gate.py (temporary)
         # gate.py uses self.phs.store(unit)
         # We'll map phs to canonical for now, but gate.py needs logic update.
         self.phs = self.canonical 
+
+    def recall(
+        self,
+        query_vector: np.ndarray,
+        entropy: float = 1.0,
+        debug_mode: bool = False,
+        human_override: bool = False
+    ) -> List[Dict[str, Any]]:
+        """
+        High-level recall entry point using Spec-05 strategy.
+        """
+        return self.recall_strategy.execute_recall(
+            canonical=self.canonical,
+            quarantine=self.quarantine,
+            query_vector=query_vector,
+            current_entropy=entropy,
+            debug_mode=debug_mode,
+            human_override=human_override
+        )
 
     # --- Domain Object Management (for setup and internal logic) ---
 

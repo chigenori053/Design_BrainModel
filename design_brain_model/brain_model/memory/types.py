@@ -20,6 +20,11 @@ class StoreType(str, Enum):
     QUARANTINE = "QuarantineStore"
     WORKING = "WorkingMemory"
 
+class MemoryStatus(str, Enum):
+    ACTIVE = "ACTIVE"
+    FROZEN = "FROZEN"
+    DISABLED = "DISABLED"
+
 class Classification(str, Enum):
     GENERALIZABLE = "GENERALIZABLE"
     UNIQUE = "UNIQUE"
@@ -29,6 +34,15 @@ class Decision(str, Enum):
     ACCEPT = "ACCEPT"
     REVIEW = "REVIEW"
     REJECT = "REJECT"
+
+DecisionLabel = Decision
+
+class DecisionResult(BaseModel):
+    label: Decision
+    confidence: float
+    entropy: float
+    utility: float
+    reason: str
 
 # --- Phase16 ---
 class OriginContext(str, Enum):
@@ -144,8 +158,24 @@ class SemanticUnit(BaseModel):
     
     # Metadata for Memory
     classification: Optional[Classification] = None
-    decision: Optional[Decision] = None
+    decision_label: Optional[DecisionLabel] = None
     memory_type: Optional[MemoryType] = None
+    
+    # Spec-02 Status fields
+    status: MemoryStatus = MemoryStatus.ACTIVE
+    status_changed_at: float = Field(default_factory=lambda: 0.0)
+    status_reason: Optional[str] = None
+
+    # Spec-03 Initial Metadata (Immutable history)
+    confidence_init: float = 0.0
+    decision_reason: Optional[str] = None
+
+    # Spec-04 Evaluation Metrics
+    reuse_count: int = 0
+    accept_support_count: int = 0
+    reject_impact_count: int = 0
+    avg_EU_delta: float = 0.0
+    retention_score: float = 0.0
     
     # Relationships
     related_unit_ids: Set[str] = Field(default_factory=set)

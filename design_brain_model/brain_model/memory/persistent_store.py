@@ -10,6 +10,8 @@ import uuid
 
 import numpy as np
 
+from .types import MemoryStatus
+
 SCHEMA_VERSION = 1
 
 
@@ -21,6 +23,7 @@ class HolographicTrace:
     interference_vector: Optional[np.ndarray]
     energy: float
     timestamp: int
+    status: MemoryStatus = MemoryStatus.ACTIVE
     version: int = SCHEMA_VERSION
 
     def __post_init__(self) -> None:
@@ -36,6 +39,7 @@ class HolographicTrace:
                 raise ValueError("interference_vector must be a 1D float32 array")
         self.energy = float(self.energy)
         self.timestamp = int(self.timestamp)
+        self.status = MemoryStatus(self.status) if isinstance(self.status, str) else self.status
         self.version = int(self.version)
 
 
@@ -69,6 +73,11 @@ class FileHolographicStore:
     """
     Append-only persistent store for HolographicTrace.
     This is not a CRUD database; it is a recall-optimized trace log.
+
+    NOTE:
+    index.bin is currently not used.
+    It will be regenerated when ANN / index-based recall is introduced.
+    Currently, _rewrite_all() (used for status updates) does NOT update index.bin.
     """
 
     TRACE_FILENAME = "traces.bin"
@@ -139,11 +148,20 @@ class FileHolographicStore:
         self._offsets.append(offset)
         self._traces.append(trace)
 
-    def recall(self, query_vector: Sequence[float], k: int) -> List[RecallResult]:
+    def recall(
+        self,
+        query_vector: Sequence[float],
+        k: int,
+        include_statuses: Optional[Set[MemoryStatus]] = None
+    ) -> List[RecallResult]:
         if not self._loaded:
             self.load()
         if k <= 0:
             return []
+
+        if include_statuses is None:
+            # Default to only ACTIVE as per Spec-02 for normal recall
+            include_statuses = {MemoryStatus.ACTIVE}
 
         query = np.asarray(query_vector, dtype=np.float32)
         if query.ndim != 1 or query.size == 0:
@@ -158,6 +176,9 @@ class FileHolographicStore:
 
         scores: List[Tuple[int, float]] = []
         for idx, trace in enumerate(self._traces):
+            if trace.status not in include_statuses:
+                continue
+
             vector = trace.raw_vector
             if trace.interference_vector is not None and trace.interference_vector.size == vector.size:
                 vector = vector + trace.interference_vector
@@ -165,7 +186,8 @@ class FileHolographicStore:
             if vec_norm == 0:
                 continue
             resonance = float(np.dot(query, vector / vec_norm))
-            scores.append((idx, resonance))
+            if resonance > 0:
+                scores.append((idx, resonance))
 
         scores.sort(key=lambda item: item[1], reverse=True)
         results: List[RecallResult] = []
@@ -181,6 +203,43 @@ class FileHolographicStore:
                 )
             )
         return results
+
+    def update_status(self, trace_id: str, new_status: MemoryStatus) -> bool:
+        """Updates the status of a trace and persists the change."""
+        if not self._loaded:
+            self.load()
+
+        found = False
+        for trace in self._traces:
+            if trace.trace_id == trace_id:
+                trace.status = new_status
+                found = True
+                break
+        
+        if found:
+            # For simplicity in Phase 19, we rewrite the entire file to reflect the change.
+            # In a production append-only store, we'd append a 'status change' record.
+            self._rewrite_all()
+            return True
+        return False
+
+    def get_trace_by_source_unit_id(self, source_unit_id: str) -> Optional[HolographicTrace]:
+        """Spec-04: Safely retrieve a trace by its source unit ID, ensuring load() is called."""
+        if not self._loaded:
+            self.load()
+        
+        # Search for the latest trace associated with this source_unit_id
+        for trace in reversed(self._traces):
+            if trace.source_unit_id == source_unit_id:
+                return trace
+        return None
+
+    def _rewrite_all(self) -> None:
+        """Rewrites the entire traces file from the current in-memory traces."""
+        with self.traces_path.open("wb") as f:
+            for trace in self._traces:
+                f.write(self._encode_trace(trace))
+        self.flush()
 
     def flush(self) -> None:
         if not self._loaded:
@@ -214,11 +273,15 @@ class FileHolographicStore:
             interference_len = int(interference.size)
             interference_bytes = interference.tobytes()
 
+        status_map = {MemoryStatus.ACTIVE: 0, MemoryStatus.FROZEN: 1, MemoryStatus.DISABLED: 2}
+        status_val = status_map.get(trace.status, 0)
+
         header = struct.pack(
-            "<I16sI",
+            "<I16sII",
             trace.version,
             uuid.UUID(trace.trace_id).bytes,
             len(source_bytes),
+            status_val,
         )
         payload = struct.pack("<I", raw_len) + raw_bytes
         payload += struct.pack("<B", 1 if has_interference else 0)
@@ -237,7 +300,10 @@ class FileHolographicStore:
                 f"Schema version mismatch in trace: expected {SCHEMA_VERSION}, found {version}"
             )
         trace_id_bytes = self._read_exact(f, 16)
-        source_len = struct.unpack("<I", self._read_exact(f, 4))[0]
+        header_remaining = struct.unpack("<II", self._read_exact(f, 8))
+        source_len = header_remaining[0]
+        status_val = header_remaining[1]
+        
         source_unit_id = self._read_exact(f, source_len).decode("utf-8")
 
         raw_len = struct.unpack("<I", self._read_exact(f, 4))[0]
@@ -254,6 +320,9 @@ class FileHolographicStore:
         energy = struct.unpack("<f", self._read_exact(f, 4))[0]
         timestamp = struct.unpack("<q", self._read_exact(f, 8))[0]
 
+        status_rev_map = {0: MemoryStatus.ACTIVE, 1: MemoryStatus.FROZEN, 2: MemoryStatus.DISABLED}
+        status = status_rev_map.get(status_val, MemoryStatus.ACTIVE)
+
         trace_id = str(uuid.UUID(bytes=trace_id_bytes))
         return HolographicTrace(
             trace_id=trace_id,
@@ -262,6 +331,7 @@ class FileHolographicStore:
             interference_vector=interference_vector,
             energy=energy,
             timestamp=timestamp,
+            status=status,
             version=version,
         )
 

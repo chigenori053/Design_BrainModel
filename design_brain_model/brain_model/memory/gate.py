@@ -1,49 +1,69 @@
-from .types import SemanticUnit, Decision, Classification, MemoryType
+import json
+import time
+from typing import Optional
+import numpy as np
+from .types import SemanticUnit, Decision, DecisionResult, MemoryStatus
 from .space import MemorySpace
 
 class MemoryGate:
     """
     Controls what enters the MemorySpace.
     Enforces the 'Passive Memory' rule.
+    (Spec-03: Decision -> Memory Routing)
     """
     def __init__(self, memory_space: MemorySpace):
         self.memory_space = memory_space
 
-    def process(self, unit: SemanticUnit) -> bool:
+    def process(self, unit: SemanticUnit, decision: DecisionResult, vector: Optional[np.ndarray] = None) -> bool:
         """
         Main entry point for storing a SemanticUnit into memory.
-        Routes based on Decision and Classification.
+        Routes based on Decision and initializes metadata.
         """
-        if not unit.decision:
-            # Undecided units cannot enter memory
+        # Spec-03: Initialize metadata
+        unit.decision_label = decision.label
+        unit.confidence_init = decision.confidence
+        unit.decision_reason = decision.reason
+        
+        # Spec-02/03: Initialize status to ACTIVE
+        unit.status = MemoryStatus.ACTIVE
+        unit.status_reason = f"initial_decision:{decision.label.value}"
+        unit.status_changed_at = time.time()
+
+        # 5. Decision -> Store Routing Rules
+        store_name = ""
+        if decision.label == Decision.ACCEPT:
+            store = self.memory_space.canonical
+            store_name = "CANONICAL"
+        elif decision.label in [Decision.REVIEW, Decision.REJECT]:
+            store = self.memory_space.quarantine
+            store_name = "QUARANTINE"
+        else:
+            # 9.1 Invalid DecisionLabel
+            print(f"ERROR: Invalid DecisionLabel detected: {decision.label}")
             return False
 
-        # 1. Decision Filter
-        if unit.decision == Decision.REJECT:
-            if unit.classification == Classification.DISCARDABLE:
-                return False # Discard
-            elif unit.classification == Classification.UNIQUE:
-                # Store strict negative constraints or dangerous patterns? 
-                # For Phase 9 MVP, we might store rejected unique items in PHS for history.
-                self.memory_space.quarantine.add(unit)
-                return True
-            # Generalizable rejected items? Likely rare, but store in PHS.
-            self.memory_space.quarantine.add(unit)
-            return True
-
-        if unit.decision == Decision.REVIEW:
-            # Review items go to PHS if they have potential value
-            if unit.classification != Classification.DISCARDABLE:
-                 self.memory_space.quarantine.add(unit)
-                 return True
+        # 5.2 Invariant: CanonicalStore is always ACTIVE
+        # store.add will handle the physical persistence
+        try:
+            store.add(unit, vector=vector)
+        except Exception as e:
+            # 9.2 Store Saving Failure
+            print(f"ERROR: Memory storage failed for unit {unit.id}: {e}")
             return False
 
-        if unit.decision == Decision.ACCEPT:
-            # Accepted items ALWAYS go to PHS first.
-            self.memory_space.canonical.add(unit)
-            
-            # If Generalizable, they are CANDIDATES for SHM, but not immediate.
-            # Promotion is a separate step in Phase 9.
-            return True
-
-        return False
+        # 8. Log Event: MEMORY_ROUTED
+        log_entry = {
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "event": "MEMORY_ROUTED",
+            "memory_id": unit.id,
+            "decision": decision.label,
+            "store": store_name,
+            "status": unit.status,
+            "confidence": decision.confidence,
+            "entropy": decision.entropy,
+            "utility": decision.utility,
+            "reason": decision.reason
+        }
+        print(f"LOG: {json.dumps(log_entry)}")
+        
+        return True
