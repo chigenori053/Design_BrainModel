@@ -1,6 +1,6 @@
 
 import pytest
-from design_brain_model.brain_model.phase18 import CodeSkeletonBuilder
+from design_brain_model.brain_model.artifact_pipeline import CodeSkeletonBuilder
 from design_brain_model.brain_model.language_engine.domain import LanguageReport
 
 class TestSkeletonBuilder:

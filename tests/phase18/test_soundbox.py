@@ -1,6 +1,6 @@
 
 import pytest
-from design_brain_model.brain_model.phase18 import SoundBox, ExecutionReport
+from design_brain_model.brain_model.artifact_pipeline import SoundBox, ExecutionReport
 
 class TestSoundBox:
     """

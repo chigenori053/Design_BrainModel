@@ -20,7 +20,7 @@ def test_execute_create_l1_atom_command(memory_space: MemorySpace):
     
     command = CreateL1AtomCommand(
         content="This is a test atom.",
-        type="Test",
+        type="OBSERVATION",
         source="pytest"
     )
     new_id = memory_space.execute_command(command)
@@ -35,9 +35,9 @@ def test_execute_create_l1_atom_command(memory_space: MemorySpace):
 def test_execute_create_l1_cluster_command(memory_space: MemorySpace):
     """Tests that CreateL1ClusterCommand correctly creates a cluster."""
     # First, add some L1 units to be clustered
-    cmd1 = CreateL1AtomCommand("content1", "type1", "src1")
+    cmd1 = CreateL1AtomCommand("content1", "OBSERVATION", "src1")
     id1 = memory_space.execute_command(cmd1)
-    cmd2 = CreateL1AtomCommand("content2", "type2", "src2")
+    cmd2 = CreateL1AtomCommand("content2", "REQUIREMENT", "src2")
     id2 = memory_space.execute_command(cmd2)
 
     assert len(memory_space.l1_clusters) == 0
@@ -68,7 +68,7 @@ def test_execute_archive_l1_cluster_command(memory_space: MemorySpace):
 def test_execute_confirm_decision_command(memory_space: MemorySpace):
     """Tests that ConfirmDecisionCommand creates a new L2 generation."""
     # Setup L1 units and a cluster
-    id1 = memory_space.execute_command(CreateL1AtomCommand("c1", "t1", "s1"))
+    id1 = memory_space.execute_command(CreateL1AtomCommand("c1", "OBSERVATION", "s1"))
     cluster_id = memory_space.execute_command(CreateL1ClusterCommand(l1_ids=[id1]))
     
     decision_id = "decision-abc"
@@ -104,7 +104,7 @@ def test_execute_invalid_command_type(memory_space: MemorySpace):
 
 def test_create_cluster_with_invalid_l1_id_fails(memory_space: MemorySpace):
     """Tests that creating a cluster with non-existent L1 IDs raises an error."""
-    id1 = memory_space.execute_command(CreateL1AtomCommand("c1", "t1", "s1"))
+    id1 = memory_space.execute_command(CreateL1AtomCommand("c1", "OBSERVATION", "s1"))
 
     invalid_cluster_command = CreateL1ClusterCommand(l1_ids=[id1, "non-existent-id"])
     

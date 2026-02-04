@@ -1,6 +1,6 @@
 
 import pytest
-from design_brain_model.brain_model.phase18 import AutoFix, ExecutionReport
+from design_brain_model.brain_model.artifact_pipeline import AutoFix, ExecutionReport
 
 class TestAutoFix:
     """

@@ -35,7 +35,7 @@ Phase16仕様書の「暫定定義」に基づき、意味の最小単位を表�
 
 ### 2.3. テキストからの`SemanticRepresentation`生成機能の実装
 
-`design_brain_model/brain_model/language_engine.py` 内の `LanguageEngine` クラスに、テキスト入力から `SemanticRepresentation` オブジェクトのリストを生成する以下のメソッドを実装した。
+`design_brain_model/brain_model/language_engine/engine.py` 内の `LanguageEngine` クラスに、テキスト入力から `SemanticRepresentation` オブジェクトのリストを生成する以下のメソッドを実装した。
 
 - `create_representations_from_text(self, text: str) -> List[SemanticRepresentation]`
 

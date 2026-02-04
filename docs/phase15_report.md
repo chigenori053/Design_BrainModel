@@ -7,7 +7,7 @@ Phase 15 の仕様、すなわち `docs/lsdt_spec.md` に基づき、長文テ�
 
 ### 2.1 意味構成分解エンジンの実装
 - 長文テキストを受け取り、意味ブロックのリストをJSON形式で返す `decompose_text` 関数を実装しました。
-- `design_brain_model/brain_model/language_engine.py` に配置されています。
+- `design_brain_model/brain_model/language_engine/engine.py` に配置されています。
 
 ### 2.2 ルールベースのアプローチ
 - 外部のNLPライブラリに依存せず、決定性を完全に保証するため、段落分割とキーワード判定を組み合わせたルールベースのロジックを採用しました。

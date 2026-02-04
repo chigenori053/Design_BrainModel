@@ -18,13 +18,33 @@ class Command:
 
 # --- L1 Commands ---
 
-@dataclass
+@dataclass(init=False)
 class CreateL1AtomCommand(Command):
     """Command to create a new SemanticUnitL1."""
     l1_type: str
     content: str
     source: str # e.g., "human_text_ui", "Agent-XYZ"
     context_id: Optional[str] = None
+
+    def __init__(
+        self,
+        content: str,
+        l1_type: Optional[str] = None,
+        source: str = "",
+        context_id: Optional[str] = None,
+        type: Optional[str] = None
+    ):
+        resolved_type = l1_type or type
+        if not resolved_type:
+            raise ValueError("l1_type is required")
+        self.l1_type = resolved_type
+        self.content = content
+        self.source = source
+        self.context_id = context_id
+
+    @property
+    def type(self) -> str:
+        return self.l1_type
 
 @dataclass
 class CreateL1ClusterCommand(Command):
