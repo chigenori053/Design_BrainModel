@@ -1,6 +1,6 @@
 import pytest
 from design_brain_model.brain_model.co_design_kernel.kernel import AgentKernel
-from design_brain_model.brain_model.co_design_kernel.types import AgentState, ReviewResponse, DesignIssue, StateMessage
+from design_brain_model.brain_model.co_design_kernel.types import AgentState, ReviewResponse, DesignIssue, ObservationSummary
 
 class TestPhase20DesignReview:
     
@@ -59,5 +59,5 @@ class TestPhase20DesignReview:
         
         # Next turn: just a regular message
         response = kernel.receive_message("Thank you.")
-        assert isinstance(response, StateMessage)
+        assert isinstance(response, ObservationSummary)
         assert kernel.current_state == AgentState.DESIGN_REVIEW

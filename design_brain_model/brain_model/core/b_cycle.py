@@ -1,4 +1,4 @@
-from ..memory.types import SemanticUnit, Decision, Classification
+from ..memory.types import SemanticUnit, Decision, Classification, DecisionResult
 from ..memory.gate import MemoryGate
 from .base import BaseCoreB
 
@@ -18,18 +18,30 @@ class ValidationCore(BaseCoreB):
         """
         
         # 1. Evaluate (Mock Logic)
+        label = Decision.REVIEW
+        classification = Classification.DISCARDABLE
+        
         if "database" in unit.content.lower():
-            unit.decision = Decision.ACCEPT
-            unit.classification = Classification.GENERALIZABLE
+            label = Decision.ACCEPT
+            classification = Classification.GENERALIZABLE
         elif "constraint" in unit.type:
-            unit.decision = Decision.REVIEW
-            unit.classification = Classification.UNIQUE
-        else:
-            unit.decision = Decision.REVIEW
-            unit.classification = Classification.DISCARDABLE
+            label = Decision.REVIEW
+            classification = Classification.UNIQUE
+        
+        unit.classification = classification
+        unit.decision_label = label # Pre-set for local context if needed
+
+        # Create DecisionResult (Mock values for confidence/entropy)
+        decision_result = DecisionResult(
+            label=label,
+            confidence=0.8 if label == Decision.ACCEPT else 0.5,
+            entropy=0.2 if label == Decision.ACCEPT else 0.8,
+            utility=0.5,
+            reason="Mock evaluation logic in BCycle"
+        )
             
         # 2. Persist (try to store)
         # Core-B triggers the storage attempt.
-        self.memory_gate.process(unit)
+        self.memory_gate.process(unit, decision_result)
         
         return unit

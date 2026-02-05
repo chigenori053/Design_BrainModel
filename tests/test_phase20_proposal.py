@@ -1,6 +1,6 @@
 import pytest
 from design_brain_model.brain_model.co_design_kernel.kernel import AgentKernel
-from design_brain_model.brain_model.co_design_kernel.types import AgentState, ReviewResponse, StateMessage
+from design_brain_model.brain_model.co_design_kernel.types import AgentState, ReviewResponse, ObservationSummary
 
 class TestPhase20Proposal:
     
@@ -26,8 +26,8 @@ class TestPhase20Proposal:
         input_text = "Just a regular update."
         response = kernel.receive_message(input_text)
         
-        # Should be state message because proposal is required
-        assert isinstance(response, StateMessage)
+        # Should be observation summary
+        assert isinstance(response, ObservationSummary)
         
     def test_proposal_structure(self):
         kernel = AgentKernel()

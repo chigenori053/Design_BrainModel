@@ -24,7 +24,7 @@ class AgentStateManager:
                 allowed = True
 
         elif self._current_state == AgentState.OBSERVING:
-            if target_state == AgentState.PROPOSING:
+            if target_state in [AgentState.PROPOSING, AgentState.APPLY_PREPARE, AgentState.RESPONDING]:
                 allowed = True
 
         elif self._current_state == AgentState.PROPOSING:
@@ -41,6 +41,24 @@ class AgentStateManager:
 
         elif self._current_state == AgentState.DESIGN_REVIEW:
             if target_state == AgentState.OBSERVING:
+                allowed = True
+            elif target_state == AgentState.APPLY_PREPARE:
+                allowed = True
+
+        elif self._current_state == AgentState.APPLY_PREPARE:
+            if target_state == AgentState.APPLY_CONFIRM:
+                allowed = True
+
+        elif self._current_state == AgentState.APPLY_CONFIRM:
+            if target_state == AgentState.APPLY_EXECUTE:
+                allowed = True
+
+        elif self._current_state == AgentState.APPLY_EXECUTE:
+            if target_state == AgentState.APPLY_DONE:
+                allowed = True
+
+        elif self._current_state == AgentState.APPLY_DONE:
+            if target_state == AgentState.DESIGN_REVIEW:
                 allowed = True
         
         elif self._current_state == AgentState.TERMINATED:

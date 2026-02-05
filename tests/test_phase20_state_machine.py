@@ -13,9 +13,6 @@ class TestPhase20StateMachine:
         sm.transition_to(AgentState.IDLE)
         sm.transition_to(AgentState.OBSERVING)
 
-        with pytest.raises(ValueError):
-            sm.transition_to(AgentState.RESPONDING)
-
         sm.transition_to(AgentState.PROPOSING)
 
         with pytest.raises(ValueError):

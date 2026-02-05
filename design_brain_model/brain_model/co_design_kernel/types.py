@@ -15,6 +15,10 @@ class AgentState(str, Enum):
     SIMULATING = "SIMULATING"
     RESPONDING = "RESPONDING"
     DESIGN_REVIEW = "DESIGN_REVIEW"
+    APPLY_PREPARE = "APPLY_PREPARE"
+    APPLY_CONFIRM = "APPLY_CONFIRM"
+    APPLY_EXECUTE = "APPLY_EXECUTE"
+    APPLY_DONE = "APPLY_DONE"
     TERMINATED = "TERMINATED"
 
 class ActionType(str, Enum):
@@ -23,6 +27,7 @@ class ActionType(str, Enum):
     WAIT = "WAIT"
     PROPOSE = "PROPOSE"
     SIMULATE = "SIMULATE"
+    APPLY = "APPLY"
 
     # Explicitly prohibited
     # CREATE_UNIT = "CREATE_UNIT" 
@@ -30,6 +35,29 @@ class ActionType(str, Enum):
     # APPLY_PROPOSAL = "APPLY_PROPOSAL"
     # AUTO_CONFIRM = "AUTO_CONFIRM"
     # CONFIRM = "CONFIRM"
+
+@dataclass
+class ApplyIntent:
+    """
+    Final intent to apply a proposal. Must be confirmed by human.
+    """
+    intent_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    proposal_id: str = ""
+    confirmed_by: str = "human"
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
+    scope: str = "full" # full | selected_units
+
+@dataclass
+class L2Patch:
+    """
+    A structural delta derived from a ProposalUnit.
+    Strictly internal and non-external-referencing.
+    """
+    patch_id: str = field(default_factory=lambda: str(uuid.uuid4()))
+    proposal_id: str = ""
+    base_l2_version: str = "unknown"
+    operations: list[dict] = field(default_factory=list) # [{op: add|modify|remove, unit_id: str}]
+    timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
 @dataclass
 class DesignIssue:

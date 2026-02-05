@@ -1,0 +1,3 @@
+[submodule "phase0_cli"]
+	path = phase0_cli
+	url = ./phase0_cli

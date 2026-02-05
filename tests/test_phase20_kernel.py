@@ -1,6 +1,6 @@
 import pytest
 from design_brain_model.brain_model.co_design_kernel.kernel import AgentKernel
-from design_brain_model.brain_model.co_design_kernel.types import AgentState, StateMessage
+from design_brain_model.brain_model.co_design_kernel.types import AgentState, StateMessage, ObservationSummary
 
 class TestAgentKernel:
     
@@ -16,7 +16,7 @@ class TestAgentKernel:
         response = kernel.receive_message(input_text)
         
         # Verify Response
-        assert isinstance(response, StateMessage)
+        assert isinstance(response, ObservationSummary)
         
         # Verify State moved to DESIGN_REVIEW
         assert kernel.current_state == AgentState.DESIGN_REVIEW
@@ -50,4 +50,4 @@ class TestAgentKernel:
         kernel = AgentKernel()
         long_input = "A" * 100
         response = kernel.receive_message(long_input)
-        assert isinstance(response, StateMessage)
+        assert isinstance(response, ObservationSummary)
