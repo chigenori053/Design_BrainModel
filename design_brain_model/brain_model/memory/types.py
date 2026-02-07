@@ -1,6 +1,6 @@
 from enum import Enum
 from typing import Dict, Any, Optional, Set, List, Union
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, model_validator
 import uuid
 from dataclasses import dataclass, field
 import numpy as np
@@ -195,22 +195,44 @@ class SemanticUnitL1:
     timestamp: float
     used_in_l2_ids: List[str] = field(default_factory=list)
 
-@dataclass(frozen=True)
-class SemanticUnitL2:
-    """
-    Represents a decision with history, ensuring immutability.
-    This corresponds to an L2-Atom-GEN.
-    """
-    id: str
-    decision_polarity: bool
-    evaluation: Dict[str, float]
-    scope: Dict[str, Any]
-    source_cluster_id: str
-    source_l1_ids: List[str]
+class Stability(str, Enum):
+    UNSTABLE = "UNSTABLE"
+    PARTIAL = "PARTIAL"
+    STABLE = "STABLE"
 
-    def __post_init__(self):
+class SemanticUnitL2(BaseModel):
+    """
+    Represents a minimal and stable design representation as per Dialogue Spec Vol.1.
+    Includes both the structural design elements and the decision history.
+    """
+    id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    
+    # --- Dialogue Spec Vol.1 Minimal Structure ---
+    objective: str = ""
+    scope_in: List[str] = Field(default_factory=list)
+    scope_out: List[str] = Field(default_factory=list)
+    constraints: List[str] = Field(default_factory=list)
+    assumptions: List[str] = Field(default_factory=list)
+    success_criteria: List[str] = Field(default_factory=list)
+    risks: List[str] = Field(default_factory=list)
+    divergence_policy: str = ""
+    open_questions: List[str] = Field(default_factory=list)
+    stability: Stability = Stability.UNSTABLE
+    confirmed_fields: Set[str] = Field(default_factory=set) # New in Dialogue Spec Vol.2
+
+    # --- Evolution / Decision Metadata (Compatible with Phase 17-3) ---
+    decision_polarity: bool = True
+    evaluation: Dict[str, float] = Field(default_factory=dict)
+    source_cluster_id: Optional[str] = None
+    source_l1_ids: List[str] = Field(default_factory=list)
+
+    model_config = ConfigDict(frozen=True)
+
+    @model_validator(mode="after")
+    def _validate_l2(self) -> "SemanticUnitL2":
         if not self.source_l1_ids:
             raise ValueError("source_l1_ids cannot be empty for an L2 unit.")
+        return self
 
 @dataclass(slots=True)
 class L1Cluster:

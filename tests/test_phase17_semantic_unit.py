@@ -1,6 +1,6 @@
 import pytest
 import time
-from dataclasses import FrozenInstanceError
+from pydantic import ValidationError
 from design_brain_model.brain_model.memory.types import SemanticUnitL1, SemanticUnitL2, L1Cluster
 
 # --- T0: Invariant Tests (不変条件テスト) ---
@@ -18,7 +18,7 @@ def test_l1_cannot_have_decision_attributes():
     with pytest.raises(AttributeError):
         l1_unit.decision_polarity = True
     with pytest.raises(AttributeError):
-        l1_unit.scope = {"area": "test"}
+        l1_unit.scope_in = ["test"]
 
 def test_l2_is_immutable():
     """T0: SemanticUnitL2は生成後に変更不可"""
@@ -26,14 +26,13 @@ def test_l2_is_immutable():
         id="l2-001",
         decision_polarity=True,
         evaluation={"utility": 0.9},
-        scope={"target": "system-X"},
         source_cluster_id="cluster-01",
         source_l1_ids=["l1-001", "l1-002"]
     )
     # frozen=Trueにより、属性を変更しようとするとエラーが発生することを確認
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises(ValidationError):
         l2_unit.decision_polarity = False
-    with pytest.raises(FrozenInstanceError):
+    with pytest.raises(ValidationError):
         l2_unit.evaluation = {"utility": 0.5}
 
 def test_l2_requires_source_l1_ids():
@@ -44,14 +43,13 @@ def test_l2_requires_source_l1_ids():
             id="l2-002",
             decision_polarity=False,
             evaluation={},
-            scope={},
             source_cluster_id="cluster-02",
             source_l1_ids=[]
         )
 
 # --- T1: Promotion Boundary Tests (昇格境界テスト) ---
 
-def promote_to_l2(cluster: L1Cluster, decision_polarity: bool, evaluation: dict, scope: dict) -> SemanticUnitL2:
+def promote_to_l2(cluster: L1Cluster, decision_polarity: bool, evaluation: dict) -> SemanticUnitL2:
     """
     昇格ロジックのヘルパー関数.
     クラスタと決定情報からL2ユニットを生成する.
@@ -65,7 +63,6 @@ def promote_to_l2(cluster: L1Cluster, decision_polarity: bool, evaluation: dict,
         id=l2_id,
         decision_polarity=decision_polarity,
         evaluation=evaluation,
-        scope=scope,
         source_cluster_id=cluster.id,
         source_l1_ids=cluster.l1_ids
     )
@@ -104,14 +101,12 @@ def test_promotion_succeeds_only_with_full_conditions(sample_l1_units):
     
     decision_polarity = True
     evaluation = {"risk": -0.2, "impact": 0.8}
-    scope = {"system": "Billing"}
 
     # 昇格ロジックを呼び出す
     l2_unit = promote_to_l2(
         cluster=cluster,
         decision_polarity=decision_polarity,
-        evaluation=evaluation,
-        scope=scope
+        evaluation=evaluation
     )
 
     # L2が期待通りに生成されたか検証
@@ -131,7 +126,6 @@ def test_promotion_fails_if_cluster_is_empty():
         promote_to_l2(
             cluster=empty_cluster,
             decision_polarity=True,
-            evaluation={},
-            scope={}
+            evaluation={}
         )
 
