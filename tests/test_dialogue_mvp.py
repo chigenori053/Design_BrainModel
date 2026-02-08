@@ -1,6 +1,7 @@
-from .controller import start_dialogue, submit_answer
-from .renderer import render
-from .models import Stability
+from design_brain_model.brain_model.dialogue_mvp.controller import start_dialogue, submit_answer
+from design_brain_model.brain_model.dialogue_mvp.renderer import render
+from design_brain_model.brain_model.dialogue_mvp.models import Stability
+
 
 def test_natural_dialogue_flow():
     print("\n--- Dialogue MVP Flow Start ---")
@@ -38,5 +39,3 @@ def test_natural_dialogue_flow():
     assert state["readiness"].stability == Stability.STABLE
     print("\n--- Dialogue MVP Flow End (STABLE Reached) ---")
 
-if __name__ == "__main__":
-    test_natural_dialogue_flow()
