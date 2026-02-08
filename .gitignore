@@ -5,3 +5,13 @@ __pycache__/
 ui/node_modules
 ui/dist
 **/target/
+.venv/
+.venv_uv/
+.venv_phase17/
+.pytest_cache/
+*.log
+server_stdout.log
+server_stderr.log
+memory_store/*.jsonl
+rust_ui_poc/client.log
+rust_ui_poc/rust_ui_poc/logs/
