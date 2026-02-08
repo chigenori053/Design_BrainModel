@@ -1,43 +1,52 @@
 use anyhow::Result;
-use log::error;
 
-use crate::model::{AppState, CreateL1AtomPayload, L1Type};
+use crate::model::{
+    AppState,
+    ActiveTab,
+    HumanOverrideLogEntry,
+    PhaseCState,
+    L1AtomVm,
+    DesignDraftVm,
+};
 use crate::vm_client::VmClient;
+use std::fs::{self, OpenOptions};
+use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Represents actions that can be dispatched to the App.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Action {
-    /// Quit the application.
     Quit,
-    /// Placeholder for future use.
     Tick,
-    /// Create a new L1 Atom with the given content.
-    CreateL1Atom(String),
-    /// Enter input mode.
     EnterInput,
-    /// Exit input mode.
     ExitInput,
-    /// Append a character to the input buffer.
     InputChar(char),
-    /// Remove the last character from the input buffer.
     Backspace,
-    /// Submit the current input buffer.
     SubmitInput,
-    /// Cycle the L1 type.
-    CycleL1Type,
-    /// Set a specific L1 type.
-    SetL1Type(L1Type),
-    // Add other actions like SelectNextCluster, EnterInputMode, etc.
+    CycleTab,
+    SelectNextUnit,
+    SelectPrevUnit,
+    TogglePhaseC,
+    SelectNextProposal,
+    SelectPrevProposal,
+    EnterOverrideInput,
+    ExitOverrideInput,
+    OverrideInputChar(char),
+    OverrideBackspace,
+    OverrideAccept,
+    OverrideHold,
+    OverrideReject,
+    OverrideSaveAsKnowledge,
+    ToggleHelp,
 }
 
-/// The main application structure, responsible for state management and logic.
 pub struct App {
     pub state: AppState,
+    #[allow(dead_code)]
     vm_client: VmClient,
 }
 
 impl App {
-    /// Creates a new App instance.
     pub fn new() -> Self {
         Self {
             state: AppState::new(),
@@ -45,25 +54,15 @@ impl App {
         }
     }
 
-    /// Called once on startup.
     pub fn init(&mut self) -> Result<()> {
         self.state.logs.push("Application initialized.".to_string());
-
-        // For now, we won't create data on init, but we could.
-        // Instead, we might want to fetch an initial list of clusters.
-        // Let's assume an endpoint `/viewmodel/clusters` exists for this.
-        // Since it doesn't, we'll log it and proceed with an empty list.
-        self.state.logs.push("Skipping initial data fetch (endpoint not implemented).".to_string());
-        
+        self.try_load_phasec_state("data/phasec_state.json");
         Ok(())
     }
 
-    /// Dispatches an action to be processed, modifying the app's state.
     pub fn dispatch(&mut self, action: Action) -> Result<()> {
         match action {
-            Action::Quit => {
-                self.state.quit();
-            }
+            Action::Quit => self.state.quit(),
             Action::EnterInput => {
                 self.state.input_mode = true;
                 self.state.logs.push("Input mode enabled.".to_string());
@@ -72,125 +71,208 @@ impl App {
                 self.state.input_mode = false;
                 self.state.logs.push("Input mode disabled.".to_string());
             }
-            Action::InputChar(ch) => {
-                self.state.input_buffer.push(ch);
-                if !self.state.input_l1_type_manual {
-                    self.state.input_l1_type = classify_l1_type(&self.state.input_buffer);
-                }
-            }
-            Action::Backspace => {
-                self.state.input_buffer.pop();
-                if !self.state.input_l1_type_manual {
-                    self.state.input_l1_type = classify_l1_type(&self.state.input_buffer);
-                }
-            }
+            Action::InputChar(ch) => self.state.input_buffer.push(ch),
+            Action::Backspace => { self.state.input_buffer.pop(); }
             Action::SubmitInput => {
                 let content = self.state.input_buffer.trim().to_string();
-                if content.is_empty() {
-                    self.state.logs.push("Cannot submit empty input.".to_string());
-                } else {
-                    let l1_type = self.state.input_l1_type;
-                    self.state.logs.push(format!(
-                        "Submitting L1 ({:?}): {}",
-                        l1_type, content
-                    ));
-                    self.create_l1_atom(content, l1_type)?;
+                if !content.is_empty() {
+                    self.submit_ui_input(content)?;
                     self.state.input_buffer.clear();
-                    self.state.input_l1_type = L1Type::default();
-                    self.state.input_l1_type_manual = false;
                 }
             }
-            Action::CycleL1Type => {
-                self.state.input_l1_type = next_l1_type(self.state.input_l1_type);
-                self.state.input_l1_type_manual = true;
+            Action::CycleTab => {
+                self.state.active_tab = match self.state.active_tab {
+                    ActiveTab::FreeNote => ActiveTab::Understanding,
+                    ActiveTab::Understanding => ActiveTab::DesignDraft,
+                    ActiveTab::DesignDraft => ActiveTab::FreeNote,
+                };
             }
-            Action::SetL1Type(l1_type) => {
-                self.state.input_l1_type = l1_type;
-                self.state.input_l1_type_manual = true;
+            Action::SelectNextUnit => self.select_next_unit(),
+            Action::SelectPrevUnit => self.select_prev_unit(),
+            Action::ToggleHelp => self.state.show_help = !self.state.show_help,
+            Action::TogglePhaseC => {
+                if self.state.active_view == crate::model::ActiveView::PhaseC {
+                    self.state.active_view = crate::model::ActiveView::Normal;
+                } else {
+                    self.state.active_view = crate::model::ActiveView::PhaseC;
+                    self.state.input_mode = false;
+                }
             }
-            Action::CreateL1Atom(content) => {
-                self.state.logs.push(format!("Dispatching CreateL1Atom with content: {}", content));
-                self.create_l1_atom(content, L1Type::Question)?;
-            }
-            Action::Tick => {
-                // This action can be used for periodic updates, e.g., fetching data.
-                // For now, we'll just log it.
-                // info!("Tick received");
-            }
-        }
-        Ok(())
-    }
-
-    fn create_l1_atom(&mut self, content: String, l1_type: L1Type) -> Result<()> {
-        let payload = CreateL1AtomPayload {
-            l1_type: format!("{:?}", l1_type).to_uppercase(),
-            content,
-            source: "human_text_ui".to_string(),
-            context_id: None,
-        };
-        match self.vm_client.execute_command("CreateL1Atom", &payload) {
-            Ok(result) => {
-                self.state.logs.push(format!("Successfully created L1 Atom: {:?}", result));
-                if let Some(atom_id) = result.get("result").and_then(|v| v.as_str()) {
-                    match self.vm_client.get_atom(atom_id) {
-                        Ok(atom_vm) => self.state.l1_atoms.push(atom_vm),
-                        Err(e) => self.state.logs.push(format!("Failed to fetch L1 atom: {}", e)),
+            Action::SelectNextProposal => {
+                if let Some(state) = &self.state.phasec_state {
+                    if !state.proposals.is_empty() {
+                        self.state.selected_proposal_index = (self.state.selected_proposal_index + 1) % state.proposals.len();
                     }
                 }
             }
-            Err(e) => {
-                let error_msg = format!("Error creating L1 Atom: {}", e);
-                error!("{}", error_msg);
-                self.state.logs.push(error_msg);
+            Action::SelectPrevProposal => {
+                if let Some(state) = &self.state.phasec_state {
+                    if !state.proposals.is_empty() {
+                        if self.state.selected_proposal_index == 0 {
+                            self.state.selected_proposal_index = state.proposals.len() - 1;
+                        } else {
+                            self.state.selected_proposal_index -= 1;
+                        }
+                    }
+                }
+            }
+            Action::EnterOverrideInput => {
+                self.state.override_input_mode = true;
+                self.state.override_buffer.clear();
+            }
+            Action::ExitOverrideInput => self.state.override_input_mode = false,
+            Action::OverrideInputChar(ch) => self.state.override_buffer.push(ch),
+            Action::OverrideBackspace => { self.state.override_buffer.pop(); }
+            Action::OverrideAccept => self.log_override_action("ACCEPT")?,
+            Action::OverrideHold => self.log_override_action("HOLD")?,
+            Action::OverrideReject => self.log_override_action("REJECT")?,
+            Action::OverrideSaveAsKnowledge => self.log_override_action("SAVE_AS_KNOWLEDGE")?,
+            Action::Tick => {}
+        }
+        Ok(())
+    }
+
+    fn select_next_unit(&mut self) {
+        match self.state.active_tab {
+            ActiveTab::FreeNote => {}
+            ActiveTab::Understanding => {
+                if !self.state.l1_atoms.is_empty() {
+                    let next = match self.state.selected_l1_index {
+                        Some(idx) => (idx + 1) % self.state.l1_atoms.len(),
+                        None => 0,
+                    };
+                    self.state.selected_l1_index = Some(next);
+                }
+            }
+            ActiveTab::DesignDraft => {
+                if !self.state.l2_units.is_empty() {
+                    let next = match self.state.selected_l2_index {
+                        Some(idx) => (idx + 1) % self.state.l2_units.len(),
+                        None => 0,
+                    };
+                    self.state.selected_l2_index = Some(next);
+                }
+            }
+        }
+    }
+
+    fn select_prev_unit(&mut self) {
+        match self.state.active_tab {
+            ActiveTab::FreeNote => {}
+            ActiveTab::Understanding => {
+                if !self.state.l1_atoms.is_empty() {
+                    let prev = match self.state.selected_l1_index {
+                        Some(idx) => if idx == 0 { self.state.l1_atoms.len() - 1 } else { idx - 1 },
+                        None => self.state.l1_atoms.len() - 1,
+                    };
+                    self.state.selected_l1_index = Some(prev);
+                }
+            }
+            ActiveTab::DesignDraft => {
+                if !self.state.l2_units.is_empty() {
+                    let prev = match self.state.selected_l2_index {
+                        Some(idx) => if idx == 0 { self.state.l2_units.len() - 1 } else { idx - 1 },
+                        None => self.state.l2_units.len() - 1,
+                    };
+                    self.state.selected_l2_index = Some(prev);
+                }
+            }
+        }
+    }
+
+    fn submit_ui_input(&mut self, content: String) -> Result<()> {
+        let tab = match self.state.active_tab {
+            ActiveTab::FreeNote => "FREE_NOTE",
+            ActiveTab::Understanding => "UNDERSTANDING",
+            ActiveTab::DesignDraft => "DESIGN_DRAFT",
+        };
+        let context_id = match self.state.active_tab {
+            ActiveTab::Understanding => self.state.selected_l1_index.and_then(|idx| {
+                self.state.l1_atoms.get(idx).map(|l1| l1.id.clone())
+            }),
+            ActiveTab::DesignDraft => self.state.selected_l2_index.and_then(|idx| {
+                self.state.l2_units.get(idx).map(|l2| l2.id.clone())
+            }),
+            _ => None,
+        };
+
+        let user_line = format!("You: {}", content);
+        self.push_tab_message(self.state.active_tab, user_line);
+
+        match self.vm_client.submit_ui_input(tab, &content, context_id) {
+            Ok(value) => {
+                if let Some(message) = value.get("message").and_then(|v| v.as_str()) {
+                    self.push_tab_message(self.state.active_tab, format!("System: {}", message));
+                }
+                if let Some(l1_val) = value.get("l1") {
+                    if let Ok(l1) = serde_json::from_value::<L1AtomVm>(l1_val.clone()) {
+                        self.state.l1_atoms.push(l1);
+                        if self.state.selected_l1_index.is_none() {
+                            self.state.selected_l1_index = Some(self.state.l1_atoms.len() - 1);
+                        }
+                    }
+                }
+                if let Some(draft_val) = value.get("draft") {
+                    if let Ok(draft) = serde_json::from_value::<DesignDraftVm>(draft_val.clone()) {
+                        self.state.l2_units.push(draft);
+                        if self.state.selected_l2_index.is_none() {
+                            self.state.selected_l2_index = Some(self.state.l2_units.len() - 1);
+                        }
+                    }
+                }
+                if self.state.active_tab == ActiveTab::FreeNote {
+                    self.state.free_notes.push(content);
+                }
+            }
+            Err(err) => {
+                self.push_tab_message(self.state.active_tab, format!("System: {}", err));
             }
         }
         Ok(())
     }
-}
 
-fn next_l1_type(current: L1Type) -> L1Type {
-    match current {
-        L1Type::Observation => L1Type::Requirement,
-        L1Type::Requirement => L1Type::Constraint,
-        L1Type::Constraint => L1Type::Hypothesis,
-        L1Type::Hypothesis => L1Type::Question,
-        L1Type::Question => L1Type::Observation,
+    fn push_tab_message(&mut self, tab: ActiveTab, message: String) {
+        self.state.tab_messages.entry(tab).or_default().push(message);
     }
-}
 
-fn classify_l1_type(text: &str) -> L1Type {
-    let lowered = text.to_lowercase();
-    let trimmed = text.trim();
-    if trimmed.is_empty() {
-        return L1Type::Question;
+    fn try_load_phasec_state(&mut self, path: &str) {
+        if !Path::new(path).exists() { return; }
+        if let Ok(raw) = fs::read_to_string(path) {
+            if let Ok(state) = serde_json::from_str::<PhaseCState>(&raw) {
+                self.state.phasec_state = Some(state);
+                self.state.active_view = crate::model::ActiveView::PhaseC;
+            }
+        }
     }
-    if trimmed.contains('?') || trimmed.contains('？')
-        || lowered.starts_with("why")
-        || lowered.starts_with("what")
-        || lowered.starts_with("how")
-        || trimmed.contains("なぜ")
-        || trimmed.contains("どう")
-        || trimmed.contains("何")
-    {
-        return L1Type::Question;
+
+    fn log_override_action(&mut self, action: &str) -> Result<()> {
+        let state = match &self.state.phasec_state {
+            Some(state) => state,
+            None => return Ok(()),
+        };
+        if state.proposals.is_empty() { return Ok(()); }
+
+        let index = self.state.selected_proposal_index.min(state.proposals.len() - 1);
+        let target_id = state.proposals[index].id.clone();
+        let rationale = if self.state.override_buffer.trim().is_empty() { None } else { Some(self.state.override_buffer.trim().to_string()) };
+        let timestamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+
+        let entry = HumanOverrideLogEntry { timestamp, target_id, action: action.to_string(), rationale };
+        self.state.override_logs.push(entry.clone());
+        let _ = self.append_override_log(&entry);
+        self.state.override_buffer.clear();
+        self.state.override_input_mode = false;
+        Ok(())
     }
-    if lowered.contains("must") || lowered.contains("need") || lowered.contains("should")
-        || trimmed.contains("必要") || trimmed.contains("べき") || trimmed.contains("要求")
-    {
-        return L1Type::Requirement;
+
+    fn append_override_log(&mut self, entry: &HumanOverrideLogEntry) -> Result<()> {
+        let dir = Path::new("rust_ui_poc/logs");
+        if !dir.exists() { fs::create_dir_all(dir)?; }
+        let path = dir.join("human_override.jsonl");
+        let line = serde_json::to_string(entry).unwrap_or_else(|_| "{}".to_string());
+        let mut file = OpenOptions::new().create(true).append(true).open(path)?;
+        use std::io::Write;
+        writeln!(file, "{}", line)?;
+        Ok(())
     }
-    if lowered.contains("cannot") || lowered.contains("must not") || lowered.contains("limit")
-        || trimmed.contains("できない") || trimmed.contains("禁止") || trimmed.contains("制約") || trimmed.contains("上限") || trimmed.contains("下限")
-    {
-        return L1Type::Constraint;
-    }
-    if lowered.contains("maybe") || lowered.contains("might") || lowered.contains("hypothesis")
-        || trimmed.contains("かもしれない") || trimmed.contains("仮説") || trimmed.contains("推測")
-    {
-        return L1Type::Hypothesis;
-    }
-    if trimmed.ends_with('.') || trimmed.ends_with("。") || trimmed.ends_with('!') || trimmed.ends_with("！") {
-        return L1Type::Observation;
-    }
-    L1Type::Question
 }

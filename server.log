@@ -106,3 +106,98 @@
 2026-01-31 15:39:05,527 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
 2026-01-31 15:39:30,233 - __mp_main__ - INFO - MemorySpace initialized.
 2026-01-31 15:39:30,243 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 13:26:40,941 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 13:26:40,953 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 13:26:41,097 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 13:26:41,112 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 13:34:42,266 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemoryを利用した株価分析手法を確立したい。株価の終値を対象にして終値をMemoryAtom化させ、想起、株価のシミュレーションする方法を核にりさせたい。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-02-07 13:34:42,266 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 34f6ddbc-1c80-4cf2-830d-b793a3e3dbc9
+2026-02-07 13:34:42,267 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 34f6ddbc-1c80-4cf2-830d-b793a3e3dbc9
+2026-02-07 13:35:36,603 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'H', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-02-07 13:35:36,603 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 667f5d31-33a5-4bee-bd34-8a2fe83d2c1d
+2026-02-07 13:35:36,604 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 667f5d31-33a5-4bee-bd34-8a2fe83d2c1d
+2026-02-07 13:45:19,022 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'i', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 13:45:19,022 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 924a5ace-4285-4f0d-b32d-3b84002fe9e6
+2026-02-07 13:45:19,023 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 924a5ace-4285-4f0d-b32d-3b84002fe9e6
+2026-02-07 13:45:23,805 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '株価の終値を核とした価格状態ベクトルを MemoryAtom として構成し、', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 13:45:23,805 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: bf8efc9e-d40b-4310-825a-d14225c049cb
+2026-02-07 13:45:23,806 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: bf8efc9e-d40b-4310-825a-d14225c049cb
+2026-02-07 13:45:23,906 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'HolographicMemory による類似状態の想起と、', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 13:45:23,907 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 82f41888-8f6e-4ef6-b0e2-8b53369ff1e3
+2026-02-07 13:45:23,907 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 82f41888-8f6e-4ef6-b0e2-8b53369ff1e3
+2026-02-07 13:45:23,986 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'その後の条件付き遷移シミュレーションを用いて、', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 13:45:23,986 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 090a898c-b271-4a17-bf10-d238fc75371f
+2026-02-07 13:45:23,987 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 090a898c-b271-4a17-bf10-d238fc75371f
+2026-02-07 13:48:54,318 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '株価の終値を核とした価格状態ベクトルをMemoryAtomとして構成し、HolographicMemoryに類似状態の想起とその後の状態遷移付きシミュレーション用いて、時系列状態遷移を分析する手法を悪立したい', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 13:48:54,318 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 5d62687f-cc6e-4809-98b6-25e6f8b1e46d
+2026-02-07 13:48:54,319 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 5d62687f-cc6e-4809-98b6-25e6f8b1e46d
+2026-02-07 16:31:58,112 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:31:58,131 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:32:08,000 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:32:08,010 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:32:40,802 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:32:40,813 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:32:51,083 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:32:51,094 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:35:26,461 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:35:26,472 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:35:47,459 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:35:47,470 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:35:53,292 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:35:53,303 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:36:00,031 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:36:00,042 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:36:09,910 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:36:09,921 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:36:33,933 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:36:33,944 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:38:50,319 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:38:50,330 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:38:55,755 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:38:55,767 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:39:02,503 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:39:02,514 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:39:14,614 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:39:14,625 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:39:42,685 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:39:42,696 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:44:25,831 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 16:44:25,845 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 16:44:25,985 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:44:26,001 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:58:33,354 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 16:58:33,367 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 16:58:33,507 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:58:33,522 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:59:10,472 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:59:10,482 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 16:59:48,611 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 16:59:48,620 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 16:59:48,757 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 16:59:48,767 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 17:03:47,564 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 17:03:47,573 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 17:03:47,710 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 17:03:47,721 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 17:10:04,936 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 17:10:04,947 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 17:31:34,556 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 17:31:34,567 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 17:31:45,366 - __mp_main__ - INFO - MemorySpace initialized.
+2026-02-07 17:31:45,376 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 22:14:24,664 - __main__ - INFO - MemorySpace initialized.
+2026-02-07 22:14:24,708 - __main__ - INFO - Starting DesignBrainModel API Server (Phase 17-4)...
+2026-02-07 22:14:31,181 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 22:14:40,577 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 22:59:46,748 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-07 23:00:40,606 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': 'i', 'l1_type': 'QUESTION', 'source': 'human_text_ui'}
+2026-02-07 23:00:40,606 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 19deacb2-153c-499e-9423-36f58eb25f94
+2026-02-07 23:00:40,608 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 19deacb2-153c-499e-9423-36f58eb25f94
+2026-02-07 23:01:13,114 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '株価分析システムをMemorySpaceを応用して構築したい。', 'l1_type': 'OBSERVATION', 'source': 'human_text_ui'}
+2026-02-07 23:01:13,115 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: ba8c7879-52de-4b01-b6a1-58723a23598a
+2026-02-07 23:01:13,116 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: ba8c7879-52de-4b01-b6a1-58723a23598a
+2026-02-07 23:03:03,578 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Received command: CreateL1Atom with payload {'content': '株価情報をHolographicMemory、', 'context_id': 'ba8c7879-52de-4b01-b6a1-58723a23598a', 'l1_type': 'HYPOTHESIS', 'source': 'human_text_ui'}
+2026-02-07 23:03:03,578 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Command 'CreateL1Atom' executed successfully. Result: 60526c77-aa60-4569-b4d5-bc89f645a8b6
+2026-02-07 23:03:03,580 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - Requesting ViewModel for atom: 60526c77-aa60-4569-b4d5-bc89f645a8b6
+2026-02-08 10:19:24,325 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.
+2026-02-08 11:20:49,509 - design_brain_model.hybrid_vm.interface_layer.api_server - INFO - MemorySpace initialized.

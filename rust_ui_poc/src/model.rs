@@ -5,38 +5,10 @@ use std::collections::HashMap;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum L1ClusterStatus {
+pub enum DesignDraftStatus {
     #[default]
-    Created,
-    Active,
-    Stale,
-    Resolved,
-    Archived,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum DecisionPolarityVm {
-    Accept,
-    #[default]
+    Draft,
     Review,
-    Reject,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
-pub enum L1Type {
-    Observation,
-    Requirement,
-    Constraint,
-    Hypothesis,
-    Question,
-}
-
-impl Default for L1Type {
-    fn default() -> Self {
-        Self::Question
-    }
 }
 
 // --- ViewModels (mirroring Python definitions) ---
@@ -54,36 +26,73 @@ pub struct L1AtomVm {
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct L1ClusterVm {
+pub struct DesignDraftVm {
     pub id: String,
-    pub status: L1ClusterStatus,
-    pub l1_count: i64,
-    pub entropy: f64,
+    pub title: String,
+    pub description: String,
+    pub source_l1_ids: Vec<String>,
+    pub status: DesignDraftStatus,
+    pub created_by: String, // "human" | "model"
+    pub created_at: f64,
+    pub feedback_text: String, // Natural language feedback
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+// --- PhaseC View Models ---
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub struct DecisionChipVm {
-    pub l2_decision_id: String,
-    pub head_generation_id: String,
-    pub polarity: DecisionPolarityVm,
-    pub scope: HashMap<String, serde_json::Value>,
-    pub confidence: f64,
-    pub entropy: f64,
+pub struct GeometryPointVm {
+    pub vector: Vec<f64>,
+    pub source_id: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct EvaluationReportVm {
+    pub targets: Vec<String>,
+    pub geometry_points: Vec<GeometryPointVm>,
+    pub distances: Vec<Vec<f64>>,
+    pub qualitative_notes: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct AxisScoreVm {
+    pub axis: String,
+    pub score: f64,
+    pub note: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct ProposalDetailVm {
+    pub id: String,
+    pub title: String,
+    pub target_type: String,
+    pub abstract_structure: serde_json::Value,
+    pub constraints: Vec<String>,
+    pub axis_scores: Vec<AxisScoreVm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct PhaseCState {
+    pub report: EvaluationReportVm,
+    pub proposals: Vec<ProposalDetailVm>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub struct HumanOverrideLogEntry {
+    pub timestamp: u64,
+    pub target_id: String,
+    pub action: String,
+    pub rationale: Option<String>,
+}
 
 // --- Command Payloads for Serialization ---
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-pub struct CreateL1AtomPayload {
-    pub l1_type: String,
-    pub content: String,
-    pub source: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context_id: Option<String>,
-}
-
+#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CreateL1ClusterPayload {
     pub l1_ids: Vec<String>,
@@ -91,29 +100,48 @@ pub struct CreateL1ClusterPayload {
 
 // --- Main Application State ---
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default)]
 pub struct AppState {
     pub active_view: ActiveView,
-    pub clusters: Vec<L1ClusterVm>,
-    pub selected_cluster_index: Option<usize>,
-    pub selected_cluster_atoms: Vec<L1AtomVm>,
-    pub selected_decision: Option<DecisionChipVm>,
     pub logs: Vec<String>,
     pub input_buffer: String,
     pub input_mode: bool,
-    pub input_l1_type: L1Type,
-    pub input_l1_type_manual: bool,
+    pub free_notes: Vec<String>,
     pub l1_atoms: Vec<L1AtomVm>,
+    pub l2_units: Vec<DesignDraftVm>,
+    pub selected_l1_index: Option<usize>,
+    pub selected_l2_index: Option<usize>,
+    pub active_tab: ActiveTab,
+    pub tab_messages: HashMap<ActiveTab, Vec<String>>,
     pub is_running: bool,
+    pub phasec_state: Option<PhaseCState>,
+    pub selected_proposal_index: usize,
+    pub override_logs: Vec<HumanOverrideLogEntry>,
+    pub override_input_mode: bool,
+    pub override_buffer: String,
+    pub show_help: bool,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone, Default, PartialEq)]
 pub enum ActiveView {
     #[default]
-    Clusters,
-    Atoms,
-    Decision,
-    Logs,
+    Normal,
+    PhaseC,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ActiveTab {
+    FreeNote,
+    Understanding,
+    DesignDraft,
+}
+
+impl Default for ActiveTab {
+    fn default() -> Self {
+        ActiveTab::FreeNote
+    }
 }
 
 impl AppState {
@@ -121,9 +149,19 @@ impl AppState {
         Self {
             is_running: true,
             input_mode: false,
-            input_l1_type: L1Type::default(),
-            input_l1_type_manual: false,
+            free_notes: Vec::new(),
             l1_atoms: Vec::new(),
+            l2_units: Vec::new(),
+            selected_l1_index: None,
+            selected_l2_index: None,
+            active_tab: ActiveTab::FreeNote,
+            tab_messages: HashMap::new(),
+            phasec_state: None,
+            selected_proposal_index: 0,
+            override_logs: Vec::new(),
+            override_input_mode: false,
+            override_buffer: String::new(),
+            show_help: false,
             ..Self::default()
         }
     }

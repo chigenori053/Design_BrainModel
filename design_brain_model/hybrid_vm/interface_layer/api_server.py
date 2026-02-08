@@ -1,15 +1,18 @@
 # design_brain_model/hybrid_vm/interface_layer/api_server.py
 import uvicorn
 import logging
+import time
+import uuid
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field, ConfigDict
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 from dataclasses import asdict
 
 # --- Domain, ViewModel, and Command Imports ---
 # Note: Adjusting relative paths to be robust from the project root.
 from design_brain_model.brain_model.memory.space import MemorySpace
+from design_brain_model.brain_model.memory.types import SemanticUnitL2
 from design_brain_model.hybrid_vm.core import (
     HybridVM,
     DecisionNotFoundError,
@@ -52,6 +55,12 @@ class CommandRequest(BaseModel):
 
     model_config = ConfigDict(populate_by_name=True)
 
+class UiInputRequest(BaseModel):
+    tab: str
+    text: str
+    context_id: Optional[str] = None
+    model_config = ConfigDict(populate_by_name=True)
+
 # Dictionary to map command type strings from the API to their Python classes.
 COMMAND_MAP = {
     "CreateL1Atom": CreateL1AtomCommand,
@@ -69,6 +78,24 @@ def _get_snapshot_or_error(payload: Dict[str, Any]):
     if not snapshot_id or snapshot_id not in snapshot_store:
         return None, JSONResponse(status_code=409, content={"error": "SNAPSHOT_MISMATCH"})
     return snapshot, None
+
+def _classify_l1_type(text: str) -> str:
+    lowered = text.lower().strip()
+    if not lowered:
+        return "QUESTION"
+    if "?" in text or "？" in text:
+        return "QUESTION"
+    if lowered.startswith(("why", "what", "how")) or any(k in text for k in ["なぜ", "どう", "何"]):
+        return "QUESTION"
+    if any(k in lowered for k in ["must", "need", "should"]) or any(k in text for k in ["必要", "べき", "要求"]):
+        return "REQUIREMENT"
+    if any(k in lowered for k in ["cannot", "must not", "limit"]) or any(k in text for k in ["できない", "禁止", "制約", "上限", "下限"]):
+        return "CONSTRAINT"
+    if any(k in lowered for k in ["maybe", "might", "hypothesis"]) or any(k in text for k in ["かもしれない", "仮説", "推測"]):
+        return "HYPOTHESIS"
+    if text.endswith((".", "。", "!", "！")):
+        return "OBSERVATION"
+    return "OBSERVATION"
 
 # --- Endpoints ---
 
@@ -126,6 +153,68 @@ def execute_command_endpoint(request: CommandRequest):
     except Exception as e:
         logger.error(f"An unexpected error occurred during command execution: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail="An internal server error occurred.")
+
+@app.post("/ui/input", tags=["UI"])
+def ui_input(request: UiInputRequest):
+    text = (request.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="TEXT_REQUIRED")
+
+    tab = (request.tab or "").strip().upper()
+    if tab not in {"FREE_NOTE", "UNDERSTANDING", "DESIGN_DRAFT"}:
+        raise HTTPException(status_code=400, detail="INVALID_TAB")
+
+    try:
+        if tab in {"FREE_NOTE", "UNDERSTANDING"}:
+            l1_type = "OBSERVATION" if tab == "FREE_NOTE" else _classify_l1_type(text)
+            l1_id = memory_space.execute_command(CreateL1AtomCommand(
+                content=text,
+                l1_type=l1_type,
+                source="ui_input",
+                context_id=request.context_id
+            ))
+            l1_vm = memory_space.project_to_l1_atom_vm(l1_id)
+            if l1_vm is None:
+                raise HTTPException(status_code=500, detail="L1_PROJECTION_FAILED")
+
+            message = "FreeNoteに記録しました。" if tab == "FREE_NOTE" else "Understandingタブに整理しました。"
+            return {"status": "ok", "message": message, "l1": asdict(l1_vm)}
+
+        # DESIGN_DRAFT
+        l1_id = memory_space.execute_command(CreateL1AtomCommand(
+            content=text,
+            l1_type="HYPOTHESIS",
+            source="ui_design_draft",
+            context_id=request.context_id
+        ))
+        l1_vm = memory_space.project_to_l1_atom_vm(l1_id)
+        decision_id = f"decision-{uuid.uuid4()}"
+        l2 = SemanticUnitL2(
+            objective=text,
+            source_l1_ids=[l1_id],
+        )
+        memory_space.add_l2_unit(l2, decision_id)
+        draft_vm = {
+            "id": decision_id,
+            "title": f"Draft {decision_id[-8:]}",
+            "description": text,
+            "source_l1_ids": [l1_id],
+            "status": "DRAFT",
+            "created_by": "human",
+            "created_at": time.time(),
+            "feedback_text": "Design Draftとして登録しました。",
+        }
+        return {
+            "status": "ok",
+            "message": "Design Draftに整理しました。",
+            "l1": asdict(l1_vm) if l1_vm else None,
+            "draft": draft_vm,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"UI input failed: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="UI_INPUT_FAILED")
 
 @app.post("/snapshot/create", tags=["Snapshot"])
 def create_snapshot():

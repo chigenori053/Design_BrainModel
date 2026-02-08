@@ -182,7 +182,7 @@ class SemanticUnit(BaseModel):
 
 # --- Phase17-3 Gate Specification Types ---
 
-@dataclass(slots=True)
+@dataclass
 class SemanticUnitL1:
     """
     Represents an "undecided semantic unit."
@@ -234,7 +234,7 @@ class SemanticUnitL2(BaseModel):
             raise ValueError("source_l1_ids cannot be empty for an L2 unit.")
         return self
 
-@dataclass(slots=True)
+@dataclass
 class L1Cluster:
     """
     Represents a cluster of L1 units.

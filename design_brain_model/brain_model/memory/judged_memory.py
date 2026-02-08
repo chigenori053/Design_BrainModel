@@ -38,7 +38,7 @@ class MemoryStatus(str):
     DISABLED = "DISABLED"
 
 
-@dataclass(slots=True)
+@dataclass
 class MemoryRecord:
     memory_id: str
     vector: np.ndarray
@@ -65,7 +65,7 @@ class MemoryRecord:
             raise ValueError("counters must be a dict")
 
 
-@dataclass(slots=True)
+@dataclass
 class RecallHit:
     memory_id: str
     store_type: StoreType
@@ -78,7 +78,7 @@ class RecallHit:
     timestamp: int
 
 
-@dataclass(slots=True)
+@dataclass
 class RecallContext:
     canonical_min_similarity: float
     entropy: float

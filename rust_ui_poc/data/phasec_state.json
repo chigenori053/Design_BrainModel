@@ -1,0 +1,83 @@
+{
+  "report": {
+    "targets": [
+      "proposal-1",
+      "proposal-2",
+      "proposal-3"
+    ],
+    "geometry_points": [
+      {
+        "vector": [0.8, 0.6, 0.2, 0.7, 0.9],
+        "source_id": "proposal-1"
+      },
+      {
+        "vector": [0.2, 0.4, 0.9, 0.3, 0.5],
+        "source_id": "proposal-2"
+      },
+      {
+        "vector": [0.6, 0.2, 0.5, 0.6, 0.4],
+        "source_id": "proposal-3"
+      }
+    ],
+    "distances": [
+      [0.0, 1.1, 0.74162],
+      [1.1, 0.0, 0.678233],
+      [0.74162, 0.678233, 0.0]
+    ],
+    "qualitative_notes": "PhaseB Evaluation Report (sample)."
+  },
+  "proposals": [
+    {
+      "id": "proposal-1",
+      "title": "Design Proposal A",
+      "target_type": "DESIGN",
+      "abstract_structure": {
+        "nodes": ["A", "B"],
+        "edges": [["A", "B"]],
+        "constraints": ["no_cycle"]
+      },
+      "constraints": ["no_cycle"],
+      "axis_scores": [
+        { "axis": "Structural Consistency", "score": 0.8, "note": null },
+        { "axis": "Reusability", "score": 0.6, "note": null },
+        { "axis": "Complexity", "score": 0.2, "note": null },
+        { "axis": "Constraint Satisfaction", "score": 0.7, "note": null },
+        { "axis": "Clarity", "score": 0.9, "note": null }
+      ]
+    },
+    {
+      "id": "proposal-2",
+      "title": "Textual Explanation B",
+      "target_type": "TEXT",
+      "abstract_structure": {
+        "paragraphs": 3,
+        "summary": "Explain evaluation rationale."
+      },
+      "constraints": [],
+      "axis_scores": [
+        { "axis": "Structural Consistency", "score": 0.2, "note": null },
+        { "axis": "Reusability", "score": 0.4, "note": null },
+        { "axis": "Complexity", "score": 0.9, "note": null },
+        { "axis": "Constraint Satisfaction", "score": 0.3, "note": null },
+        { "axis": "Clarity", "score": 0.5, "note": null }
+      ]
+    },
+    {
+      "id": "proposal-3",
+      "title": "UI Skeleton C",
+      "target_type": "UI",
+      "abstract_structure": {
+        "layout": { "rows": 2, "cols": 3 },
+        "hierarchy": ["header", "body", "footer"]
+      },
+      "constraints": ["grid_alignment"],
+      "axis_scores": [
+        { "axis": "Structural Consistency", "score": 0.6, "note": null },
+        { "axis": "Reusability", "score": 0.2, "note": null },
+        { "axis": "Complexity", "score": 0.5, "note": null },
+        { "axis": "Constraint Satisfaction", "score": 0.6, "note": null },
+        { "axis": "Clarity", "score": 0.4, "note": null }
+      ]
+    }
+  ]
+}

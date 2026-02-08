@@ -1,7 +1,7 @@
 use crate::{app::App, view};
 use anyhow::Result;
 use ratatui::{backend::CrosstermBackend, Terminal};
-use std::io::{self, stdout, Stdout};
+use std::io::{stdout, Stdout};
 use crossterm::{
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},

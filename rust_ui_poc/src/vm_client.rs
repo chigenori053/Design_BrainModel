@@ -1,4 +1,4 @@
-use crate::model::{CreateL1AtomPayload, L1AtomVm, L1ClusterVm, DecisionChipVm};
+use crate::model::L1AtomVm;
 use reqwest::blocking::Client;
 use serde::Serialize;
 use serde_json::Value;
@@ -21,7 +21,6 @@ impl VmClient {
             base_url: API_BASE_URL.to_string(),
             client: Client::builder()
                 .timeout(std::time::Duration::from_secs(5))
-                // Avoid macOS system proxy lookup panic in blocking client.
                 .no_proxy()
                 .build()
                 .expect("Failed to build reqwest client"),
@@ -30,23 +29,7 @@ impl VmClient {
 
     // --- ViewModel Getters ---
 
-    pub fn get_cluster(&self, cluster_id: &str) -> Result<L1ClusterVm, String> {
-        let url = format!("{}/viewmodel/cluster/{}", self.base_url, cluster_id);
-        info!("Fetching from URL: {}", url);
-        
-        self.client.get(&url)
-            .send()
-            .map_err(|e| {
-                error!("Request failed for get_cluster({}): {}", cluster_id, e);
-                e.to_string()
-            })?
-            .json::<L1ClusterVm>()
-            .map_err(|e| {
-                error!("Failed to parse JSON for get_cluster({}): {}", cluster_id, e);
-                e.to_string()
-            })
-    }
-
+    #[allow(dead_code)]
     pub fn get_atom(&self, atom_id: &str) -> Result<L1AtomVm, String> {
         let url = format!("{}/viewmodel/atom/{}", self.base_url, atom_id);
         info!("Fetching from URL: {}", url);
@@ -58,20 +41,10 @@ impl VmClient {
             .map_err(|e| e.to_string())
     }
 
-    pub fn get_decision(&self, decision_id: &str) -> Result<DecisionChipVm, String> {
-        let url = format!("{}/viewmodel/decision/{}", self.base_url, decision_id);
-        info!("Fetching from URL: {}", url);
-
-        self.client.get(&url)
-            .send()
-            .map_err(|e| e.to_string())?
-            .json::<DecisionChipVm>()
-            .map_err(|e| e.to_string())
-    }
-
     // --- Command Executor ---
 
     /// Executes a command on the backend.
+    #[allow(dead_code)]
     pub fn execute_command<T: Serialize>(&self, command_type: &str, payload: &T) -> Result<Value, String> {
         let url = format!("{}/command", self.base_url);
         let body = serde_json::json!({
@@ -94,6 +67,47 @@ impl VmClient {
             },
             Err(e) => {
                 error!("Failed to send command to server: {}", e);
+                Err(e.to_string())
+            }
+        }
+    }
+
+    pub fn submit_ui_input(
+        &self,
+        tab: &str,
+        text: &str,
+        context_id: Option<String>,
+    ) -> Result<Value, String> {
+        let url = format!("{}/ui/input", self.base_url);
+        let body = serde_json::json!({
+            "tab": tab,
+            "text": text,
+            "context_id": context_id,
+        });
+
+        info!("Submitting UI input to '{}' with tab {}", url, tab);
+
+        match self.client.post(&url).json(&body).send() {
+            Ok(resp) => {
+                let status = resp.status();
+                if status.is_success() {
+                    resp.json::<Value>().map_err(|e| format!("Failed to parse response: {}", e))
+                } else {
+                    let text = resp.text().unwrap_or_else(|_| "Failed to read error body".to_string());
+                    error!("API Error ({}): {}", status, text);
+                    if let Ok(val) = serde_json::from_str::<Value>(&text) {
+                        if let Some(detail) = val.get("detail").and_then(|v| v.as_str()) {
+                            return Err(detail.to_string());
+                        }
+                        if let Some(err) = val.get("error").and_then(|v| v.as_str()) {
+                            return Err(err.to_string());
+                        }
+                    }
+                    Err(format!("API Error ({}): {}", status, text))
+                }
+            }
+            Err(e) => {
+                error!("Failed to send UI input to server: {}", e);
                 Err(e.to_string())
             }
         }

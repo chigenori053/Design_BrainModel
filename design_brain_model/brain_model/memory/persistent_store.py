@@ -15,7 +15,7 @@ from .types import MemoryStatus
 SCHEMA_VERSION = 1
 
 
-@dataclass(slots=True)
+@dataclass
 class HolographicTrace:
     trace_id: str
     source_unit_id: str
@@ -43,7 +43,7 @@ class HolographicTrace:
         self.version = int(self.version)
 
 
-@dataclass(slots=True)
+@dataclass
 class RecallResult:
     trace_id: str
     source_unit_id: str
