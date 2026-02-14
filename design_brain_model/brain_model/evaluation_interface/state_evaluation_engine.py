@@ -4,6 +4,7 @@ from typing import List, Dict, Any, Optional
 from dataclasses import dataclass, asdict
 from collections import defaultdict
 from enum import Enum
+from numbers import Real
 
 class EvaluationStatus(str, Enum):
     OK = "OK"
@@ -85,16 +86,21 @@ class StateEvaluationEngine:
         raise NotImplementedError(f"Format {format} not supported")
 
     def _calc_stats(self, values: List[float]) -> Optional[StatSummary]:
-        if not values:
+        cleaned = [v for v in values if isinstance(v, Real) and not isinstance(v, bool)]
+        if not cleaned:
             return None
         return StatSummary(
-            mean=statistics.mean(values),
-            median=statistics.median(values),
-            std=statistics.stdev(values) if len(values) > 1 else 0.0,
-            min=min(values),
-            max=max(values),
-            count=len(values)
+            mean=statistics.mean(cleaned),
+            median=statistics.median(cleaned),
+            std=statistics.stdev(cleaned) if len(cleaned) > 1 else 0.0,
+            min=min(cleaned),
+            max=max(cleaned),
+            count=len(cleaned)
         )
+
+    def _stats_dict(self, values: List[float]) -> Optional[Dict[str, Any]]:
+        summary = self._calc_stats(values)
+        return asdict(summary) if summary else None
 
     def _evaluate_decisions(self) -> Dict[str, Any]:
         if not self.decision_logs:
@@ -122,9 +128,9 @@ class StateEvaluationEngine:
             note = "High REVIEW rate detected"
             
         stats_summary = {
-            "confidence": asdict(self._calc_stats(confidences)),
-            "entropy": asdict(self._calc_stats(entropies)),
-            "utility": asdict(self._calc_stats(utilities)),
+            "confidence": self._stats_dict(confidences),
+            "entropy": self._stats_dict(entropies),
+            "utility": self._stats_dict(utilities),
             "label_ratios": label_ratios,
             "status": status.value,
             "note": note
@@ -156,7 +162,7 @@ class StateEvaluationEngine:
 
         return {
             "store_ratios": store_ratios,
-            "quarantine_dwell_stats": asdict(self._calc_stats(dwell_times)) if dwell_times else None,
+            "quarantine_dwell_stats": self._stats_dict(dwell_times),
             "status": status.value,
             "note": note
         }
@@ -166,8 +172,9 @@ class StateEvaluationEngine:
             return {"status": EvaluationStatus.OK.value, "note": "No data"}
             
         eu_deltas = [r.get("eu_delta", 0.0) for r in self.recall_logs]
-        success_count = sum(1 for eu in eu_deltas if eu > 0)
-        success_rate = success_count / len(eu_deltas) if eu_deltas else 0.0
+        numeric_deltas = [v for v in eu_deltas if isinstance(v, Real) and not isinstance(v, bool)]
+        success_count = sum(1 for eu in numeric_deltas if eu > 0)
+        success_rate = success_count / len(numeric_deltas) if numeric_deltas else 0.0
         
         status = EvaluationStatus.OK
         note = "Stable"
@@ -177,7 +184,7 @@ class StateEvaluationEngine:
             note = "Low recall utility"
 
         return {
-            "eu_delta_stats": asdict(self._calc_stats(eu_deltas)),
+            "eu_delta_stats": self._stats_dict(eu_deltas),
             "success_rate": success_rate,
             "status": status.value,
             "note": note
@@ -189,19 +196,20 @@ class StateEvaluationEngine:
             
         completeness = [d.get("completeness_score", 0.0) for d in self.design_eval_logs]
         consistency = [d.get("consistency_score", 0.0) for d in self.design_eval_logs]
+        numeric_completeness = [v for v in completeness if isinstance(v, Real) and not isinstance(v, bool)]
         
         status = EvaluationStatus.OK
         note = "Stable"
         
         # Check for consistently poor language scores
-        avg_comp = statistics.mean(completeness)
-        if avg_comp < 0.5:
+        avg_comp = statistics.mean(numeric_completeness) if numeric_completeness else 0.0
+        if numeric_completeness and avg_comp < 0.5:
             status = EvaluationStatus.WARNING
             note = "Low completeness scores"
 
         return {
-            "completeness_stats": asdict(self._calc_stats(completeness)),
-            "consistency_stats": asdict(self._calc_stats(consistency)),
+            "completeness_stats": self._stats_dict(completeness),
+            "consistency_stats": self._stats_dict(consistency),
             "status": status.value,
             "note": note
         }
@@ -216,8 +224,14 @@ class StateEvaluationEngine:
         if self.decision_logs:
             # Check confidence >= 0.40
             threshold = 0.40
-            below = [d for d in self.decision_logs if d.get("confidence", 0) < threshold]
-            above = [d for d in self.decision_logs if d.get("confidence", 0) >= threshold]
+            def numeric_confidence(item: Dict[str, Any]) -> Optional[float]:
+                value = item.get("confidence", 0)
+                if isinstance(value, Real) and not isinstance(value, bool):
+                    return float(value)
+                return None
+
+            below = [d for d in self.decision_logs if (c := numeric_confidence(d)) is not None and c < threshold]
+            above = [d for d in self.decision_logs if (c := numeric_confidence(d)) is not None and c >= threshold]
             
             # Compare utility or other metrics between groups
             below_utility = [d.get("utility", 0) for d in below]

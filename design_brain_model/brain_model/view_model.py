@@ -6,7 +6,7 @@ of the domain state for CLI / UI clients.
 """
 
 from dataclasses import dataclass
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from enum import Enum
 
 # --- Enums ---
@@ -69,6 +69,7 @@ class DecisionHistoryVM:
 
 @dataclass(frozen=True)
 class L1ContextSnapshotVM:
+    focused_cluster_id: Optional[str]
     active_l1_atoms: List[L1AtomVM]
     missing_types: List[str]
     entropy_summary: float

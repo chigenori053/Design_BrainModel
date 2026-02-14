@@ -182,7 +182,7 @@ class SemanticUnit(BaseModel):
 
 # --- Phase17-3 Gate Specification Types ---
 
-@dataclass
+@dataclass(slots=True)
 class SemanticUnitL1:
     """
     Represents an "undecided semantic unit."
@@ -227,6 +227,17 @@ class SemanticUnitL2(BaseModel):
     source_l1_ids: List[str] = Field(default_factory=list)
 
     model_config = ConfigDict(frozen=True)
+
+    @property
+    def scope(self) -> Dict[str, Any]:
+        return {
+            "in": list(self.scope_in),
+            "out": list(self.scope_out),
+            "constraints": list(self.constraints),
+            "assumptions": list(self.assumptions),
+            "success_criteria": list(self.success_criteria),
+            "risks": list(self.risks),
+        }
 
     @model_validator(mode="after")
     def _validate_l2(self) -> "SemanticUnitL2":

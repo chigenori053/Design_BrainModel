@@ -167,11 +167,20 @@ class MemorySpace:
         confidence = 0.95 
         entropy = 0.05
 
+        scope = {
+            "in": list(head_gen.scope_in),
+            "out": list(head_gen.scope_out),
+            "constraints": list(head_gen.constraints),
+            "assumptions": list(head_gen.assumptions),
+            "success_criteria": list(head_gen.success_criteria),
+            "risks": list(head_gen.risks),
+        }
+
         return DecisionChipVM(
             l2_decision_id=decision_id,
             head_generation_id=head_gen.id,
             polarity=polarity_vm,
-            scope=head_gen.scope,
+            scope=scope,
             confidence=confidence,
             entropy=entropy
         )
