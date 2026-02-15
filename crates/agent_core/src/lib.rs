@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -137,6 +137,25 @@ pub struct TraceRow {
     pub local_global_distance: f32,
     pub field_min_distance: f32,
     pub field_rejected_count: usize,
+    pub mu: f32,
+    pub dhm_k: usize,
+    pub dhm_norm: f32,
+    pub dhm_resonance_mean: f32,
+    pub dhm_score_ratio: f32,
+    pub dhm_build_us: f32,
+    pub expanded_categories_count: usize,
+    pub selected_rules_count: usize,
+    pub per_category_selected: String,
+    pub entropy_per_depth: f32,
+    pub unique_category_count_per_depth: usize,
+    pub pareto_front_size_per_depth: usize,
+    pub pareto_mean_nn_dist: f32,
+    pub pareto_spacing: f32,
+    pub pareto_hv_2d: f32,
+    pub field_extract_us: f32,
+    pub field_score_us: f32,
+    pub field_aggregate_us: f32,
+    pub field_total_us: f32,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -144,6 +163,46 @@ pub struct TraceRunConfig {
     pub depth: usize,
     pub beam: usize,
     pub seed: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum MuSchedule {
+    Fixed { mu: f32 },
+    DepthExp { mu_max: f32, k: f32 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct DhMConfig {
+    pub enabled: bool,
+    pub mu_schedule: MuSchedule,
+    pub gamma: f32,
+    pub k_nearest: usize,
+}
+
+impl DhMConfig {
+    pub fn phase7_fixed() -> Self {
+        Self {
+            enabled: true,
+            mu_schedule: MuSchedule::Fixed { mu: 0.05 },
+            gamma: 0.05,
+            k_nearest: 20,
+        }
+    }
+
+    pub fn mu_at_depth(&self, depth: usize) -> f64 {
+        if !self.enabled {
+            return 0.0;
+        }
+        match self.mu_schedule {
+            MuSchedule::Fixed { mu } => mu as f64,
+            MuSchedule::DepthExp { mu_max, k } => {
+                let d = depth as f64;
+                let mu_max = mu_max as f64;
+                let k = k as f64;
+                mu_max * (1.0 - (-k * d).exp())
+            }
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -165,12 +224,14 @@ pub struct BenchResult {
     pub avg_field_us: f64,
     pub avg_resonance_us: f64,
     pub avg_chm_us: f64,
+    pub avg_dhm_us: f64,
     pub avg_pareto_us: f64,
     pub avg_lambda_us: f64,
     pub lambda_final: f64,
 }
 
 const FIELD_DISTANCE_DELTA: f64 = 0.5;
+const FIELD_CACHE_CAPACITY: usize = 50_000;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase45Controller {
@@ -280,6 +341,8 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
     let mut frontier = vec![trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);
     let mut depth_boundary_diversity = 1.0f64;
+    let dhm_config = DhMConfig::phase7_fixed();
+    let mut dhm_memory = vec![(0usize, field.aggregate_state(&frontier[0]))];
 
     let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
     let mut conflict_hist = Vec::new();
@@ -287,15 +350,59 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
 
     for depth in 1..=config.depth {
         controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
+        let mu = dhm_config.mu_at_depth(depth);
+        let t_dhm = Instant::now();
+        let (dhm_field, dhm_norm) = build_dhm_field(
+            &dhm_memory,
+            depth,
+            dhm_config.gamma as f64,
+            dhm_config.k_nearest,
+            field.dimensions(),
+        );
+        let dhm_build_us = elapsed_us(t_dhm);
+        let mut dhm_res_sum = 0.0f64;
+        let mut dhm_ratio_sum = 0.0f64;
+        let mut dhm_count = 0usize;
 
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            for rule in shm.applicable_rules(state) {
+            let mut ranked_rules = shm
+                .applicable_rules(state)
+                .into_iter()
+                .map(|rule| {
+                    let r_dhm = dhm_rule_resonance(rule, &field, &dhm_field);
+                    let score_ratio = 1.0 + mu * r_dhm;
+                    let score = rule.priority.max(0.0) * score_ratio;
+                    (rule, r_dhm, score_ratio, score)
+                })
+                .collect::<Vec<_>>();
+            ranked_rules.sort_by(|(l_rule, _, _, l_score), (r_rule, _, _, r_score)| {
+                r_score
+                    .partial_cmp(l_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| l_rule.id.cmp(&r_rule.id))
+            });
+
+            for (rule, r_dhm, score_ratio, _) in ranked_rules {
+                dhm_res_sum += r_dhm;
+                dhm_ratio_sum += score_ratio;
+                dhm_count += 1;
+
                 let new_state = apply_atomic(rule, state);
                 let obj = evaluator.evaluate(&new_state);
                 candidates.push((new_state, obj));
             }
         }
+        let dhm_resonance_mean = if dhm_count == 0 {
+            0.0
+        } else {
+            dhm_res_sum / dhm_count as f64
+        };
+        let dhm_score_ratio = if dhm_count == 0 {
+            1.0
+        } else {
+            dhm_ratio_sum / dhm_count as f64
+        };
 
         if candidates.is_empty() {
             rows.push(TraceRow {
@@ -317,6 +424,25 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 local_global_distance: 0.0,
                 field_min_distance: 0.0,
                 field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: dhm_config.k_nearest,
+                dhm_norm: dhm_norm as f32,
+                dhm_resonance_mean: dhm_resonance_mean as f32,
+                dhm_score_ratio: dhm_score_ratio as f32,
+                dhm_build_us: dhm_build_us as f32,
+                expanded_categories_count: 0,
+                selected_rules_count: 0,
+                per_category_selected: String::new(),
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: 0,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
             });
             continue;
         }
@@ -343,6 +469,25 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 local_global_distance: 0.0,
                 field_min_distance: field_min_distance as f32,
                 field_rejected_count,
+                mu: mu as f32,
+                dhm_k: dhm_config.k_nearest,
+                dhm_norm: dhm_norm as f32,
+                dhm_resonance_mean: dhm_resonance_mean as f32,
+                dhm_score_ratio: dhm_score_ratio as f32,
+                dhm_build_us: dhm_build_us as f32,
+                expanded_categories_count: 0,
+                selected_rules_count: 0,
+                per_category_selected: String::new(),
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: 0,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
             });
             frontier = vec![trace_initial_state(config.seed)];
             continue;
@@ -427,6 +572,259 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             local_global_distance: adjustment.local_global_distance as f32,
             field_min_distance: field_min_distance as f32,
             field_rejected_count,
+            mu: mu as f32,
+            dhm_k: dhm_config.k_nearest,
+            dhm_norm: dhm_norm as f32,
+            dhm_resonance_mean: dhm_resonance_mean as f32,
+            dhm_score_ratio: dhm_score_ratio as f32,
+            dhm_build_us: dhm_build_us as f32,
+            expanded_categories_count: 0,
+            selected_rules_count: 0,
+            per_category_selected: String::new(),
+            entropy_per_depth: 0.0,
+            unique_category_count_per_depth: 0,
+            pareto_front_size_per_depth: front.len(),
+            pareto_mean_nn_dist: 0.0,
+            pareto_spacing: 0.0,
+            pareto_hv_2d: 0.0,
+            field_extract_us: 0.0,
+            field_score_us: 0.0,
+            field_aggregate_us: 0.0,
+            field_total_us: 0.0,
+        });
+
+        frontier = front
+            .into_iter()
+            .take(config.beam.max(1))
+            .map(|(s, _)| s)
+            .collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(config.seed)];
+        }
+        for state in &frontier {
+            dhm_memory.push((depth, field.aggregate_state(state)));
+        }
+
+        profile = p_inferred(&profile, &profile, &profile, &profile);
+    }
+
+    rows
+}
+
+pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, config.seed);
+    let field = FieldEngine::new(256);
+    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
+
+    let mut controller = Phase45Controller::new(0.5);
+    let mut profile = PreferenceProfile {
+        struct_weight: 0.25,
+        field_weight: 0.25,
+        risk_weight: 0.25,
+        cost_weight: 0.25,
+    };
+    let mut frontier = vec![trace_initial_state(config.seed)];
+    let mut rows = Vec::with_capacity(config.depth);
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    for depth in 1..=config.depth {
+        controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
+        let mu = 0.0f64;
+
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            for rule in shm.applicable_rules(state) {
+                let new_state = apply_atomic(rule, state);
+                let obj = evaluator.evaluate(&new_state);
+                candidates.push((new_state, obj));
+            }
+        }
+
+        if candidates.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count: 0,
+                selected_rules_count: 0,
+                per_category_selected: String::new(),
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: 0,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
+            });
+            continue;
+        }
+
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+
+        if front.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count: 0,
+                selected_rules_count: 0,
+                per_category_selected: String::new(),
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: 0,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
+            });
+            frontier = vec![trace_initial_state(config.seed)];
+            continue;
+        }
+
+        let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        let target_field = build_target_field(
+            &field,
+            &shm,
+            &front[0].0,
+            controller.lambda(),
+        );
+
+        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| {
+                let r = resonance_score(&field.aggregate_state(&front[0].0), &target_field);
+                (o.f_struct + r) * 0.5
+            })
+            .sum::<f64>()
+            / front.len() as f64;
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let log = controller.update_depth(
+            depth,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+
+        rows.push(TraceRow {
+            depth,
+            lambda: log.lambda_new as f32,
+            delta_lambda: log.delta_lambda as f32,
+            tau_prime: log.tau_prime as f32,
+            conf_chm: log.conf_chm as f32,
+            density: log.density as f32,
+            k: log.k,
+            h_profile: profile_modulation(log.stability_index) as f32,
+            pareto_size: front.len(),
+            diversity: depth_boundary_diversity as f32,
+            resonance_avg: resonance_avg as f32,
+            pressure: 0.0,
+            epsilon_effect: 0.0,
+            target_local_weight: 0.0,
+            target_global_weight: 0.0,
+            local_global_distance: 0.0,
+            field_min_distance: 0.0,
+            field_rejected_count: 0,
+            mu: mu as f32,
+            dhm_k: 0,
+            dhm_norm: 0.0,
+            dhm_resonance_mean: 0.0,
+            dhm_score_ratio: 1.0,
+            dhm_build_us: 0.0,
+            expanded_categories_count: 0,
+            selected_rules_count: 0,
+            per_category_selected: String::new(),
+            entropy_per_depth: 0.0,
+            unique_category_count_per_depth: 0,
+            pareto_front_size_per_depth: front.len(),
+            pareto_mean_nn_dist: 0.0,
+            pareto_spacing: 0.0,
+            pareto_hv_2d: 0.0,
+            field_extract_us: 0.0,
+            field_score_us: 0.0,
+            field_aggregate_us: 0.0,
+            field_total_us: 0.0,
         });
 
         frontier = front
@@ -439,6 +837,474 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
         }
 
         profile = p_inferred(&profile, &profile, &profile, &profile);
+    }
+
+    rows
+}
+
+pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) -> Vec<TraceRow> {
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, config.seed);
+    let field = FieldEngine::new(256);
+    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
+
+    let mut controller = Phase45Controller::new(0.5);
+    let mut profile = PreferenceProfile {
+        struct_weight: 0.25,
+        field_weight: 0.25,
+        risk_weight: 0.25,
+        cost_weight: 0.25,
+    };
+    let mut frontier = vec![trace_initial_state(config.seed)];
+    let mut rows = Vec::with_capacity(config.depth);
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    for depth in 1..=config.depth {
+        controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
+        let mu = 0.0f64;
+        let mut depth_category_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut depth_selected_rules_count = 0usize;
+
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            let (selected_rules, per_state_counts) =
+                select_rules_category_balanced(shm.applicable_rules(state), m);
+            depth_selected_rules_count += selected_rules.len();
+            for (cat, c) in per_state_counts {
+                *depth_category_counts.entry(cat).or_insert(0) += c;
+            }
+            for rule in selected_rules {
+                let new_state = apply_atomic(rule, state);
+                let obj = evaluator.evaluate(&new_state);
+                candidates.push((new_state, obj));
+            }
+        }
+        let expanded_categories_count = depth_category_counts.len();
+        let per_category_selected = format_category_counts(&depth_category_counts);
+
+        if candidates.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count,
+                selected_rules_count: depth_selected_rules_count,
+                per_category_selected,
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: expanded_categories_count,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
+            });
+            continue;
+        }
+
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+
+        if front.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count,
+                selected_rules_count: depth_selected_rules_count,
+                per_category_selected,
+                entropy_per_depth: 0.0,
+                unique_category_count_per_depth: expanded_categories_count,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: 0.0,
+                field_score_us: 0.0,
+                field_aggregate_us: 0.0,
+                field_total_us: 0.0,
+            });
+            frontier = vec![trace_initial_state(config.seed)];
+            continue;
+        }
+
+        let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        let target_field = build_target_field(
+            &field,
+            &shm,
+            &front[0].0,
+            controller.lambda(),
+        );
+
+        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| {
+                let r = resonance_score(&field.aggregate_state(&front[0].0), &target_field);
+                (o.f_struct + r) * 0.5
+            })
+            .sum::<f64>()
+            / front.len() as f64;
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let log = controller.update_depth(
+            depth,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+
+        rows.push(TraceRow {
+            depth,
+            lambda: log.lambda_new as f32,
+            delta_lambda: log.delta_lambda as f32,
+            tau_prime: log.tau_prime as f32,
+            conf_chm: log.conf_chm as f32,
+            density: log.density as f32,
+            k: log.k,
+            h_profile: profile_modulation(log.stability_index) as f32,
+            pareto_size: front.len(),
+            diversity: depth_boundary_diversity as f32,
+            resonance_avg: resonance_avg as f32,
+            pressure: 0.0,
+            epsilon_effect: 0.0,
+            target_local_weight: 0.0,
+            target_global_weight: 0.0,
+            local_global_distance: 0.0,
+            field_min_distance: 0.0,
+            field_rejected_count: 0,
+            mu: mu as f32,
+            dhm_k: 0,
+            dhm_norm: 0.0,
+            dhm_resonance_mean: 0.0,
+            dhm_score_ratio: 1.0,
+            dhm_build_us: 0.0,
+            expanded_categories_count,
+            selected_rules_count: depth_selected_rules_count,
+            per_category_selected,
+            entropy_per_depth: shannon_entropy_from_counts(&depth_category_counts) as f32,
+            unique_category_count_per_depth: expanded_categories_count,
+            pareto_front_size_per_depth: front.len(),
+            pareto_mean_nn_dist: 0.0,
+            pareto_spacing: 0.0,
+            pareto_hv_2d: 0.0,
+            field_extract_us: 0.0,
+            field_score_us: 0.0,
+            field_aggregate_us: 0.0,
+            field_total_us: 0.0,
+        });
+
+        frontier = front
+            .into_iter()
+            .take(config.beam.max(1))
+            .map(|(s, _)| s)
+            .collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(config.seed)];
+        }
+
+        profile = p_inferred(&profile, &profile, &profile, &profile);
+    }
+
+    rows
+}
+
+pub fn generate_trace_baseline_off_soft(
+    config: TraceRunConfig,
+    alpha: f64,
+    temperature: f64,
+    entropy_beta: f64,
+    lambda_min: f64,
+    lambda_target_entropy: f64,
+    lambda_k: f64,
+    lambda_ema: f64,
+    field_profile: bool,
+) -> Vec<TraceRow> {
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, config.seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+
+    let mut frontier = vec![trace_initial_state(config.seed)];
+    let mut rows = Vec::with_capacity(config.depth);
+    let mut lambda = 0.5f64;
+    let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
+    let mut field_cache_order: VecDeque<(u128, u128, usize, usize)> = VecDeque::new();
+
+    for depth in 1..=config.depth {
+        let mu = 0.0f64;
+        let target_field = build_target_field(&field, &shm, &frontier[0], lambda);
+        let batch = build_soft_candidates_for_frontier(
+            &frontier,
+            config.beam.max(1),
+            depth,
+            alpha,
+            temperature,
+            entropy_beta,
+            &field,
+            &shm,
+            &chm,
+            &structural,
+            &target_field,
+            field_profile,
+            &mut field_cache,
+            &mut field_cache_order,
+        );
+        let candidates = batch.candidates;
+        let expanded_categories_count = batch.depth_category_counts.len();
+        let per_category_selected = format_category_counts(&batch.depth_category_counts);
+        let entropy_per_depth = shannon_entropy_from_counts(&batch.depth_category_counts) as f32;
+        let depth_selected_rules_count = batch.depth_selected_rules_count;
+        let field_extract_us = batch.field_extract_us;
+        let field_score_us = batch.field_score_us;
+        let field_aggregate_us = batch.field_aggregate_us;
+        let field_total_us = batch.field_total_us;
+        let lambda_old = lambda;
+        lambda = update_lambda_entropy(
+            lambda,
+            entropy_per_depth as f64,
+            lambda_target_entropy,
+            lambda_k,
+            lambda_ema,
+            lambda_min,
+            1.0,
+        );
+
+        if candidates.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: lambda as f32,
+                delta_lambda: (lambda - lambda_old) as f32,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: 0,
+                h_profile: 1.0,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count,
+                selected_rules_count: depth_selected_rules_count,
+                per_category_selected,
+                entropy_per_depth,
+                unique_category_count_per_depth: expanded_categories_count,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: field_extract_us as f32,
+                field_score_us: field_score_us as f32,
+                field_aggregate_us: field_aggregate_us as f32,
+                field_total_us: field_total_us as f32,
+            });
+            continue;
+        }
+
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+
+        if front.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: lambda as f32,
+                delta_lambda: (lambda - lambda_old) as f32,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: 0,
+                h_profile: 1.0,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
+                mu: mu as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
+                expanded_categories_count,
+                selected_rules_count: depth_selected_rules_count,
+                per_category_selected,
+                entropy_per_depth,
+                unique_category_count_per_depth: expanded_categories_count,
+                pareto_front_size_per_depth: 0,
+                pareto_mean_nn_dist: 0.0,
+                pareto_spacing: 0.0,
+                pareto_hv_2d: 0.0,
+                field_extract_us: field_extract_us as f32,
+                field_score_us: field_score_us as f32,
+                field_aggregate_us: field_aggregate_us as f32,
+                field_total_us: field_total_us as f32,
+            });
+            frontier = vec![trace_initial_state(config.seed)];
+            continue;
+        }
+
+        let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
+        let front_objs = front.iter().map(|(_, o)| o).collect::<Vec<_>>();
+        let pareto_mean_nn = pareto_mean_nn_distance(&front_objs);
+        let pareto_spacing = pareto_spacing_metric(&front_objs);
+        let pareto_hv_2d = pareto_hv_2d_metric(&front_objs);
+
+        rows.push(TraceRow {
+            depth,
+            lambda: lambda as f32,
+            delta_lambda: (lambda - lambda_old) as f32,
+            tau_prime: 0.0,
+            conf_chm: 0.0,
+            density: 0.0,
+            k: 0,
+            h_profile: 1.0,
+            pareto_size: front.len(),
+            diversity: depth_boundary_diversity as f32,
+            resonance_avg: resonance_avg as f32,
+            pressure: 0.0,
+            epsilon_effect: 0.0,
+            target_local_weight: 0.0,
+            target_global_weight: 0.0,
+            local_global_distance: 0.0,
+            field_min_distance: 0.0,
+            field_rejected_count: 0,
+            mu: mu as f32,
+            dhm_k: 0,
+            dhm_norm: 0.0,
+            dhm_resonance_mean: 0.0,
+            dhm_score_ratio: 1.0,
+            dhm_build_us: 0.0,
+            expanded_categories_count,
+            selected_rules_count: depth_selected_rules_count,
+            per_category_selected,
+            entropy_per_depth,
+            unique_category_count_per_depth: expanded_categories_count,
+            pareto_front_size_per_depth: front.len(),
+            pareto_mean_nn_dist: pareto_mean_nn as f32,
+            pareto_spacing: pareto_spacing as f32,
+            pareto_hv_2d: pareto_hv_2d as f32,
+            field_extract_us: field_extract_us as f32,
+            field_score_us: field_score_us as f32,
+            field_aggregate_us: field_aggregate_us as f32,
+            field_total_us: field_total_us as f32,
+        });
+
+        frontier = front
+            .into_iter()
+            .take(config.beam.max(1))
+            .map(|(s, _)| s)
+            .collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(config.seed)];
+        }
     }
 
     rows
@@ -457,12 +1323,60 @@ pub fn run_bench(config: BenchConfig) -> BenchResult {
     let mut field_us_sum = 0.0;
     let mut resonance_us_sum = 0.0;
     let mut chm_us_sum = 0.0;
+    let mut dhm_us_sum = 0.0;
     let mut pareto_us_sum = 0.0;
     let mut lambda_us_sum = 0.0;
     let mut lambda_final_sum = 0.0;
 
     for i in 0..iterations {
         let stats = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        total_ms_sum += stats.total_ms;
+        per_depth_ms_sum += stats.per_depth_ms;
+        field_us_sum += stats.field_us;
+        resonance_us_sum += stats.resonance_us;
+        chm_us_sum += stats.chm_us;
+        dhm_us_sum += stats.dhm_us;
+        pareto_us_sum += stats.pareto_us;
+        lambda_us_sum += stats.lambda_us;
+        lambda_final_sum += stats.lambda_final;
+    }
+
+    let denom = iterations as f64;
+    BenchResult {
+        depth: config.depth,
+        beam: config.beam,
+        iterations,
+        avg_total_ms: total_ms_sum / denom,
+        avg_per_depth_ms: per_depth_ms_sum / denom,
+        avg_field_us: field_us_sum / denom,
+        avg_resonance_us: resonance_us_sum / denom,
+        avg_chm_us: chm_us_sum / denom,
+        avg_dhm_us: dhm_us_sum / denom,
+        avg_pareto_us: pareto_us_sum / denom,
+        avg_lambda_us: lambda_us_sum / denom,
+        lambda_final: lambda_final_sum / denom,
+    }
+}
+
+pub fn run_bench_baseline_off(config: BenchConfig) -> BenchResult {
+    let iterations = config.iterations.max(1);
+    let warmup = config.warmup;
+
+    for i in 0..warmup {
+        let _ = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+    }
+
+    let mut total_ms_sum = 0.0;
+    let mut per_depth_ms_sum = 0.0;
+    let mut field_us_sum = 0.0;
+    let mut resonance_us_sum = 0.0;
+    let mut chm_us_sum = 0.0;
+    let mut pareto_us_sum = 0.0;
+    let mut lambda_us_sum = 0.0;
+    let mut lambda_final_sum = 0.0;
+
+    for i in 0..iterations {
+        let stats = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64));
         total_ms_sum += stats.total_ms;
         per_depth_ms_sum += stats.per_depth_ms;
         field_us_sum += stats.field_us;
@@ -483,6 +1397,143 @@ pub fn run_bench(config: BenchConfig) -> BenchResult {
         avg_field_us: field_us_sum / denom,
         avg_resonance_us: resonance_us_sum / denom,
         avg_chm_us: chm_us_sum / denom,
+        avg_dhm_us: 0.0,
+        avg_pareto_us: pareto_us_sum / denom,
+        avg_lambda_us: lambda_us_sum / denom,
+        lambda_final: lambda_final_sum / denom,
+    }
+}
+
+pub fn run_bench_baseline_off_balanced(config: BenchConfig, m: usize) -> BenchResult {
+    let iterations = config.iterations.max(1);
+    let warmup = config.warmup;
+
+    for i in 0..warmup {
+        let _ = run_bench_once_baseline_off_balanced(
+            config.depth,
+            config.beam,
+            config.seed.wrapping_add(i as u64),
+            m,
+        );
+    }
+
+    let mut total_ms_sum = 0.0;
+    let mut per_depth_ms_sum = 0.0;
+    let mut field_us_sum = 0.0;
+    let mut resonance_us_sum = 0.0;
+    let mut chm_us_sum = 0.0;
+    let mut pareto_us_sum = 0.0;
+    let mut lambda_us_sum = 0.0;
+    let mut lambda_final_sum = 0.0;
+
+    for i in 0..iterations {
+        let stats = run_bench_once_baseline_off_balanced(
+            config.depth,
+            config.beam,
+            config.seed.wrapping_add(i as u64),
+            m,
+        );
+        total_ms_sum += stats.total_ms;
+        per_depth_ms_sum += stats.per_depth_ms;
+        field_us_sum += stats.field_us;
+        resonance_us_sum += stats.resonance_us;
+        chm_us_sum += stats.chm_us;
+        pareto_us_sum += stats.pareto_us;
+        lambda_us_sum += stats.lambda_us;
+        lambda_final_sum += stats.lambda_final;
+    }
+
+    let denom = iterations as f64;
+    BenchResult {
+        depth: config.depth,
+        beam: config.beam,
+        iterations,
+        avg_total_ms: total_ms_sum / denom,
+        avg_per_depth_ms: per_depth_ms_sum / denom,
+        avg_field_us: field_us_sum / denom,
+        avg_resonance_us: resonance_us_sum / denom,
+        avg_chm_us: chm_us_sum / denom,
+        avg_dhm_us: 0.0,
+        avg_pareto_us: pareto_us_sum / denom,
+        avg_lambda_us: lambda_us_sum / denom,
+        lambda_final: lambda_final_sum / denom,
+    }
+}
+
+pub fn run_bench_baseline_off_soft(
+    config: BenchConfig,
+    alpha: f64,
+    temperature: f64,
+    entropy_beta: f64,
+    lambda_min: f64,
+    lambda_target_entropy: f64,
+    lambda_k: f64,
+    lambda_ema: f64,
+    field_profile: bool,
+) -> BenchResult {
+    let iterations = config.iterations.max(1);
+    let warmup = config.warmup;
+
+    for i in 0..warmup {
+        let _ = run_bench_once_baseline_off_soft(
+            config.depth,
+            config.beam,
+            config.seed.wrapping_add(i as u64),
+            alpha,
+            temperature,
+            entropy_beta,
+            lambda_min,
+            lambda_target_entropy,
+            lambda_k,
+            lambda_ema,
+            field_profile,
+        );
+    }
+
+    let mut total_ms_sum = 0.0;
+    let mut per_depth_ms_sum = 0.0;
+    let mut field_us_sum = 0.0;
+    let mut resonance_us_sum = 0.0;
+    let mut chm_us_sum = 0.0;
+    let mut pareto_us_sum = 0.0;
+    let mut lambda_us_sum = 0.0;
+    let mut lambda_final_sum = 0.0;
+
+    for i in 0..iterations {
+        let stats = run_bench_once_baseline_off_soft(
+            config.depth,
+            config.beam,
+            config.seed.wrapping_add(i as u64),
+            alpha,
+            temperature,
+            entropy_beta,
+            lambda_min,
+            lambda_target_entropy,
+            lambda_k,
+            lambda_ema,
+            field_profile,
+        );
+        total_ms_sum += stats.total_ms;
+        per_depth_ms_sum += stats.per_depth_ms;
+        field_us_sum += stats.field_us;
+        resonance_us_sum += stats.resonance_us;
+        chm_us_sum += stats.chm_us;
+        pareto_us_sum += stats.pareto_us;
+        lambda_us_sum += stats.lambda_us;
+        lambda_final_sum += stats.lambda_final;
+    }
+
+    let denom = iterations as f64;
+    BenchResult {
+        depth: config.depth,
+        beam: config.beam,
+        iterations,
+        avg_total_ms: total_ms_sum / denom,
+        avg_per_depth_ms: per_depth_ms_sum / denom,
+        avg_field_us: field_us_sum / denom,
+        avg_resonance_us: resonance_us_sum / denom,
+        avg_chm_us: chm_us_sum / denom,
+        avg_dhm_us: 0.0,
         avg_pareto_us: pareto_us_sum / denom,
         avg_lambda_us: lambda_us_sum / denom,
         lambda_final: lambda_final_sum / denom,
@@ -496,6 +1547,7 @@ struct BenchOnceStats {
     field_us: f64,
     resonance_us: f64,
     chm_us: f64,
+    dhm_us: f64,
     pareto_us: f64,
     lambda_us: f64,
     lambda_final: f64,
@@ -511,6 +1563,8 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
     let structural = StructuralEvaluator::default();
     let mut controller = Phase45Controller::new(0.5);
     let mut frontier = vec![trace_initial_state(seed)];
+    let dhm_config = DhMConfig::phase7_fixed();
+    let mut dhm_memory = vec![(0usize, field.aggregate_state(&frontier[0]))];
 
     let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
     let mut conflict_hist = Vec::new();
@@ -519,6 +1573,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
     let mut field_us_total = 0.0;
     let mut resonance_us_total = 0.0;
     let mut chm_us_total = 0.0;
+    let mut dhm_us_total = 0.0;
     let mut pareto_us_total = 0.0;
     let mut lambda_us_total = 0.0;
     let mut depth_count = 0usize;
@@ -528,6 +1583,16 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
     for d in 1..=depth {
         depth_count += 1;
         controller.on_profile_update(d, 0.25, ProfileUpdateType::TypeCStatistical);
+        let mu = dhm_config.mu_at_depth(d);
+        let t_dhm = Instant::now();
+        let (dhm_field, _dhm_norm) = build_dhm_field(
+            &dhm_memory,
+            d,
+            dhm_config.gamma as f64,
+            dhm_config.k_nearest,
+            field.dimensions(),
+        );
+        dhm_us_total += elapsed_us(t_dhm);
 
         let (target_field, _adjustment) = build_target_field_with_diversity(
             &field,
@@ -538,8 +1603,23 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
         );
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            let rules = shm.applicable_rules(state);
-            for rule in rules {
+            let mut ranked_rules = shm
+                .applicable_rules(state)
+                .into_iter()
+                .map(|rule| {
+                    let r_dhm = dhm_rule_resonance(rule, &field, &dhm_field);
+                    let score_ratio = 1.0 + mu * r_dhm;
+                    let score = rule.priority.max(0.0) * score_ratio;
+                    (rule, score)
+                })
+                .collect::<Vec<_>>();
+            ranked_rules.sort_by(|(l_rule, l_score), (r_rule, r_score)| {
+                r_score
+                    .partial_cmp(l_score)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| l_rule.id.cmp(&r_rule.id))
+            });
+            for (rule, _) in ranked_rules {
                 let new_state = apply_atomic(rule, state);
                 let mut obj = structural.evaluate(&new_state);
 
@@ -622,6 +1702,9 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
         if frontier.is_empty() {
             frontier = vec![trace_initial_state(seed)];
         }
+        for state in &frontier {
+            dhm_memory.push((d, field.aggregate_state(state)));
+        }
     }
 
     let total_ms = elapsed_ms(t_total);
@@ -633,9 +1716,387 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
         field_us: field_us_total / denom_depth,
         resonance_us: resonance_us_total / denom_depth,
         chm_us: chm_us_total / denom_depth,
+        dhm_us: dhm_us_total / denom_depth,
         pareto_us: pareto_us_total / denom_depth,
         lambda_us: lambda_us_total / denom_depth,
         lambda_final: controller.lambda(),
+    }
+}
+
+fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
+    let depth = depth.max(1);
+    let beam = beam.max(1);
+
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+    let mut controller = Phase45Controller::new(0.5);
+    let mut frontier = vec![trace_initial_state(seed)];
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    let mut field_us_total = 0.0;
+    let mut resonance_us_total = 0.0;
+    let mut chm_us_total = 0.0;
+    let mut pareto_us_total = 0.0;
+    let mut lambda_us_total = 0.0;
+    let mut depth_count = 0usize;
+    let mut depth_boundary_diversity = 1.0f64;
+
+    let t_total = Instant::now();
+    for d in 1..=depth {
+        depth_count += 1;
+        controller.on_profile_update(d, 0.25, ProfileUpdateType::TypeCStatistical);
+
+        let target_field = build_target_field(
+            &field,
+            &shm,
+            &frontier[0],
+            controller.lambda(),
+        );
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            for rule in shm.applicable_rules(state) {
+                let new_state = apply_atomic(rule, state);
+                let mut obj = structural.evaluate(&new_state);
+
+                let t_field = Instant::now();
+                let projection = field.aggregate_state(&new_state);
+                field_us_total += elapsed_us(t_field);
+
+                let t_res = Instant::now();
+                obj.f_field = resonance_score(&projection, &target_field);
+                resonance_us_total += elapsed_us(t_res);
+
+                let t_chm = Instant::now();
+                obj.f_risk = risk_score_from_chm(&new_state, &chm);
+                chm_us_total += elapsed_us(t_chm);
+
+                candidates.push((new_state, obj.clamped()));
+            }
+        }
+
+        if candidates.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+            continue;
+        }
+
+        let t_pareto = Instant::now();
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+        pareto_us_total += elapsed_us(t_pareto);
+        depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| (o.f_struct + o.f_field) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let t_lambda = Instant::now();
+        let _log = controller.update_depth(
+            d,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+        lambda_us_total += elapsed_us(t_lambda);
+
+        frontier = front.into_iter().take(beam).map(|(s, _)| s).collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+        }
+    }
+
+    let total_ms = elapsed_ms(t_total);
+    let per_depth_ms = total_ms / depth_count.max(1) as f64;
+    let denom_depth = depth_count.max(1) as f64;
+    let _ = depth_boundary_diversity;
+    BenchOnceStats {
+        total_ms,
+        per_depth_ms,
+        field_us: field_us_total / denom_depth,
+        resonance_us: resonance_us_total / denom_depth,
+        chm_us: chm_us_total / denom_depth,
+        dhm_us: 0.0,
+        pareto_us: pareto_us_total / denom_depth,
+        lambda_us: lambda_us_total / denom_depth,
+        lambda_final: controller.lambda(),
+    }
+}
+
+fn run_bench_once_baseline_off_balanced(depth: usize, beam: usize, seed: u64, m: usize) -> BenchOnceStats {
+    let depth = depth.max(1);
+    let beam = beam.max(1);
+
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+    let mut controller = Phase45Controller::new(0.5);
+    let mut frontier = vec![trace_initial_state(seed)];
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    let mut field_us_total = 0.0;
+    let mut resonance_us_total = 0.0;
+    let mut chm_us_total = 0.0;
+    let mut pareto_us_total = 0.0;
+    let mut lambda_us_total = 0.0;
+    let mut depth_count = 0usize;
+
+    let t_total = Instant::now();
+    for d in 1..=depth {
+        depth_count += 1;
+        controller.on_profile_update(d, 0.25, ProfileUpdateType::TypeCStatistical);
+
+        let target_field = build_target_field(
+            &field,
+            &shm,
+            &frontier[0],
+            controller.lambda(),
+        );
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            let (selected_rules, _) = select_rules_category_balanced(shm.applicable_rules(state), m);
+            for rule in selected_rules {
+                let new_state = apply_atomic(rule, state);
+                let mut obj = structural.evaluate(&new_state);
+
+                let t_field = Instant::now();
+                let projection = field.aggregate_state(&new_state);
+                field_us_total += elapsed_us(t_field);
+
+                let t_res = Instant::now();
+                obj.f_field = resonance_score(&projection, &target_field);
+                resonance_us_total += elapsed_us(t_res);
+
+                let t_chm = Instant::now();
+                obj.f_risk = risk_score_from_chm(&new_state, &chm);
+                chm_us_total += elapsed_us(t_chm);
+
+                candidates.push((new_state, obj.clamped()));
+            }
+        }
+
+        if candidates.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+            continue;
+        }
+
+        let t_pareto = Instant::now();
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+        pareto_us_total += elapsed_us(t_pareto);
+
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| (o.f_struct + o.f_field) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let t_lambda = Instant::now();
+        let _log = controller.update_depth(
+            d,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+        lambda_us_total += elapsed_us(t_lambda);
+
+        frontier = front.into_iter().take(beam).map(|(s, _)| s).collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+        }
+    }
+
+    let total_ms = elapsed_ms(t_total);
+    let per_depth_ms = total_ms / depth_count.max(1) as f64;
+    let denom_depth = depth_count.max(1) as f64;
+    BenchOnceStats {
+        total_ms,
+        per_depth_ms,
+        field_us: field_us_total / denom_depth,
+        resonance_us: resonance_us_total / denom_depth,
+        chm_us: chm_us_total / denom_depth,
+        dhm_us: 0.0,
+        pareto_us: pareto_us_total / denom_depth,
+        lambda_us: lambda_us_total / denom_depth,
+        lambda_final: controller.lambda(),
+    }
+}
+
+fn run_bench_once_baseline_off_soft(
+    depth: usize,
+    beam: usize,
+    seed: u64,
+    alpha: f64,
+    temperature: f64,
+    entropy_beta: f64,
+    lambda_min: f64,
+    lambda_target_entropy: f64,
+    lambda_k: f64,
+    lambda_ema: f64,
+    field_profile: bool,
+) -> BenchOnceStats {
+    let depth = depth.max(1);
+    let beam = beam.max(1);
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+    let mut frontier = vec![trace_initial_state(seed)];
+    let mut lambda = 0.5f64;
+    let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
+    let mut field_cache_order: VecDeque<(u128, u128, usize, usize)> = VecDeque::new();
+
+    let mut field_us_total = 0.0;
+    let mut resonance_us_total = 0.0;
+    let mut chm_us_total = 0.0;
+    let mut pareto_us_total = 0.0;
+    let mut lambda_us_total = 0.0;
+    let mut depth_count = 0usize;
+
+    let t_total = Instant::now();
+    for d in 1..=depth {
+        depth_count += 1;
+        let target_field = build_target_field(&field, &shm, &frontier[0], lambda);
+        let batch = build_soft_candidates_for_frontier(
+            &frontier,
+            beam,
+            d,
+            alpha,
+            temperature,
+            entropy_beta,
+            &field,
+            &shm,
+            &chm,
+            &structural,
+            &target_field,
+            field_profile,
+            &mut field_cache,
+            &mut field_cache_order,
+        );
+        let candidates = batch.candidates;
+        field_us_total += batch.field_extract_us + batch.field_aggregate_us;
+        resonance_us_total += batch.field_score_us;
+        chm_us_total += batch.chm_us;
+        if candidates.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+            continue;
+        }
+
+        let t_pareto = Instant::now();
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+        pareto_us_total += elapsed_us(t_pareto);
+
+        let entropy = shannon_entropy_from_counts(&batch.depth_category_counts);
+        let t_lambda = Instant::now();
+        lambda = update_lambda_entropy(
+            lambda,
+            entropy,
+            lambda_target_entropy,
+            lambda_k,
+            lambda_ema,
+            lambda_min,
+            1.0,
+        );
+        lambda_us_total += elapsed_us(t_lambda);
+
+        frontier = front.into_iter().take(beam).map(|(s, _)| s).collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+        }
+    }
+
+    let total_ms = elapsed_ms(t_total);
+    let per_depth_ms = total_ms / depth_count.max(1) as f64;
+    let denom_depth = depth_count.max(1) as f64;
+    BenchOnceStats {
+        total_ms,
+        per_depth_ms,
+        field_us: field_us_total / denom_depth,
+        resonance_us: resonance_us_total / denom_depth,
+        chm_us: chm_us_total / denom_depth,
+        dhm_us: 0.0,
+        pareto_us: pareto_us_total / denom_depth,
+        lambda_us: lambda_us_total / denom_depth,
+        lambda_final: lambda,
     }
 }
 
@@ -1296,6 +2757,438 @@ fn compose_category_field(field: &FieldEngine, categories: &[NodeCategory]) -> F
     FieldVector::average(&basis, field.dimensions())
 }
 
+fn rule_category_name(category: &RuleCategory) -> &'static str {
+    match category {
+        RuleCategory::Structural => "Structural",
+        RuleCategory::Performance => "Performance",
+        RuleCategory::Reliability => "Reliability",
+        RuleCategory::Cost => "Cost",
+        RuleCategory::Refactor => "Refactor",
+        RuleCategory::ConstraintPropagation => "ConstraintPropagation",
+    }
+}
+
+fn select_rules_category_balanced<'a>(
+    rules: Vec<&'a DesignRule>,
+    m: usize,
+) -> (Vec<&'a DesignRule>, BTreeMap<String, usize>) {
+    let per_category = m.max(1);
+    if rules.is_empty() {
+        return (Vec::new(), BTreeMap::new());
+    }
+
+    let mut ranked = rules;
+    ranked.sort_by(|l, r| {
+        r.priority
+            .partial_cmp(&l.priority)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| l.id.cmp(&r.id))
+    });
+
+    let mut by_cat: BTreeMap<String, Vec<&DesignRule>> = BTreeMap::new();
+    for rule in ranked {
+        by_cat
+            .entry(rule_category_name(&rule.category).to_string())
+            .or_default()
+            .push(rule);
+    }
+
+    let mut selected = Vec::new();
+    let mut per_cat_selected: BTreeMap<String, usize> = BTreeMap::new();
+    for rules_cat in by_cat.values() {
+        for rule in rules_cat.iter().take(per_category) {
+            selected.push(*rule);
+            let cat = rule_category_name(&rule.category).to_string();
+            *per_cat_selected.entry(cat).or_insert(0) += 1;
+        }
+    }
+    (selected, per_cat_selected)
+}
+
+#[derive(Default)]
+struct SoftCandidateBatch {
+    candidates: Vec<(DesignState, ObjectiveVector)>,
+    depth_category_counts: BTreeMap<String, usize>,
+    depth_selected_rules_count: usize,
+    field_extract_us: f64,
+    field_score_us: f64,
+    field_aggregate_us: f64,
+    field_total_us: f64,
+    chm_us: f64,
+}
+
+type FieldCacheKey = (u128, u128, usize, usize);
+
+fn bounded_cache_get_or_insert(
+    cache: &mut BTreeMap<FieldCacheKey, FieldVector>,
+    order: &mut VecDeque<FieldCacheKey>,
+    key: FieldCacheKey,
+    compute: impl FnOnce() -> FieldVector,
+) -> (FieldVector, bool) {
+    if let Some(found) = cache.get(&key) {
+        return (found.clone(), true);
+    }
+    let value = compute();
+    cache.insert(key, value.clone());
+    order.push_back(key);
+    while cache.len() > FIELD_CACHE_CAPACITY {
+        if let Some(old) = order.pop_front() {
+            cache.remove(&old);
+        } else {
+            break;
+        }
+    }
+    (value, false)
+}
+
+fn build_soft_candidates_for_frontier(
+    frontier: &[DesignState],
+    beam: usize,
+    depth: usize,
+    alpha: f64,
+    temperature: f64,
+    entropy_beta: f64,
+    field: &FieldEngine,
+    shm: &Shm,
+    chm: &Chm,
+    structural: &StructuralEvaluator,
+    target_field: &TargetField,
+    field_profile: bool,
+    field_cache: &mut BTreeMap<FieldCacheKey, FieldVector>,
+    field_cache_order: &mut VecDeque<FieldCacheKey>,
+) -> SoftCandidateBatch {
+    let mut batch = SoftCandidateBatch::default();
+    let mut partials: Vec<(DesignState, ObjectiveVector, RuleId, usize, f64)> = Vec::new();
+
+    for (state_idx, state) in frontier.iter().enumerate() {
+        let (selected_rules, per_state_counts, _availability_counts) = select_rules_category_soft(
+            shm.applicable_rules(state),
+            (beam.max(1) * 5).max(1),
+            alpha,
+            temperature,
+            entropy_beta,
+        );
+        batch.depth_selected_rules_count += selected_rules.len();
+        for (cat, c) in per_state_counts {
+            *batch.depth_category_counts.entry(cat).or_insert(0) += c;
+        }
+        for rule in selected_rules {
+            let new_state = apply_atomic(rule, state);
+            let mut obj = structural.evaluate(&new_state);
+            let t_chm = Instant::now();
+            obj.f_risk = risk_score_from_chm(&new_state, chm);
+            batch.chm_us += elapsed_us(t_chm);
+            obj.f_field = 0.0;
+            let pre_score = 0.4 * obj.f_struct + 0.2 * obj.f_risk + 0.2 * obj.f_cost;
+            partials.push((new_state, obj.clamped(), rule.id, state_idx, pre_score));
+        }
+    }
+
+    partials.sort_by(|(ls, _, _, _, lscore), (rs, _, _, _, rscore)| {
+        rscore
+            .partial_cmp(lscore)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| ls.id.cmp(&rs.id))
+    });
+
+    let detailed_n = (beam.max(1) * 5).min(partials.len());
+    for (idx, (state, obj, rule_id, state_idx, _)) in partials.iter_mut().enumerate() {
+        if idx >= detailed_n {
+            break;
+        }
+        let t_total = Instant::now();
+        let key = (state.id.as_u128(), rule_id.as_u128(), depth, *state_idx);
+        let t_extract = Instant::now();
+        let t_agg = Instant::now();
+        let (projection, cache_hit) =
+            bounded_cache_get_or_insert(field_cache, field_cache_order, key, || field.aggregate_state(state));
+        if field_profile && !cache_hit {
+            batch.field_aggregate_us += elapsed_us(t_agg);
+        }
+        if field_profile {
+            batch.field_extract_us += elapsed_us(t_extract);
+        }
+        let t_score = Instant::now();
+        obj.f_field = resonance_score(&projection, target_field);
+        if field_profile {
+            batch.field_score_us += elapsed_us(t_score);
+            batch.field_total_us += elapsed_us(t_total);
+        }
+        *obj = obj.clone().clamped();
+    }
+
+    batch.candidates = partials.into_iter().map(|(s, o, _, _, _)| (s, o)).collect();
+    batch
+}
+
+fn select_rules_category_soft<'a>(
+    rules: Vec<&'a DesignRule>,
+    max_select: usize,
+    alpha: f64,
+    temperature: f64,
+    entropy_beta: f64,
+) -> (Vec<&'a DesignRule>, BTreeMap<String, usize>, BTreeMap<String, usize>) {
+    if rules.is_empty() {
+        return (Vec::new(), BTreeMap::new(), BTreeMap::new());
+    }
+
+    let mut availability_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for rule in &rules {
+        *availability_counts
+            .entry(rule_category_name(&rule.category).to_string())
+            .or_insert(0) += 1;
+    }
+
+    let n_total = rules.len() as f64;
+    let k = availability_counts.len().max(1) as f64;
+    let uniform = 1.0 / k;
+    let entropy = shannon_entropy_from_counts(&availability_counts);
+    let t = temperature.max(1e-6);
+
+    let mut scored: Vec<(&DesignRule, f64)> = rules
+        .into_iter()
+        .map(|rule| {
+            let cat = rule_category_name(&rule.category).to_string();
+            let p_i = *availability_counts.get(&cat).unwrap_or(&0) as f64 / n_total;
+            let w_balance = (-alpha * (p_i - uniform)).exp();
+            let s_final = rule.priority * w_balance + entropy_beta * entropy;
+            (rule, s_final / t)
+        })
+        .collect();
+
+    // Softmax normalization with max-shift for numerical stability.
+    let max_logit = scored
+        .iter()
+        .map(|(_, logit)| *logit)
+        .fold(f64::NEG_INFINITY, f64::max);
+
+    let mut with_prob: Vec<(&DesignRule, f64, f64)> = scored
+        .drain(..)
+        .map(|(rule, logit)| (rule, logit, (logit - max_logit).exp()))
+        .collect();
+    let z = with_prob.iter().map(|(_, _, x)| *x).sum::<f64>().max(1e-12);
+    for (_, _, x) in &mut with_prob {
+        *x /= z;
+    }
+
+    with_prob.sort_by(|(l_rule, l_logit, l_prob), (r_rule, r_logit, r_prob)| {
+        r_prob
+            .partial_cmp(l_prob)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| r_logit.partial_cmp(l_logit).unwrap_or(std::cmp::Ordering::Equal))
+            .then_with(|| l_rule.id.cmp(&r_rule.id))
+    });
+
+    let limit = max_select.max(1).min(with_prob.len());
+    let mut selected = Vec::with_capacity(limit);
+    let mut selected_counts: BTreeMap<String, usize> = BTreeMap::new();
+    for (rule, _, _) in with_prob.into_iter().take(limit) {
+        selected.push(rule);
+        let cat = rule_category_name(&rule.category).to_string();
+        *selected_counts.entry(cat).or_insert(0) += 1;
+    }
+
+    (selected, selected_counts, availability_counts)
+}
+
+fn format_category_counts(counts: &BTreeMap<String, usize>) -> String {
+    if counts.is_empty() {
+        return String::new();
+    }
+    counts
+        .iter()
+        .map(|(cat, count)| format!("{cat}:{count}"))
+        .collect::<Vec<_>>()
+        .join("|")
+}
+
+fn shannon_entropy_from_counts(counts: &BTreeMap<String, usize>) -> f64 {
+    let total = counts.values().copied().sum::<usize>();
+    if total == 0 {
+        return 0.0;
+    }
+    let total_f = total as f64;
+    counts
+        .values()
+        .map(|count| *count as f64 / total_f)
+        .filter(|p| *p > 0.0)
+        .map(|p| -(p * p.ln()))
+        .sum::<f64>()
+}
+
+fn update_lambda_entropy(
+    lambda: f64,
+    entropy: f64,
+    target_entropy: f64,
+    k: f64,
+    ema: f64,
+    lambda_min: f64,
+    lambda_max: f64,
+) -> f64 {
+    let e = target_entropy - entropy;
+    let lambda_prime = lambda + k * e;
+    let lambda_new = (1.0 - ema) * lambda + ema * lambda_prime;
+    lambda_new.clamp(lambda_min, lambda_max)
+}
+
+fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
+    let ds = a.f_struct - b.f_struct;
+    let df = a.f_field - b.f_field;
+    let dr = a.f_risk - b.f_risk;
+    let dc = a.f_cost - b.f_cost;
+    (ds * ds + df * df + dr * dr + dc * dc).sqrt()
+}
+
+fn pareto_mean_nn_distance(front: &[&ObjectiveVector]) -> f64 {
+    if front.len() < 2 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for (i, obj) in front.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, other) in front.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(objective_distance(obj, other));
+        }
+        if best.is_finite() {
+            sum += best;
+        }
+    }
+    sum / front.len() as f64
+}
+
+fn pareto_spacing_metric(front: &[&ObjectiveVector]) -> f64 {
+    if front.len() < 2 {
+        return 0.0;
+    }
+    let mut nn = Vec::with_capacity(front.len());
+    for (i, obj) in front.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, other) in front.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(objective_distance(obj, other));
+        }
+        if best.is_finite() {
+            nn.push(best);
+        }
+    }
+    if nn.len() < 2 {
+        return 0.0;
+    }
+    let mean = nn.iter().sum::<f64>() / nn.len() as f64;
+    let var = nn.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (nn.len() - 1) as f64;
+    var.sqrt()
+}
+
+fn hv_2d_rect_approx(points: &[(f64, f64)]) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    let mut xs = vec![0.0f64];
+    for (x, _) in points {
+        xs.push(x.clamp(0.0, 1.0));
+    }
+    xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    xs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+
+    let mut area = 0.0;
+    for w in xs.windows(2) {
+        let left = w[0];
+        let right = w[1];
+        if right <= left {
+            continue;
+        }
+        let mid = (left + right) * 0.5;
+        let max_y = points
+            .iter()
+            .filter(|(x, _)| x.clamp(0.0, 1.0) >= mid)
+            .map(|(_, y)| y.clamp(0.0, 1.0))
+            .fold(0.0f64, f64::max);
+        area += (right - left) * max_y;
+    }
+    area.clamp(0.0, 1.0)
+}
+
+fn pareto_hv_2d_metric(front: &[&ObjectiveVector]) -> f64 {
+    if front.is_empty() {
+        return 0.0;
+    }
+    let hv_cost_perf = hv_2d_rect_approx(
+        &front
+            .iter()
+            .map(|o| (o.f_cost.clamp(0.0, 1.0), o.f_struct.clamp(0.0, 1.0)))
+            .collect::<Vec<_>>(),
+    );
+    let hv_rel_cost = hv_2d_rect_approx(
+        &front
+            .iter()
+            .map(|o| (o.f_risk.clamp(0.0, 1.0), o.f_cost.clamp(0.0, 1.0)))
+            .collect::<Vec<_>>(),
+    );
+    (hv_cost_perf + hv_rel_cost) * 0.5
+}
+
+fn map_rule_category(category: RuleCategory) -> NodeCategory {
+    match category {
+        RuleCategory::Structural => NodeCategory::Abstraction,
+        RuleCategory::Performance => NodeCategory::Performance,
+        RuleCategory::Reliability => NodeCategory::Reliability,
+        RuleCategory::Cost => NodeCategory::CostSensitive,
+        RuleCategory::Refactor => NodeCategory::Control,
+        RuleCategory::ConstraintPropagation => NodeCategory::Constraint,
+    }
+}
+
+fn dhm_rule_resonance(rule: &DesignRule, field: &FieldEngine, dhm_field: &FieldVector) -> f64 {
+    if dhm_field.dimensions() == 0 {
+        return 0.0;
+    }
+    let basis = field.projector().basis_for(map_rule_category(rule.category.clone()));
+    let target = TargetField {
+        data: dhm_field.clone(),
+    };
+    resonance_score(&basis, &target).clamp(0.0, 1.0)
+}
+
+fn build_dhm_field(
+    memory: &[(usize, FieldVector)],
+    depth: usize,
+    gamma: f64,
+    k_nearest: usize,
+    dimensions: usize,
+) -> (FieldVector, f64) {
+    if memory.is_empty() {
+        return (FieldVector::zeros(dimensions), 0.0);
+    }
+
+    let mut acc = FieldVector::zeros(dimensions);
+    let window = k_nearest.max(1);
+    let start = memory.len().saturating_sub(window);
+    for (d_i, field_i) in &memory[start..] {
+        let dt = depth.saturating_sub(*d_i) as f64;
+        let w = (-gamma * dt).exp() as f32;
+        acc = acc.add(&field_i.scale(w));
+    }
+
+    let norm = acc
+        .data
+        .iter()
+        .map(|v| v.norm_sqr() as f64)
+        .sum::<f64>()
+        .sqrt();
+    let denom = (norm + 1e-6) as f32;
+    let normalized = if denom <= f32::EPSILON {
+        FieldVector::zeros(dimensions)
+    } else {
+        acc.scale(1.0 / denom)
+    };
+    (normalized, norm)
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -1578,5 +3471,10 @@ mod tests {
         assert!(rows.iter().all(|r| r.field_min_distance >= 0.0));
         assert!(rows.iter().all(|r| r.field_rejected_count <= 1000));
         assert!(rows.iter().any(|r| r.field_rejected_count > 0));
+        assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.mu)));
+        assert!(rows.iter().all(|r| r.dhm_norm >= 0.0));
+        assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.dhm_resonance_mean)));
+        assert!(rows.iter().all(|r| r.dhm_score_ratio >= 1.0));
+        assert!(rows.iter().all(|r| r.dhm_build_us >= 0.0));
     }
 }

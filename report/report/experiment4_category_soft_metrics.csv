@@ -1,0 +1,27 @@
+metric,value,condition,note
+mode,baseline_off+category_soft,fixed,alpha=3.0 temperature=0.8 entropy_beta=0.02
+seed,42,fixed,
+depth,100,fixed,
+beam,5,fixed,
+
+diversity_mean,0.000005394,trace depth=100,required
+diversity_min,0.000000000,trace depth=100,required
+pareto_mean,4.910000000,trace depth=100,required
+lambda_variance,0.025418750,trace depth=100,required
+
+avg_total_ms,12.060,bench release depth=100 beam=5,required
+avg_pareto_us,2.787,bench release depth=100 beam=5,required
+
+entropy_per_depth_mean,1.332179070,trace depth=100,diagnostic
+unique_category_count_per_depth_mean,4.000000000,trace depth=100,diagnostic
+expanded_categories_count_mean,4.000000000,trace depth=100,diagnostic
+selected_rules_count_mean,24.300000000,trace depth=100,diagnostic
+
+zero_diversity_depth_count,95,trace depth=100,diagnostic
+zero_diversity_entropy_mean,1.332179070,trace depth=100,diagnostic
+zero_diversity_pareto_front_mean,4.957894737,trace depth=100,diagnostic
+
+compare_hard_balanced_diversity_mean,0.060964541,experiment3 reference,comparison
+compare_hard_balanced_pareto_mean,11.940000000,experiment3 reference,comparison
+compare_hard_balanced_avg_total_ms,26.871,experiment3 reference,comparison
+success_criterion_diversity_ge_0.01,fail,>=0.01,判定基準

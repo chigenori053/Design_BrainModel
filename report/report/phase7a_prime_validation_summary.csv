@@ -1,0 +1,15 @@
+section,item,value,target,pass,note
+config,dhm_memory_scope,k-nearest in time order,k-nearest in time order,yes,Phase 7A' simplification
+config,dhm_k,20,20,yes,fixed
+config,gamma,0.05,0.05,yes,fixed
+config,mu_fixed,0.05,0.05,yes,fixed
+config,trace_column_dhm_k,added,required,yes,trace now includes dhm_k
+metric,diversity_mean,0.015831920,>=0.02,no,from trace_depth100_phase7a_prime.csv
+metric,pareto_mean,9.390000000,between 5.344000000 and 8.016000000,no,phase6 baseline=6.680000000
+metric,lambda_variance,0.038010458,<= 0.054502356,yes,phase6 baseline=0.041924889
+metric,avg_total_ms,120.770,<= 86.000,no,bench depth=100 beam=5 iter=20 warmup=3
+metric,dhm_build_us_mean,4.262490022,monitor,na,from trace_depth100_phase7a_prime.csv
+metric,field_rejected_count_mean,20.150000000,monitor,na,from trace_depth100_phase7a_prime.csv
+metric,dhm_k_mean,20.000,=20.000,yes,from trace_depth100_phase7a_prime.csv
+metric,dhm_ratio,0.0037,monitor,na,from bench_phase7a_prime.txt
+gate,stability_tests,pass,must pass,yes,cargo test -p agent_core --test stability_tests

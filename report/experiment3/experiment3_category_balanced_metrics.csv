@@ -1,0 +1,23 @@
+metric,value,condition,note
+seed,42,fixed,
+depth,100,fixed,
+beam,5,fixed,
+mode,baseline_off+category_balanced_m1,fixed,DHM/Field距離/DiversityPressure OFF
+
+diversity_mean,0.060964541,trace depth=100,required
+diversity_min,0.000000000,trace depth=100,required
+pareto_mean,11.940000000,trace depth=100,required
+lambda_variance,0.025713207,trace depth=100,required
+
+avg_total_ms,26.871,bench release depth=100 beam=5,required
+avg_pareto_us,6.238,bench release depth=100 beam=5,required
+avg_per_depth_ms,0.269,bench release depth=100 beam=5,reference
+avg_field_us,123.943,bench release depth=100 beam=5,reference
+
+expanded_categories_count_mean,6.000000000,trace depth=100,added_log
+selected_rules_count_mean,28.020000000,trace depth=100,added_log
+per_category_selected_mode,"ConstraintPropagation:5|Cost:5|Performance:5|Refactor:5|Reliability:5|Structural:5",trace depth=100,added_log
+
+baseline_diversity_mean_experiment2,0.002648081,trace depth=100,comparison
+improvement_diversity_delta,0.058316460,vs baseline,comparison
+success_criterion_diversity_ge_0.01,pass,>=0.01,判定基準

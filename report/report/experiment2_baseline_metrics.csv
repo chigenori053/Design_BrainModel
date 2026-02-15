@@ -1,0 +1,16 @@
+metric,value,condition,assessment
+seed,42,fixed,ok
+depth,100,fixed,ok
+beam,5,fixed,ok
+diversity_mean,0.002648081,trace depth=100,measured
+diversity_min,0.000000000,trace depth=100,measured
+pareto_mean,5.750000000,trace depth=100,measured
+lambda_variance,0.031655089,trace depth=100,measured
+field_rejected_count_mean,0.000000000,expected 0,pass
+avg_total_ms,21.836,bench release depth=100 beam=5,measured
+avg_per_depth_ms,0.218,bench release depth=100 beam=5,measured
+avg_pareto_us,6.318,bench release depth=100 beam=5,measured
+avg_field_us,92.024,bench release depth=100 beam=5,measured
+case_A_diversity_low,yes,0.002-0.005 range,matched
+case_B_diversity_high,no,>=0.02,not_matched
+case_C_perf_lt70ms,yes,<70ms,matched

@@ -1,0 +1,16 @@
+=== Bench Result ===
+depth: 100
+beam: 5
+iterations: 20
+avg_total_ms: 21.836
+avg_per_depth_ms: 0.218
+avg_field_us: 92.024
+avg_resonance_us: 5.079
+avg_chm_us: 28.004
+avg_dhm_us: 0.000
+avg_pareto_us: 6.318
+avg_lambda_us: 0.016
+lambda_final: 0.000000
+resonance_ratio: 0.0386
+chm_ratio: 0.2131
+dhm_ratio: 0.0000
