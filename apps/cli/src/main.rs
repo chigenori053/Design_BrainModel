@@ -696,12 +696,12 @@ fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
 
 fn render_csv(rows: &[TraceRow]) -> String {
     let mut out = String::from(
-        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode\n",
+        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls\n",
     );
 
     for row in rows {
         out.push_str(&format!(
-            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},\"{}\"\n",
+            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},\"{}\",{},{},{:.9},{:.9},{:.9},{:.9},{},{}\n",
             row.depth,
             row.lambda,
             row.delta_lambda,
@@ -750,6 +750,14 @@ fn render_csv(rows: &[TraceRow]) -> String {
             row.median_nn_dist_all_depth,
             row.collapse_flag,
             row.normalization_mode,
+            row.unique_norm_vec_count,
+            row.norm_dim_mad_zero_count,
+            row.mean_nn_dist_raw,
+            row.mean_nn_dist_norm,
+            row.pareto_spacing_raw,
+            row.pareto_spacing_norm,
+            row.distance_calls,
+            row.nn_distance_calls,
         ));
     }
 

@@ -1,0 +1,4 @@
+variant,depth_count,collapse_depth_count,collapse_ratio,mean_nn_dist_mean,spacing_mean,pareto_front_size_mean,high_corr_multi_pair_depth_count
+Base,100,0,0.000000,721.013195311,2468.996714013,10.410000000,69
+Delta,100,44,0.440000,661.450384344,1801.022784418,10.790000000,46
+Ortho,100,85,0.850000,765.816473516,2701.491401127,14.590000000,0

@@ -1,6 +1,11 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
+
+pub static DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+pub static NN_DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
+
 
 mod diversity;
 
@@ -167,6 +172,14 @@ pub struct TraceRow {
     pub median_nn_dist_all_depth: f32,
     pub collapse_flag: bool,
     pub normalization_mode: String,
+    pub unique_norm_vec_count: usize,
+    pub norm_dim_mad_zero_count: usize,
+    pub mean_nn_dist_raw: f32,
+    pub mean_nn_dist_norm: f32,
+    pub pareto_spacing_raw: f32,
+    pub pareto_spacing_norm: f32,
+    pub distance_calls: usize,
+    pub nn_distance_calls: usize,
 }
 
 impl Default for TraceRow {
@@ -220,6 +233,14 @@ impl Default for TraceRow {
             median_nn_dist_all_depth: 0.0,
             collapse_flag: false,
             normalization_mode: String::new(),
+            unique_norm_vec_count: 0,
+            norm_dim_mad_zero_count: 0,
+            mean_nn_dist_raw: 0.0,
+            mean_nn_dist_norm: 0.0,
+            pareto_spacing_raw: 0.0,
+            pareto_spacing_norm: 0.0,
+            distance_calls: 0,
+            nn_distance_calls: 0,
         }
     }
 }
@@ -282,10 +303,12 @@ pub struct ObjectiveRaw(pub [f64; 4]);
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveNorm(pub [f64; 4]);
 
-#[derive(Clone, Copy, Debug, PartialEq)]
-struct GlobalRobustStats {
-    median: [f64; 4],
-    mad: [f64; 4],
+#[derive(Clone, Debug, PartialEq)]
+pub struct GlobalRobustStats {
+    pub median: [f64; 4],
+    pub mad: [f64; 4],
+    pub active_dims: [bool; 4],
+    pub mad_zero_count: usize,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -631,7 +654,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             continue;
         }
 
-        let normalized = normalize_by_depth(filtered_candidates);
+        let (normalized, stats) = normalize_by_depth(filtered_candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -691,6 +714,14 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
 
         let diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
         depth_boundary_diversity = diversity;
+
+        let front_norm_objs: Vec<ObjectiveNorm> = front
+            .iter()
+            .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
+            .collect();
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+
         rows.push(TraceRow {
             depth,
             lambda: log.lambda_new as f32,
@@ -722,14 +753,32 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             entropy_per_depth: 0.0,
             unique_category_count_per_depth: 0,
             pareto_front_size_per_depth: front.len(),
-            pareto_mean_nn_dist: 0.0,
+            pareto_mean_nn_dist: 0.0, // Replaced below
             pareto_spacing: 0.0,
             pareto_hv_2d: 0.0,
             field_extract_us: 0.0,
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
-            ..TraceRow::default()
+            norm_median_0: stats.median[0] as f32,
+            norm_median_1: stats.median[1] as f32,
+            norm_median_2: stats.median[2] as f32,
+            norm_median_3: stats.median[3] as f32,
+            norm_mad_0: stats.mad[0] as f32,
+            norm_mad_1: stats.mad[1] as f32,
+            norm_mad_2: stats.mad[2] as f32,
+            norm_mad_3: stats.mad[3] as f32,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: front.len() == 1 || pareto_mean_nn == 0.0,
+            normalization_mode: "robust_v2".to_string(),
+            unique_norm_vec_count,
+            norm_dim_mad_zero_count: stats.mad_zero_count,
+            mean_nn_dist_raw: 0.0,
+            mean_nn_dist_norm: pareto_mean_nn as f32,
+            pareto_spacing_raw: 0.0,
+            pareto_spacing_norm: 0.0,
+            distance_calls: 0,
+            nn_distance_calls: 0,
         });
 
         frontier = front
@@ -827,7 +876,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             continue;
         }
 
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -928,6 +977,13 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             stability_index(0.25, 0.25, 0.0, 0.0),
         );
 
+        let front_norm_objs: Vec<ObjectiveNorm> = front
+            .iter()
+            .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
+            .collect();
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+
         rows.push(TraceRow {
             depth,
             lambda: log.lambda_new as f32,
@@ -966,8 +1022,27 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
-            ..TraceRow::default()
+            norm_median_0: stats.median[0] as f32,
+            norm_median_1: stats.median[1] as f32,
+            norm_median_2: stats.median[2] as f32,
+            norm_median_3: stats.median[3] as f32,
+            norm_mad_0: stats.mad[0] as f32,
+            norm_mad_1: stats.mad[1] as f32,
+            norm_mad_2: stats.mad[2] as f32,
+            norm_mad_3: stats.mad[3] as f32,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: front.len() == 1 || pareto_mean_nn == 0.0,
+            normalization_mode: "robust_v2".to_string(),
+            unique_norm_vec_count,
+            norm_dim_mad_zero_count: stats.mad_zero_count,
+            mean_nn_dist_raw: 0.0,
+            mean_nn_dist_norm: pareto_mean_nn as f32,
+            pareto_spacing_raw: 0.0,
+            pareto_spacing_norm: 0.0,
+            distance_calls: 0,
+            nn_distance_calls: 0,
         });
+
 
         frontier = front
             .into_iter()
@@ -1071,7 +1146,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             continue;
         }
 
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1172,6 +1247,13 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             stability_index(0.25, 0.25, 0.0, 0.0),
         );
 
+        let front_norm_objs: Vec<ObjectiveNorm> = front
+            .iter()
+            .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
+            .collect();
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+
         rows.push(TraceRow {
             depth,
             lambda: log.lambda_new as f32,
@@ -1210,7 +1292,25 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
-            ..TraceRow::default()
+            norm_median_0: stats.median[0] as f32,
+            norm_median_1: stats.median[1] as f32,
+            norm_median_2: stats.median[2] as f32,
+            norm_median_3: stats.median[3] as f32,
+            norm_mad_0: stats.mad[0] as f32,
+            norm_mad_1: stats.mad[1] as f32,
+            norm_mad_2: stats.mad[2] as f32,
+            norm_mad_3: stats.mad[3] as f32,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: front.len() == 1 || pareto_mean_nn == 0.0,
+            normalization_mode: "robust_v2".to_string(),
+            unique_norm_vec_count,
+            norm_dim_mad_zero_count: stats.mad_zero_count,
+            mean_nn_dist_raw: 0.0,
+            mean_nn_dist_norm: pareto_mean_nn as f32,
+            pareto_spacing_raw: 0.0,
+            pareto_spacing_norm: 0.0,
+            distance_calls: 0,
+            nn_distance_calls: 0,
         });
 
         frontier = front
@@ -1253,6 +1353,8 @@ pub fn generate_trace_baseline_off_soft(
     let warmup_depths = 10usize;
 
     for depth in 1..=config.depth {
+        let calls_start = DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
+        let nn_calls_start = NN_DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
         let mu = 0.0f64;
         let target_field = build_target_field(&field, &shm, &frontier[0], lambda);
         let batch = build_soft_candidates_for_frontier(
@@ -1290,11 +1392,13 @@ pub fn generate_trace_baseline_off_soft(
             }
         }
         let stats = estimator
-            .frozen
+            .frozen.clone()
             .or_else(|| robust_stats_from_samples(&estimator.samples))
             .unwrap_or(GlobalRobustStats {
                 median: [0.0; 4],
                 mad: [1.0; 4],
+                active_dims: [true; 4],
+                mad_zero_count: 0,
             });
 
         let lambda_old = lambda;
@@ -1358,11 +1462,19 @@ pub fn generate_trace_baseline_off_soft(
                 median_nn_dist_all_depth: 0.0,
                 collapse_flag: false,
                 normalization_mode: "global_robust".to_string(),
+                unique_norm_vec_count: 0,
+                norm_dim_mad_zero_count: 0,
+                mean_nn_dist_raw: 0.0,
+                mean_nn_dist_norm: 0.0,
+                pareto_spacing_raw: 0.0,
+                pareto_spacing_norm: 0.0,
+                distance_calls: 0,
+                nn_distance_calls: 0,
             });
             continue;
         }
 
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1387,13 +1499,26 @@ pub fn generate_trace_baseline_off_soft(
 
         let front_norm = front
             .iter()
-            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), stats))
+            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), &stats))
             .collect::<Vec<_>>();
         let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
         let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm);
-        let pareto_spacing = spacing_norm(&front_norm);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm, &stats.active_dims);
+        let pareto_spacing = spacing_norm(&front_norm, &stats.active_dims);
         let pareto_hv_2d = pareto_hv_2d_norm(&front_norm);
+
+        let unique_norm_vec_count = count_unique_norm(&front_norm, &stats.active_dims);
+        let norm_dim_mad_zero_count = stats.mad.iter().filter(|&&m| m.abs() < 1e-9).count();
+
+        // Calculate raw metrics
+        let front_refs: Vec<&ObjectiveVector> = front.iter().map(|(_, o)| o).collect();
+        let pareto_mean_nn_raw = pareto_mean_nn_distance(&front_refs);
+        let pareto_spacing_raw = pareto_spacing_metric(&front_refs);
+
+        let calls_end = DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
+        let nn_calls_end = NN_DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
+        let distance_calls = calls_end.saturating_sub(calls_start);
+        let nn_distance_calls = nn_calls_end.saturating_sub(nn_calls_start);
 
         rows.push(TraceRow {
             depth,
@@ -1444,9 +1569,17 @@ pub fn generate_trace_baseline_off_soft(
             median_nn_dist_all_depth: 0.0,
             collapse_flag: false,
             normalization_mode: "global_robust".to_string(),
+            unique_norm_vec_count,
+            norm_dim_mad_zero_count,
+            mean_nn_dist_raw: pareto_mean_nn_raw as f32,
+            mean_nn_dist_norm: pareto_mean_nn as f32,
+            pareto_spacing_raw: pareto_spacing_raw as f32,
+            pareto_spacing_norm: pareto_spacing as f32,
+            distance_calls,
+            nn_distance_calls,
         });
 
-        frontier = select_beam_maxmin_norm(front, front_norm, config.beam.max(1))
+        frontier = select_beam_maxmin_norm(front, front_norm, config.beam.max(1), &stats.active_dims)
             .into_iter()
             .map(|(s, _)| s)
             .collect();
@@ -1946,7 +2079,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
             frontier = vec![trace_initial_state(seed)];
             continue;
         }
-        let normalized = normalize_by_depth(filtered_candidates);
+        let (normalized, _) = normalize_by_depth(filtered_candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2080,7 +2213,7 @@ fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64) -> BenchOnc
         }
 
         let t_pareto = Instant::now();
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2212,7 +2345,7 @@ fn run_bench_once_baseline_off_balanced(depth: usize, beam: usize, seed: u64, m:
         }
 
         let t_pareto = Instant::now();
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2346,11 +2479,13 @@ fn run_bench_once_baseline_off_soft(
             }
         }
         let stats = estimator
-            .frozen
+            .frozen.clone()
             .or_else(|| robust_stats_from_samples(&estimator.samples))
             .unwrap_or(GlobalRobustStats {
                 median: [0.0; 4],
                 mad: [1.0; 4],
+                active_dims: [true; 4],
+                mad_zero_count: 0,
             });
         if candidates.is_empty() {
             frontier = vec![trace_initial_state(seed)];
@@ -2358,7 +2493,7 @@ fn run_bench_once_baseline_off_soft(
         }
 
         let t_pareto = Instant::now();
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2378,7 +2513,7 @@ fn run_bench_once_baseline_off_soft(
         pareto_us_total += elapsed_us(t_pareto);
         let front_norm = front
             .iter()
-            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), stats))
+            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), &stats))
             .collect::<Vec<_>>();
 
         let entropy = shannon_entropy_from_counts(&batch.depth_category_counts);
@@ -2394,7 +2529,7 @@ fn run_bench_once_baseline_off_soft(
         );
         lambda_us_total += elapsed_us(t_lambda);
 
-        frontier = select_beam_maxmin_norm(front, front_norm, beam)
+        frontier = select_beam_maxmin_norm(front, front_norm, beam, &stats.active_dims)
             .into_iter()
             .map(|(s, _)| s)
             .collect();
@@ -2462,7 +2597,7 @@ impl<'a> BeamSearch<'a> {
                 break;
             }
 
-            let normalized = normalize_by_depth(candidates);
+            let (normalized, _) = normalize_by_depth(candidates);
 
             let mut pareto = ParetoFront::new();
             for (state, obj) in &normalized {
@@ -2783,54 +2918,204 @@ fn field_l2_distance(a: &FieldVector, b: &FieldVector) -> f64 {
     sum.sqrt()
 }
 
-fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> Vec<(DesignState, ObjectiveVector)> {
-    let mut min = ObjectiveVector {
-        f_struct: 1.0,
-        f_field: 1.0,
-        f_risk: 1.0,
-        f_cost: 1.0,
-    };
-    let mut max = ObjectiveVector {
-        f_struct: 0.0,
-        f_field: 0.0,
-        f_risk: 0.0,
-        f_cost: 0.0,
-    };
 
-    for (_, obj) in &candidates {
-        min.f_struct = min.f_struct.min(obj.f_struct);
-        min.f_field = min.f_field.min(obj.f_field);
-        min.f_risk = min.f_risk.min(obj.f_risk);
-        min.f_cost = min.f_cost.min(obj.f_cost);
-        max.f_struct = max.f_struct.max(obj.f_struct);
-        max.f_field = max.f_field.max(obj.f_field);
-        max.f_risk = max.f_risk.max(obj.f_risk);
-        max.f_cost = max.f_cost.max(obj.f_cost);
+
+fn median_absolute_deviation(sorted_values: &[f64], median: f64) -> f64 {
+    let mut devs: Vec<f64> = sorted_values.iter().map(|v| (v - median).abs()).collect();
+    devs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    devs[devs.len() / 2]
+}
+
+fn normalize_with_mad(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(DesignState, ObjectiveVector)>, usize) {
+    if candidates.is_empty() {
+        return (candidates, 0);
     }
 
-    candidates
+    let n = candidates.len();
+    let mut f_structs: Vec<f64> = candidates.iter().map(|(_, o)| o.f_struct).collect();
+    let mut f_fields: Vec<f64> = candidates.iter().map(|(_, o)| o.f_field).collect();
+    let mut f_risks: Vec<f64> = candidates.iter().map(|(_, o)| o.f_risk).collect();
+    let mut f_costs: Vec<f64> = candidates.iter().map(|(_, o)| o.f_cost).collect();
+
+    f_structs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    f_fields.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    f_risks.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    f_costs.sort_by(|a, b| a.partial_cmp(b).unwrap());
+
+    let median_struct = f_structs[n / 2];
+    let median_field = f_fields[n / 2];
+    let median_risk = f_risks[n / 2];
+    let median_cost = f_costs[n / 2];
+
+    let mad_struct = median_absolute_deviation(&f_structs, median_struct);
+    let mad_field = median_absolute_deviation(&f_fields, median_field);
+    let mad_risk = median_absolute_deviation(&f_risks, median_risk);
+    let mad_cost = median_absolute_deviation(&f_costs, median_cost);
+
+    let mad_floor = 1e-9;
+    let mut mad_zero_count = 0;
+    if mad_struct < mad_floor { mad_zero_count += 1; }
+    if mad_field < mad_floor { mad_zero_count += 1; }
+    if mad_risk < mad_floor { mad_zero_count += 1; }
+    if mad_cost < mad_floor { mad_zero_count += 1; }
+
+    let norm_struct_mad = mad_struct.max(mad_floor);
+    let norm_field_mad = mad_field.max(mad_floor);
+    let norm_risk_mad = mad_risk.max(mad_floor);
+    let norm_cost_mad = mad_cost.max(mad_floor);
+
+    let normalized = candidates.into_iter().map(|(s, o)| {
+        (s, ObjectiveVector {
+            f_struct: (o.f_struct - median_struct) / norm_struct_mad,
+            f_field: (o.f_field - median_field) / norm_field_mad,
+            f_risk: (o.f_risk - median_risk) / norm_risk_mad,
+            f_cost: (o.f_cost - median_cost) / norm_cost_mad,
+        })
+    }).collect();
+
+    (normalized, mad_zero_count)
+}
+
+fn calculate_pareto_metrics(vectors: &[(StateId, ObjectiveVector)]) -> (f32, f32, usize) {
+    if vectors.len() < 2 {
+        return (0.0, 0.0, vectors.len());
+    }
+
+    let mut nn_dists = Vec::new();
+    let mut unique_vecs: Vec<ObjectiveVector> = Vec::new();
+
+    for (_, v) in vectors {
+         let mut found = false;
+         for existing in &unique_vecs {
+             if objective_distance(v, existing) < 1e-9 {
+                 found = true;
+                 break;
+             }
+         }
+         if !found {
+             unique_vecs.push(v.clone());
+         }
+    }
+    
+    // We calculate NN on the Full set or Unique set? 
+    // Spec: "mean_nn_dist_raw: raw space NN dist", "unique_norm_vec_count: unique count".
+    // Usually NN is calculated on the unique set to avoid 0 distance.
+    // If we have duplicates, NN distance would be 0, which might trigger Case B or others.
+    // Spec Case B: unique_norm_vec_count > 1 AND mean_nn_dist_norm == 0.
+    // If we have distinct clusters but duplicates within clusters, valid NN might be 0.
+    // But "NN calculation implementation inconsistency" suggests we should handle this.
+    // I will calculate NN on the provided vectors, allowing 0 if duplicates exist,
+    // BUT `unique_norm_vec_count` will detect strict degeneration.
+    // However, if unique_norm > 1 and mean_nn == 0, it means *everyone* has a duplicate 
+    // OR the calculation is wrong.
+    // Let's stick to calculating on `vectors` as is.
+    
+    for i in 0..vectors.len() {
+        let mut min_dist = f64::MAX;
+        for j in 0..vectors.len() {
+            if i == j { continue; }
+            let d = objective_distance(&vectors[i].1, &vectors[j].1);
+            if d < min_dist {
+                min_dist = d;
+            }
+        }
+        NN_DISTANCE_CALL_COUNT.fetch_add(vectors.len() - 1, Ordering::Relaxed);
+        nn_dists.push(min_dist);
+    }
+
+    let mean_nn = if nn_dists.is_empty() { 0.0 } else { nn_dists.iter().sum::<f64>() / nn_dists.len() as f64 };
+    
+    // Spacing
+    let variance = if nn_dists.is_empty() { 0.0 } else { nn_dists.iter().map(|d| (d - mean_nn).powi(2)).sum::<f64>() / nn_dists.len() as f64 };
+    let spacing = variance.sqrt();
+
+    (mean_nn as f32, spacing as f32, unique_vecs.len())
+}
+
+fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(DesignState, ObjectiveVector)>, GlobalRobustStats) {
+    if candidates.is_empty() {
+        return (Vec::new(), GlobalRobustStats {
+            median: [0.0; 4],
+            mad: [1.0; 4],
+            active_dims: [true; 4],
+            mad_zero_count: 0,
+        });
+    }
+
+    let n = candidates.len();
+    let mut structs = Vec::with_capacity(n);
+    let mut fields = Vec::with_capacity(n);
+    let mut risks = Vec::with_capacity(n);
+    let mut costs = Vec::with_capacity(n);
+
+    for (_, obj) in &candidates {
+        structs.push(obj.f_struct);
+        fields.push(obj.f_field);
+        risks.push(obj.f_risk);
+        costs.push(obj.f_cost);
+    }
+
+    let med_s = median(structs.clone());
+    let med_f = median(fields.clone());
+    let med_r = median(risks.clone());
+    let med_c = median(costs.clone());
+
+    let mad_s = compute_mad(&structs, med_s);
+    let mad_f = compute_mad(&fields, med_f);
+    let mad_r = compute_mad(&risks, med_r);
+    let mad_c = compute_mad(&costs, med_c);
+
+    let eps_mad = 1e-12;
+    let eps_small = 1e-9;
+
+    let active = [
+        mad_s > eps_mad,
+        mad_f > eps_mad,
+        mad_r > eps_mad,
+        mad_c > eps_mad,
+    ];
+    let mad = [mad_s, mad_f, mad_r, mad_c];
+    let median = [med_s, med_f, med_r, med_c];
+    let mad_zero_count = active.iter().filter(|&&a| !a).count();
+
+    let stats = GlobalRobustStats {
+        median,
+        mad,
+        active_dims: active,
+        mad_zero_count,
+    };
+
+    let normalized = candidates
         .into_iter()
         .map(|(state, obj)| {
+            let mut f = [0.0; 4];
+            let raw = [obj.f_struct, obj.f_field, obj.f_risk, obj.f_cost];
+            for i in 0..4 {
+                if active[i] {
+                    let safe_mad = if mad[i] < eps_small { eps_small } else { mad[i] };
+                    f[i] = (raw[i] - median[i]) / safe_mad;
+                } else {
+                    f[i] = 0.0;
+                }
+            }
             (
                 state,
                 ObjectiveVector {
-                    f_struct: norm(obj.f_struct, min.f_struct, max.f_struct),
-                    f_field: norm(obj.f_field, min.f_field, max.f_field),
-                    f_risk: norm(obj.f_risk, min.f_risk, max.f_risk),
-                    f_cost: norm(obj.f_cost, min.f_cost, max.f_cost),
+                    f_struct: f[0],
+                    f_field: f[1],
+                    f_risk: f[2],
+                    f_cost: f[3],
                 },
             )
         })
-        .collect()
+        .collect();
+
+    (normalized, stats)
 }
 
-fn norm(value: f64, min: f64, max: f64) -> f64 {
-    let denom = max - min;
-    if denom.abs() < 1e-12 {
-        1.0
-    } else {
-        ((value - min) / denom).clamp(0.0, 1.0)
-    }
+fn compute_mad(values: &[f64], med: f64) -> f64 {
+    let diffs: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
+    median(diffs)
 }
 
 fn deterministic_state_id(
@@ -3351,6 +3636,7 @@ fn update_lambda_entropy(
 }
 
 fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
+    DISTANCE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
     let ds = a.f_struct - b.f_struct;
     let df = a.f_field - b.f_field;
     let dr = a.f_risk - b.f_risk;
@@ -3362,6 +3648,7 @@ fn pareto_mean_nn_distance(front: &[&ObjectiveVector]) -> f64 {
     if front.len() < 2 {
         return 0.0;
     }
+    NN_DISTANCE_CALL_COUNT.fetch_add(front.len() * (front.len() - 1), Ordering::Relaxed);
     let mut sum = 0.0;
     for (i, obj) in front.iter().enumerate() {
         let mut best = f64::INFINITY;
@@ -3659,36 +3946,60 @@ fn robust_stats_from_samples(samples: &[ObjectiveRaw]) -> Option<GlobalRobustSta
     }
     let mut med = [0.0; 4];
     let mut mad = [0.0; 4];
+    let mut active = [true; 4];
+    let eps_mad = 1e-12;
+
     for i in 0..4 {
         let col = samples.iter().map(|v| v.0[i]).collect::<Vec<_>>();
         med[i] = median(col.clone());
-        let abs_dev = col.iter().map(|x| (x - med[i]).abs()).collect::<Vec<_>>();
-        mad[i] = median(abs_dev);
+        mad[i] = compute_mad(&col, med[i]);
+        active[i] = mad[i] > eps_mad;
     }
-    Some(GlobalRobustStats { median: med, mad })
+    let mad_zero_count = active.iter().filter(|&&a| !a).count();
+
+    Some(GlobalRobustStats {
+        median: med,
+        mad,
+        active_dims: active,
+        mad_zero_count,
+    })
 }
 
-fn normalize_objective(raw: &ObjectiveRaw, stats: GlobalRobustStats) -> ObjectiveNorm {
-    let eps = 1e-6;
+fn normalize_objective(raw: &ObjectiveRaw, stats: &GlobalRobustStats) -> ObjectiveNorm {
+    let eps_small = 1e-9;
     let mut out = [0.0; 4];
     for i in 0..4 {
-        out[i] = ((raw.0[i] - stats.median[i]) / (stats.mad[i] + eps)).clamp(-20.0, 20.0);
+        if stats.active_dims[i] {
+            let safe_mad = if stats.mad[i] < eps_small { eps_small } else { stats.mad[i] };
+            out[i] = (raw.0[i] - stats.median[i]) / safe_mad;
+        } else {
+            out[i] = 0.0;
+        }
     }
     ObjectiveNorm(out)
 }
 
-fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm) -> f64 {
+fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm, active_dims: &[bool; 4]) -> f64 {
+    DISTANCE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
     let mut s = 0.0;
+    let mut count = 0;
     for i in 0..4 {
-        s += (a.0[i] - b.0[i]).powi(2);
+        if active_dims[i] {
+            s += (a.0[i] - b.0[i]).powi(2);
+            count += 1;
+        }
     }
-    s.sqrt()
+    if count == 0 {
+        return 0.0;
+    }
+    s.sqrt() / (count as f64).sqrt()
 }
 
-fn mean_nn_dist_norm(vs: &[ObjectiveNorm]) -> f64 {
+fn mean_nn_dist_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
     if vs.len() < 2 {
         return 0.0;
     }
+    NN_DISTANCE_CALL_COUNT.fetch_add(vs.len() * (vs.len() - 1), Ordering::Relaxed);
     let mut sum = 0.0;
     for (i, v) in vs.iter().enumerate() {
         let mut best = f64::INFINITY;
@@ -3696,7 +4007,7 @@ fn mean_nn_dist_norm(vs: &[ObjectiveNorm]) -> f64 {
             if i == j {
                 continue;
             }
-            best = best.min(norm_distance(v, u));
+            best = best.min(norm_distance(v, u, active_dims));
         }
         if best.is_finite() {
             sum += best;
@@ -3705,7 +4016,17 @@ fn mean_nn_dist_norm(vs: &[ObjectiveNorm]) -> f64 {
     sum / vs.len() as f64
 }
 
-fn spacing_norm(vs: &[ObjectiveNorm]) -> f64 {
+fn count_unique_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> usize {
+    let mut unique: Vec<&ObjectiveNorm> = Vec::new();
+    for v in vs {
+        if !unique.iter().any(|u| norm_distance(v, u, active_dims) < 1e-9) {
+            unique.push(v);
+        }
+    }
+    unique.len()
+}
+
+fn spacing_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
     if vs.len() < 2 {
         return 0.0;
     }
@@ -3716,7 +4037,7 @@ fn spacing_norm(vs: &[ObjectiveNorm]) -> f64 {
             if i == j {
                 continue;
             }
-            best = best.min(norm_distance(v, u));
+            best = best.min(norm_distance(v, u, active_dims));
         }
         if best.is_finite() {
             nn.push(best);
@@ -3772,6 +4093,7 @@ fn select_beam_maxmin_norm(
     front: Vec<(DesignState, ObjectiveVector)>,
     norms: Vec<ObjectiveNorm>,
     beam: usize,
+    active_dims: &[bool; 4],
 ) -> Vec<(DesignState, ObjectiveVector)> {
     if front.is_empty() {
         return Vec::new();
@@ -3799,7 +4121,7 @@ fn select_beam_maxmin_norm(
             }
             let dmin = selected_idx
                 .iter()
-                .map(|j| norm_distance(&norms[i], &norms[*j]))
+                .map(|j| norm_distance(&norms[i], &norms[*j], active_dims))
                 .fold(f64::INFINITY, f64::min);
             if dmin > best_d {
                 best_d = dmin;
@@ -4022,7 +4344,7 @@ mod tests {
             ),
         ];
 
-        let normalized = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates);
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_struct)));
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_field)));
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_risk)));
