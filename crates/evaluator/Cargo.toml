@@ -4,5 +4,6 @@ version = "1.0.0"
 edition = "2024"
 
 [dependencies]
+core_types = { workspace = true }
 memory_space = { workspace = true }
 field_engine = { workspace = true }

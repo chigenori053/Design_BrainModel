@@ -1,8 +1,9 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 use chm::Chm;
-use evaluator::{Evaluator, ObjectiveVector, StructuralEvaluator};
+use core_types::{stability_index as core_stability_index, ObjectiveVector, P_INFER_ALPHA, P_INFER_BETA, P_INFER_GAMMA};
+use evaluator::{Evaluator, StructuralEvaluator};
 use field_engine::{resonance_score, FieldEngine, FieldVector, NodeCategory, TargetField};
 use memory_space::{DesignNode, DesignState, StateId, StructuralGraph, Uuid, Value};
 use profile::PreferenceProfile;
@@ -113,6 +114,28 @@ pub struct Phase45Log {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct TraceRow {
+    pub depth: usize,
+    pub lambda: f32,
+    pub delta_lambda: f32,
+    pub tau_prime: f32,
+    pub conf_chm: f32,
+    pub density: f32,
+    pub k: usize,
+    pub h_profile: f32,
+    pub pareto_size: usize,
+    pub diversity: f32,
+    pub resonance_avg: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TraceRunConfig {
+    pub depth: usize,
+    pub beam: usize,
+    pub seed: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct Phase45Controller {
     lambda: f64,
     k: usize,
@@ -130,7 +153,7 @@ impl Phase45Controller {
             k: 3,
             tau: 0.2,
             eta: 0.2,
-            gain: 1.0,
+            gain: 0.9,
             cooldown_depths: 2,
             next_allowed_update_depth: 0,
         }
@@ -184,7 +207,8 @@ impl Phase45Controller {
         };
 
         let h = profile_modulation(stability_index);
-        let tau_prime = self.tau * (0.1 + 0.6 * conf_chm * conf_chm) * h;
+        let tau_prime_raw = self.tau * (0.1 + 0.6 * conf_chm * conf_chm) * h;
+        let tau_prime = tau_prime_raw.clamp(0.1 * self.tau, 0.7 * self.tau);
 
         Phase45Log {
             depth,
@@ -201,6 +225,137 @@ impl Phase45Controller {
             stability_index,
         }
     }
+}
+
+pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, config.seed);
+    let field = FieldEngine::new(256);
+    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
+
+    let mut controller = Phase45Controller::new(0.5);
+    let mut profile = PreferenceProfile {
+        struct_weight: 0.25,
+        field_weight: 0.25,
+        risk_weight: 0.25,
+        cost_weight: 0.25,
+    };
+    let mut frontier = vec![trace_initial_state(config.seed)];
+    let mut rows = Vec::with_capacity(config.depth);
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    for depth in 1..=config.depth {
+        controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
+
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            for rule in shm.applicable_rules(state) {
+                let new_state = apply_atomic(rule, state);
+                let obj = evaluator.evaluate(&new_state);
+                candidates.push((new_state, obj));
+            }
+        }
+
+        if candidates.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+            });
+            continue;
+        }
+
+        let normalized = normalize_by_depth(candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+
+        let target_field = build_target_field(&field, &shm, &front[0].0, controller.lambda());
+        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
+
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| {
+                let r = resonance_score(&field.aggregate_state(&front[0].0), &target_field);
+                (o.f_struct + r) * 0.5
+            })
+            .sum::<f64>()
+            / front.len() as f64;
+
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let log = controller.update_depth(
+            depth,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+
+        let diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        rows.push(TraceRow {
+            depth,
+            lambda: log.lambda_new as f32,
+            delta_lambda: log.delta_lambda as f32,
+            tau_prime: log.tau_prime as f32,
+            conf_chm: log.conf_chm as f32,
+            density: log.density as f32,
+            k: log.k,
+            h_profile: profile_modulation(log.stability_index) as f32,
+            pareto_size: front.len(),
+            diversity: diversity as f32,
+            resonance_avg: resonance_avg as f32,
+        });
+
+        frontier = front
+            .into_iter()
+            .take(config.beam.max(1))
+            .map(|(s, _)| s)
+            .collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(config.seed)];
+        }
+
+        profile = p_inferred(&profile, &profile, &profile, &profile);
+    }
+
+    rows
 }
 
 pub struct BeamSearch<'a> {
@@ -620,10 +775,10 @@ pub fn p_inferred(
     prev: &PreferenceProfile,
 ) -> PreferenceProfile {
     let raw = PreferenceProfile {
-        struct_weight: 0.4 * p_shm.struct_weight + 0.3 * p_pareto.struct_weight + 0.3 * p_chm.struct_weight,
-        field_weight: 0.4 * p_shm.field_weight + 0.3 * p_pareto.field_weight + 0.3 * p_chm.field_weight,
-        risk_weight: 0.4 * p_shm.risk_weight + 0.3 * p_pareto.risk_weight + 0.3 * p_chm.risk_weight,
-        cost_weight: 0.4 * p_shm.cost_weight + 0.3 * p_pareto.cost_weight + 0.3 * p_chm.cost_weight,
+        struct_weight: P_INFER_ALPHA * p_shm.struct_weight + P_INFER_BETA * p_pareto.struct_weight + P_INFER_GAMMA * p_chm.struct_weight,
+        field_weight: P_INFER_ALPHA * p_shm.field_weight + P_INFER_BETA * p_pareto.field_weight + P_INFER_GAMMA * p_chm.field_weight,
+        risk_weight: P_INFER_ALPHA * p_shm.risk_weight + P_INFER_BETA * p_pareto.risk_weight + P_INFER_GAMMA * p_chm.risk_weight,
+        cost_weight: P_INFER_ALPHA * p_shm.cost_weight + P_INFER_BETA * p_pareto.cost_weight + P_INFER_GAMMA * p_chm.cost_weight,
     }
     .normalized();
 
@@ -652,7 +807,7 @@ pub fn stability_index(
     experimental: f64,
     rapid_prototype: f64,
 ) -> f64 {
-    (high_reliability + safety_critical - experimental - rapid_prototype).clamp(-1.0, 1.0)
+    core_stability_index(high_reliability, safety_critical, experimental, rapid_prototype)
 }
 
 pub fn chm_density(n_edge_obs: usize, category_count: usize) -> f64 {
@@ -667,6 +822,64 @@ pub fn profile_modulation(stability_index: f64) -> f64 {
     let s = stability_index.clamp(-1.0, 1.0);
     let sigma = 1.0 / (1.0 + (-1.5 * s).exp());
     0.85 + (1.20 - 0.85) * sigma
+}
+
+fn make_dense_trace_chm(shm: &Shm, seed: u64) -> Chm {
+    let mut chm = Chm::default();
+    let ids: Vec<Uuid> = shm.rules.iter().map(|r| r.id).collect();
+    for (i, from) in ids.iter().enumerate() {
+        for (j, to) in ids.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            chm.insert_edge(*from, *to, pseudo_strength(seed, *from, *to));
+        }
+    }
+    chm
+}
+
+fn pseudo_strength(seed: u64, a: Uuid, b: Uuid) -> f64 {
+    let mut x = seed ^ (a.as_u128() as u64).wrapping_mul(0x9e3779b97f4a7c15);
+    x ^= (b.as_u128() as u64).wrapping_mul(0xD1B54A32D192ED03);
+    x ^= x >> 33;
+    x = x.wrapping_mul(0xff51afd7ed558ccd);
+    let frac = (x as f64) / (u64::MAX as f64);
+    frac * 2.0 - 1.0
+}
+
+fn trace_initial_state(seed: u64) -> DesignState {
+    let mut graph = StructuralGraph::default();
+    let categories = ["Interface", "Storage", "Network", "Compute", "Control"];
+    for i in 0..6u128 {
+        let mut attrs = BTreeMap::new();
+        attrs.insert("seed".to_string(), Value::Int(seed as i64 + i as i64));
+        attrs.insert(
+            "category".to_string(),
+            Value::Text(categories[(i as usize) % categories.len()].to_string()),
+        );
+        graph = graph.with_node_added(DesignNode::new(Uuid::from_u128(100 + i), format!("N{i}"), attrs));
+    }
+    for i in 0..5u128 {
+        graph = graph.with_edge_added(Uuid::from_u128(100 + i), Uuid::from_u128(101 + i));
+    }
+    DesignState::new(Uuid::from_u128(42), Arc::new(graph), "history:")
+}
+
+fn moving_average_tail(v: &[f64], k: usize) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let start = v.len().saturating_sub(k);
+    let slice = &v[start..];
+    slice.iter().sum::<f64>() / slice.len() as f64
+}
+
+fn variance(v: &[f64]) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    let mean = v.iter().sum::<f64>() / v.len() as f64;
+    v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64
 }
 
 fn select_k_with_hysteresis(prev_k: usize, stability_index: f64) -> usize {
@@ -735,7 +948,8 @@ mod tests {
     use std::sync::Arc;
 
     use chm::Chm;
-    use evaluator::{Evaluator, ObjectiveVector, StructuralEvaluator};
+    use core_types::ObjectiveVector;
+    use evaluator::{Evaluator, StructuralEvaluator};
     use field_engine::FieldEngine;
     use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid};
     use profile::PreferenceProfile;

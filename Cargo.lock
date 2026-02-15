@@ -7,6 +7,7 @@ name = "agent_core"
 version = "1.0.0"
 dependencies = [
  "chm",
+ "core_types",
  "evaluator",
  "field_engine",
  "memory_space",
@@ -27,9 +28,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "core_types"
+version = "1.0.0"
+
+[[package]]
 name = "design_cli"
 version = "0.1.0"
 dependencies = [
+ "agent_core",
  "interface_ui",
 ]
 
@@ -58,6 +64,7 @@ dependencies = [
 name = "evaluator"
 version = "1.0.0"
 dependencies = [
+ "core_types",
  "field_engine",
  "memory_space",
 ]
@@ -89,7 +96,7 @@ version = "0.4.0"
 name = "profile"
 version = "1.0.0"
 dependencies = [
- "evaluator",
+ "core_types",
 ]
 
 [[package]]

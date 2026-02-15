@@ -1,33 +1,6 @@
-use evaluator::ObjectiveVector;
+use core_types::ProfileVector;
 
-#[derive(Clone, Debug, PartialEq)]
-pub struct PreferenceProfile {
-    pub struct_weight: f64,
-    pub field_weight: f64,
-    pub risk_weight: f64,
-    pub cost_weight: f64,
-}
-
-impl PreferenceProfile {
-    pub fn normalized(self) -> Self {
-        let sum = (self.struct_weight + self.field_weight + self.risk_weight + self.cost_weight).max(1e-12);
-        Self {
-            struct_weight: self.struct_weight / sum,
-            field_weight: self.field_weight / sum,
-            risk_weight: self.risk_weight / sum,
-            cost_weight: self.cost_weight / sum,
-        }
-    }
-
-    pub fn score(&self, obj: &ObjectiveVector) -> f64 {
-        let n = self.clone().normalized();
-        (n.struct_weight * obj.f_struct
-            + n.field_weight * obj.f_field
-            + n.risk_weight * obj.f_risk
-            + n.cost_weight * obj.f_cost)
-            .clamp(0.0, 1.0)
-    }
-}
+pub type PreferenceProfile = ProfileVector;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ProfileSnapshot {
@@ -108,7 +81,7 @@ fn move_axis(current: f64, target: f64, max_delta: f64) -> f64 {
 
 #[cfg(test)]
 mod tests {
-    use evaluator::ObjectiveVector;
+    use core_types::ObjectiveVector;
 
     use crate::{blend_profiles, PreferenceProfile, ProfileManager};
 

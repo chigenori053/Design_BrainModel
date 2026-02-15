@@ -1,24 +1,6 @@
 use field_engine::{resonance_score, FieldEngine, TargetField};
+use core_types::ObjectiveVector;
 use memory_space::DesignState;
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct ObjectiveVector {
-    pub f_struct: f64,
-    pub f_field: f64,
-    pub f_risk: f64,
-    pub f_cost: f64,
-}
-
-impl ObjectiveVector {
-    pub fn clamped(self) -> Self {
-        Self {
-            f_struct: clamp01(self.f_struct),
-            f_field: clamp01(self.f_field),
-            f_risk: clamp01(self.f_risk),
-            f_cost: clamp01(self.f_cost),
-        }
-    }
-}
 
 pub trait Evaluator {
     fn evaluate(&self, state: &DesignState) -> ObjectiveVector;
