@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/agent_core",
+    "crates/brain_core",
+    "crates/chm",
+    "crates/evaluator",
+    "crates/field_engine",
+    "crates/profile",
+    "crates/shm",
+    "crates/memory_space",
+    "crates/num-complex",
+    "crates/runtime_vm",
+    "crates/interface_ui",
+    "apps/cli",
+    "apps/desktop",
+    "apps/server",
+    "apps/lsp"
+]
+resolver = "2"
+
+[workspace.dependencies]
+agent_core = { path = "crates/agent_core" }
+brain_core = { path = "crates/brain_core" }
+chm = { path = "crates/chm" }
+evaluator = { path = "crates/evaluator" }
+field_engine = { path = "crates/field_engine" }
+interface_ui = { path = "crates/interface_ui" }
+memory_space = { path = "crates/memory_space" }
+num-complex = { path = "crates/num-complex" }
+profile = { path = "crates/profile" }
+runtime_vm = { path = "crates/runtime_vm" }
+shm = { path = "crates/shm" }

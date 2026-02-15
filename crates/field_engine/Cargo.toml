@@ -1,0 +1,8 @@
+[package]
+name = "field_engine"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+memory_space = { workspace = true }
+num-complex = { workspace = true }

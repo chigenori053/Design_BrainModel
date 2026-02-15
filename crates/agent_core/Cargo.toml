@@ -1,0 +1,12 @@
+[package]
+name = "agent_core"
+version = "1.0.0"
+edition = "2024"
+
+[dependencies]
+memory_space = { workspace = true }
+shm = { workspace = true }
+chm = { workspace = true }
+evaluator = { workspace = true }
+field_engine = { workspace = true }
+profile = { workspace = true }
