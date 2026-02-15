@@ -1,0 +1,15 @@
+metric,value
+trace_rows,100
+diversity_mean,0.002618123
+diversity_min,0.000000000
+collapse_depth_count,79
+collapse_ratio,0.7900
+pareto_front_size_mean,9.400000
+mean_nn_dist_mean,1.229082304
+median_nn_dist_all_depth,2.884950638
+avg_total_ms,30.839
+avg_per_depth_ms,0.308
+avg_pareto_us,10.427
+lambda_final,0.224552
+previous_setA_avg_total_ms,17.225
+avg_total_ms_delta_pct,79.04

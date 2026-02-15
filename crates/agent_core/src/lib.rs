@@ -156,6 +156,142 @@ pub struct TraceRow {
     pub field_score_us: f32,
     pub field_aggregate_us: f32,
     pub field_total_us: f32,
+    pub norm_median_0: f32,
+    pub norm_median_1: f32,
+    pub norm_median_2: f32,
+    pub norm_median_3: f32,
+    pub norm_mad_0: f32,
+    pub norm_mad_1: f32,
+    pub norm_mad_2: f32,
+    pub norm_mad_3: f32,
+    pub median_nn_dist_all_depth: f32,
+    pub collapse_flag: bool,
+    pub normalization_mode: String,
+}
+
+impl Default for TraceRow {
+    fn default() -> Self {
+        Self {
+            depth: 0,
+            lambda: 0.0,
+            delta_lambda: 0.0,
+            tau_prime: 0.0,
+            conf_chm: 0.0,
+            density: 0.0,
+            k: 0,
+            h_profile: 0.0,
+            pareto_size: 0,
+            diversity: 0.0,
+            resonance_avg: 0.0,
+            pressure: 0.0,
+            epsilon_effect: 0.0,
+            target_local_weight: 0.0,
+            target_global_weight: 0.0,
+            local_global_distance: 0.0,
+            field_min_distance: 0.0,
+            field_rejected_count: 0,
+            mu: 0.0,
+            dhm_k: 0,
+            dhm_norm: 0.0,
+            dhm_resonance_mean: 0.0,
+            dhm_score_ratio: 0.0,
+            dhm_build_us: 0.0,
+            expanded_categories_count: 0,
+            selected_rules_count: 0,
+            per_category_selected: String::new(),
+            entropy_per_depth: 0.0,
+            unique_category_count_per_depth: 0,
+            pareto_front_size_per_depth: 0,
+            pareto_mean_nn_dist: 0.0,
+            pareto_spacing: 0.0,
+            pareto_hv_2d: 0.0,
+            field_extract_us: 0.0,
+            field_score_us: 0.0,
+            field_aggregate_us: 0.0,
+            field_total_us: 0.0,
+            norm_median_0: 0.0,
+            norm_median_1: 0.0,
+            norm_median_2: 0.0,
+            norm_median_3: 0.0,
+            norm_mad_0: 0.0,
+            norm_mad_1: 0.0,
+            norm_mad_2: 0.0,
+            norm_mad_3: 0.0,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: false,
+            normalization_mode: String::new(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Phase1Variant {
+    Base,
+    Delta,
+    Ortho { epsilon: f64 },
+}
+
+impl Phase1Variant {
+    fn name(self) -> &'static str {
+        match self {
+            Phase1Variant::Base => "Base",
+            Phase1Variant::Delta => "Delta",
+            Phase1Variant::Ortho { .. } => "Ortho",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Phase1Config {
+    pub depth: usize,
+    pub beam: usize,
+    pub seed: u64,
+    pub alpha: f64,
+    pub temperature: f64,
+    pub entropy_beta: f64,
+    pub lambda_min: f64,
+    pub lambda_target_entropy: f64,
+    pub lambda_k: f64,
+    pub lambda_ema: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Phase1RawRow {
+    pub variant: String,
+    pub depth: usize,
+    pub beam_index: usize,
+    pub rule_id: String,
+    pub objective_vector_raw: String,
+    pub objective_vector_norm: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct Phase1SummaryRow {
+    pub variant: String,
+    pub depth: usize,
+    pub corr_matrix_flat: String,
+    pub mean_nn_dist: f64,
+    pub spacing: f64,
+    pub pareto_front_size: usize,
+    pub collapse_flag: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectiveRaw(pub [f64; 4]);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ObjectiveNorm(pub [f64; 4]);
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct GlobalRobustStats {
+    median: [f64; 4],
+    mad: [f64; 4],
+}
+
+#[derive(Clone, Debug, Default)]
+struct GlobalRobustEstimator {
+    samples: Vec<ObjectiveRaw>,
+    frozen: Option<GlobalRobustStats>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -443,6 +579,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             continue;
         }
@@ -488,6 +625,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             frontier = vec![trace_initial_state(config.seed)];
             continue;
@@ -591,6 +729,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
+            ..TraceRow::default()
         });
 
         frontier = front
@@ -683,6 +822,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             continue;
         }
@@ -745,6 +885,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             frontier = vec![trace_initial_state(config.seed)];
             continue;
@@ -825,6 +966,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
+            ..TraceRow::default()
         });
 
         frontier = front
@@ -924,6 +1066,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             continue;
         }
@@ -986,6 +1129,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
                 field_score_us: 0.0,
                 field_aggregate_us: 0.0,
                 field_total_us: 0.0,
+                ..TraceRow::default()
             });
             frontier = vec![trace_initial_state(config.seed)];
             continue;
@@ -1066,6 +1210,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             field_score_us: 0.0,
             field_aggregate_us: 0.0,
             field_total_us: 0.0,
+            ..TraceRow::default()
         });
 
         frontier = front
@@ -1104,6 +1249,8 @@ pub fn generate_trace_baseline_off_soft(
     let mut lambda = 0.5f64;
     let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
     let mut field_cache_order: VecDeque<(u128, u128, usize, usize)> = VecDeque::new();
+    let mut estimator = GlobalRobustEstimator::default();
+    let warmup_depths = 10usize;
 
     for depth in 1..=config.depth {
         let mu = 0.0f64;
@@ -1133,6 +1280,23 @@ pub fn generate_trace_baseline_off_soft(
         let field_score_us = batch.field_score_us;
         let field_aggregate_us = batch.field_aggregate_us;
         let field_total_us = batch.field_total_us;
+
+        if depth <= warmup_depths {
+            estimator
+                .samples
+                .extend(candidates.iter().map(|(_, o)| ObjectiveRaw(obj_to_arr(o))));
+            if depth == warmup_depths {
+                estimator.frozen = robust_stats_from_samples(&estimator.samples);
+            }
+        }
+        let stats = estimator
+            .frozen
+            .or_else(|| robust_stats_from_samples(&estimator.samples))
+            .unwrap_or(GlobalRobustStats {
+                median: [0.0; 4],
+                mad: [1.0; 4],
+            });
+
         let lambda_old = lambda;
         lambda = update_lambda_entropy(
             lambda,
@@ -1183,6 +1347,17 @@ pub fn generate_trace_baseline_off_soft(
                 field_score_us: field_score_us as f32,
                 field_aggregate_us: field_aggregate_us as f32,
                 field_total_us: field_total_us as f32,
+                norm_median_0: stats.median[0] as f32,
+                norm_median_1: stats.median[1] as f32,
+                norm_median_2: stats.median[2] as f32,
+                norm_median_3: stats.median[3] as f32,
+                norm_mad_0: stats.mad[0] as f32,
+                norm_mad_1: stats.mad[1] as f32,
+                norm_mad_2: stats.mad[2] as f32,
+                norm_mad_3: stats.mad[3] as f32,
+                median_nn_dist_all_depth: 0.0,
+                collapse_flag: false,
+                normalization_mode: "global_robust".to_string(),
             });
             continue;
         }
@@ -1192,7 +1367,6 @@ pub fn generate_trace_baseline_off_soft(
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
         }
-
         let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
         let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
             .into_iter()
@@ -1207,55 +1381,19 @@ pub fn generate_trace_baseline_off_soft(
         front.dedup_by(|a, b| a.0.id == b.0.id);
 
         if front.is_empty() {
-            rows.push(TraceRow {
-                depth,
-                lambda: lambda as f32,
-                delta_lambda: (lambda - lambda_old) as f32,
-                tau_prime: 0.0,
-                conf_chm: 0.0,
-                density: 0.0,
-                k: 0,
-                h_profile: 1.0,
-                pareto_size: 0,
-                diversity: 0.0,
-                resonance_avg: 0.0,
-                pressure: 0.0,
-                epsilon_effect: 0.0,
-                target_local_weight: 0.0,
-                target_global_weight: 0.0,
-                local_global_distance: 0.0,
-                field_min_distance: 0.0,
-                field_rejected_count: 0,
-                mu: mu as f32,
-                dhm_k: 0,
-                dhm_norm: 0.0,
-                dhm_resonance_mean: 0.0,
-                dhm_score_ratio: 1.0,
-                dhm_build_us: 0.0,
-                expanded_categories_count,
-                selected_rules_count: depth_selected_rules_count,
-                per_category_selected,
-                entropy_per_depth,
-                unique_category_count_per_depth: expanded_categories_count,
-                pareto_front_size_per_depth: 0,
-                pareto_mean_nn_dist: 0.0,
-                pareto_spacing: 0.0,
-                pareto_hv_2d: 0.0,
-                field_extract_us: field_extract_us as f32,
-                field_score_us: field_score_us as f32,
-                field_aggregate_us: field_aggregate_us as f32,
-                field_total_us: field_total_us as f32,
-            });
             frontier = vec![trace_initial_state(config.seed)];
             continue;
         }
 
+        let front_norm = front
+            .iter()
+            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), stats))
+            .collect::<Vec<_>>();
         let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
         let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
-        let front_objs = front.iter().map(|(_, o)| o).collect::<Vec<_>>();
-        let pareto_mean_nn = pareto_mean_nn_distance(&front_objs);
-        let pareto_spacing = pareto_spacing_metric(&front_objs);
-        let pareto_hv_2d = pareto_hv_2d_metric(&front_objs);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm);
+        let pareto_spacing = spacing_norm(&front_norm);
+        let pareto_hv_2d = pareto_hv_2d_norm(&front_norm);
 
         rows.push(TraceRow {
             depth,
@@ -1295,11 +1433,21 @@ pub fn generate_trace_baseline_off_soft(
             field_score_us: field_score_us as f32,
             field_aggregate_us: field_aggregate_us as f32,
             field_total_us: field_total_us as f32,
+            norm_median_0: stats.median[0] as f32,
+            norm_median_1: stats.median[1] as f32,
+            norm_median_2: stats.median[2] as f32,
+            norm_median_3: stats.median[3] as f32,
+            norm_mad_0: stats.mad[0] as f32,
+            norm_mad_1: stats.mad[1] as f32,
+            norm_mad_2: stats.mad[2] as f32,
+            norm_mad_3: stats.mad[3] as f32,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: false,
+            normalization_mode: "global_robust".to_string(),
         });
 
-        frontier = front
+        frontier = select_beam_maxmin_norm(front, front_norm, config.beam.max(1))
             .into_iter()
-            .take(config.beam.max(1))
             .map(|(s, _)| s)
             .collect();
         if frontier.is_empty() {
@@ -1307,6 +1455,17 @@ pub fn generate_trace_baseline_off_soft(
         }
     }
 
+    let all_nn = rows
+        .iter()
+        .map(|r| r.pareto_mean_nn_dist as f64)
+        .filter(|v| *v > 0.0)
+        .collect::<Vec<_>>();
+    let d_med = median(all_nn);
+    for row in &mut rows {
+        row.median_nn_dist_all_depth = d_med as f32;
+        row.collapse_flag =
+            (row.pareto_mean_nn_dist as f64) < 0.01 * d_med && row.pareto_front_size_per_depth >= 2;
+    }
     rows
 }
 
@@ -1538,6 +1697,142 @@ pub fn run_bench_baseline_off_soft(
         avg_lambda_us: lambda_us_sum / denom,
         lambda_final: lambda_final_sum / denom,
     }
+}
+
+pub fn run_phase1_matrix(config: Phase1Config) -> (Vec<Phase1RawRow>, Vec<Phase1SummaryRow>) {
+    let variants = [
+        Phase1Variant::Base,
+        Phase1Variant::Delta,
+        Phase1Variant::Ortho { epsilon: 0.02 },
+    ];
+    let mut raw = Vec::new();
+    let mut summary = Vec::new();
+    for variant in variants {
+        let (r, s) = run_phase1_variant(config, variant);
+        raw.extend(r);
+        summary.extend(s);
+    }
+    (raw, summary)
+}
+
+fn run_phase1_variant(config: Phase1Config, variant: Phase1Variant) -> (Vec<Phase1RawRow>, Vec<Phase1SummaryRow>) {
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, config.seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+    let mut frontier = vec![trace_initial_state(config.seed)];
+    let mut lambda = 0.5f64;
+    let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
+    let mut field_cache_order: VecDeque<(u128, u128, usize, usize)> = VecDeque::new();
+    let mut raw_rows = Vec::new();
+    let mut summary_rows = Vec::new();
+
+    for depth in 1..=config.depth.max(1) {
+        let target_field = build_target_field(&field, &shm, &frontier[0], lambda);
+        let mut depth_category_counts: BTreeMap<String, usize> = BTreeMap::new();
+        let mut candidates: Vec<(DesignState, ObjectiveVector, RuleId)> = Vec::new();
+
+        for (state_idx, state) in frontier.iter().enumerate() {
+            let (selected_rules, _, _) = select_rules_category_soft(
+                shm.applicable_rules(state),
+                (config.beam.max(1) * 5).max(1),
+                config.alpha,
+                config.temperature,
+                config.entropy_beta,
+            );
+            let current_obj = evaluate_state_for_phase1(state, &structural, &chm, &field, &target_field);
+            for rule in selected_rules {
+                *depth_category_counts
+                    .entry(rule_category_name(&rule.category).to_string())
+                    .or_insert(0) += 1;
+                let new_state = apply_atomic(rule, state);
+                let key = (new_state.id.as_u128(), rule.id.as_u128(), depth, state_idx);
+                let projection =
+                    bounded_cache_get_or_insert(&mut field_cache, &mut field_cache_order, key, || field.aggregate_state(&new_state)).0;
+                let mut obj = structural.evaluate(&new_state);
+                obj.f_risk = risk_score_from_chm(&new_state, &chm);
+                obj.f_field = resonance_score(&projection, &target_field);
+                let obj = match variant {
+                    Phase1Variant::Base => obj.clamped(),
+                    Phase1Variant::Delta => objective_delta(&obj, &current_obj),
+                    Phase1Variant::Ortho { epsilon } => objective_with_ortho(&new_state, obj, epsilon),
+                };
+                candidates.push((new_state, obj, rule.id));
+            }
+        }
+
+        if candidates.is_empty() {
+            break;
+        }
+
+        let normalized_depth = normalize_phase1_vectors(&candidates.iter().map(|(_, o, _)| o.clone()).collect::<Vec<_>>());
+        let mut pareto = ParetoFront::new();
+        for (state, obj, _) in &candidates {
+            pareto.insert(state.id, obj.clone());
+        }
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector, RuleId)> = candidates
+            .into_iter()
+            .filter(|(s, _, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo, _), (rs, ro, _)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+
+        let normalized_front = normalize_phase1_vectors(&front.iter().map(|(_, o, _)| o.clone()).collect::<Vec<_>>());
+        let corr = corr_matrix4(&normalized_front);
+        let mean_nn = mean_nn_dist4(&normalized_front);
+        let spacing = spacing4(&normalized_front);
+        let collapse_flag = mean_nn < 1e-4 && front.len() >= 2;
+        summary_rows.push(Phase1SummaryRow {
+            variant: variant.name().to_string(),
+            depth,
+            corr_matrix_flat: flatten_corr4(&corr),
+            mean_nn_dist: mean_nn,
+            spacing,
+            pareto_front_size: front.len(),
+            collapse_flag,
+        });
+
+        let beam_take = config.beam.max(1).min(front.len());
+        let mut id_to_norm: BTreeMap<u128, [f64; 4]> = BTreeMap::new();
+        for ((state, _, _), norm) in front.iter().zip(normalized_front.iter()) {
+            id_to_norm.insert(state.id.as_u128(), *norm);
+        }
+        for (beam_index, (state, obj, rid)) in front.iter().take(beam_take).enumerate() {
+            let norm = id_to_norm.get(&state.id.as_u128()).copied().unwrap_or([0.0; 4]);
+            raw_rows.push(Phase1RawRow {
+                variant: variant.name().to_string(),
+                depth,
+                beam_index,
+                rule_id: format!("{:032x}", rid.as_u128()),
+                objective_vector_raw: fmt_vec4(&obj_to_arr(obj)),
+                objective_vector_norm: fmt_vec4(&norm),
+            });
+        }
+
+        let entropy = shannon_entropy_from_counts(&depth_category_counts);
+        lambda = update_lambda_entropy(
+            lambda,
+            entropy,
+            config.lambda_target_entropy,
+            config.lambda_k,
+            config.lambda_ema,
+            config.lambda_min,
+            1.0,
+        );
+        frontier = front.into_iter().take(beam_take).map(|(s, _, _)| s).collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(config.seed)];
+        }
+        let _ = normalized_depth;
+    }
+
+    (raw_rows, summary_rows)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -2008,6 +2303,8 @@ fn run_bench_once_baseline_off_soft(
     let mut lambda = 0.5f64;
     let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
     let mut field_cache_order: VecDeque<(u128, u128, usize, usize)> = VecDeque::new();
+    let mut estimator = GlobalRobustEstimator::default();
+    let warmup_depths = 10usize;
 
     let mut field_us_total = 0.0;
     let mut resonance_us_total = 0.0;
@@ -2040,6 +2337,21 @@ fn run_bench_once_baseline_off_soft(
         field_us_total += batch.field_extract_us + batch.field_aggregate_us;
         resonance_us_total += batch.field_score_us;
         chm_us_total += batch.chm_us;
+        if d <= warmup_depths {
+            estimator
+                .samples
+                .extend(candidates.iter().map(|(_, o)| ObjectiveRaw(obj_to_arr(o))));
+            if d == warmup_depths {
+                estimator.frozen = robust_stats_from_samples(&estimator.samples);
+            }
+        }
+        let stats = estimator
+            .frozen
+            .or_else(|| robust_stats_from_samples(&estimator.samples))
+            .unwrap_or(GlobalRobustStats {
+                median: [0.0; 4],
+                mad: [1.0; 4],
+            });
         if candidates.is_empty() {
             frontier = vec![trace_initial_state(seed)];
             continue;
@@ -2064,6 +2376,10 @@ fn run_bench_once_baseline_off_soft(
         });
         front.dedup_by(|a, b| a.0.id == b.0.id);
         pareto_us_total += elapsed_us(t_pareto);
+        let front_norm = front
+            .iter()
+            .map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), stats))
+            .collect::<Vec<_>>();
 
         let entropy = shannon_entropy_from_counts(&batch.depth_category_counts);
         let t_lambda = Instant::now();
@@ -2078,7 +2394,10 @@ fn run_bench_once_baseline_off_soft(
         );
         lambda_us_total += elapsed_us(t_lambda);
 
-        frontier = front.into_iter().take(beam).map(|(s, _)| s).collect();
+        frontier = select_beam_maxmin_norm(front, front_norm, beam)
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect();
         if frontier.is_empty() {
             frontier = vec![trace_initial_state(seed)];
         }
@@ -3130,6 +3449,371 @@ fn pareto_hv_2d_metric(front: &[&ObjectiveVector]) -> f64 {
             .collect::<Vec<_>>(),
     );
     (hv_cost_perf + hv_rel_cost) * 0.5
+}
+
+fn obj_to_arr(obj: &ObjectiveVector) -> [f64; 4] {
+    [obj.f_struct, obj.f_field, obj.f_risk, obj.f_cost]
+}
+
+fn arr_to_obj(v: [f64; 4]) -> ObjectiveVector {
+    ObjectiveVector {
+        f_struct: v[0],
+        f_field: v[1],
+        f_risk: v[2],
+        f_cost: v[3],
+    }
+}
+
+fn fmt_vec4(v: &[f64; 4]) -> String {
+    format!("{:.9}|{:.9}|{:.9}|{:.9}", v[0], v[1], v[2], v[3])
+}
+
+fn evaluate_state_for_phase1(
+    state: &DesignState,
+    structural: &StructuralEvaluator,
+    chm: &Chm,
+    field: &FieldEngine,
+    target: &TargetField,
+) -> ObjectiveVector {
+    let mut obj = structural.evaluate(state);
+    obj.f_risk = risk_score_from_chm(state, chm);
+    obj.f_field = resonance_score(&field.aggregate_state(state), target);
+    obj.clamped()
+}
+
+fn objective_delta(next: &ObjectiveVector, current: &ObjectiveVector) -> ObjectiveVector {
+    arr_to_obj([
+        next.f_struct - current.f_struct,
+        next.f_field - current.f_field,
+        next.f_risk - current.f_risk,
+        next.f_cost - current.f_cost,
+    ])
+}
+
+fn objective_with_ortho(state: &DesignState, obj: ObjectiveVector, eps: f64) -> ObjectiveVector {
+    let nodes = state.graph.nodes().len() as f64;
+    let edges = state.graph.edges().len() as f64;
+    let hist = state.profile_snapshot.len() as f64;
+    let g = [
+        (nodes / 64.0).tanh(),
+        (edges / 128.0).tanh(),
+        ((nodes - edges).abs() / 64.0).tanh(),
+        (hist / 256.0).tanh(),
+    ];
+    arr_to_obj([
+        (obj.f_struct + eps * g[0]).clamp(0.0, 1.0),
+        (obj.f_field + eps * g[1]).clamp(0.0, 1.0),
+        (obj.f_risk + eps * g[2]).clamp(0.0, 1.0),
+        (obj.f_cost + eps * g[3]).clamp(0.0, 1.0),
+    ])
+}
+
+fn median(mut v: Vec<f64>) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = v.len();
+    if n % 2 == 1 {
+        v[n / 2]
+    } else {
+        0.5 * (v[n / 2 - 1] + v[n / 2])
+    }
+}
+
+fn normalize_phase1_vectors(objs: &[ObjectiveVector]) -> Vec<[f64; 4]> {
+    if objs.is_empty() {
+        return Vec::new();
+    }
+    let eps = 1e-6;
+    let arrs = objs.iter().map(obj_to_arr).collect::<Vec<_>>();
+    let mut meds = [0.0; 4];
+    let mut mads = [0.0; 4];
+    for i in 0..4 {
+        let col = arrs.iter().map(|v| v[i]).collect::<Vec<_>>();
+        meds[i] = median(col.clone());
+        let abs_dev = col.iter().map(|x| (x - meds[i]).abs()).collect::<Vec<_>>();
+        mads[i] = median(abs_dev);
+    }
+    arrs.into_iter()
+        .map(|v| {
+            let mut out = [0.0; 4];
+            for i in 0..4 {
+                out[i] = (v[i] - meds[i]) / (mads[i] + eps);
+            }
+            out
+        })
+        .collect()
+}
+
+fn corr_matrix4(vs: &[[f64; 4]]) -> [[f64; 4]; 4] {
+    let n = vs.len();
+    if n < 2 {
+        return [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+    }
+    let mut mean = [0.0; 4];
+    for v in vs {
+        for i in 0..4 {
+            mean[i] += v[i];
+        }
+    }
+    for i in 0..4 {
+        mean[i] /= n as f64;
+    }
+    let mut var = [0.0; 4];
+    for v in vs {
+        for i in 0..4 {
+            var[i] += (v[i] - mean[i]).powi(2);
+        }
+    }
+    for i in 0..4 {
+        var[i] /= (n - 1) as f64;
+    }
+    let mut out = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            if i == j {
+                out[i][j] = 1.0;
+                continue;
+            }
+            if var[i] <= 1e-12 || var[j] <= 1e-12 {
+                out[i][j] = 0.0;
+                continue;
+            }
+            let mut cov = 0.0;
+            for v in vs {
+                cov += (v[i] - mean[i]) * (v[j] - mean[j]);
+            }
+            cov /= (n - 1) as f64;
+            out[i][j] = (cov / (var[i].sqrt() * var[j].sqrt())).clamp(-1.0, 1.0);
+        }
+    }
+    out
+}
+
+fn flatten_corr4(c: &[[f64; 4]; 4]) -> String {
+    let mut vals = Vec::with_capacity(16);
+    for row in c {
+        for v in row {
+            vals.push(format!("{:.6}", v));
+        }
+    }
+    vals.join("|")
+}
+
+fn dist4(a: &[f64; 4], b: &[f64; 4]) -> f64 {
+    let mut s = 0.0;
+    for i in 0..4 {
+        s += (a[i] - b[i]).powi(2);
+    }
+    s.sqrt()
+}
+
+fn mean_nn_dist4(vs: &[[f64; 4]]) -> f64 {
+    if vs.len() < 2 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for (i, v) in vs.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, u) in vs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(dist4(v, u));
+        }
+        if best.is_finite() {
+            sum += best;
+        }
+    }
+    sum / vs.len() as f64
+}
+
+fn spacing4(vs: &[[f64; 4]]) -> f64 {
+    if vs.len() < 2 {
+        return 0.0;
+    }
+    let mut nn = Vec::with_capacity(vs.len());
+    for (i, v) in vs.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, u) in vs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(dist4(v, u));
+        }
+        if best.is_finite() {
+            nn.push(best);
+        }
+    }
+    if nn.len() < 2 {
+        return 0.0;
+    }
+    let mean = nn.iter().sum::<f64>() / nn.len() as f64;
+    (nn.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (nn.len() - 1) as f64).sqrt()
+}
+
+fn robust_stats_from_samples(samples: &[ObjectiveRaw]) -> Option<GlobalRobustStats> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut med = [0.0; 4];
+    let mut mad = [0.0; 4];
+    for i in 0..4 {
+        let col = samples.iter().map(|v| v.0[i]).collect::<Vec<_>>();
+        med[i] = median(col.clone());
+        let abs_dev = col.iter().map(|x| (x - med[i]).abs()).collect::<Vec<_>>();
+        mad[i] = median(abs_dev);
+    }
+    Some(GlobalRobustStats { median: med, mad })
+}
+
+fn normalize_objective(raw: &ObjectiveRaw, stats: GlobalRobustStats) -> ObjectiveNorm {
+    let eps = 1e-6;
+    let mut out = [0.0; 4];
+    for i in 0..4 {
+        out[i] = ((raw.0[i] - stats.median[i]) / (stats.mad[i] + eps)).clamp(-20.0, 20.0);
+    }
+    ObjectiveNorm(out)
+}
+
+fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm) -> f64 {
+    let mut s = 0.0;
+    for i in 0..4 {
+        s += (a.0[i] - b.0[i]).powi(2);
+    }
+    s.sqrt()
+}
+
+fn mean_nn_dist_norm(vs: &[ObjectiveNorm]) -> f64 {
+    if vs.len() < 2 {
+        return 0.0;
+    }
+    let mut sum = 0.0;
+    for (i, v) in vs.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, u) in vs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(norm_distance(v, u));
+        }
+        if best.is_finite() {
+            sum += best;
+        }
+    }
+    sum / vs.len() as f64
+}
+
+fn spacing_norm(vs: &[ObjectiveNorm]) -> f64 {
+    if vs.len() < 2 {
+        return 0.0;
+    }
+    let mut nn = Vec::with_capacity(vs.len());
+    for (i, v) in vs.iter().enumerate() {
+        let mut best = f64::INFINITY;
+        for (j, u) in vs.iter().enumerate() {
+            if i == j {
+                continue;
+            }
+            best = best.min(norm_distance(v, u));
+        }
+        if best.is_finite() {
+            nn.push(best);
+        }
+    }
+    if nn.len() < 2 {
+        return 0.0;
+    }
+    let mean = nn.iter().sum::<f64>() / nn.len() as f64;
+    (nn.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (nn.len() - 1) as f64).sqrt()
+}
+
+fn corr_matrix_norm(vs: &[ObjectiveNorm]) -> [[f64; 4]; 4] {
+    let arr = vs.iter().map(|v| v.0).collect::<Vec<_>>();
+    corr_matrix4(&arr)
+}
+
+fn rescale_norm_for_hv(vs: &[ObjectiveNorm]) -> Vec<[f64; 4]> {
+    if vs.is_empty() {
+        return Vec::new();
+    }
+    let eps = 1e-6;
+    let mut minv = [f64::INFINITY; 4];
+    let mut maxv = [f64::NEG_INFINITY; 4];
+    for v in vs {
+        for i in 0..4 {
+            minv[i] = minv[i].min(v.0[i]);
+            maxv[i] = maxv[i].max(v.0[i]);
+        }
+    }
+    vs.iter()
+        .map(|v| {
+            let mut out = [0.0; 4];
+            for i in 0..4 {
+                out[i] = ((v.0[i] - minv[i]) / (maxv[i] - minv[i] + eps)).clamp(0.0, 1.0);
+            }
+            out
+        })
+        .collect()
+}
+
+fn pareto_hv_2d_norm(vs: &[ObjectiveNorm]) -> f64 {
+    let scaled = rescale_norm_for_hv(vs);
+    if scaled.is_empty() {
+        return 0.0;
+    }
+    let hv_cost_perf = hv_2d_rect_approx(&scaled.iter().map(|v| (v[3], v[0])).collect::<Vec<_>>());
+    let hv_rel_cost = hv_2d_rect_approx(&scaled.iter().map(|v| (v[2], v[3])).collect::<Vec<_>>());
+    (hv_cost_perf + hv_rel_cost) * 0.5
+}
+
+fn select_beam_maxmin_norm(
+    front: Vec<(DesignState, ObjectiveVector)>,
+    norms: Vec<ObjectiveNorm>,
+    beam: usize,
+) -> Vec<(DesignState, ObjectiveVector)> {
+    if front.is_empty() {
+        return Vec::new();
+    }
+    let beam = beam.max(1).min(front.len());
+    let mut used = vec![false; front.len()];
+    let mut selected_idx = Vec::with_capacity(beam);
+    let mut seed = 0usize;
+    let mut best = f64::NEG_INFINITY;
+    for (i, (_, obj)) in front.iter().enumerate() {
+        let s = scalar_score(obj);
+        if s > best {
+            best = s;
+            seed = i;
+        }
+    }
+    selected_idx.push(seed);
+    used[seed] = true;
+    while selected_idx.len() < beam {
+        let mut best_i = None;
+        let mut best_d = f64::NEG_INFINITY;
+        for i in 0..front.len() {
+            if used[i] {
+                continue;
+            }
+            let dmin = selected_idx
+                .iter()
+                .map(|j| norm_distance(&norms[i], &norms[*j]))
+                .fold(f64::INFINITY, f64::min);
+            if dmin > best_d {
+                best_d = dmin;
+                best_i = Some(i);
+            }
+        }
+        if let Some(i) = best_i {
+            used[i] = true;
+            selected_idx.push(i);
+        } else {
+            break;
+        }
+    }
+    selected_idx.into_iter().map(|i| front[i].clone()).collect()
 }
 
 fn map_rule_category(category: RuleCategory) -> NodeCategory {

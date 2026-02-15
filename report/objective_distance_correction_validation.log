@@ -1,0 +1,86 @@
+[build] cargo build -p design_cli
+warning: function `objective_distance` is never used
+    --> crates/agent_core/src/lib.rs:3353:4
+     |
+3353 | fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pareto_mean_nn_distance` is never used
+    --> crates/agent_core/src/lib.rs:3361:4
+     |
+3361 | fn pareto_mean_nn_distance(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pareto_spacing_metric` is never used
+    --> crates/agent_core/src/lib.rs:3381:4
+     |
+3381 | fn pareto_spacing_metric(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pareto_hv_2d_metric` is never used
+    --> crates/agent_core/src/lib.rs:3435:4
+     |
+3435 | fn pareto_hv_2d_metric(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `corr_matrix_norm` is never used
+    --> crates/agent_core/src/lib.rs:3732:4
+     |
+3732 | fn corr_matrix_norm(vs: &[ObjectiveNorm]) -> [[f64; 4]; 4] {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: `agent_core` (lib) generated 5 warnings
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.00s
+
+[test] cargo test -p agent_core --test stability_tests
+warning: function `objective_distance` is never used
+    --> crates/agent_core/src/lib.rs:3353:4
+     |
+3353 | fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^
+     |
+     = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: function `pareto_mean_nn_distance` is never used
+    --> crates/agent_core/src/lib.rs:3361:4
+     |
+3361 | fn pareto_mean_nn_distance(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pareto_spacing_metric` is never used
+    --> crates/agent_core/src/lib.rs:3381:4
+     |
+3381 | fn pareto_spacing_metric(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^^^
+
+warning: function `pareto_hv_2d_metric` is never used
+    --> crates/agent_core/src/lib.rs:3435:4
+     |
+3435 | fn pareto_hv_2d_metric(front: &[&ObjectiveVector]) -> f64 {
+     |    ^^^^^^^^^^^^^^^^^^^
+
+warning: function `corr_matrix_norm` is never used
+    --> crates/agent_core/src/lib.rs:3732:4
+     |
+3732 | fn corr_matrix_norm(vs: &[ObjectiveNorm]) -> [[f64; 4]; 4] {
+     |    ^^^^^^^^^^^^^^^^
+
+warning: `agent_core` (lib) generated 5 warnings
+    Finished `test` profile [unoptimized + debuginfo] target(s) in 0.00s
+     Running tests/stability_tests.rs (target/debug/deps/stability_tests-7a2b4bf29f3254b3)
+
+running 9 tests
+test smoke_beam_engine_depth50_runs ... ok
+test reproducibility_test ... ok
+test pareto_stability_test ... ok
+test lambda_stability_test ... ok
+test profile_stability_test ... ok
+test tau_prime_stability_test ... ok
+test extreme_case_chm_fully_connected ... ok
+test extreme_case_chm_empty ... ok
+test extreme_case_profile_extremes ... ok
+
+test result: ok. 9 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 5.88s
+

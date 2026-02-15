@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use agent_core::{
     generate_trace, generate_trace_baseline_off, generate_trace_baseline_off_balanced, generate_trace_baseline_off_soft,
-    run_bench, run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft, BenchConfig,
-    BenchResult, TraceRow, TraceRunConfig,
+    run_bench, run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft, run_phase1_matrix,
+    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, TraceRow, TraceRunConfig,
 };
 use interface_ui::{UiEvent, UserInterface, VmBridge};
 
@@ -93,6 +93,11 @@ fn main() {
         return;
     }
 
+    if args.iter().any(|a| a == "--phase1") {
+        run_phase1_mode();
+        return;
+    }
+
     if trace_cfg.enabled {
         let rows = if trace_cfg.baseline_off {
             if trace_cfg.category_soft {
@@ -154,6 +159,50 @@ fn main() {
     ui.render();
     ui.handle_input(UiEvent::Tick);
     ui.render();
+}
+
+fn run_phase1_mode() {
+    let cfg = Phase1Config {
+        depth: 100,
+        beam: 5,
+        seed: 42,
+        alpha: 3.0,
+        temperature: 0.8,
+        entropy_beta: 0.0,
+        lambda_min: 0.05,
+        lambda_target_entropy: 0.8,
+        lambda_k: 0.05,
+        lambda_ema: 0.1,
+    };
+    let (raw, summary) = run_phase1_matrix(cfg);
+    fs::create_dir_all("report").expect("failed to create report directory");
+    fs::write("report/trace_phase1_raw.csv", render_phase1_raw_csv(&raw)).expect("failed to write trace_phase1_raw.csv");
+    fs::write("report/trace_phase1_summary.csv", render_phase1_summary_csv(&summary))
+        .expect("failed to write trace_phase1_summary.csv");
+    println!("phase1 written: report/trace_phase1_raw.csv");
+    println!("phase1 written: report/trace_phase1_summary.csv");
+}
+
+fn render_phase1_raw_csv(rows: &[Phase1RawRow]) -> String {
+    let mut out = String::from("variant,depth,beam_index,rule_id,objective_vector_raw,objective_vector_norm\n");
+    for r in rows {
+        out.push_str(&format!(
+            "{},{},{},{},\"{}\",\"{}\"\n",
+            r.variant, r.depth, r.beam_index, r.rule_id, r.objective_vector_raw, r.objective_vector_norm
+        ));
+    }
+    out
+}
+
+fn render_phase1_summary_csv(rows: &[Phase1SummaryRow]) -> String {
+    let mut out = String::from("variant,depth,corr_matrix_flat,mean_nn_dist,spacing,pareto_front_size,collapse_flag\n");
+    for r in rows {
+        out.push_str(&format!(
+            "{},{},\"{}\",{:.9},{:.9},{},{}\n",
+            r.variant, r.depth, r.corr_matrix_flat, r.mean_nn_dist, r.spacing, r.pareto_front_size, r.collapse_flag
+        ));
+    }
+    out
 }
 
 fn run_bench_mode(cfg: &BenchCliConfig) {
@@ -647,12 +696,12 @@ fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
 
 fn render_csv(rows: &[TraceRow]) -> String {
     let mut out = String::from(
-        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,pareto_mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,unique_category_count,category_entropy,pareto_front_size,field_total_us_required\n",
+        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode\n",
     );
 
     for row in rows {
         out.push_str(&format!(
-            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9}\n",
+            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},\"{}\"\n",
             row.depth,
             row.lambda,
             row.delta_lambda,
@@ -690,10 +739,17 @@ fn render_csv(rows: &[TraceRow]) -> String {
             row.field_score_us,
             row.field_aggregate_us,
             row.field_total_us,
-            row.unique_category_count_per_depth,
-            row.entropy_per_depth,
-            row.pareto_front_size_per_depth,
-            row.field_total_us,
+            row.norm_median_0,
+            row.norm_median_1,
+            row.norm_median_2,
+            row.norm_median_3,
+            row.norm_mad_0,
+            row.norm_mad_1,
+            row.norm_mad_2,
+            row.norm_mad_3,
+            row.median_nn_dist_all_depth,
+            row.collapse_flag,
+            row.normalization_mode,
         ));
     }
 
