@@ -1,8 +1,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Instant;
+
+mod diversity;
 
 use chm::Chm;
 use core_types::{stability_index as core_stability_index, ObjectiveVector, P_INFER_ALPHA, P_INFER_BETA, P_INFER_GAMMA};
+use diversity::apply_diversity_pressure;
 use evaluator::{Evaluator, StructuralEvaluator};
 use field_engine::{resonance_score, FieldEngine, FieldVector, NodeCategory, TargetField};
 use memory_space::{DesignNode, DesignState, StateId, StructuralGraph, Uuid, Value};
@@ -126,6 +130,13 @@ pub struct TraceRow {
     pub pareto_size: usize,
     pub diversity: f32,
     pub resonance_avg: f32,
+    pub pressure: f32,
+    pub epsilon_effect: f32,
+    pub target_local_weight: f32,
+    pub target_global_weight: f32,
+    pub local_global_distance: f32,
+    pub field_min_distance: f32,
+    pub field_rejected_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +145,32 @@ pub struct TraceRunConfig {
     pub beam: usize,
     pub seed: u64,
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BenchConfig {
+    pub depth: usize,
+    pub beam: usize,
+    pub iterations: usize,
+    pub warmup: usize,
+    pub seed: u64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BenchResult {
+    pub depth: usize,
+    pub beam: usize,
+    pub iterations: usize,
+    pub avg_total_ms: f64,
+    pub avg_per_depth_ms: f64,
+    pub avg_field_us: f64,
+    pub avg_resonance_us: f64,
+    pub avg_chm_us: f64,
+    pub avg_pareto_us: f64,
+    pub avg_lambda_us: f64,
+    pub lambda_final: f64,
+}
+
+const FIELD_DISTANCE_DELTA: f64 = 0.5;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Phase45Controller {
@@ -242,6 +279,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
     };
     let mut frontier = vec![trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);
+    let mut depth_boundary_diversity = 1.0f64;
 
     let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
     let mut conflict_hist = Vec::new();
@@ -272,11 +310,45 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 pareto_size: 0,
                 diversity: 0.0,
                 resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: 0.0,
+                field_rejected_count: 0,
             });
             continue;
         }
 
-        let normalized = normalize_by_depth(candidates);
+        let (filtered_candidates, field_min_distance, field_rejected_count) =
+            filter_candidates_by_field_distance(candidates, &field, FIELD_DISTANCE_DELTA);
+        if filtered_candidates.is_empty() {
+            rows.push(TraceRow {
+                depth,
+                lambda: controller.lambda() as f32,
+                delta_lambda: 0.0,
+                tau_prime: 0.0,
+                conf_chm: 0.0,
+                density: 0.0,
+                k: controller.k(),
+                h_profile: profile_modulation(0.25) as f32,
+                pareto_size: 0,
+                diversity: 0.0,
+                resonance_avg: 0.0,
+                pressure: 0.0,
+                epsilon_effect: 0.0,
+                target_local_weight: 0.0,
+                target_global_weight: 0.0,
+                local_global_distance: 0.0,
+                field_min_distance: field_min_distance as f32,
+                field_rejected_count,
+            });
+            frontier = vec![trace_initial_state(config.seed)];
+            continue;
+        }
+
+        let normalized = normalize_by_depth(filtered_candidates);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -296,7 +368,13 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
         });
         front.dedup_by(|a, b| a.0.id == b.0.id);
 
-        let target_field = build_target_field(&field, &shm, &front[0].0, controller.lambda());
+        let (target_field, adjustment) = build_target_field_with_diversity(
+            &field,
+            &shm,
+            &front[0].0,
+            controller.lambda(),
+            depth_boundary_diversity,
+        );
         let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
 
         let conflict_raw = front
@@ -329,6 +407,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
         );
 
         let diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        depth_boundary_diversity = diversity;
         rows.push(TraceRow {
             depth,
             lambda: log.lambda_new as f32,
@@ -341,6 +420,13 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             pareto_size: front.len(),
             diversity: diversity as f32,
             resonance_avg: resonance_avg as f32,
+            pressure: adjustment.pressure as f32,
+            epsilon_effect: adjustment.epsilon_effect as f32,
+            target_local_weight: adjustment.target_local_weight as f32,
+            target_global_weight: adjustment.target_global_weight as f32,
+            local_global_distance: adjustment.local_global_distance as f32,
+            field_min_distance: field_min_distance as f32,
+            field_rejected_count,
         });
 
         frontier = front
@@ -356,6 +442,201 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
     }
 
     rows
+}
+
+pub fn run_bench(config: BenchConfig) -> BenchResult {
+    let iterations = config.iterations.max(1);
+    let warmup = config.warmup;
+
+    for i in 0..warmup {
+        let _ = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+    }
+
+    let mut total_ms_sum = 0.0;
+    let mut per_depth_ms_sum = 0.0;
+    let mut field_us_sum = 0.0;
+    let mut resonance_us_sum = 0.0;
+    let mut chm_us_sum = 0.0;
+    let mut pareto_us_sum = 0.0;
+    let mut lambda_us_sum = 0.0;
+    let mut lambda_final_sum = 0.0;
+
+    for i in 0..iterations {
+        let stats = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        total_ms_sum += stats.total_ms;
+        per_depth_ms_sum += stats.per_depth_ms;
+        field_us_sum += stats.field_us;
+        resonance_us_sum += stats.resonance_us;
+        chm_us_sum += stats.chm_us;
+        pareto_us_sum += stats.pareto_us;
+        lambda_us_sum += stats.lambda_us;
+        lambda_final_sum += stats.lambda_final;
+    }
+
+    let denom = iterations as f64;
+    BenchResult {
+        depth: config.depth,
+        beam: config.beam,
+        iterations,
+        avg_total_ms: total_ms_sum / denom,
+        avg_per_depth_ms: per_depth_ms_sum / denom,
+        avg_field_us: field_us_sum / denom,
+        avg_resonance_us: resonance_us_sum / denom,
+        avg_chm_us: chm_us_sum / denom,
+        avg_pareto_us: pareto_us_sum / denom,
+        avg_lambda_us: lambda_us_sum / denom,
+        lambda_final: lambda_final_sum / denom,
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct BenchOnceStats {
+    total_ms: f64,
+    per_depth_ms: f64,
+    field_us: f64,
+    resonance_us: f64,
+    chm_us: f64,
+    pareto_us: f64,
+    lambda_us: f64,
+    lambda_final: f64,
+}
+
+fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
+    let depth = depth.max(1);
+    let beam = beam.max(1);
+
+    let shm = Shm::with_default_rules();
+    let chm = make_dense_trace_chm(&shm, seed);
+    let field = FieldEngine::new(256);
+    let structural = StructuralEvaluator::default();
+    let mut controller = Phase45Controller::new(0.5);
+    let mut frontier = vec![trace_initial_state(seed)];
+
+    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let mut conflict_hist = Vec::new();
+    let mut align_hist = Vec::new();
+
+    let mut field_us_total = 0.0;
+    let mut resonance_us_total = 0.0;
+    let mut chm_us_total = 0.0;
+    let mut pareto_us_total = 0.0;
+    let mut lambda_us_total = 0.0;
+    let mut depth_count = 0usize;
+    let mut depth_boundary_diversity = 1.0f64;
+
+    let t_total = Instant::now();
+    for d in 1..=depth {
+        depth_count += 1;
+        controller.on_profile_update(d, 0.25, ProfileUpdateType::TypeCStatistical);
+
+        let (target_field, _adjustment) = build_target_field_with_diversity(
+            &field,
+            &shm,
+            &frontier[0],
+            controller.lambda(),
+            depth_boundary_diversity,
+        );
+        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
+        for state in &frontier {
+            let rules = shm.applicable_rules(state);
+            for rule in rules {
+                let new_state = apply_atomic(rule, state);
+                let mut obj = structural.evaluate(&new_state);
+
+                let t_field = Instant::now();
+                let projection = field.aggregate_state(&new_state);
+                field_us_total += elapsed_us(t_field);
+
+                let t_res = Instant::now();
+                obj.f_field = resonance_score(&projection, &target_field);
+                resonance_us_total += elapsed_us(t_res);
+
+                let t_chm = Instant::now();
+                obj.f_risk = risk_score_from_chm(&new_state, &chm);
+                chm_us_total += elapsed_us(t_chm);
+
+                candidates.push((new_state, obj.clamped()));
+            }
+        }
+
+        if candidates.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+            continue;
+        }
+
+        let t_pareto = Instant::now();
+        let (filtered_candidates, _field_min_distance, _field_rejected_count) =
+            filter_candidates_by_field_distance(candidates, &field, FIELD_DISTANCE_DELTA);
+        if filtered_candidates.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+            continue;
+        }
+        let normalized = normalize_by_depth(filtered_candidates);
+        let mut pareto = ParetoFront::new();
+        for (state, obj) in &normalized {
+            pareto.insert(state.id, obj.clone());
+        }
+        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
+        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
+            .into_iter()
+            .filter(|(s, _)| front_set.contains(&s.id))
+            .collect();
+        front.sort_by(|(ls, lo), (rs, ro)| {
+            scalar_score(ro)
+                .partial_cmp(&scalar_score(lo))
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| ls.id.cmp(&rs.id))
+        });
+        front.dedup_by(|a, b| a.0.id == b.0.id);
+        pareto_us_total += elapsed_us(t_pareto);
+        depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+
+        let conflict_raw = front
+            .iter()
+            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        let align_raw = front
+            .iter()
+            .map(|(_, o)| (o.f_struct + o.f_field) * 0.5)
+            .sum::<f64>()
+            / front.len() as f64;
+        conflict_hist.push(conflict_raw);
+        align_hist.push(align_raw);
+        let k = controller.k().max(1);
+        let conflict_k = moving_average_tail(&conflict_hist, k);
+        let align_k = moving_average_tail(&align_hist, k);
+
+        let t_lambda = Instant::now();
+        let _log = controller.update_depth(
+            d,
+            conflict_k,
+            align_k,
+            n_edge_obs,
+            10,
+            stability_index(0.25, 0.25, 0.0, 0.0),
+        );
+        lambda_us_total += elapsed_us(t_lambda);
+
+        frontier = front.into_iter().take(beam).map(|(s, _)| s).collect();
+        if frontier.is_empty() {
+            frontier = vec![trace_initial_state(seed)];
+        }
+    }
+
+    let total_ms = elapsed_ms(t_total);
+    let per_depth_ms = total_ms / depth_count.max(1) as f64;
+    let denom_depth = depth_count.max(1) as f64;
+    BenchOnceStats {
+        total_ms,
+        per_depth_ms,
+        field_us: field_us_total / denom_depth,
+        resonance_us: resonance_us_total / denom_depth,
+        chm_us: chm_us_total / denom_depth,
+        pareto_us: pareto_us_total / denom_depth,
+        lambda_us: lambda_us_total / denom_depth,
+        lambda_final: controller.lambda(),
+    }
 }
 
 pub struct BeamSearch<'a> {
@@ -669,6 +950,59 @@ fn risk_score_from_chm(state: &DesignState, chm: &Chm) -> f64 {
     (1.0 - avg_penalty).clamp(0.0, 1.0)
 }
 
+fn filter_candidates_by_field_distance(
+    candidates: Vec<(DesignState, ObjectiveVector)>,
+    field: &FieldEngine,
+    delta: f64,
+) -> (Vec<(DesignState, ObjectiveVector)>, f64, usize) {
+    let delta = delta.max(0.0);
+    let mut accepted: Vec<(DesignState, ObjectiveVector, FieldVector)> = Vec::new();
+    let mut rejected_count = 0usize;
+    let mut min_distance_seen = f64::INFINITY;
+
+    for (state, obj) in candidates {
+        let projection = field.aggregate_state(&state);
+        let mut min_d = f64::INFINITY;
+        for (_, _, existing_projection) in &accepted {
+            let d = field_l2_distance(&projection, existing_projection);
+            min_d = min_d.min(d);
+        }
+
+        if min_d.is_finite() {
+            min_distance_seen = min_distance_seen.min(min_d);
+        }
+
+        if min_d < delta {
+            rejected_count += 1;
+            continue;
+        }
+        accepted.push((state, obj, projection));
+    }
+
+    let filtered = accepted
+        .into_iter()
+        .map(|(state, obj, _)| (state, obj))
+        .collect::<Vec<_>>();
+
+    let min_distance = if min_distance_seen.is_finite() {
+        min_distance_seen
+    } else {
+        0.0
+    };
+
+    (filtered, min_distance, rejected_count)
+}
+
+fn field_l2_distance(a: &FieldVector, b: &FieldVector) -> f64 {
+    let len = a.dimensions().min(b.dimensions());
+    let mut sum = 0.0f64;
+    for i in 0..len {
+        let diff = a.data[i] - b.data[i];
+        sum += diff.norm_sqr() as f64;
+    }
+    sum.sqrt()
+}
+
 fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> Vec<(DesignState, ObjectiveVector)> {
     let mut min = ObjectiveVector {
         f_struct: 1.0,
@@ -756,6 +1090,17 @@ pub fn build_target_field(
     state: &DesignState,
     lambda: f64,
 ) -> TargetField {
+    let (target, _) = build_target_field_with_diversity(field, shm, state, lambda, 1.0);
+    target
+}
+
+pub fn build_target_field_with_diversity(
+    field: &FieldEngine,
+    shm: &Shm,
+    state: &DesignState,
+    lambda: f64,
+    diversity: f64,
+) -> (TargetField, diversity::DiversityAdjustment) {
     let global_categories = categories_from_rules(shm.rules.iter().map(|r| r.category.clone()));
     let local_categories = categories_from_rules(
         shm.applicable_rules(state)
@@ -765,7 +1110,8 @@ pub fn build_target_field(
 
     let global = compose_category_field(field, &global_categories);
     let local = compose_category_field(field, &local_categories);
-    TargetField::blend(&global, &local, lambda as f32)
+    let base = TargetField::blend(&global, &local, lambda as f32);
+    apply_diversity_pressure(&base, &global, &local, lambda, diversity)
 }
 
 pub fn p_inferred(
@@ -882,6 +1228,14 @@ fn variance(v: &[f64]) -> f64 {
     v.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / v.len() as f64
 }
 
+fn elapsed_us(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1_000_000.0
+}
+
+fn elapsed_ms(start: Instant) -> f64 {
+    start.elapsed().as_secs_f64() * 1_000.0
+}
+
 fn select_k_with_hysteresis(prev_k: usize, stability_index: f64) -> usize {
     match prev_k {
         4 => {
@@ -957,9 +1311,9 @@ mod tests {
 
     use crate::{
         apply_atomic, apply_macro, build_target_field, chm_density, dominates, need_from_objective,
-        normalize_by_depth, p_inferred, profile_modulation, scalar_score, stability_index, BeamSearch,
-        MacroOperator, ParetoFront, Phase45Controller, ProfileUpdateType, SearchConfig, SearchMode,
-        SystemEvaluator,
+        generate_trace, normalize_by_depth, p_inferred, profile_modulation, scalar_score,
+        stability_index, BeamSearch, MacroOperator, ParetoFront, Phase45Controller,
+        ProfileUpdateType, SearchConfig, SearchMode, SystemEvaluator, TraceRunConfig,
     };
 
     fn base_state() -> DesignState {
@@ -1203,5 +1557,26 @@ mod tests {
         assert!((-1.0..=1.0).contains(&s));
         assert!((0.85..=1.20).contains(&h));
         assert!((0.0..=1.0).contains(&d));
+    }
+
+    #[test]
+    fn trace_rows_include_diversity_pressure_signals() {
+        let rows = generate_trace(TraceRunConfig {
+            depth: 10,
+            beam: 5,
+            seed: 42,
+        });
+        assert!(!rows.is_empty());
+        assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.pressure)));
+        assert!(rows.iter().all(|r| (0.0..=0.15).contains(&r.epsilon_effect)));
+        assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.target_local_weight)));
+        assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.target_global_weight)));
+        assert!(rows
+            .iter()
+            .all(|r| (r.target_local_weight + r.target_global_weight - 1.0).abs() < 1e-5));
+        assert!(rows.iter().all(|r| r.local_global_distance >= 0.0));
+        assert!(rows.iter().all(|r| r.field_min_distance >= 0.0));
+        assert!(rows.iter().all(|r| r.field_rejected_count <= 1000));
+        assert!(rows.iter().any(|r| r.field_rejected_count > 0));
     }
 }
