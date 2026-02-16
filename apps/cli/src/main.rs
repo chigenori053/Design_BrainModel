@@ -19,6 +19,9 @@ pub struct TraceConfig {
     pub output: Option<PathBuf>,
     pub depth: usize,
     pub beam: usize,
+    pub seed: u64,
+    pub norm_alpha: f64,
+    pub adaptive_alpha: bool,
     pub baseline_off: bool,
     pub category_balanced: bool,
     pub category_m: usize,
@@ -32,6 +35,7 @@ pub struct TraceConfig {
     pub lambda_ema: f64,
     pub log_per_depth: bool,
     pub field_profile: bool,
+    pub raw_output: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug)]
@@ -41,6 +45,8 @@ pub struct BenchCliConfig {
     pub beam: usize,
     pub iter: usize,
     pub warmup: usize,
+    pub norm_alpha: f64,
+    pub adaptive_alpha: bool,
     pub depth_set: bool,
     pub beam_set: bool,
     pub baseline_off: bool,
@@ -105,7 +111,10 @@ fn main() {
                     TraceRunConfig {
                         depth: trace_cfg.depth,
                         beam: trace_cfg.beam,
-                        seed: 42,
+                        seed: trace_cfg.seed,
+                        norm_alpha: trace_cfg.norm_alpha,
+                        adaptive_alpha: trace_cfg.adaptive_alpha,
+                        raw_output_path: trace_cfg.raw_output.clone(),
                     },
                     trace_cfg.category_alpha,
                     trace_cfg.temperature,
@@ -121,7 +130,10 @@ fn main() {
                     TraceRunConfig {
                         depth: trace_cfg.depth,
                         beam: trace_cfg.beam,
-                        seed: 42,
+                        seed: trace_cfg.seed,
+                        norm_alpha: trace_cfg.norm_alpha,
+                        adaptive_alpha: trace_cfg.adaptive_alpha,
+                        raw_output_path: trace_cfg.raw_output.clone(),
                     },
                     trace_cfg.category_m,
                 )
@@ -129,14 +141,20 @@ fn main() {
                 generate_trace_baseline_off(TraceRunConfig {
                     depth: trace_cfg.depth,
                     beam: trace_cfg.beam,
-                    seed: 42,
+                    seed: trace_cfg.seed,
+                    norm_alpha: trace_cfg.norm_alpha,
+                    adaptive_alpha: trace_cfg.adaptive_alpha,
+                    raw_output_path: trace_cfg.raw_output.clone(),
                 })
             }
         } else {
             generate_trace(TraceRunConfig {
                 depth: trace_cfg.depth,
                 beam: trace_cfg.beam,
-                seed: 42,
+                seed: trace_cfg.seed,
+                norm_alpha: trace_cfg.norm_alpha,
+                adaptive_alpha: trace_cfg.adaptive_alpha,
+                raw_output_path: trace_cfg.raw_output.clone(),
             })
         };
         let rows = if trace_cfg.log_per_depth {
@@ -166,6 +184,7 @@ fn run_phase1_mode() {
         depth: 100,
         beam: 5,
         seed: 42,
+        norm_alpha: 3.0,
         alpha: 3.0,
         temperature: 0.8,
         entropy_beta: 0.0,
@@ -227,6 +246,7 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
                         iterations: cfg.iter,
                         warmup: cfg.warmup,
                         seed: 42,
+                        norm_alpha: cfg.norm_alpha,
                     },
                     cfg.category_alpha,
                     cfg.temperature,
@@ -245,6 +265,7 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
                         iterations: cfg.iter,
                         warmup: cfg.warmup,
                         seed: 42,
+                        norm_alpha: cfg.norm_alpha,
                     },
                     cfg.category_m,
                 )
@@ -255,6 +276,7 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
                     iterations: cfg.iter,
                     warmup: cfg.warmup,
                     seed: 42,
+                    norm_alpha: cfg.norm_alpha,
                 })
             }
         } else {
@@ -264,6 +286,7 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
                 iterations: cfg.iter,
                 warmup: cfg.warmup,
                 seed: 42,
+                norm_alpha: cfg.norm_alpha,
             })
         };
         print_bench_result(&result);
@@ -312,6 +335,9 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
     let mut output = None;
     let mut depth = 50usize;
     let mut beam = 5usize;
+    let mut seed = 42u64;
+    let mut norm_alpha = 0.25f64;
+    let mut adaptive_alpha = false;
     let mut baseline_off = false;
     let mut category_balanced = false;
     let mut category_m = 1usize;
@@ -325,6 +351,7 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
     let mut lambda_ema = 0.1f64;
     let mut log_per_depth = false;
     let mut field_profile = false;
+    let mut raw_output = None;
 
     let mut i = 0usize;
     while i < args.len() {
@@ -357,6 +384,28 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                     .parse::<usize>()
                     .expect("--trace-beam must be usize");
                 i += 2;
+            }
+            "--seed" => {
+                if i + 1 >= args.len() {
+                    panic!("--seed requires a number");
+                }
+                seed = args[i + 1]
+                    .parse::<u64>()
+                    .expect("--seed must be u64");
+                i += 2;
+            }
+            "--norm-alpha" => {
+                if i + 1 >= args.len() {
+                    panic!("--norm-alpha requires a number");
+                }
+                norm_alpha = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--norm-alpha must be f64");
+                i += 2;
+            }
+            "--adaptive" => {
+                adaptive_alpha = true;
+                i += 1;
             }
             "--baseline-off" => {
                 baseline_off = true;
@@ -438,6 +487,13 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                 field_profile = true;
                 i += 1;
             }
+            "--raw-trace-output" => {
+                if i + 1 >= args.len() {
+                    panic!("--raw-trace-output requires a path");
+                }
+                raw_output = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            }
             _ => i += 1,
         }
     }
@@ -447,6 +503,9 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
         output,
         depth,
         beam,
+        seed,
+        norm_alpha,
+        adaptive_alpha,
         baseline_off,
         category_balanced,
         category_m,
@@ -460,6 +519,7 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
         lambda_ema,
         log_per_depth,
         field_profile,
+        raw_output,
     }
 }
 
@@ -469,6 +529,8 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
     let mut beam = 5usize;
     let mut iter = 3usize;
     let mut warmup = 1usize;
+    let mut norm_alpha = 0.25f64;
+    let mut adaptive_alpha = false;
     let mut depth_set = false;
     let mut beam_set = false;
     let mut baseline_off = false;
@@ -620,6 +682,8 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
         beam,
         iter,
         warmup,
+        norm_alpha,
+        adaptive_alpha,
         depth_set,
         beam_set,
         baseline_off,
@@ -696,12 +760,12 @@ fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
 
 fn render_csv(rows: &[TraceRow]) -> String {
     let mut out = String::from(
-        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls\n",
+        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls,weak_dim_count,effective_dim_count,alpha_t,weak_contrib_ratio,collapse_proxy\n",
     );
 
     for row in rows {
         out.push_str(&format!(
-            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},\"{}\",{},{},{:.9},{:.9},{:.9},{:.9},{},{}\n",
+            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},\"{}\",{},{},{},{:.9},{:.9},{:.9},{:.9},{},{},{},{},{:.9},{:.9},{:.9}\n",
             row.depth,
             row.lambda,
             row.delta_lambda,
@@ -758,6 +822,11 @@ fn render_csv(rows: &[TraceRow]) -> String {
             row.pareto_spacing_norm,
             row.distance_calls,
             row.nn_distance_calls,
+            row.weak_dim_count,
+            row.effective_dim_count,
+            row.alpha_t,
+            row.weak_contrib_ratio,
+            row.collapse_proxy,
         ));
     }
 

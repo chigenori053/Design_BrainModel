@@ -1,4 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fs::OpenOptions;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
@@ -8,6 +11,7 @@ pub static NN_DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 
 mod diversity;
+mod stability;
 
 use chm::Chm;
 use core_types::{stability_index as core_stability_index, ObjectiveVector, P_INFER_ALPHA, P_INFER_BETA, P_INFER_GAMMA};
@@ -17,6 +21,7 @@ use field_engine::{resonance_score, FieldEngine, FieldVector, NodeCategory, Targ
 use memory_space::{DesignNode, DesignState, StateId, StructuralGraph, Uuid, Value};
 use profile::PreferenceProfile;
 use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
+use stability::*;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ParetoFront {
@@ -68,10 +73,11 @@ pub fn dominates(a: &ObjectiveVector, b: &ObjectiveVector) -> bool {
     all_ge && one_gt
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SearchConfig {
     pub beam_width: usize,
     pub max_depth: usize,
+    pub norm_alpha: f64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -180,6 +186,18 @@ pub struct TraceRow {
     pub pareto_spacing_norm: f32,
     pub distance_calls: usize,
     pub nn_distance_calls: usize,
+    pub weak_dim_count: usize,
+    pub effective_dim_count: usize,
+    pub alpha_t: f32,
+    pub weak_contrib_ratio: f32,
+    pub collapse_proxy: f32,
+    // Stability V3
+    pub redundancy_flags: String,
+    pub saturation_flags: String,
+    pub discrete_saturation_count: usize,
+    pub effective_dim: usize,
+    pub effective_dim_ratio: f32,
+    pub collapse_reasons: String,
 }
 
 impl Default for TraceRow {
@@ -241,6 +259,17 @@ impl Default for TraceRow {
             pareto_spacing_norm: 0.0,
             distance_calls: 0,
             nn_distance_calls: 0,
+            weak_dim_count: 0,
+            effective_dim_count: 0,
+            alpha_t: 0.0,
+            weak_contrib_ratio: 0.0,
+            collapse_proxy: 0.0,
+            redundancy_flags: String::new(),
+            saturation_flags: String::new(),
+            discrete_saturation_count: 0,
+            effective_dim: 0,
+            effective_dim_ratio: 0.0,
+            collapse_reasons: String::new(),
         }
     }
 }
@@ -267,6 +296,7 @@ pub struct Phase1Config {
     pub depth: usize,
     pub beam: usize,
     pub seed: u64,
+    pub norm_alpha: f64,
     pub alpha: f64,
     pub temperature: f64,
     pub entropy_beta: f64,
@@ -307,8 +337,104 @@ pub struct ObjectiveNorm(pub [f64; 4]);
 pub struct GlobalRobustStats {
     pub median: [f64; 4],
     pub mad: [f64; 4],
-    pub active_dims: [bool; 4],
+    pub mean: [f64; 4],
+    pub std: [f64; 4],
+    pub active_dims: [bool; 4], // Meaning "Not Degenerate" (Strong OR Weak)
+    pub weak_dims: [bool; 4],   // Subset of active_dims
+    pub weights: [f64; 4],
     pub mad_zero_count: usize,
+    pub alpha_used: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AdaptiveAlphaState {
+    pub alpha: f64,
+    pub alpha_prev: f64,
+    pub d_prev: f64,
+}
+
+impl AdaptiveAlphaState {
+    pub fn new(initial_alpha: f64) -> Self {
+        Self {
+            alpha: initial_alpha,
+            alpha_prev: initial_alpha,
+            d_prev: 0.0,
+        }
+    }
+}
+
+pub fn calculate_adaptive_alpha(
+    state: &AdaptiveAlphaState,
+    stats: &GlobalRobustStats,
+    mean_nn_dist: f64,
+    pareto_size: usize,
+    d_target: f64,
+    effective_dim: usize,
+) -> AdaptiveAlphaState {
+    // Rule 4: Effective Dimension Guarantee
+    // If effective_dim < 3, alpha adjustment is invalid.
+    if effective_dim < 3 {
+        return state.clone();
+    }
+
+    let alpha_min = 0.01;
+    let alpha_max = 0.20;
+    let r0 = 0.25;
+    let r1 = 0.75;
+    let k = 0.05;
+    let beta = 0.2;
+    let rho_max = 0.35;
+    let delta = 0.1 * d_target;
+
+    // 1. Input Metrics
+    let s_count = stats
+        .active_dims
+        .iter()
+        .zip(stats.weak_dims.iter())
+        .filter(|&(&a, &w)| a && !w)
+        .count() as f64;
+    let w_count = stats.weak_dims.iter().filter(|&&w| w).count() as f64;
+    let e_count = s_count + w_count;
+
+    // 2. Base Alpha (State-based)
+    let r = w_count / e_count.max(1.0);
+    let ratio_factor = ((r - r0) / (r1 - r0)).clamp(0.0, 1.0);
+    let alpha_base = alpha_min + (alpha_max - alpha_min) * ratio_factor;
+
+    // 3. Feedback Correction (Collapse Proxy)
+    // If d < d_target, we need MORE alpha (to increase distance).
+    // If d > d_target, we can reduce alpha.
+    let error = ((d_target - mean_nn_dist) / d_target).clamp(-1.0, 1.0);
+    let alpha_fb = alpha_base + k * error;
+
+    // 4. Smoothing
+    let alpha_target = (1.0 - beta) * state.alpha + beta * alpha_fb;
+
+    // 5. Hysteresis (Deadband)
+    let mut next_alpha = alpha_target;
+    if (mean_nn_dist - d_target).abs() < delta && pareto_size > 1 {
+        // Inside deadband, keep previous alpha to prevent chattering
+        next_alpha = state.alpha;
+    }
+
+    // 6. Safety Valve (Outlier Dominance Suppression)
+    // alpha * W / (S + alpha * W) <= rho_max
+    // alpha * W <= rho_max * S + rho_max * alpha * W
+    // alpha * W * (1 - rho_max) <= rho_max * S
+    // alpha <= (rho_max * S) / (W * (1 - rho_max))
+    if w_count > 0.0 {
+        let max_allowed = (rho_max * s_count) / (w_count * (1.0 - rho_max));
+        next_alpha = next_alpha.min(max_allowed);
+    }
+
+    // Final Clamp
+    next_alpha = next_alpha.clamp(alpha_min, alpha_max);
+
+    AdaptiveAlphaState {
+        alpha: next_alpha,
+        alpha_prev: state.alpha,
+        d_prev: mean_nn_dist,
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -317,11 +443,14 @@ struct GlobalRobustEstimator {
     frozen: Option<GlobalRobustStats>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TraceRunConfig {
     pub depth: usize,
     pub beam: usize,
     pub seed: u64,
+    pub norm_alpha: f64,
+    pub adaptive_alpha: bool,
+    pub raw_output_path: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -364,13 +493,14 @@ impl DhMConfig {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BenchConfig {
     pub depth: usize,
     pub beam: usize,
     pub iterations: usize,
     pub warmup: usize,
     pub seed: u64,
+    pub norm_alpha: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -491,6 +621,21 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
     let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
 
     let mut controller = Phase45Controller::new(0.5);
+    
+    // Initialize alpha. 
+    // If adaptive, start with 0.01 (per spec recommendation) or config.norm_alpha if provided.
+    // If fixed, use config.norm_alpha.
+    // [Adaptive Alpha v2.2]
+    // Initialize with config.norm_alpha (or min/max if specified, 
+    // but typically start with 0.01 per spec or config).
+    // Let's use config.norm_alpha as the initial value if > 0, else 0.01.
+    let initial_alpha = if config.adaptive_alpha {
+        if config.norm_alpha > 1e-6 { config.norm_alpha } else { 0.01 }
+    } else {
+        config.norm_alpha
+    };
+    let mut adaptive_state = AdaptiveAlphaState::new(initial_alpha);
+
     let mut profile = PreferenceProfile {
         struct_weight: 0.25,
         field_weight: 0.25,
@@ -654,34 +799,123 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             continue;
         }
 
-        let (normalized, stats) = normalize_by_depth(filtered_candidates);
+        let (normalized, stats) = normalize_by_depth(filtered_candidates, adaptive_state.alpha);
+        
+        // Stability Analysis V3
+        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| obj_to_arr(obj)).collect();
+        let mad_norm = if let Some(s) = &stats { s.mad } else { [0.0; 4] };
+        
+        // Calculate basic metrics for analyzer
+        let weights_default = if let Some(s) = &stats { s.weights } else { [1.0; 4] }; // Approximation
+        let mean_nn_norm = mean_nn_dist_norm(
+            &normalized.iter().map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), s.as_ref().unwrap())).collect::<Vec<_>>(),
+            &weights_default
+        ); // Wait, normalized is already normalized?
+           // normalize_by_depth returns (Vec<(DesignState, ObjectiveVector)>, Option<GlobalRobustStats>)
+           // The ObjectiveVector in the Vec IS NORMALIZED.
+           // normalize_by_depth calls normalize_phase1_vectors OR uses robust_stats.
+           // Let's check normalize_by_depth implementation.
+           
+        // Re-reading normalize_by_depth (I need to be sure what it returns)
+        // It returns (Vec<(DesignState, ObjectiveVector)>, Option<GlobalRobustStats>)
+        // The objects are NORMALIZED.
+        
+        let normalized_objc: Vec<ObjectiveNorm> = normalized.iter().map(|(_, o)| ObjectiveNorm(obj_to_arr(o))).collect();
+        let current_mean_nn_dist_norm = mean_nn_dist_norm(&normalized_objc, &weights_default);
+        let current_unique_norm_count = count_unique_norm(&normalized_objc, &weights_default);
+        
+        let stability_metrics = ObjectiveStabilityAnalyzer::analyze(
+            &norm_data,
+            &mad_norm,
+            current_unique_norm_count,
+            current_mean_nn_dist_norm,
+        );
+
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
         }
 
         let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
-        let mut front: Vec<(DesignState, ObjectiveVector)> = normalized
-            .into_iter()
-            .filter(|(s, _)| front_set.contains(&s.id))
-            .collect();
-
-        front.sort_by(|(ls, lo), (rs, ro)| {
-            scalar_score(ro)
-                .partial_cmp(&scalar_score(lo))
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| ls.id.cmp(&rs.id))
-        });
-        front.dedup_by(|a, b| a.0.id == b.0.id);
-
-        let (target_field, adjustment) = build_target_field_with_diversity(
-            &field,
-            &shm,
-            &front[0].0,
-            controller.lambda(),
-            depth_boundary_diversity,
+        let s_ref = stats.as_ref().unwrap();
+        adaptive_state = calculate_adaptive_alpha(
+            &adaptive_state,
+            s_ref,
+            mean_nn_dist_norm_val,
+            front.len(),
+            0.5,
+            stability_metrics.effective_dim,
         );
-        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
+
+        rows.push(TraceRow {
+            depth,
+            lambda: controller.lambda() as f32,
+            delta_lambda: controller.lambda() as f32, // Check logic
+            tau_prime: adjustment.tau_prime as f32,
+            conf_chm: adjustment.conf_chm as f32,
+            density: adjustment.density as f32,
+            k: controller.k(),
+            h_profile: profile_modulation(0.25) as f32,
+            pareto_size: front.len(),
+            diversity: 0.0,
+            resonance_avg: resonance_avg as f32,
+            pressure: 0.0,
+            epsilon_effect: 0.0,
+            target_local_weight: 0.0,
+            target_global_weight: 0.0,
+            local_global_distance: 0.0,
+            field_min_distance: field_min_distance as f32,
+            field_rejected_count,
+            mu: mu as f32,
+            dhm_k: dhm_config.k_nearest,
+            dhm_norm: dhm_norm as f32,
+            dhm_resonance_mean: dhm_resonance_mean as f32,
+            dhm_score_ratio: dhm_score_ratio as f32,
+            dhm_build_us: dhm_build_us as f32,
+            expanded_categories_count: 0,
+            selected_rules_count: 0,
+            per_category_selected: String::new(),
+            entropy_per_depth: 0.0,
+            unique_category_count_per_depth: 0,
+            pareto_front_size_per_depth: front.len(),
+            pareto_mean_nn_dist: mean_nn_dist_val as f32,
+            pareto_spacing: spacing_val as f32,
+            pareto_hv_2d: hv_2d as f32,
+            field_extract_us: 0.0,
+            field_score_us: 0.0,
+            field_aggregate_us: 0.0,
+            field_total_us: 0.0,
+            norm_median_0: s_ref.median[0] as f32,
+            norm_median_1: s_ref.median[1] as f32,
+            norm_median_2: s_ref.median[2] as f32,
+            norm_median_3: s_ref.median[3] as f32,
+            norm_mad_0: s_ref.mad[0] as f32,
+            norm_mad_1: s_ref.mad[1] as f32,
+            norm_mad_2: s_ref.mad[2] as f32,
+            norm_mad_3: s_ref.mad[3] as f32,
+            median_nn_dist_all_depth: 0.0,
+            collapse_flag: stability_metrics.is_collapsed,
+            normalization_mode: "RobustV3".to_string(),
+            unique_norm_vec_count: unique_norm_count_val,
+            norm_dim_mad_zero_count: s_ref.mad_zero_count,
+            mean_nn_dist_raw: mean_nn_dist_val as f32,
+            mean_nn_dist_norm: mean_nn_dist_norm_val as f32,
+            pareto_spacing_raw: spacing_val as f32,
+            pareto_spacing_norm: spacing_norm_val as f32,
+            distance_calls: DISTANCE_CALL_COUNT.load(Ordering::Relaxed),
+            nn_distance_calls: NN_DISTANCE_CALL_COUNT.load(Ordering::Relaxed),
+            weak_dim_count: s_ref.weak_dims.iter().filter(|&&w| w).count(),
+            effective_dim_count: stability_metrics.effective_dim,
+            alpha_t: adaptive_state.alpha as f32,
+            weak_contrib_ratio: 0.0,
+            collapse_proxy: 0.0,
+            redundancy_flags: stability_metrics.redundancy_flags.join("|"),
+            saturation_flags: stability_metrics.saturation_flags.join("|"),
+            discrete_saturation_count: stability_metrics.discrete_saturation_count,
+            effective_dim: stability_metrics.effective_dim,
+            effective_dim_ratio: stability_metrics.effective_dim_ratio as f32,
+            collapse_reasons: stability_metrics.collapse_reasons.join("|"),
+        });        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
 
         let conflict_raw = front
             .iter()
@@ -719,8 +953,10 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             .iter()
             .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
             .collect();
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
-        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.weights);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.weights);
+        let effective_dim_count = stats.active_dims.iter().filter(|&&a| a).count();
+        let weak_dim_count = stats.weak_dims.iter().filter(|&&w| w).count();
 
         rows.push(TraceRow {
             depth,
@@ -753,7 +989,10 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             entropy_per_depth: 0.0,
             unique_category_count_per_depth: 0,
             pareto_front_size_per_depth: front.len(),
-            pareto_mean_nn_dist: 0.0, // Replaced below
+            pareto_mean_nn_dist: 0.0,
+            alpha_t: 0.0,
+            weak_contrib_ratio: 0.0,
+            collapse_proxy: 0.0,
             pareto_spacing: 0.0,
             pareto_hv_2d: 0.0,
             field_extract_us: 0.0,
@@ -779,6 +1018,8 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
             pareto_spacing_norm: 0.0,
             distance_calls: 0,
             nn_distance_calls: 0,
+            weak_dim_count,
+            effective_dim_count,
         });
 
         frontier = front
@@ -876,7 +1117,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             continue;
         }
 
-        let (normalized, stats) = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates, config.norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -981,8 +1222,10 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             .iter()
             .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
             .collect();
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
-        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.weights);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.weights);
+        let effective_dim_count = stats.active_dims.iter().filter(|&&a| a).count();
+        let weak_dim_count = stats.weak_dims.iter().filter(|&&w| w).count();
 
         rows.push(TraceRow {
             depth,
@@ -1016,6 +1259,9 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             unique_category_count_per_depth: 0,
             pareto_front_size_per_depth: front.len(),
             pareto_mean_nn_dist: 0.0,
+            alpha_t: 0.0,
+            weak_contrib_ratio: 0.0,
+            collapse_proxy: 0.0,
             pareto_spacing: 0.0,
             pareto_hv_2d: 0.0,
             field_extract_us: 0.0,
@@ -1041,6 +1287,8 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             pareto_spacing_norm: 0.0,
             distance_calls: 0,
             nn_distance_calls: 0,
+            weak_dim_count,
+            effective_dim_count,
         });
 
 
@@ -1146,7 +1394,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             continue;
         }
 
-        let (normalized, stats) = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates, config.norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1251,8 +1499,10 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             .iter()
             .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
             .collect();
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.active_dims);
-        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.active_dims);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.weights);
+        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.weights);
+        let effective_dim_count = stats.active_dims.iter().filter(|&&a| a).count();
+        let weak_dim_count = stats.weak_dims.iter().filter(|&&w| w).count();
 
         rows.push(TraceRow {
             depth,
@@ -1286,6 +1536,9 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             unique_category_count_per_depth: expanded_categories_count,
             pareto_front_size_per_depth: front.len(),
             pareto_mean_nn_dist: 0.0,
+            alpha_t: 0.0,
+            weak_contrib_ratio: 0.0,
+            collapse_proxy: 0.0,
             pareto_spacing: 0.0,
             pareto_hv_2d: 0.0,
             field_extract_us: 0.0,
@@ -1311,6 +1564,8 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             pareto_spacing_norm: 0.0,
             distance_calls: 0,
             nn_distance_calls: 0,
+            weak_dim_count,
+            effective_dim_count,
         });
 
         frontier = front
@@ -1352,9 +1607,21 @@ pub fn generate_trace_baseline_off_soft(
     let mut estimator = GlobalRobustEstimator::default();
     let warmup_depths = 10usize;
 
+    let initial_alpha = if config.adaptive_alpha {
+        if config.norm_alpha > 1e-6 { config.norm_alpha } else { 0.01 }
+    } else {
+        config.norm_alpha
+    };
+    let mut adaptive_state = AdaptiveAlphaState::new(initial_alpha);
+
     for depth in 1..=config.depth {
         let calls_start = DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
         let nn_calls_start = NN_DISTANCE_CALL_COUNT.load(Ordering::Relaxed);
+        let norm_alpha_val = if config.adaptive_alpha {
+            adaptive_state.alpha
+        } else {
+            config.norm_alpha
+        };
         let mu = 0.0f64;
         let target_field = build_target_field(&field, &shm, &frontier[0], lambda);
         let batch = build_soft_candidates_for_frontier(
@@ -1383,21 +1650,52 @@ pub fn generate_trace_baseline_off_soft(
         let field_aggregate_us = batch.field_aggregate_us;
         let field_total_us = batch.field_total_us;
 
+        if let Some(path) = &config.raw_output_path {
+            let mut file = OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .expect("failed to open raw trace file");
+            
+            if depth == 1 {
+                writeln!(file, "depth,candidate_id,objective_0,objective_1,objective_2,objective_3").unwrap();
+            }
+
+            for (i, (_, obj)) in candidates.iter().enumerate() {
+                writeln!(
+                    file,
+                    "{},{},{},{},{},{}",
+                    depth,
+                    i,
+                    obj.f_struct,
+                    obj.f_field,
+                    obj.f_risk,
+                    obj.f_cost
+                )
+                .unwrap();
+            }
+        }
+
         if depth <= warmup_depths {
             estimator
                 .samples
                 .extend(candidates.iter().map(|(_, o)| ObjectiveRaw(obj_to_arr(o))));
             if depth == warmup_depths {
-                estimator.frozen = robust_stats_from_samples(&estimator.samples);
+                estimator.frozen = robust_stats_from_samples(&estimator.samples, norm_alpha_val);
             }
         }
         let stats = estimator
             .frozen.clone()
-            .or_else(|| robust_stats_from_samples(&estimator.samples))
+            .or_else(|| robust_stats_from_samples(&estimator.samples, norm_alpha_val))
             .unwrap_or(GlobalRobustStats {
+                alpha_used: norm_alpha_val,
                 median: [0.0; 4],
                 mad: [1.0; 4],
+                mean: [0.0; 4],
+                std: [1.0; 4],
                 active_dims: [true; 4],
+                weak_dims: [false; 4],
+                weights: [1.0; 4],
                 mad_zero_count: 0,
             });
 
@@ -1470,11 +1768,16 @@ pub fn generate_trace_baseline_off_soft(
                 pareto_spacing_norm: 0.0,
                 distance_calls: 0,
                 nn_distance_calls: 0,
+                weak_dim_count: 0,
+                effective_dim_count: 0,
+                alpha_t: 0.0,
+                weak_contrib_ratio: 0.0,
+                collapse_proxy: 0.0,
             });
             continue;
         }
 
-        let (normalized, _) = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates, norm_alpha_val);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1503,11 +1806,41 @@ pub fn generate_trace_baseline_off_soft(
             .collect::<Vec<_>>();
         let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
         let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm, &stats.active_dims);
-        let pareto_spacing = spacing_norm(&front_norm, &stats.active_dims);
+        let pareto_mean_nn = mean_nn_dist_norm(&front_norm, &stats.weights);
+        let pareto_spacing = spacing_norm(&front_norm, &stats.weights);
         let pareto_hv_2d = pareto_hv_2d_norm(&front_norm);
+        // unique_norm_vec_count is used in TraceRow, computing it here
+        let unique_norm_vec_count = count_unique_norm(&front_norm, &stats.weights);
+        let s_count = stats.active_dims.iter().zip(stats.weak_dims.iter()).filter(|&(&a, &w)| a && !w).count();
+        let w_count = stats.weak_dims.iter().filter(|&&w| w).count();
+        let effective_dim_count = s_count + w_count;
+        let weak_dim_count = w_count;
+        let weak_contrib_ratio = if w_count > 0 {
+            norm_alpha_val * (w_count as f64) / ( (s_count as f64) + norm_alpha_val * (w_count as f64) )
+        } else {
+            0.0
+        };
+        let collapse_proxy = if depth > warmup_depths && front.len() > 1 && pareto_mean_nn < 0.01 { 1.0 } else { 0.0 };
 
-        let unique_norm_vec_count = count_unique_norm(&front_norm, &stats.active_dims);
+        // Stability V3 Integration for run_search_phase1
+        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| obj_to_arr(obj)).collect();
+        let stability_metrics = ObjectiveStabilityAnalyzer::analyze(
+            &norm_data,
+            &stats.mad,
+            unique_norm_vec_count,
+            pareto_mean_nn,
+        );
+
+        if config.adaptive_alpha && depth > warmup_depths {
+            adaptive_state = calculate_adaptive_alpha(
+                &adaptive_state,
+                &stats,
+                pareto_mean_nn,
+                front.len(),
+                0.01, // d_target default
+                stability_metrics.effective_dim,
+            );
+        }
         let norm_dim_mad_zero_count = stats.mad.iter().filter(|&&m| m.abs() < 1e-9).count();
 
         // Calculate raw metrics
@@ -1556,6 +1889,9 @@ pub fn generate_trace_baseline_off_soft(
             pareto_hv_2d: pareto_hv_2d as f32,
             field_extract_us: field_extract_us as f32,
             field_score_us: field_score_us as f32,
+            alpha_t: norm_alpha_val as f32,
+            weak_contrib_ratio: weak_contrib_ratio as f32,
+            collapse_proxy: collapse_proxy as f32,
             field_aggregate_us: field_aggregate_us as f32,
             field_total_us: field_total_us as f32,
             norm_median_0: stats.median[0] as f32,
@@ -1577,9 +1913,17 @@ pub fn generate_trace_baseline_off_soft(
             pareto_spacing_norm: pareto_spacing as f32,
             distance_calls,
             nn_distance_calls,
+            weak_dim_count,
+            effective_dim_count,
+            redundancy_flags: stability_metrics.redundancy_flags.join("|"),
+            saturation_flags: stability_metrics.saturation_flags.join("|"),
+            discrete_saturation_count: stability_metrics.discrete_saturation_count,
+            effective_dim: stability_metrics.effective_dim,
+            effective_dim_ratio: stability_metrics.effective_dim_ratio as f32,
+            collapse_reasons: stability_metrics.collapse_reasons.join("|"),
         });
 
-        frontier = select_beam_maxmin_norm(front, front_norm, config.beam.max(1), &stats.active_dims)
+        frontier = select_beam_maxmin_norm(front, front_norm, config.beam.max(1), &stats.weights)
             .into_iter()
             .map(|(s, _)| s)
             .collect();
@@ -1607,7 +1951,7 @@ pub fn run_bench(config: BenchConfig) -> BenchResult {
     let warmup = config.warmup;
 
     for i in 0..warmup {
-        let _ = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        let _ = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64), config.norm_alpha);
     }
 
     let mut total_ms_sum = 0.0;
@@ -1621,7 +1965,7 @@ pub fn run_bench(config: BenchConfig) -> BenchResult {
     let mut lambda_final_sum = 0.0;
 
     for i in 0..iterations {
-        let stats = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        let stats = run_bench_once(config.depth, config.beam, config.seed.wrapping_add(i as u64), config.norm_alpha);
         total_ms_sum += stats.total_ms;
         per_depth_ms_sum += stats.per_depth_ms;
         field_us_sum += stats.field_us;
@@ -1655,7 +1999,7 @@ pub fn run_bench_baseline_off(config: BenchConfig) -> BenchResult {
     let warmup = config.warmup;
 
     for i in 0..warmup {
-        let _ = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        let _ = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64), config.norm_alpha);
     }
 
     let mut total_ms_sum = 0.0;
@@ -1668,7 +2012,7 @@ pub fn run_bench_baseline_off(config: BenchConfig) -> BenchResult {
     let mut lambda_final_sum = 0.0;
 
     for i in 0..iterations {
-        let stats = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64));
+        let stats = run_bench_once_baseline_off(config.depth, config.beam, config.seed.wrapping_add(i as u64), config.norm_alpha);
         total_ms_sum += stats.total_ms;
         per_depth_ms_sum += stats.per_depth_ms;
         field_us_sum += stats.field_us;
@@ -1706,6 +2050,7 @@ pub fn run_bench_baseline_off_balanced(config: BenchConfig, m: usize) -> BenchRe
             config.beam,
             config.seed.wrapping_add(i as u64),
             m,
+            config.norm_alpha,
         );
     }
 
@@ -1724,6 +2069,7 @@ pub fn run_bench_baseline_off_balanced(config: BenchConfig, m: usize) -> BenchRe
             config.beam,
             config.seed.wrapping_add(i as u64),
             m,
+            config.norm_alpha,
         );
         total_ms_sum += stats.total_ms;
         per_depth_ms_sum += stats.per_depth_ms;
@@ -1771,6 +2117,7 @@ pub fn run_bench_baseline_off_soft(
             config.depth,
             config.beam,
             config.seed.wrapping_add(i as u64),
+            config.norm_alpha,
             alpha,
             temperature,
             entropy_beta,
@@ -1796,6 +2143,7 @@ pub fn run_bench_baseline_off_soft(
             config.depth,
             config.beam,
             config.seed.wrapping_add(i as u64),
+            config.norm_alpha,
             alpha,
             temperature,
             entropy_beta,
@@ -1981,7 +2329,7 @@ struct BenchOnceStats {
     lambda_final: f64,
 }
 
-fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
+fn run_bench_once(depth: usize, beam: usize, seed: u64, norm_alpha: f64) -> BenchOnceStats {
     let depth = depth.max(1);
     let beam = beam.max(1);
 
@@ -2079,7 +2427,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
             frontier = vec![trace_initial_state(seed)];
             continue;
         }
-        let (normalized, _) = normalize_by_depth(filtered_candidates);
+        let (normalized, _) = normalize_by_depth(filtered_candidates, norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2151,7 +2499,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
     }
 }
 
-fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64) -> BenchOnceStats {
+fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64, norm_alpha: f64) -> BenchOnceStats {
     let depth = depth.max(1);
     let beam = beam.max(1);
 
@@ -2213,7 +2561,7 @@ fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64) -> BenchOnc
         }
 
         let t_pareto = Instant::now();
-        let (normalized, _) = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates, norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2283,7 +2631,7 @@ fn run_bench_once_baseline_off(depth: usize, beam: usize, seed: u64) -> BenchOnc
     }
 }
 
-fn run_bench_once_baseline_off_balanced(depth: usize, beam: usize, seed: u64, m: usize) -> BenchOnceStats {
+fn run_bench_once_baseline_off_balanced(depth: usize, beam: usize, seed: u64, m: usize, norm_alpha: f64) -> BenchOnceStats {
     let depth = depth.max(1);
     let beam = beam.max(1);
 
@@ -2345,7 +2693,7 @@ fn run_bench_once_baseline_off_balanced(depth: usize, beam: usize, seed: u64, m:
         }
 
         let t_pareto = Instant::now();
-        let (normalized, _) = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates, norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2417,6 +2765,7 @@ fn run_bench_once_baseline_off_soft(
     depth: usize,
     beam: usize,
     seed: u64,
+    norm_alpha: f64,
     alpha: f64,
     temperature: f64,
     entropy_beta: f64,
@@ -2475,16 +2824,21 @@ fn run_bench_once_baseline_off_soft(
                 .samples
                 .extend(candidates.iter().map(|(_, o)| ObjectiveRaw(obj_to_arr(o))));
             if d == warmup_depths {
-                estimator.frozen = robust_stats_from_samples(&estimator.samples);
+                estimator.frozen = robust_stats_from_samples(&estimator.samples, norm_alpha);
             }
         }
         let stats = estimator
             .frozen.clone()
-            .or_else(|| robust_stats_from_samples(&estimator.samples))
+            .or_else(|| robust_stats_from_samples(&estimator.samples, norm_alpha))
             .unwrap_or(GlobalRobustStats {
+                alpha_used: norm_alpha,
                 median: [0.0; 4],
                 mad: [1.0; 4],
+                mean: [0.0; 4],
+                std: [1.0; 4],
                 active_dims: [true; 4],
+                weak_dims: [false; 4],
+                weights: [1.0; 4],
                 mad_zero_count: 0,
             });
         if candidates.is_empty() {
@@ -2493,7 +2847,7 @@ fn run_bench_once_baseline_off_soft(
         }
 
         let t_pareto = Instant::now();
-        let (normalized, stats) = normalize_by_depth(candidates);
+        let (normalized, stats) = normalize_by_depth(candidates, norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -2529,7 +2883,7 @@ fn run_bench_once_baseline_off_soft(
         );
         lambda_us_total += elapsed_us(t_lambda);
 
-        frontier = select_beam_maxmin_norm(front, front_norm, beam, &stats.active_dims)
+        frontier = select_beam_maxmin_norm(front, front_norm, beam, &stats.weights)
             .into_iter()
             .map(|(s, _)| s)
             .collect();
@@ -2597,7 +2951,7 @@ impl<'a> BeamSearch<'a> {
                 break;
             }
 
-            let (normalized, _) = normalize_by_depth(candidates);
+            let (normalized, _) = normalize_by_depth(candidates, self.config.norm_alpha);
 
             let mut pareto = ParetoFront::new();
             for (state, obj) in &normalized {
@@ -3032,13 +3386,18 @@ fn calculate_pareto_metrics(vectors: &[(StateId, ObjectiveVector)]) -> (f32, f32
     (mean_nn as f32, spacing as f32, unique_vecs.len())
 }
 
-fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(DesignState, ObjectiveVector)>, GlobalRobustStats) {
+fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>, alpha: f64) -> (Vec<(DesignState, ObjectiveVector)>, GlobalRobustStats) {
     if candidates.is_empty() {
         return (Vec::new(), GlobalRobustStats {
             median: [0.0; 4],
             mad: [1.0; 4],
+            mean: [0.0; 4],
+            std: [1.0; 4],
             active_dims: [true; 4],
+            weak_dims: [false; 4],
+            weights: [1.0; 4],
             mad_zero_count: 0,
+            alpha_used: alpha,
         });
     }
 
@@ -3065,24 +3424,59 @@ fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(
     let mad_r = compute_mad(&risks, med_r);
     let mad_c = compute_mad(&costs, med_c);
 
-    let eps_mad = 1e-12;
-    let eps_small = 1e-9;
+    let mean_s = compute_mean(&structs);
+    let mean_f = compute_mean(&fields);
+    let mean_r = compute_mean(&risks);
+    let mean_c = compute_mean(&costs);
 
-    let active = [
-        mad_s > eps_mad,
-        mad_f > eps_mad,
-        mad_r > eps_mad,
-        mad_c > eps_mad,
-    ];
+    let std_s = compute_std(&structs, mean_s);
+    let std_f = compute_std(&fields, mean_f);
+    let std_r = compute_std(&risks, mean_r);
+    let std_c = compute_std(&costs, mean_c);
+
+    let eps_mad = 1e-12;
+    let eps_std = 1e-9;
+    let alpha_weak = alpha;
+
+    let mut active = [false; 4];
+    let mut weak = [false; 4];
+    let mut weights = [0.0; 4];
     let mad = [mad_s, mad_f, mad_r, mad_c];
     let median = [med_s, med_f, med_r, med_c];
-    let mad_zero_count = active.iter().filter(|&&a| !a).count();
+    let mean = [mean_s, mean_f, mean_r, mean_c];
+    let std_dev = [std_s, std_f, std_r, std_c];
+
+    for i in 0..4 {
+        if mad[i] > eps_mad {
+            // Strong Active
+            active[i] = true;
+            weak[i] = false;
+            weights[i] = 1.0;
+        } else if std_dev[i] > eps_std {
+            // Weak Active
+            active[i] = true;
+            weak[i] = true;
+            weights[i] = alpha_weak;
+        } else {
+            // Degenerate
+            active[i] = false;
+            weak[i] = false;
+            weights[i] = 0.0;
+        }
+    }
+
+    let mad_zero_count = active.iter().zip(mad.iter()).filter(|&(&a, &m)| a && m <= eps_mad).count();
 
     let stats = GlobalRobustStats {
         median,
         mad,
+        mean,
+        std: std_dev,
         active_dims: active,
+        weak_dims: weak,
+        weights,
         mad_zero_count,
+        alpha_used: alpha_weak,
     };
 
     let normalized = candidates
@@ -3092,8 +3486,15 @@ fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(
             let raw = [obj.f_struct, obj.f_field, obj.f_risk, obj.f_cost];
             for i in 0..4 {
                 if active[i] {
-                    let safe_mad = if mad[i] < eps_small { eps_small } else { mad[i] };
-                    f[i] = (raw[i] - median[i]) / safe_mad;
+                    if !weak[i] {
+                        // Strong: (x - median) / MAD
+                        // MAD is guaranteed > eps_mad
+                        f[i] = (raw[i] - median[i]) / mad[i];
+                    } else {
+                        // Weak: (x - mean) / max(std, eps_std)
+                        let den = std_dev[i].max(eps_std);
+                        f[i] = (raw[i] - mean[i]) / den;
+                    }
                 } else {
                     f[i] = 0.0;
                 }
@@ -3116,6 +3517,21 @@ fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>) -> (Vec<(
 fn compute_mad(values: &[f64], med: f64) -> f64 {
     let diffs: Vec<f64> = values.iter().map(|v| (v - med).abs()).collect();
     median(diffs)
+}
+
+fn compute_mean(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    values.iter().sum::<f64>() / values.len() as f64
+}
+
+fn compute_std(values: &[f64], mean: f64) -> f64 {
+    if values.len() < 2 {
+        return 0.0;
+    }
+    let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
+    var.sqrt()
 }
 
 fn deterministic_state_id(
@@ -3940,28 +4356,54 @@ fn spacing4(vs: &[[f64; 4]]) -> f64 {
     (nn.iter().map(|d| (d - mean).powi(2)).sum::<f64>() / (nn.len() - 1) as f64).sqrt()
 }
 
-fn robust_stats_from_samples(samples: &[ObjectiveRaw]) -> Option<GlobalRobustStats> {
+fn robust_stats_from_samples(samples: &[ObjectiveRaw], alpha: f64) -> Option<GlobalRobustStats> {
     if samples.is_empty() {
         return None;
     }
     let mut med = [0.0; 4];
     let mut mad = [0.0; 4];
+    let mut std_dev = [0.0; 4];
+    let mut mean = [0.0; 4];
     let mut active = [true; 4];
+    let mut weak = [false; 4];
+    let mut weights = [0.0; 4];
     let eps_mad = 1e-12;
+    let eps_std = 1e-9;
+    let alpha_weak = alpha;
 
     for i in 0..4 {
         let col = samples.iter().map(|v| v.0[i]).collect::<Vec<_>>();
         med[i] = median(col.clone());
         mad[i] = compute_mad(&col, med[i]);
-        active[i] = mad[i] > eps_mad;
+        mean[i] = compute_mean(&col);
+        std_dev[i] = compute_std(&col, mean[i]);
+
+        if mad[i] > eps_mad {
+            active[i] = true;
+            weak[i] = false;
+            weights[i] = 1.0;
+        } else if std_dev[i] > eps_std {
+            active[i] = true;
+            weak[i] = true;
+            weights[i] = alpha_weak;
+        } else {
+            active[i] = false;
+            weak[i] = false;
+            weights[i] = 0.0;
+        }
     }
-    let mad_zero_count = active.iter().filter(|&&a| !a).count();
+    let mad_zero_count = active.iter().zip(mad.iter()).filter(|&(&a, &m)| a && m <= eps_mad).count();
 
     Some(GlobalRobustStats {
         median: med,
         mad,
+        mean,
+        std: std_dev,
         active_dims: active,
+        weak_dims: weak,
+        weights,
         mad_zero_count,
+        alpha_used: alpha_weak,
     })
 }
 
@@ -3970,8 +4412,15 @@ fn normalize_objective(raw: &ObjectiveRaw, stats: &GlobalRobustStats) -> Objecti
     let mut out = [0.0; 4];
     for i in 0..4 {
         if stats.active_dims[i] {
-            let safe_mad = if stats.mad[i] < eps_small { eps_small } else { stats.mad[i] };
-            out[i] = (raw.0[i] - stats.median[i]) / safe_mad;
+            if !stats.weak_dims[i] {
+                // Strong active: (x - median) / MAD
+                let safe_mad = if stats.mad[i] < eps_small { eps_small } else { stats.mad[i] };
+                out[i] = (raw.0[i] - stats.median[i]) / safe_mad;
+            } else {
+                // Weak active: (x - mean) / max(std, eps_small)
+                let den = if stats.std[i] < eps_small { eps_small } else { stats.std[i] };
+                out[i] = (raw.0[i] - stats.mean[i]) / den;
+            }
         } else {
             out[i] = 0.0;
         }
@@ -3979,23 +4428,29 @@ fn normalize_objective(raw: &ObjectiveRaw, stats: &GlobalRobustStats) -> Objecti
     ObjectiveNorm(out)
 }
 
-fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm, active_dims: &[bool; 4]) -> f64 {
+fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm, weights: &[f64; 4]) -> f64 {
     DISTANCE_CALL_COUNT.fetch_add(1, Ordering::Relaxed);
     let mut s = 0.0;
-    let mut count = 0;
+    let mut w_sum = 0.0;
     for i in 0..4 {
-        if active_dims[i] {
-            s += (a.0[i] - b.0[i]).powi(2);
-            count += 1;
+        if weights[i] > 0.0 {
+            s += weights[i] * (a.0[i] - b.0[i]).powi(2);
+            w_sum += weights[i];
         }
     }
-    if count == 0 {
+    if w_sum <= 1e-12 {
         return 0.0;
     }
-    s.sqrt() / (count as f64).sqrt()
+    let dist = (s / w_sum).sqrt();
+    let eps_dist = 1e-6;
+    if dist < eps_dist {
+        eps_dist
+    } else {
+        dist
+    }
 }
 
-fn mean_nn_dist_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
+fn mean_nn_dist_norm(vs: &[ObjectiveNorm], weights: &[f64; 4]) -> f64 {
     if vs.len() < 2 {
         return 0.0;
     }
@@ -4007,7 +4462,7 @@ fn mean_nn_dist_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
             if i == j {
                 continue;
             }
-            best = best.min(norm_distance(v, u, active_dims));
+            best = best.min(norm_distance(v, u, weights));
         }
         if best.is_finite() {
             sum += best;
@@ -4016,17 +4471,17 @@ fn mean_nn_dist_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
     sum / vs.len() as f64
 }
 
-fn count_unique_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> usize {
+fn count_unique_norm(vs: &[ObjectiveNorm], weights: &[f64; 4]) -> usize {
     let mut unique: Vec<&ObjectiveNorm> = Vec::new();
     for v in vs {
-        if !unique.iter().any(|u| norm_distance(v, u, active_dims) < 1e-9) {
+        if !unique.iter().any(|u| norm_distance(v, u, weights) < 1e-6) {
             unique.push(v);
         }
     }
     unique.len()
 }
 
-fn spacing_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
+fn spacing_norm(vs: &[ObjectiveNorm], weights: &[f64; 4]) -> f64 {
     if vs.len() < 2 {
         return 0.0;
     }
@@ -4037,7 +4492,7 @@ fn spacing_norm(vs: &[ObjectiveNorm], active_dims: &[bool; 4]) -> f64 {
             if i == j {
                 continue;
             }
-            best = best.min(norm_distance(v, u, active_dims));
+            best = best.min(norm_distance(v, u, weights));
         }
         if best.is_finite() {
             nn.push(best);
@@ -4093,7 +4548,7 @@ fn select_beam_maxmin_norm(
     front: Vec<(DesignState, ObjectiveVector)>,
     norms: Vec<ObjectiveNorm>,
     beam: usize,
-    active_dims: &[bool; 4],
+    weights: &[f64; 4],
 ) -> Vec<(DesignState, ObjectiveVector)> {
     if front.is_empty() {
         return Vec::new();
@@ -4121,7 +4576,7 @@ fn select_beam_maxmin_norm(
             }
             let dmin = selected_idx
                 .iter()
-                .map(|j| norm_distance(&norms[i], &norms[*j], active_dims))
+                .map(|j| norm_distance(&norms[i], &norms[*j], weights))
                 .fold(f64::INFINITY, f64::min);
             if dmin > best_d {
                 best_d = dmin;
@@ -4292,6 +4747,7 @@ mod tests {
             config: SearchConfig {
                 beam_width: 3,
                 max_depth: 2,
+                norm_alpha: 0.25,
             },
         };
 
@@ -4344,7 +4800,7 @@ mod tests {
             ),
         ];
 
-        let (normalized, _) = normalize_by_depth(candidates);
+        let (normalized, _) = normalize_by_depth(candidates, 0.25);
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_struct)));
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_field)));
         assert!(normalized.iter().all(|(_, o)| (0.0..=1.0).contains(&o.f_risk)));
@@ -4364,6 +4820,7 @@ mod tests {
             config: SearchConfig {
                 beam_width: 2,
                 max_depth: 3,
+                norm_alpha: 0.25,
             },
         };
 

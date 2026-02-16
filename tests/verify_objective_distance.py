@@ -64,7 +64,8 @@ def analyze_trace():
             # If pareto_size is 1, unique_norm is 1.
             # Does Case A apply? "pareto_size > 1 AND unique_norm_vec_count == 1".
             # So if pareto_size=1, Case A is false.
-            pass
+            # So if pareto_size=1, Case A is false.
+            continue
 
         # Case A: Normalization Degeneracy
         if pareto_size > 1 and unique_norm == 1:
