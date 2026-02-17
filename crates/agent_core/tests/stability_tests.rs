@@ -419,6 +419,7 @@ fn smoke_beam_engine_depth50_runs() {
         config: SearchConfig {
             beam_width: 5,
             max_depth: 50,
+            norm_alpha: 0.25,
         },
     };
 

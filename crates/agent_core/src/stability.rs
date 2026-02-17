@@ -1,5 +1,10 @@
-use std::collections::{BTreeSet, HashMap};
 use std::f64;
+
+const EPS: f64 = 1e-9;
+
+fn is_stable(a: f64, b: f64, eps: f64) -> bool {
+    (a - b).abs() < eps
+}
 
 /// Computes the rank of elements in the vector, handling ties by assigning average rank.
 fn rank_data(v: &[f64]) -> Vec<f64> {
@@ -12,7 +17,7 @@ fn rank_data(v: &[f64]) -> Vec<f64> {
     let mut i = 0;
     while i < n {
         let mut j = i + 1;
-        while j < n && (indexed[j].1 - indexed[i].1).abs() < 1e-9 {
+        while j < n && is_stable(indexed[j].1, indexed[i].1, EPS) {
             j += 1;
         }
         // Elements from i to j-1 have equal values.
@@ -62,6 +67,7 @@ pub fn spearman_correlation(x: &[f64], y: &[f64]) -> f64 {
 }
 
 /// Compute covariance matrix for 4D vectors.
+#[allow(clippy::needless_range_loop)]
 pub fn covariance_matrix4(data: &[[f64; 4]]) -> [[f64; 4]; 4] {
     let n = data.len();
     if n < 2 {
@@ -97,6 +103,7 @@ pub fn covariance_matrix4(data: &[[f64; 4]]) -> [[f64; 4]; 4] {
 
 /// Cyclic Jacobi method to compute eigenvalues of a symmetric 4x4 matrix.
 /// Returns eigenvalues sorted descending.
+#[allow(clippy::needless_range_loop)]
 pub fn eigenvalues_jacobi_4x4(matrix: &[[f64; 4]; 4]) -> [f64; 4] {
     let mut a = *matrix;
     let n = 4;
@@ -201,6 +208,7 @@ pub struct StabilityMetrics {
 pub struct ObjectiveStabilityAnalyzer;
 
 impl ObjectiveStabilityAnalyzer {
+    #[allow(clippy::needless_range_loop)]
     pub fn analyze(
         data: &[[f64; 4]],
         mad: &[f64; 4],
@@ -237,7 +245,7 @@ impl ObjectiveStabilityAnalyzer {
         for i in 0..n_dim {
             let mut col: Vec<f64> = data.iter().map(|v| v[i]).collect();
             col.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
-            col.dedup_by(|a, b| (a - b).abs() < 1e-9);
+            col.dedup_by(|a, b| is_stable(*a, *b, EPS));
             let u_i = col.len() as f64;
             
             if u_i / n_samples.max(1.0) < 0.15 {

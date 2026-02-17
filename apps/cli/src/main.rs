@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use agent_core::{
     generate_trace, generate_trace_baseline_off, generate_trace_baseline_off_balanced, generate_trace_baseline_off_soft,
     run_bench, run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft, run_phase1_matrix,
-    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, TraceRow, TraceRunConfig,
+    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, SoftTraceParams, TraceRow, TraceRunConfig,
 };
 use interface_ui::{UiEvent, UserInterface, VmBridge};
 
@@ -116,14 +116,16 @@ fn main() {
                         adaptive_alpha: trace_cfg.adaptive_alpha,
                         raw_output_path: trace_cfg.raw_output.clone(),
                     },
-                    trace_cfg.category_alpha,
-                    trace_cfg.temperature,
-                    trace_cfg.entropy_beta,
-                    trace_cfg.lambda_min,
-                    trace_cfg.lambda_target_entropy,
-                    trace_cfg.lambda_k,
-                    trace_cfg.lambda_ema,
-                    trace_cfg.field_profile,
+                    SoftTraceParams {
+                        alpha: trace_cfg.category_alpha,
+                        temperature: trace_cfg.temperature,
+                        entropy_beta: trace_cfg.entropy_beta,
+                        lambda_min: trace_cfg.lambda_min,
+                        lambda_target_entropy: trace_cfg.lambda_target_entropy,
+                        lambda_k: trace_cfg.lambda_k,
+                        lambda_ema: trace_cfg.lambda_ema,
+                        field_profile: trace_cfg.field_profile,
+                    },
                 )
             } else if trace_cfg.category_balanced {
                 generate_trace_baseline_off_balanced(
@@ -248,14 +250,16 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
                         seed: 42,
                         norm_alpha: cfg.norm_alpha,
                     },
-                    cfg.category_alpha,
-                    cfg.temperature,
-                    cfg.entropy_beta,
-                    cfg.lambda_min,
-                    cfg.lambda_target_entropy,
-                    cfg.lambda_k,
-                    cfg.lambda_ema,
-                    cfg.field_profile,
+                    SoftTraceParams {
+                        alpha: cfg.category_alpha,
+                        temperature: cfg.temperature,
+                        entropy_beta: cfg.entropy_beta,
+                        lambda_min: cfg.lambda_min,
+                        lambda_target_entropy: cfg.lambda_target_entropy,
+                        lambda_k: cfg.lambda_k,
+                        lambda_ema: cfg.lambda_ema,
+                        field_profile: cfg.field_profile,
+                    },
                 )
             } else if cfg.category_balanced {
                 run_bench_baseline_off_balanced(
@@ -529,8 +533,8 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
     let mut beam = 5usize;
     let mut iter = 3usize;
     let mut warmup = 1usize;
-    let mut norm_alpha = 0.25f64;
-    let mut adaptive_alpha = false;
+    let norm_alpha = 0.25f64;
+    let adaptive_alpha = false;
     let mut depth_set = false;
     let mut beam_set = false;
     let mut baseline_off = false;
