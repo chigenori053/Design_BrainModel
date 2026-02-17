@@ -615,27 +615,16 @@ impl Phase45Controller {
 }
 
 pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
+    generate_trace_baseline_off(config)
+}
+
+pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
     let shm = Shm::with_default_rules();
     let chm = make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
     let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
 
     let mut controller = Phase45Controller::new(0.5);
-    
-    // Initialize alpha. 
-    // If adaptive, start with 0.01 (per spec recommendation) or config.norm_alpha if provided.
-    // If fixed, use config.norm_alpha.
-    // [Adaptive Alpha v2.2]
-    // Initialize with config.norm_alpha (or min/max if specified, 
-    // but typically start with 0.01 per spec or config).
-    // Let's use config.norm_alpha as the initial value if > 0, else 0.01.
-    let initial_alpha = if config.adaptive_alpha {
-        if config.norm_alpha > 1e-6 { config.norm_alpha } else { 0.01 }
-    } else {
-        config.norm_alpha
-    };
-    let mut adaptive_state = AdaptiveAlphaState::new(initial_alpha);
-
     let mut profile = PreferenceProfile {
         struct_weight: 0.25,
         field_weight: 0.25,
@@ -644,69 +633,35 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
     };
     let mut frontier = vec![trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);
-    let mut depth_boundary_diversity = 1.0f64;
-    let dhm_config = DhMConfig::phase7_fixed();
-    let mut dhm_memory = vec![(0usize, field.aggregate_state(&frontier[0]))];
 
     let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
+    let mut depth_boundary_diversity = 1.0f64;
 
     for depth in 1..=config.depth {
         controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
-        let mu = dhm_config.mu_at_depth(depth);
-        let t_dhm = Instant::now();
-        let (dhm_field, dhm_norm) = build_dhm_field(
-            &dhm_memory,
-            depth,
-            dhm_config.gamma as f64,
-            dhm_config.k_nearest,
-            field.dimensions(),
+        let mu = 0.0f64;
+        let fallback_state = frontier
+            .first()
+            .cloned()
+            .unwrap_or_else(|| trace_initial_state(config.seed));
+        let (_fallback_target, fallback_adjustment) = build_target_field_with_diversity(
+            &field,
+            &shm,
+            &fallback_state,
+            controller.lambda(),
+            depth_boundary_diversity,
         );
-        let dhm_build_us = elapsed_us(t_dhm);
-        let mut dhm_res_sum = 0.0f64;
-        let mut dhm_ratio_sum = 0.0f64;
-        let mut dhm_count = 0usize;
 
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            let mut ranked_rules = shm
-                .applicable_rules(state)
-                .into_iter()
-                .map(|rule| {
-                    let r_dhm = dhm_rule_resonance(rule, &field, &dhm_field);
-                    let score_ratio = 1.0 + mu * r_dhm;
-                    let score = rule.priority.max(0.0) * score_ratio;
-                    (rule, r_dhm, score_ratio, score)
-                })
-                .collect::<Vec<_>>();
-            ranked_rules.sort_by(|(l_rule, _, _, l_score), (r_rule, _, _, r_score)| {
-                r_score
-                    .partial_cmp(l_score)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| l_rule.id.cmp(&r_rule.id))
-            });
-
-            for (rule, r_dhm, score_ratio, _) in ranked_rules {
-                dhm_res_sum += r_dhm;
-                dhm_ratio_sum += score_ratio;
-                dhm_count += 1;
-
+            for rule in shm.applicable_rules(state) {
                 let new_state = apply_atomic(rule, state);
                 let obj = evaluator.evaluate(&new_state);
                 candidates.push((new_state, obj));
             }
         }
-        let dhm_resonance_mean = if dhm_count == 0 {
-            0.0
-        } else {
-            dhm_res_sum / dhm_count as f64
-        };
-        let dhm_score_ratio = if dhm_count == 0 {
-            1.0
-        } else {
-            dhm_ratio_sum / dhm_count as f64
-        };
 
         if candidates.is_empty() {
             rows.push(TraceRow {
@@ -721,19 +676,19 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 pareto_size: 0,
                 diversity: 0.0,
                 resonance_avg: 0.0,
-                pressure: 0.0,
-                epsilon_effect: 0.0,
-                target_local_weight: 0.0,
-                target_global_weight: 0.0,
-                local_global_distance: 0.0,
+                pressure: fallback_adjustment.pressure as f32,
+                epsilon_effect: fallback_adjustment.epsilon_effect as f32,
+                target_local_weight: fallback_adjustment.target_local_weight as f32,
+                target_global_weight: fallback_adjustment.target_global_weight as f32,
+                local_global_distance: fallback_adjustment.local_global_distance as f32,
                 field_min_distance: 0.0,
                 field_rejected_count: 0,
                 mu: mu as f32,
-                dhm_k: dhm_config.k_nearest,
-                dhm_norm: dhm_norm as f32,
-                dhm_resonance_mean: dhm_resonance_mean as f32,
-                dhm_score_ratio: dhm_score_ratio as f32,
-                dhm_build_us: dhm_build_us as f32,
+                dhm_k: 0,
+                dhm_norm: 0.0,
+                dhm_resonance_mean: 0.0,
+                dhm_score_ratio: 1.0,
+                dhm_build_us: 0.0,
                 expanded_categories_count: 0,
                 selected_rules_count: 0,
                 per_category_selected: String::new(),
@@ -767,332 +722,13 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
                 pareto_size: 0,
                 diversity: 0.0,
                 resonance_avg: 0.0,
-                pressure: 0.0,
-                epsilon_effect: 0.0,
-                target_local_weight: 0.0,
-                target_global_weight: 0.0,
-                local_global_distance: 0.0,
+                pressure: fallback_adjustment.pressure as f32,
+                epsilon_effect: fallback_adjustment.epsilon_effect as f32,
+                target_local_weight: fallback_adjustment.target_local_weight as f32,
+                target_global_weight: fallback_adjustment.target_global_weight as f32,
+                local_global_distance: fallback_adjustment.local_global_distance as f32,
                 field_min_distance: field_min_distance as f32,
                 field_rejected_count,
-                mu: mu as f32,
-                dhm_k: dhm_config.k_nearest,
-                dhm_norm: dhm_norm as f32,
-                dhm_resonance_mean: dhm_resonance_mean as f32,
-                dhm_score_ratio: dhm_score_ratio as f32,
-                dhm_build_us: dhm_build_us as f32,
-                expanded_categories_count: 0,
-                selected_rules_count: 0,
-                per_category_selected: String::new(),
-                entropy_per_depth: 0.0,
-                unique_category_count_per_depth: 0,
-                pareto_front_size_per_depth: 0,
-                pareto_mean_nn_dist: 0.0,
-                pareto_spacing: 0.0,
-                pareto_hv_2d: 0.0,
-                field_extract_us: 0.0,
-                field_score_us: 0.0,
-                field_aggregate_us: 0.0,
-                field_total_us: 0.0,
-                ..TraceRow::default()
-            });
-            frontier = vec![trace_initial_state(config.seed)];
-            continue;
-        }
-
-        let (normalized, stats) = normalize_by_depth(filtered_candidates, adaptive_state.alpha);
-        
-        // Stability Analysis V3
-        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| obj_to_arr(obj)).collect();
-        let mad_norm = if let Some(s) = &stats { s.mad } else { [0.0; 4] };
-        
-        // Calculate basic metrics for analyzer
-        let weights_default = if let Some(s) = &stats { s.weights } else { [1.0; 4] }; // Approximation
-        let mean_nn_norm = mean_nn_dist_norm(
-            &normalized.iter().map(|(_, o)| normalize_objective(&ObjectiveRaw(obj_to_arr(o)), s.as_ref().unwrap())).collect::<Vec<_>>(),
-            &weights_default
-        ); // Wait, normalized is already normalized?
-           // normalize_by_depth returns (Vec<(DesignState, ObjectiveVector)>, Option<GlobalRobustStats>)
-           // The ObjectiveVector in the Vec IS NORMALIZED.
-           // normalize_by_depth calls normalize_phase1_vectors OR uses robust_stats.
-           // Let's check normalize_by_depth implementation.
-           
-        // Re-reading normalize_by_depth (I need to be sure what it returns)
-        // It returns (Vec<(DesignState, ObjectiveVector)>, Option<GlobalRobustStats>)
-        // The objects are NORMALIZED.
-        
-        let normalized_objc: Vec<ObjectiveNorm> = normalized.iter().map(|(_, o)| ObjectiveNorm(obj_to_arr(o))).collect();
-        let current_mean_nn_dist_norm = mean_nn_dist_norm(&normalized_objc, &weights_default);
-        let current_unique_norm_count = count_unique_norm(&normalized_objc, &weights_default);
-        
-        let stability_metrics = ObjectiveStabilityAnalyzer::analyze(
-            &norm_data,
-            &mad_norm,
-            current_unique_norm_count,
-            current_mean_nn_dist_norm,
-        );
-
-        let mut pareto = ParetoFront::new();
-        for (state, obj) in &normalized {
-            pareto.insert(state.id, obj.clone());
-        }
-
-        let front_set: BTreeSet<Uuid> = pareto.get_front().into_iter().collect();
-        let s_ref = stats.as_ref().unwrap();
-        adaptive_state = calculate_adaptive_alpha(
-            &adaptive_state,
-            s_ref,
-            mean_nn_dist_norm_val,
-            front.len(),
-            0.5,
-            stability_metrics.effective_dim,
-        );
-
-        rows.push(TraceRow {
-            depth,
-            lambda: controller.lambda() as f32,
-            delta_lambda: controller.lambda() as f32, // Check logic
-            tau_prime: adjustment.tau_prime as f32,
-            conf_chm: adjustment.conf_chm as f32,
-            density: adjustment.density as f32,
-            k: controller.k(),
-            h_profile: profile_modulation(0.25) as f32,
-            pareto_size: front.len(),
-            diversity: 0.0,
-            resonance_avg: resonance_avg as f32,
-            pressure: 0.0,
-            epsilon_effect: 0.0,
-            target_local_weight: 0.0,
-            target_global_weight: 0.0,
-            local_global_distance: 0.0,
-            field_min_distance: field_min_distance as f32,
-            field_rejected_count,
-            mu: mu as f32,
-            dhm_k: dhm_config.k_nearest,
-            dhm_norm: dhm_norm as f32,
-            dhm_resonance_mean: dhm_resonance_mean as f32,
-            dhm_score_ratio: dhm_score_ratio as f32,
-            dhm_build_us: dhm_build_us as f32,
-            expanded_categories_count: 0,
-            selected_rules_count: 0,
-            per_category_selected: String::new(),
-            entropy_per_depth: 0.0,
-            unique_category_count_per_depth: 0,
-            pareto_front_size_per_depth: front.len(),
-            pareto_mean_nn_dist: mean_nn_dist_val as f32,
-            pareto_spacing: spacing_val as f32,
-            pareto_hv_2d: hv_2d as f32,
-            field_extract_us: 0.0,
-            field_score_us: 0.0,
-            field_aggregate_us: 0.0,
-            field_total_us: 0.0,
-            norm_median_0: s_ref.median[0] as f32,
-            norm_median_1: s_ref.median[1] as f32,
-            norm_median_2: s_ref.median[2] as f32,
-            norm_median_3: s_ref.median[3] as f32,
-            norm_mad_0: s_ref.mad[0] as f32,
-            norm_mad_1: s_ref.mad[1] as f32,
-            norm_mad_2: s_ref.mad[2] as f32,
-            norm_mad_3: s_ref.mad[3] as f32,
-            median_nn_dist_all_depth: 0.0,
-            collapse_flag: stability_metrics.is_collapsed,
-            normalization_mode: "RobustV3".to_string(),
-            unique_norm_vec_count: unique_norm_count_val,
-            norm_dim_mad_zero_count: s_ref.mad_zero_count,
-            mean_nn_dist_raw: mean_nn_dist_val as f32,
-            mean_nn_dist_norm: mean_nn_dist_norm_val as f32,
-            pareto_spacing_raw: spacing_val as f32,
-            pareto_spacing_norm: spacing_norm_val as f32,
-            distance_calls: DISTANCE_CALL_COUNT.load(Ordering::Relaxed),
-            nn_distance_calls: NN_DISTANCE_CALL_COUNT.load(Ordering::Relaxed),
-            weak_dim_count: s_ref.weak_dims.iter().filter(|&&w| w).count(),
-            effective_dim_count: stability_metrics.effective_dim,
-            alpha_t: adaptive_state.alpha as f32,
-            weak_contrib_ratio: 0.0,
-            collapse_proxy: 0.0,
-            redundancy_flags: stability_metrics.redundancy_flags.join("|"),
-            saturation_flags: stability_metrics.saturation_flags.join("|"),
-            discrete_saturation_count: stability_metrics.discrete_saturation_count,
-            effective_dim: stability_metrics.effective_dim,
-            effective_dim_ratio: stability_metrics.effective_dim_ratio as f32,
-            collapse_reasons: stability_metrics.collapse_reasons.join("|"),
-        });        let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
-
-        let conflict_raw = front
-            .iter()
-            .map(|(_, o)| (1.0 - o.f_risk + 1.0 - o.f_cost) * 0.5)
-            .sum::<f64>()
-            / front.len() as f64;
-        let align_raw = front
-            .iter()
-            .map(|(_, o)| {
-                let r = resonance_score(&field.aggregate_state(&front[0].0), &target_field);
-                (o.f_struct + r) * 0.5
-            })
-            .sum::<f64>()
-            / front.len() as f64;
-
-        conflict_hist.push(conflict_raw);
-        align_hist.push(align_raw);
-        let k = controller.k().max(1);
-        let conflict_k = moving_average_tail(&conflict_hist, k);
-        let align_k = moving_average_tail(&align_hist, k);
-
-        let log = controller.update_depth(
-            depth,
-            conflict_k,
-            align_k,
-            n_edge_obs,
-            10,
-            stability_index(0.25, 0.25, 0.0, 0.0),
-        );
-
-        let diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
-        depth_boundary_diversity = diversity;
-
-        let front_norm_objs: Vec<ObjectiveNorm> = front
-            .iter()
-            .map(|(_, o)| ObjectiveNorm([o.f_struct, o.f_field, o.f_risk, o.f_cost]))
-            .collect();
-        let pareto_mean_nn = mean_nn_dist_norm(&front_norm_objs, &stats.weights);
-        let unique_norm_vec_count = count_unique_norm(&front_norm_objs, &stats.weights);
-        let effective_dim_count = stats.active_dims.iter().filter(|&&a| a).count();
-        let weak_dim_count = stats.weak_dims.iter().filter(|&&w| w).count();
-
-        rows.push(TraceRow {
-            depth,
-            lambda: log.lambda_new as f32,
-            delta_lambda: log.delta_lambda as f32,
-            tau_prime: log.tau_prime as f32,
-            conf_chm: log.conf_chm as f32,
-            density: log.density as f32,
-            k: log.k,
-            h_profile: profile_modulation(log.stability_index) as f32,
-            pareto_size: front.len(),
-            diversity: diversity as f32,
-            resonance_avg: resonance_avg as f32,
-            pressure: adjustment.pressure as f32,
-            epsilon_effect: adjustment.epsilon_effect as f32,
-            target_local_weight: adjustment.target_local_weight as f32,
-            target_global_weight: adjustment.target_global_weight as f32,
-            local_global_distance: adjustment.local_global_distance as f32,
-            field_min_distance: field_min_distance as f32,
-            field_rejected_count,
-            mu: mu as f32,
-            dhm_k: dhm_config.k_nearest,
-            dhm_norm: dhm_norm as f32,
-            dhm_resonance_mean: dhm_resonance_mean as f32,
-            dhm_score_ratio: dhm_score_ratio as f32,
-            dhm_build_us: dhm_build_us as f32,
-            expanded_categories_count: 0,
-            selected_rules_count: 0,
-            per_category_selected: String::new(),
-            entropy_per_depth: 0.0,
-            unique_category_count_per_depth: 0,
-            pareto_front_size_per_depth: front.len(),
-            pareto_mean_nn_dist: 0.0,
-            alpha_t: 0.0,
-            weak_contrib_ratio: 0.0,
-            collapse_proxy: 0.0,
-            pareto_spacing: 0.0,
-            pareto_hv_2d: 0.0,
-            field_extract_us: 0.0,
-            field_score_us: 0.0,
-            field_aggregate_us: 0.0,
-            field_total_us: 0.0,
-            norm_median_0: stats.median[0] as f32,
-            norm_median_1: stats.median[1] as f32,
-            norm_median_2: stats.median[2] as f32,
-            norm_median_3: stats.median[3] as f32,
-            norm_mad_0: stats.mad[0] as f32,
-            norm_mad_1: stats.mad[1] as f32,
-            norm_mad_2: stats.mad[2] as f32,
-            norm_mad_3: stats.mad[3] as f32,
-            median_nn_dist_all_depth: 0.0,
-            collapse_flag: front.len() == 1 || pareto_mean_nn == 0.0,
-            normalization_mode: "robust_v2".to_string(),
-            unique_norm_vec_count,
-            norm_dim_mad_zero_count: stats.mad_zero_count,
-            mean_nn_dist_raw: 0.0,
-            mean_nn_dist_norm: pareto_mean_nn as f32,
-            pareto_spacing_raw: 0.0,
-            pareto_spacing_norm: 0.0,
-            distance_calls: 0,
-            nn_distance_calls: 0,
-            weak_dim_count,
-            effective_dim_count,
-        });
-
-        frontier = front
-            .into_iter()
-            .take(config.beam.max(1))
-            .map(|(s, _)| s)
-            .collect();
-        if frontier.is_empty() {
-            frontier = vec![trace_initial_state(config.seed)];
-        }
-        for state in &frontier {
-            dhm_memory.push((depth, field.aggregate_state(state)));
-        }
-
-        profile = p_inferred(&profile, &profile, &profile, &profile);
-    }
-
-    rows
-}
-
-pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
-    let shm = Shm::with_default_rules();
-    let chm = make_dense_trace_chm(&shm, config.seed);
-    let field = FieldEngine::new(256);
-    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
-
-    let mut controller = Phase45Controller::new(0.5);
-    let mut profile = PreferenceProfile {
-        struct_weight: 0.25,
-        field_weight: 0.25,
-        risk_weight: 0.25,
-        cost_weight: 0.25,
-    };
-    let mut frontier = vec![trace_initial_state(config.seed)];
-    let mut rows = Vec::with_capacity(config.depth);
-
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
-    let mut conflict_hist = Vec::new();
-    let mut align_hist = Vec::new();
-
-    for depth in 1..=config.depth {
-        controller.on_profile_update(depth, 0.25, ProfileUpdateType::TypeCStatistical);
-        let mu = 0.0f64;
-
-        let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
-        for state in &frontier {
-            for rule in shm.applicable_rules(state) {
-                let new_state = apply_atomic(rule, state);
-                let obj = evaluator.evaluate(&new_state);
-                candidates.push((new_state, obj));
-            }
-        }
-
-        if candidates.is_empty() {
-            rows.push(TraceRow {
-                depth,
-                lambda: controller.lambda() as f32,
-                delta_lambda: 0.0,
-                tau_prime: 0.0,
-                conf_chm: 0.0,
-                density: 0.0,
-                k: controller.k(),
-                h_profile: profile_modulation(0.25) as f32,
-                pareto_size: 0,
-                diversity: 0.0,
-                resonance_avg: 0.0,
-                pressure: 0.0,
-                epsilon_effect: 0.0,
-                target_local_weight: 0.0,
-                target_global_weight: 0.0,
-                local_global_distance: 0.0,
-                field_min_distance: 0.0,
-                field_rejected_count: 0,
                 mu: mu as f32,
                 dhm_k: 0,
                 dhm_norm: 0.0,
@@ -1114,10 +750,11 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
                 field_total_us: 0.0,
                 ..TraceRow::default()
             });
+            frontier = vec![trace_initial_state(config.seed)];
             continue;
         }
 
-        let (normalized, stats) = normalize_by_depth(candidates, config.norm_alpha);
+        let (normalized, stats) = normalize_by_depth(filtered_candidates, config.norm_alpha);
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1149,13 +786,13 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
                 pareto_size: 0,
                 diversity: 0.0,
                 resonance_avg: 0.0,
-                pressure: 0.0,
-                epsilon_effect: 0.0,
-                target_local_weight: 0.0,
-                target_global_weight: 0.0,
-                local_global_distance: 0.0,
-                field_min_distance: 0.0,
-                field_rejected_count: 0,
+                pressure: fallback_adjustment.pressure as f32,
+                epsilon_effect: fallback_adjustment.epsilon_effect as f32,
+                target_local_weight: fallback_adjustment.target_local_weight as f32,
+                target_global_weight: fallback_adjustment.target_global_weight as f32,
+                local_global_distance: fallback_adjustment.local_global_distance as f32,
+                field_min_distance: field_min_distance as f32,
+                field_rejected_count,
                 mu: mu as f32,
                 dhm_k: 0,
                 dhm_norm: 0.0,
@@ -1181,12 +818,14 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             continue;
         }
 
-        let depth_boundary_diversity = variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
-        let target_field = build_target_field(
+        depth_boundary_diversity =
+            variance(&front.iter().map(|(_, o)| scalar_score(o)).collect::<Vec<_>>());
+        let (target_field, adjustment) = build_target_field_with_diversity(
             &field,
             &shm,
             &front[0].0,
             controller.lambda(),
+            depth_boundary_diversity,
         );
 
         let resonance_avg = front.iter().map(|(_, o)| o.f_field).sum::<f64>() / front.len() as f64;
@@ -1239,13 +878,13 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             pareto_size: front.len(),
             diversity: depth_boundary_diversity as f32,
             resonance_avg: resonance_avg as f32,
-            pressure: 0.0,
-            epsilon_effect: 0.0,
-            target_local_weight: 0.0,
-            target_global_weight: 0.0,
-            local_global_distance: 0.0,
-            field_min_distance: 0.0,
-            field_rejected_count: 0,
+            pressure: adjustment.pressure as f32,
+            epsilon_effect: adjustment.epsilon_effect as f32,
+            target_local_weight: adjustment.target_local_weight as f32,
+            target_global_weight: adjustment.target_global_weight as f32,
+            local_global_distance: adjustment.local_global_distance as f32,
+            field_min_distance: field_min_distance as f32,
+            field_rejected_count,
             mu: mu as f32,
             dhm_k: 0,
             dhm_norm: 0.0,
@@ -1289,6 +928,12 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
             nn_distance_calls: 0,
             weak_dim_count,
             effective_dim_count,
+            redundancy_flags: String::new(),
+            saturation_flags: String::new(),
+            discrete_saturation_count: 0,
+            effective_dim: 0,
+            effective_dim_ratio: 0.0,
+            collapse_reasons: String::new(),
         });
 
 
@@ -1566,6 +1211,12 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
             nn_distance_calls: 0,
             weak_dim_count,
             effective_dim_count,
+            redundancy_flags: String::new(),
+            saturation_flags: String::new(),
+            discrete_saturation_count: 0,
+            effective_dim: 0,
+            effective_dim_ratio: 0.0,
+            collapse_reasons: String::new(),
         });
 
         frontier = front
@@ -1773,11 +1424,18 @@ pub fn generate_trace_baseline_off_soft(
                 alpha_t: 0.0,
                 weak_contrib_ratio: 0.0,
                 collapse_proxy: 0.0,
+                redundancy_flags: String::new(),
+                saturation_flags: String::new(),
+                discrete_saturation_count: 0,
+                effective_dim: 0,
+                effective_dim_ratio: 0.0,
+                collapse_reasons: String::new(),
             });
             continue;
         }
 
         let (normalized, _) = normalize_by_depth(candidates, norm_alpha_val);
+        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| obj_to_arr(obj)).collect();
         let mut pareto = ParetoFront::new();
         for (state, obj) in &normalized {
             pareto.insert(state.id, obj.clone());
@@ -1823,7 +1481,6 @@ pub fn generate_trace_baseline_off_soft(
         let collapse_proxy = if depth > warmup_depths && front.len() > 1 && pareto_mean_nn < 0.01 { 1.0 } else { 0.0 };
 
         // Stability V3 Integration for run_search_phase1
-        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| obj_to_arr(obj)).collect();
         let stability_metrics = ObjectiveStabilityAnalyzer::analyze(
             &norm_data,
             &stats.mad,
@@ -3479,7 +3136,7 @@ fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>, alpha: f6
         alpha_used: alpha_weak,
     };
 
-    let normalized = candidates
+    let normalized_raw = candidates
         .into_iter()
         .map(|(state, obj)| {
             let mut f = [0.0; 4];
@@ -3499,17 +3156,54 @@ fn normalize_by_depth(candidates: Vec<(DesignState, ObjectiveVector)>, alpha: f6
                     f[i] = 0.0;
                 }
             }
+            (state, f)
+        })
+        .collect::<Vec<_>>();
+
+    let mut min_vals = [f64::INFINITY; 4];
+    let mut max_vals = [f64::NEG_INFINITY; 4];
+    for (_, vals) in &normalized_raw {
+        for i in 0..4 {
+            if active[i] {
+                min_vals[i] = min_vals[i].min(vals[i]);
+                max_vals[i] = max_vals[i].max(vals[i]);
+            }
+        }
+    }
+
+    let normalize_eps = 1e-12;
+    let normalized = normalized_raw
+        .into_iter()
+        .map(|(state, vals)| {
+            let mut out = [0.0; 4];
+            for i in 0..4 {
+                if !active[i] {
+                    out[i] = 0.0;
+                    continue;
+                }
+                let range = max_vals[i] - min_vals[i];
+                let mapped = if range.abs() <= normalize_eps {
+                    0.5
+                } else {
+                    (vals[i] - min_vals[i]) / range
+                };
+                out[i] = if mapped.is_finite() {
+                    mapped.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+            }
             (
                 state,
                 ObjectiveVector {
-                    f_struct: f[0],
-                    f_field: f[1],
-                    f_risk: f[2],
-                    f_cost: f[3],
+                    f_struct: out[0],
+                    f_field: out[1],
+                    f_risk: out[2],
+                    f_cost: out[3],
                 },
             )
         })
-        .collect();
+        .collect::<Vec<_>>();
 
     (normalized, stats)
 }
@@ -4921,6 +4615,9 @@ mod tests {
             depth: 10,
             beam: 5,
             seed: 42,
+            norm_alpha: 0.25,
+            adaptive_alpha: false,
+            raw_output_path: None,
         });
         assert!(!rows.is_empty());
         assert!(rows.iter().all(|r| (0.0..=1.0).contains(&r.pressure)));
