@@ -5,7 +5,6 @@ members = [
     "crates/chm",
     "crates/core_types",
     "crates/dhm",
-    "crates/evaluator",
     "crates/field_engine",
     "crates/hybrid_vm",
     "crates/profile",
@@ -15,6 +14,7 @@ members = [
     "crates/num-complex",
     "crates/runtime_vm",
     "crates/interface_ui",
+    "crates/language_dhm",
     "apps/cli",
     "apps/desktop",
     "apps/server",
@@ -28,12 +28,12 @@ brain_core = { path = "crates/brain_core" }
 chm = { path = "crates/chm" }
 core_types = { path = "crates/core_types" }
 dhm = { path = "crates/dhm" }
-evaluator = { path = "crates/evaluator" }
 field_engine = { path = "crates/field_engine" }
 hybrid_vm = { path = "crates/hybrid_vm" }
 interface_ui = { path = "crates/interface_ui" }
 memory_store = { path = "crates/memory_store" }
 memory_space = { path = "crates/memory_space" }
+language_dhm = { path = "crates/language_dhm" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime_vm" }

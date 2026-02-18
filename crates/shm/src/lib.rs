@@ -45,18 +45,16 @@ pub struct DesignRule {
 
 #[derive(Clone, Debug, Default)]
 pub struct Shm {
-    pub rules: Vec<DesignRule>,
+    rules: Vec<DesignRule>,
 }
 
 impl Shm {
-    pub fn new(rules: Vec<DesignRule>) -> Self {
+    pub(crate) fn new(rules: Vec<DesignRule>) -> Self {
         Self { rules }
     }
 
     pub fn with_default_rules() -> Self {
-        Self {
-            rules: default_rules(),
-        }
+        Self::new(default_rules())
     }
 
     pub fn applicable_rules(&self, state: &DesignState) -> Vec<&DesignRule> {
@@ -64,6 +62,10 @@ impl Shm {
             .iter()
             .filter(|rule| (rule.precondition)(state))
             .collect()
+    }
+
+    pub fn rules(&self) -> &[DesignRule] {
+        &self.rules
     }
 }
 
@@ -386,7 +388,7 @@ mod tests {
                 .iter()
                 .all(|rule| (rule.precondition)(&connected))
         );
-        assert!(shm.rules.len() >= 20);
+        assert!(shm.rules().len() >= 20);
     }
 
     #[test]

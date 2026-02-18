@@ -38,6 +38,7 @@ where
 {
     fn put(&self, key: K, value: V) -> io::Result<()>;
     fn get(&self, key: &K) -> io::Result<Option<V>>;
+    fn entries(&self) -> io::Result<Vec<(K, V)>>;
 }
 
 #[derive(Debug, Default)]
@@ -81,6 +82,14 @@ where
             .read()
             .map_err(|_| io::Error::other("in-memory store poisoned"))?;
         Ok(guard.get(key).cloned())
+    }
+
+    fn entries(&self) -> io::Result<Vec<(K, V)>> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| io::Error::other("in-memory store poisoned"))?;
+        Ok(guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
     }
 }
 
@@ -192,6 +201,11 @@ where
         let map = self.read_map()?;
         Ok(map.get(key).cloned())
     }
+
+    fn entries(&self) -> io::Result<Vec<(K, V)>> {
+        let map = self.read_map()?;
+        Ok(map.into_iter().collect())
+    }
 }
 
 fn read_u32(raw: &[u8], idx: &mut usize) -> io::Result<u32> {
@@ -228,6 +242,7 @@ mod tests {
             .expect("put");
         let out = store.get(&"alpha".to_string()).expect("get");
         assert_eq!(out.as_deref(), Some("one"));
+        assert_eq!(store.entries().expect("entries").len(), 1);
     }
 
     #[test]
@@ -249,6 +264,7 @@ mod tests {
             let store = FileStore::<String, String>::open(&path).expect("open read");
             let out = store.get(&"k1".to_string()).expect("get");
             assert_eq!(out.as_deref(), Some("v1"));
+            assert_eq!(store.entries().expect("entries").len(), 1);
         }
         let _ = std::fs::remove_file(path);
     }

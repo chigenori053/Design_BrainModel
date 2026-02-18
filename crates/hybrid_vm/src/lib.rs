@@ -1,9 +1,11 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use core_types::ObjectiveVector;
 use dhm::Dhm;
 use field_engine::{FieldEngine, TargetField};
+use language_dhm::{LangId, LanguageDhm, LanguageUnit};
+use memory_store::{FileStore, InMemoryStore};
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
 
 pub use chm::Chm;
@@ -129,11 +131,22 @@ impl HybridVM {
     }
 
     pub fn chm_edge_count(chm: &Chm) -> usize {
-        chm.rule_graph.values().map(|v| v.len()).sum::<usize>()
+        chm.edge_count()
     }
 
     pub fn rules(shm: &Shm) -> &[DesignRule] {
-        &shm.rules
+        shm.rules()
+    }
+
+    pub fn language_dhm_in_memory(
+    ) -> std::io::Result<LanguageDhm<InMemoryStore<LangId, LanguageUnit>>> {
+        LanguageDhm::in_memory()
+    }
+
+    pub fn language_dhm_file(
+        path: impl AsRef<Path>,
+    ) -> std::io::Result<LanguageDhm<FileStore<LangId, LanguageUnit>>> {
+        LanguageDhm::file(path)
     }
 }
 

@@ -95,13 +95,13 @@ where
 pub type InMemoryChmStore = ChmStore<InMemoryStore<ChmKey, ChmEdgeList>>;
 pub type FileChmStore = ChmStore<FileStore<ChmKey, ChmEdgeList>>;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Chm {
-    pub rule_graph: BTreeMap<RuleId, Vec<CausalEdge>>,
+    rule_graph: BTreeMap<RuleId, Vec<CausalEdge>>,
 }
 
 impl Chm {
-    pub fn new(rule_graph: BTreeMap<RuleId, Vec<CausalEdge>>) -> Self {
+    pub(crate) fn new(rule_graph: BTreeMap<RuleId, Vec<CausalEdge>>) -> Self {
         Self { rule_graph }
     }
 
@@ -148,6 +148,16 @@ impl Chm {
             to_rule: to,
             strength: clamp_strength(delta),
         });
+    }
+
+    pub fn edge_count(&self) -> usize {
+        self.rule_graph.values().map(|v| v.len()).sum::<usize>()
+    }
+}
+
+impl Default for Chm {
+    fn default() -> Self {
+        Self::new(BTreeMap::new())
     }
 }
 

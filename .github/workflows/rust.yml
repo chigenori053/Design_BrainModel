@@ -25,17 +25,29 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
-      - name: Boundary checks
+      - name: Enforce boundary rules
         run: |
+          cargo tree --workspace > tree.txt
           cargo tree -p chm | tee /tmp/chm_tree.txt
           if rg -q " shm v" /tmp/chm_tree.txt; then
             echo "Dependency leak: chm must not depend on shm"
+            exit 1
+          fi
+          if rg -n "Shm::new|Chm::new" crates/agent_core; then
+            echo "Boundary violation detected"
             exit 1
           fi
           if rg -n "use (shm|chm|dhm)::" crates/agent_core/src crates/agent_core/tests; then
             echo "Dependency leak: agent_core must access layers only via hybrid_vm"
             exit 1
           fi
+          if rg -n "use language_dhm::|LanguageDhm::" crates/agent_core/src crates/agent_core/tests; then
+            echo "Boundary violation: agent_core must not use language_dhm directly"
+            exit 1
+          fi
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2

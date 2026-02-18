@@ -15,3 +15,4 @@ memory_store = { workspace = true }
 dhm = { workspace = true }
 shm = { workspace = true }
 chm = { workspace = true }
+language_dhm = { workspace = true }
