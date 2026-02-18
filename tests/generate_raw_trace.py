@@ -45,7 +45,7 @@ def run_extraction():
         # Validation
         with open(output_csv, 'r') as f:
             header = f.readline().strip()
-            expected = "depth,candidate_id,objective_0,objective_1,objective_2,objective_3"
+            expected = "depth,candidate_id,objective_0,objective_1,objective_2,objective_3_shape"
             if header != expected:
                 print(f"Error: Unexpected header. Got: {header}, Expected: {expected}")
                 sys.exit(1)

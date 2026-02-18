@@ -1,11 +1,15 @@
 pub mod exploration;
 pub mod graph;
+pub mod holographic_store;
+pub mod interference_memory;
 pub mod node;
 pub mod state;
 pub mod types;
 
 pub use exploration::ExplorationMemory;
 pub use graph::StructuralGraph;
+pub use holographic_store::{HolographicVectorStore, MemoryEntry};
+pub use interference_memory::{InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
 pub use node::DesignNode;
 pub use state::DesignState;
 pub use types::{NodeId, StateId, Uuid, Value};

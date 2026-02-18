@@ -87,6 +87,9 @@ dependencies = [
 [[package]]
 name = "memory_space"
 version = "1.0.0"
+dependencies = [
+ "core_types",
+]
 
 [[package]]
 name = "num-complex"

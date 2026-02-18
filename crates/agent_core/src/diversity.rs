@@ -71,8 +71,8 @@ mod tests {
     use field_engine::{FieldEngine, NodeCategory, TargetField};
 
     use super::{
-        apply_diversity_pressure, epsilon_effect, pressure_from_diversity, DIVERSITY_EPSILON,
-        DIVERSITY_EPSILON_MAX,
+        DIVERSITY_EPSILON, DIVERSITY_EPSILON_MAX, apply_diversity_pressure, epsilon_effect,
+        pressure_from_diversity,
     };
 
     #[test]

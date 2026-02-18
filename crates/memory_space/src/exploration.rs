@@ -9,8 +9,14 @@ pub struct ExplorationMemory {
 }
 
 impl ExplorationMemory {
-    pub fn new(states: BTreeMap<StateId, Vec<f64>>, transitions: BTreeSet<(StateId, StateId)>) -> Self {
-        Self { states, transitions }
+    pub fn new(
+        states: BTreeMap<StateId, Vec<f64>>,
+        transitions: BTreeSet<(StateId, StateId)>,
+    ) -> Self {
+        Self {
+            states,
+            transitions,
+        }
     }
 
     pub fn with_state_registered(&self, state_id: StateId, evaluation: Vec<f64>) -> Self {

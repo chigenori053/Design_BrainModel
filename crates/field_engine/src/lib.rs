@@ -127,9 +127,7 @@ impl TargetField {
             attributes: BTreeMap::new(),
         };
         let data = projector.project_for_category(&pseudo_node, NodeCategory::Abstraction);
-        Self {
-            data,
-        }
+        Self { data }
     }
 
     pub fn blend(global: &FieldVector, local: &FieldVector, lambda: f32) -> Self {
@@ -158,7 +156,10 @@ impl HybridProjector {
 
         let mut category_basis = BTreeMap::new();
         for category in NodeCategory::all() {
-            category_basis.insert(category, build_category_basis(dimension, category.index() as u64));
+            category_basis.insert(
+                category,
+                build_category_basis(dimension, category.index() as u64),
+            );
         }
 
         Self {
@@ -294,7 +295,10 @@ pub fn aggregate(nodes: &[DesignNode]) -> FieldVector {
     aggregate_with_projector(nodes, &projector)
 }
 
-pub fn aggregate_with_projector(nodes: &[DesignNode], projector: &dyn NodeProjector) -> FieldVector {
+pub fn aggregate_with_projector(
+    nodes: &[DesignNode],
+    projector: &dyn NodeProjector,
+) -> FieldVector {
     if nodes.is_empty() {
         return FieldVector::zeros(1);
     }
@@ -350,7 +354,8 @@ fn build_category_basis(dim: usize, category_seed: u64) -> FieldVector {
 
 fn infer_category(node: &DesignNode) -> NodeCategory {
     if let Some(Value::Text(raw)) = node.attributes.get("category") {
-        return parse_category(raw).unwrap_or_else(|| parse_category(&node.kind).unwrap_or(NodeCategory::Abstraction));
+        return parse_category(raw)
+            .unwrap_or_else(|| parse_category(&node.kind).unwrap_or(NodeCategory::Abstraction));
     }
     parse_category(&node.kind).unwrap_or(NodeCategory::Abstraction)
 }
@@ -429,7 +434,7 @@ mod tests {
     use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid, Value};
 
     use crate::{
-        resonance_score, FieldEngine, HybridProjector, NodeCategory, NodeProjector, TargetField,
+        FieldEngine, HybridProjector, NodeCategory, NodeProjector, TargetField, resonance_score,
     };
 
     #[test]
@@ -488,7 +493,10 @@ mod tests {
     fn resonance_is_stable_and_bounded() {
         let mut graph = StructuralGraph::default();
         let mut attrs = BTreeMap::new();
-        attrs.insert("category".to_string(), Value::Text("Reliability".to_string()));
+        attrs.insert(
+            "category".to_string(),
+            Value::Text("Reliability".to_string()),
+        );
         graph = graph.with_node_added(DesignNode::new(Uuid::from_u128(1), "Reliability", attrs));
 
         let state = DesignState::new(Uuid::from_u128(9), Arc::new(graph), "history:");

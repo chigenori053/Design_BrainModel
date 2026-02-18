@@ -36,6 +36,8 @@ pub struct ReasoningEngine;
 
 impl ReasoningEngine {
     pub fn step(&self, state: &CoreState) -> CoreResult<CoreState> {
-        Ok(CoreState { tick: state.tick + 1 })
+        Ok(CoreState {
+            tick: state.tick + 1,
+        })
     }
 }

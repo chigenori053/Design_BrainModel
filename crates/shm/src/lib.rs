@@ -357,7 +357,11 @@ mod tests {
         let simple = state_with_graph(&[(1, 0)], &[]);
         let connected = state_with_graph(&[(1, 0), (2, 0)], &[(1, 2)]);
 
-        let simple_ids: Vec<RuleId> = shm.applicable_rules(&simple).iter().map(|rule| rule.id).collect();
+        let simple_ids: Vec<RuleId> = shm
+            .applicable_rules(&simple)
+            .iter()
+            .map(|rule| rule.id)
+            .collect();
         let connected_ids: Vec<RuleId> = shm
             .applicable_rules(&connected)
             .iter()
@@ -375,7 +379,11 @@ mod tests {
 
         let applicable = shm.applicable_rules(&connected);
         assert!(!applicable.is_empty());
-        assert!(applicable.iter().all(|rule| (rule.precondition)(&connected)));
+        assert!(
+            applicable
+                .iter()
+                .all(|rule| (rule.precondition)(&connected))
+        );
         assert!(shm.rules.len() >= 20);
     }
 
@@ -384,8 +392,16 @@ mod tests {
         let shm = Shm::with_default_rules();
         let state = state_with_graph(&[(1, 3), (2, 0), (3, 0)], &[(1, 2), (1, 3)]);
 
-        let first: Vec<RuleId> = shm.applicable_rules(&state).iter().map(|rule| rule.id).collect();
-        let second: Vec<RuleId> = shm.applicable_rules(&state).iter().map(|rule| rule.id).collect();
+        let first: Vec<RuleId> = shm
+            .applicable_rules(&state)
+            .iter()
+            .map(|rule| rule.id)
+            .collect();
+        let second: Vec<RuleId> = shm
+            .applicable_rules(&state)
+            .iter()
+            .map(|rule| rule.id)
+            .collect();
 
         assert_eq!(first, second);
     }

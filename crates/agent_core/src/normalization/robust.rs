@@ -22,7 +22,10 @@ fn median(mut values: Vec<f64>) -> f64 {
 }
 
 fn median_absolute_deviation(values: &[f64], median: f64) -> f64 {
-    let mut diffs = values.iter().map(|v| (v - median).abs()).collect::<Vec<_>>();
+    let mut diffs = values
+        .iter()
+        .map(|v| (v - median).abs())
+        .collect::<Vec<_>>();
     diffs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = diffs.len();
     if n == 0 {

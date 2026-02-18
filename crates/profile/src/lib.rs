@@ -53,7 +53,11 @@ impl ProfileManager {
     }
 }
 
-pub fn blend_profiles(user: &PreferenceProfile, auto: &PreferenceProfile, lambda: f64) -> PreferenceProfile {
+pub fn blend_profiles(
+    user: &PreferenceProfile,
+    auto: &PreferenceProfile,
+    lambda: f64,
+) -> PreferenceProfile {
     let l = lambda.clamp(0.0, 1.0);
     PreferenceProfile {
         struct_weight: l * user.struct_weight + (1.0 - l) * auto.struct_weight,
@@ -64,7 +68,11 @@ pub fn blend_profiles(user: &PreferenceProfile, auto: &PreferenceProfile, lambda
     .normalized()
 }
 
-fn step_towards(current: &PreferenceProfile, target: &PreferenceProfile, max_delta: f64) -> PreferenceProfile {
+fn step_towards(
+    current: &PreferenceProfile,
+    target: &PreferenceProfile,
+    max_delta: f64,
+) -> PreferenceProfile {
     PreferenceProfile {
         struct_weight: move_axis(current.struct_weight, target.struct_weight, max_delta),
         field_weight: move_axis(current.field_weight, target.field_weight, max_delta),
@@ -83,7 +91,7 @@ fn move_axis(current: f64, target: f64, max_delta: f64) -> f64 {
 mod tests {
     use core_types::ObjectiveVector;
 
-    use crate::{blend_profiles, PreferenceProfile, ProfileManager};
+    use crate::{PreferenceProfile, ProfileManager, blend_profiles};
 
     #[test]
     fn blend_is_clamped_and_normalized() {
@@ -107,7 +115,7 @@ mod tests {
             f_struct: 1.0,
             f_field: 0.0,
             f_risk: 0.0,
-            f_cost: 0.0,
+            f_shape: 0.0,
         });
         assert_eq!(s, 1.0);
     }

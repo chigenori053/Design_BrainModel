@@ -11,7 +11,11 @@ pub struct DesignState {
 }
 
 impl DesignState {
-    pub fn new(id: StateId, graph: Arc<StructuralGraph>, profile_snapshot: impl Into<String>) -> Self {
+    pub fn new(
+        id: StateId,
+        graph: Arc<StructuralGraph>,
+        profile_snapshot: impl Into<String>,
+    ) -> Self {
         Self {
             id,
             graph,
@@ -36,7 +40,11 @@ mod tests {
 
     #[test]
     fn design_state_cloning_preserves_arc_sharing() {
-        let state = DesignState::new(Uuid::from_u128(7), Arc::new(StructuralGraph::default()), "snapshot-v1");
+        let state = DesignState::new(
+            Uuid::from_u128(7),
+            Arc::new(StructuralGraph::default()),
+            "snapshot-v1",
+        );
         let cloned = state.clone();
 
         assert!(Arc::ptr_eq(&state.graph, &cloned.graph));

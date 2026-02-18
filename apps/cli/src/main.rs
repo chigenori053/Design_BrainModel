@@ -3,9 +3,11 @@ use std::fs;
 use std::path::PathBuf;
 
 use agent_core::{
-    generate_trace, generate_trace_baseline_off, generate_trace_baseline_off_balanced, generate_trace_baseline_off_soft,
-    run_bench, run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft, run_phase1_matrix,
-    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, SoftTraceParams, TraceRow, TraceRunConfig,
+    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, SoftTraceParams,
+    TraceRow, TraceRunConfig, generate_trace, generate_trace_baseline_off,
+    generate_trace_baseline_off_balanced, generate_trace_baseline_off_soft, run_bench,
+    run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft,
+    run_phase1_matrix,
 };
 use interface_ui::{UiEvent, UserInterface, VmBridge};
 
@@ -197,30 +199,49 @@ fn run_phase1_mode() {
     };
     let (raw, summary) = run_phase1_matrix(cfg);
     fs::create_dir_all("report").expect("failed to create report directory");
-    fs::write("report/trace_phase1_raw.csv", render_phase1_raw_csv(&raw)).expect("failed to write trace_phase1_raw.csv");
-    fs::write("report/trace_phase1_summary.csv", render_phase1_summary_csv(&summary))
-        .expect("failed to write trace_phase1_summary.csv");
+    fs::write("report/trace_phase1_raw.csv", render_phase1_raw_csv(&raw))
+        .expect("failed to write trace_phase1_raw.csv");
+    fs::write(
+        "report/trace_phase1_summary.csv",
+        render_phase1_summary_csv(&summary),
+    )
+    .expect("failed to write trace_phase1_summary.csv");
     println!("phase1 written: report/trace_phase1_raw.csv");
     println!("phase1 written: report/trace_phase1_summary.csv");
 }
 
 fn render_phase1_raw_csv(rows: &[Phase1RawRow]) -> String {
-    let mut out = String::from("variant,depth,beam_index,rule_id,objective_vector_raw,objective_vector_norm\n");
+    let mut out = String::from(
+        "variant,depth,beam_index,rule_id,objective_vector_raw,objective_vector_norm\n",
+    );
     for r in rows {
         out.push_str(&format!(
             "{},{},{},{},\"{}\",\"{}\"\n",
-            r.variant, r.depth, r.beam_index, r.rule_id, r.objective_vector_raw, r.objective_vector_norm
+            r.variant,
+            r.depth,
+            r.beam_index,
+            r.rule_id,
+            r.objective_vector_raw,
+            r.objective_vector_norm
         ));
     }
     out
 }
 
 fn render_phase1_summary_csv(rows: &[Phase1SummaryRow]) -> String {
-    let mut out = String::from("variant,depth,corr_matrix_flat,mean_nn_dist,spacing,pareto_front_size,collapse_flag\n");
+    let mut out = String::from(
+        "variant,depth,corr_matrix_flat,mean_nn_dist,spacing,pareto_front_size,collapse_flag\n",
+    );
     for r in rows {
         out.push_str(&format!(
             "{},{},\"{}\",{:.9},{:.9},{},{}\n",
-            r.variant, r.depth, r.corr_matrix_flat, r.mean_nn_dist, r.spacing, r.pareto_front_size, r.collapse_flag
+            r.variant,
+            r.depth,
+            r.corr_matrix_flat,
+            r.mean_nn_dist,
+            r.spacing,
+            r.pareto_front_size,
+            r.collapse_flag
         ));
     }
     out
@@ -298,8 +319,12 @@ fn run_bench_mode(cfg: &BenchCliConfig) {
 }
 
 fn print_bench_result(r: &BenchResult) {
-    let phase_sum_us =
-        r.avg_field_us + r.avg_resonance_us + r.avg_chm_us + r.avg_dhm_us + r.avg_pareto_us + r.avg_lambda_us;
+    let phase_sum_us = r.avg_field_us
+        + r.avg_resonance_us
+        + r.avg_chm_us
+        + r.avg_dhm_us
+        + r.avg_pareto_us
+        + r.avg_lambda_us;
     let resonance_ratio = if phase_sum_us > 0.0 {
         r.avg_resonance_us / phase_sum_us
     } else {
@@ -393,9 +418,7 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                 if i + 1 >= args.len() {
                     panic!("--seed requires a number");
                 }
-                seed = args[i + 1]
-                    .parse::<u64>()
-                    .expect("--seed must be u64");
+                seed = args[i + 1].parse::<u64>().expect("--seed must be u64");
                 i += 2;
             }
             "--norm-alpha" => {
@@ -423,7 +446,9 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                 if i + 1 >= args.len() {
                     panic!("--category-m requires a number");
                 }
-                category_m = args[i + 1].parse::<usize>().expect("--category-m must be usize");
+                category_m = args[i + 1]
+                    .parse::<usize>()
+                    .expect("--category-m must be usize");
                 i += 2;
             }
             "--category-soft" => {
@@ -443,21 +468,27 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                 if i + 1 >= args.len() {
                     panic!("--temperature requires a number");
                 }
-                temperature = args[i + 1].parse::<f64>().expect("--temperature must be f64");
+                temperature = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--temperature must be f64");
                 i += 2;
             }
             "--entropy-beta" => {
                 if i + 1 >= args.len() {
                     panic!("--entropy-beta requires a number");
                 }
-                entropy_beta = args[i + 1].parse::<f64>().expect("--entropy-beta must be f64");
+                entropy_beta = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--entropy-beta must be f64");
                 i += 2;
             }
             "--lambda-min" => {
                 if i + 1 >= args.len() {
                     panic!("--lambda-min requires a number");
                 }
-                lambda_min = args[i + 1].parse::<f64>().expect("--lambda-min must be f64");
+                lambda_min = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--lambda-min must be f64");
                 i += 2;
             }
             "--lambda-target-entropy" => {
@@ -480,7 +511,9 @@ fn parse_trace_config(args: &[String]) -> TraceConfig {
                 if i + 1 >= args.len() {
                     panic!("--lambda-ema requires a number");
                 }
-                lambda_ema = args[i + 1].parse::<f64>().expect("--lambda-ema must be f64");
+                lambda_ema = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--lambda-ema must be f64");
                 i += 2;
             }
             "--log-per-depth" => {
@@ -608,7 +641,9 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
                 if i + 1 >= args.len() {
                     panic!("--category-m requires a number");
                 }
-                category_m = args[i + 1].parse::<usize>().expect("--category-m must be usize");
+                category_m = args[i + 1]
+                    .parse::<usize>()
+                    .expect("--category-m must be usize");
                 i += 2;
             }
             "--category-soft" => {
@@ -628,21 +663,27 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
                 if i + 1 >= args.len() {
                     panic!("--temperature requires a number");
                 }
-                temperature = args[i + 1].parse::<f64>().expect("--temperature must be f64");
+                temperature = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--temperature must be f64");
                 i += 2;
             }
             "--entropy-beta" => {
                 if i + 1 >= args.len() {
                     panic!("--entropy-beta requires a number");
                 }
-                entropy_beta = args[i + 1].parse::<f64>().expect("--entropy-beta must be f64");
+                entropy_beta = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--entropy-beta must be f64");
                 i += 2;
             }
             "--lambda-min" => {
                 if i + 1 >= args.len() {
                     panic!("--lambda-min requires a number");
                 }
-                lambda_min = args[i + 1].parse::<f64>().expect("--lambda-min must be f64");
+                lambda_min = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--lambda-min must be f64");
                 i += 2;
             }
             "--lambda-target-entropy" => {
@@ -665,7 +706,9 @@ fn parse_bench_config(args: &[String]) -> BenchCliConfig {
                 if i + 1 >= args.len() {
                     panic!("--lambda-ema requires a number");
                 }
-                lambda_ema = args[i + 1].parse::<f64>().expect("--lambda-ema must be f64");
+                lambda_ema = args[i + 1]
+                    .parse::<f64>()
+                    .expect("--lambda-ema must be f64");
                 i += 2;
             }
             "--log-per-depth" => {
@@ -742,7 +785,9 @@ fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
             panic!("{name} must be finite");
         }
     }
-    if !(0.0..=20.0).contains(&trace.category_alpha) || !(0.0..=20.0).contains(&bench.category_alpha) {
+    if !(0.0..=20.0).contains(&trace.category_alpha)
+        || !(0.0..=20.0).contains(&bench.category_alpha)
+    {
         panic!("category-alpha must be in [0,20]");
     }
     if !(0.0..=1.0).contains(&trace.entropy_beta) || !(0.0..=1.0).contains(&bench.entropy_beta) {
@@ -764,12 +809,12 @@ fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
 
 fn render_csv(rows: &[TraceRow]) -> String {
     let mut out = String::from(
-        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls,weak_dim_count,effective_dim_count,alpha_t,weak_contrib_ratio,collapse_proxy\n",
+        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls,weak_dim_count,effective_dim_count,alpha_t,weak_contrib_ratio,collapse_proxy,avg_tau_mem,avg_delta_norm,memory_hit_rate\n",
     );
 
     for row in rows {
         out.push_str(&format!(
-            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},\"{}\",{},{},{},{:.9},{:.9},{:.9},{:.9},{},{},{},{},{:.9},{:.9},{:.9}\n",
+            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},\"{}\",{},{},{},{:.9},{:.9},{:.9},{:.9},{},{},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\n",
             row.depth,
             row.lambda,
             row.delta_lambda,
@@ -831,6 +876,9 @@ fn render_csv(rows: &[TraceRow]) -> String {
             row.alpha_t,
             row.weak_contrib_ratio,
             row.collapse_proxy,
+            row.avg_tau_mem,
+            row.avg_delta_norm,
+            row.memory_hit_rate,
         ));
     }
 

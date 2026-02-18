@@ -18,7 +18,11 @@ impl DesignNode {
         }
     }
 
-    pub fn with_id(id: NodeId, kind: impl Into<String>, attributes: BTreeMap<String, Value>) -> Self {
+    pub fn with_id(
+        id: NodeId,
+        kind: impl Into<String>,
+        attributes: BTreeMap<String, Value>,
+    ) -> Self {
         Self::new(id, kind, attributes)
     }
 }

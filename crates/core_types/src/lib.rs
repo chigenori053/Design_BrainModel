@@ -3,7 +3,7 @@ pub struct ObjectiveVector {
     pub f_struct: f64,
     pub f_field: f64,
     pub f_risk: f64,
-    pub f_cost: f64,
+    pub f_shape: f64,
 }
 
 impl ObjectiveVector {
@@ -12,7 +12,7 @@ impl ObjectiveVector {
             f_struct: self.f_struct.clamp(0.0, 1.0),
             f_field: self.f_field.clamp(0.0, 1.0),
             f_risk: self.f_risk.clamp(0.0, 1.0),
-            f_cost: self.f_cost.clamp(0.0, 1.0),
+            f_shape: self.f_shape.clamp(0.0, 1.0),
         }
     }
 }
@@ -27,7 +27,8 @@ pub struct ProfileVector {
 
 impl ProfileVector {
     pub fn normalized(self) -> Self {
-        let sum = (self.struct_weight + self.field_weight + self.risk_weight + self.cost_weight).max(1e-12);
+        let sum = (self.struct_weight + self.field_weight + self.risk_weight + self.cost_weight)
+            .max(1e-12);
         Self {
             struct_weight: self.struct_weight / sum,
             field_weight: self.field_weight / sum,
@@ -41,7 +42,7 @@ impl ProfileVector {
         (n.struct_weight * obj.f_struct
             + n.field_weight * obj.f_field
             + n.risk_weight * obj.f_risk
-            + n.cost_weight * obj.f_cost)
+            + n.cost_weight * obj.f_shape)
             .clamp(0.0, 1.0)
     }
 }
