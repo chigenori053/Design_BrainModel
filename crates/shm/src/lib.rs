@@ -1,5 +1,7 @@
 use memory_space::{DesignState, Uuid};
 
+pub mod store;
+
 pub type RuleId = Uuid;
 
 #[derive(Clone, Debug, PartialEq, Eq)]

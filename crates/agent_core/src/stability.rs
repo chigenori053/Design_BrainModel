@@ -2,8 +2,12 @@ use std::f64;
 
 const EPS: f64 = 1e-9;
 
-fn is_stable(a: f64, b: f64, eps: f64) -> bool {
+pub fn is_stable(a: f64, b: f64, eps: f64) -> bool {
     (a - b).abs() < eps
+}
+
+pub fn stable_flag(a: f64, b: f64, eps: f64) -> f64 {
+    if is_stable(a, b, eps) { 1.0 } else { 0.0 }
 }
 
 /// Computes the rank of elements in the vector, handling ties by assigning average rank.

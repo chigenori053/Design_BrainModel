@@ -1,0 +1,4 @@
+mode,gate_pass,avg_unique_distance_ratio_beam5,avg_unique_distance_ratio_beam12,avg_rank_min,mad0_o1_max,mad0_o2_max,u0_eq_u3_max,avg_tau_mem,avg_delta_norm,memory_hit_rate
+A_baseline_off,,0.048478831592590935,0.03287240995442847,3,0.02,0.02,0,0.0,0.0,0.0
+B_v6_0_contractive,,1.0,0.9971629583535897,3,0,0,0,0.6910049716666666,0.6921537913333333,0.126202874
+C_v6_1_repulsive,True,0.9685939393032296,0.9777549964383534,3,0.02,0.02,0,0.5035710536666667,0.046092047,0.336141477

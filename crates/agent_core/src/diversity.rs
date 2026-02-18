@@ -1,6 +1,5 @@
 use field_engine::{FieldVector, TargetField};
 
-pub const DIVERSITY_PRESSURE_BETA: f64 = 50.0;
 pub const DIVERSITY_EPSILON: f64 = 0.1;
 pub const DIVERSITY_EPSILON_MAX: f64 = 0.15;
 
@@ -13,12 +12,13 @@ pub struct DiversityAdjustment {
     pub local_global_distance: f64,
 }
 
-pub fn pressure_from_diversity(diversity: f64) -> f64 {
-    if !diversity.is_finite() {
+pub fn pressure_from_distance(distance: f64, pressure_lambda: f64) -> f64 {
+    if !distance.is_finite() || !pressure_lambda.is_finite() {
         return 0.0;
     }
-    let d = diversity.max(0.0);
-    (-DIVERSITY_PRESSURE_BETA * d).exp().clamp(0.0, 1.0)
+    let d = distance.max(0.0);
+    let lambda = pressure_lambda.max(0.0);
+    (-lambda * d).exp().clamp(0.0, 1.0)
 }
 
 pub fn epsilon_effect(pressure: f64) -> f64 {
@@ -30,18 +30,22 @@ pub fn apply_diversity_pressure(
     global: &FieldVector,
     local: &FieldVector,
     lambda: f64,
-    diversity: f64,
+    pressure_lambda: f64,
 ) -> (TargetField, DiversityAdjustment) {
-    let l = lambda.clamp(0.0, 1.0);
-    let pressure = pressure_from_diversity(diversity);
+    let global_weight = lambda.clamp(0.0, 1.0);
+    let local_weight = 1.0 - global_weight;
+    let d_local = l2_distance(&base.data, local);
+    let d_global = l2_distance(&base.data, global);
+    let integrated_distance = local_weight * d_local + global_weight * d_global;
+    let pressure = pressure_from_distance(integrated_distance, pressure_lambda);
     let epsilon_effect = epsilon_effect(pressure);
     let e = epsilon_effect as f32;
 
     let adjusted = TargetField {
         data: base.data.scale(1.0 - e).add(&local.scale(e)),
     };
-    let target_global_weight = l * (1.0 - epsilon_effect);
-    let target_local_weight = (1.0 - l) * (1.0 - epsilon_effect) + epsilon_effect;
+    let target_global_weight = global_weight * (1.0 - epsilon_effect);
+    let target_local_weight = local_weight * (1.0 - epsilon_effect) + epsilon_effect;
     let local_global_distance = l2_distance(global, local);
 
     (
@@ -72,16 +76,26 @@ mod tests {
 
     use super::{
         DIVERSITY_EPSILON, DIVERSITY_EPSILON_MAX, apply_diversity_pressure, epsilon_effect,
-        pressure_from_diversity,
+        pressure_from_distance,
     };
 
     #[test]
     fn pressure_is_monotonic() {
-        let high = pressure_from_diversity(0.0);
-        let low = pressure_from_diversity(0.2);
+        let high = pressure_from_distance(0.0, 1.0);
+        let low = pressure_from_distance(0.2, 1.0);
         assert!(high >= low);
         assert!((0.0..=1.0).contains(&high));
         assert!((0.0..=1.0).contains(&low));
+    }
+
+    #[test]
+    fn pressure_is_convex_like_exponential_decay() {
+        let p0 = pressure_from_distance(0.0, 1.0);
+        let p1 = pressure_from_distance(0.5, 1.0);
+        let p2 = pressure_from_distance(1.0, 1.0);
+        assert!(p0 >= p1 && p1 >= p2);
+        // midpoint of exp(-x) lies below linear interpolation in [0,1].
+        assert!(p1 <= 0.5 * (p0 + p2) + 1e-12);
     }
 
     #[test]

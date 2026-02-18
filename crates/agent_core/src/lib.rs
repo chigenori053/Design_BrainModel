@@ -11,24 +11,29 @@ pub static DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 pub static NN_DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
 const EPSILON_JITTER: f64 = 1e-6;
 const SOFT_PARETO_TEMPERATURE: f64 = 0.05;
+const SELECTION_W1_QUALITY: f64 = 0.60;
+const SELECTION_W2_PRESSURE: f64 = 0.25;
+const SELECTION_W3_STABILITY: f64 = 0.15;
+const SELECTION_PRESSURE_LAMBDA: f64 = 1.0;
+const SELECTION_STABILITY_EPS: f64 = 0.05;
 
 mod diversity;
 mod normalization;
 mod stability;
 
-use chm::Chm;
+use hybrid_vm::Chm;
 use core_types::{
     ObjectiveVector, P_INFER_ALPHA, P_INFER_BETA, P_INFER_GAMMA,
     stability_index as core_stability_index,
 };
 use diversity::apply_diversity_pressure;
-use evaluator::{Evaluator, HybridVM, StructuralEvaluator};
+use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use field_engine::{FieldEngine, FieldVector, NodeCategory, TargetField, resonance_score};
 use memory_space::{
     DesignNode, DesignState, MemoryInterferenceTelemetry, StateId, StructuralGraph, Uuid, Value,
 };
 use profile::PreferenceProfile;
-use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
+use hybrid_vm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 use stability::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -156,6 +161,7 @@ fn soft_front_rank(
     let objs: Vec<ObjectiveVector> = entries.iter().map(|(_, o)| o.clone()).collect();
     let n = objs.len();
     let scores = soft_dominance_scores(&objs, temperature);
+    let selection_scores = compute_selection_scores(&objs);
 
     let mut order: Vec<usize> = (0..n).collect();
     order.sort_by(|&li, &ri| {
@@ -163,8 +169,8 @@ fn soft_front_rank(
             .partial_cmp(&scores[li])
             .unwrap_or(std::cmp::Ordering::Equal)
             .then_with(|| {
-                scalar_score(&objs[ri])
-                    .partial_cmp(&scalar_score(&objs[li]))
+                selection_scores[ri]
+                    .partial_cmp(&selection_scores[li])
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
             .then_with(|| entries[li].0.id.cmp(&entries[ri].0.id))
@@ -174,6 +180,54 @@ fn soft_front_rank(
         .into_iter()
         .map(|idx| entries[idx].clone())
         .collect::<Vec<_>>()
+}
+
+fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
+    let ds = a.f_struct - b.f_struct;
+    let df = a.f_field - b.f_field;
+    let dr = a.f_risk - b.f_risk;
+    let dc = a.f_shape - b.f_shape;
+    (ds * ds + df * df + dr * dr + dc * dc).sqrt()
+}
+
+fn selection_score(quality: f64, pressure: f64, stability: f64) -> f64 {
+    SELECTION_W1_QUALITY * quality + SELECTION_W2_PRESSURE * pressure + SELECTION_W3_STABILITY * stability
+}
+
+fn compute_selection_scores(objs: &[ObjectiveVector]) -> Vec<f64> {
+    if objs.is_empty() {
+        return Vec::new();
+    }
+    let n = objs.len();
+    let centroid = ObjectiveVector {
+        f_struct: objs.iter().map(|o| o.f_struct).sum::<f64>() / n as f64,
+        f_field: objs.iter().map(|o| o.f_field).sum::<f64>() / n as f64,
+        f_risk: objs.iter().map(|o| o.f_risk).sum::<f64>() / n as f64,
+        f_shape: objs.iter().map(|o| o.f_shape).sum::<f64>() / n as f64,
+    };
+
+    let mut out = Vec::with_capacity(n);
+    for i in 0..n {
+        let local_distance = if n <= 1 {
+            0.0
+        } else {
+            let mut min_d = f64::INFINITY;
+            for j in 0..n {
+                if i == j {
+                    continue;
+                }
+                min_d = min_d.min(objective_distance(&objs[i], &objs[j]));
+            }
+            if min_d.is_finite() { min_d } else { 0.0 }
+        };
+        let global_distance = objective_distance(&objs[i], &centroid);
+        let integrated_distance = 0.5 * local_distance + 0.5 * global_distance;
+        let pressure = (-SELECTION_PRESSURE_LAMBDA * integrated_distance).exp().clamp(0.0, 1.0);
+        let stability = stable_flag(local_distance, global_distance, SELECTION_STABILITY_EPS);
+        let quality = scalar_score(&objs[i]).clamp(0.0, 1.0);
+        out.push(selection_score(quality, pressure, stability));
+    }
+    out
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -795,7 +849,7 @@ pub fn generate_trace(config: TraceRunConfig) -> Vec<TraceRow> {
 }
 
 pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
     let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
@@ -810,7 +864,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
     let mut frontier = vec![trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);
 
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let n_edge_obs = HybridVM::chm_edge_count(&chm);
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
     let mut depth_boundary_diversity = 1.0f64;
@@ -874,7 +928,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
 
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            for rule in shm.applicable_rules(state) {
+            for rule in HybridVM::applicable_rules(&shm, state) {
                 let new_state = apply_atomic(rule, state);
                 let obj = evaluator.evaluate(&new_state);
                 candidates.push((new_state, obj));
@@ -1048,7 +1102,7 @@ pub fn generate_trace_baseline_off(config: TraceRunConfig) -> Vec<TraceRow> {
 }
 
 pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) -> Vec<TraceRow> {
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
     let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
@@ -1063,7 +1117,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
     let mut frontier = vec![trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);
 
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let n_edge_obs = HybridVM::chm_edge_count(&chm);
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
 
@@ -1076,7 +1130,7 @@ pub fn generate_trace_baseline_off_balanced(config: TraceRunConfig, m: usize) ->
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
             let (selected_rules, per_state_counts) =
-                select_rules_category_balanced(shm.applicable_rules(state), m);
+                select_rules_category_balanced(HybridVM::applicable_rules(&shm, state), m);
             depth_selected_rules_count += selected_rules.len();
             for (cat, c) in per_state_counts {
                 *depth_category_counts.entry(cat).or_insert(0) += c;
@@ -1323,7 +1377,7 @@ pub fn generate_trace_baseline_off_soft(
     config: TraceRunConfig,
     params: SoftTraceParams,
 ) -> Vec<TraceRow> {
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let _chm = make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
@@ -1949,7 +2003,7 @@ fn run_phase1_variant(
     config: Phase1Config,
     variant: Phase1Variant,
 ) -> (Vec<Phase1RawRow>, Vec<Phase1SummaryRow>) {
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
@@ -1967,7 +2021,7 @@ fn run_phase1_variant(
 
         for (state_idx, state) in frontier.iter().enumerate() {
             let (selected_rules, _, _) = select_rules_category_soft(
-                shm.applicable_rules(state),
+                HybridVM::applicable_rules(&shm, state),
                 (config.beam.max(1) * 5).max(1),
                 config.alpha,
                 config.temperature,
@@ -2116,7 +2170,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64, norm_alpha: f64) -> Benc
     let depth = depth.max(1);
     let beam = beam.max(1);
 
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
@@ -2125,7 +2179,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64, norm_alpha: f64) -> Benc
     let dhm_config = DhMConfig::phase7_fixed();
     let mut dhm_memory = vec![(0usize, field.aggregate_state(&frontier[0]))];
 
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let n_edge_obs = HybridVM::chm_edge_count(&chm);
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
 
@@ -2162,8 +2216,7 @@ fn run_bench_once(depth: usize, beam: usize, seed: u64, norm_alpha: f64) -> Benc
         );
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            let mut ranked_rules = shm
-                .applicable_rules(state)
+            let mut ranked_rules = HybridVM::applicable_rules(&shm, state)
                 .into_iter()
                 .map(|rule| {
                     let r_dhm = dhm_rule_resonance(rule, &field, &dhm_field);
@@ -2279,14 +2332,14 @@ fn run_bench_once_baseline_off(
     let depth = depth.max(1);
     let beam = beam.max(1);
 
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
     let mut controller = Phase45Controller::new(0.5);
     let mut frontier = vec![trace_initial_state(seed)];
 
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let n_edge_obs = HybridVM::chm_edge_count(&chm);
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
 
@@ -2306,7 +2359,7 @@ fn run_bench_once_baseline_off(
         let _target_field = build_target_field(&field, &shm, &frontier[0], controller.lambda());
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
-            for rule in shm.applicable_rules(state) {
+            for rule in HybridVM::applicable_rules(&shm, state) {
                 let new_state = apply_atomic(rule, state);
                 let obj = hybrid_vm.evaluate(&new_state);
 
@@ -2400,14 +2453,14 @@ fn run_bench_once_baseline_off_balanced(
     let depth = depth.max(1);
     let beam = beam.max(1);
 
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let chm = make_dense_trace_chm(&shm, seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
     let mut controller = Phase45Controller::new(0.5);
     let mut frontier = vec![trace_initial_state(seed)];
 
-    let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+    let n_edge_obs = HybridVM::chm_edge_count(&chm);
     let mut conflict_hist = Vec::new();
     let mut align_hist = Vec::new();
 
@@ -2427,7 +2480,7 @@ fn run_bench_once_baseline_off_balanced(
         let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
         for state in &frontier {
             let (selected_rules, _) =
-                select_rules_category_balanced(shm.applicable_rules(state), m);
+                select_rules_category_balanced(HybridVM::applicable_rules(&shm, state), m);
             for rule in selected_rules {
                 let new_state = apply_atomic(rule, state);
                 let obj = hybrid_vm.evaluate(&new_state);
@@ -2523,7 +2576,7 @@ fn run_bench_once_baseline_off_soft(
     let norm_alpha = config.norm_alpha;
     let depth = depth.max(1);
     let beam = beam.max(1);
-    let shm = Shm::with_default_rules();
+    let shm = HybridVM::default_shm();
     let _chm = make_dense_trace_chm(&shm, seed);
     let field = FieldEngine::new(256);
     let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
@@ -2672,7 +2725,7 @@ impl<'a> BeamSearch<'a> {
             let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
 
             for state in &frontier {
-                let rules = self.shm.applicable_rules(state);
+                let rules = HybridVM::applicable_rules(self.shm, state);
                 for rule in rules {
                     let new_state = apply_atomic(rule, state);
                     let obj = self.evaluator.evaluate(&new_state);
@@ -3033,41 +3086,14 @@ fn normalize_by_depth(
     let std_c = compute_std(&costs, mean_c);
 
     let eps_mad = 1e-12;
-    let eps_std = 1e-9;
-    let alpha_weak = alpha;
-
-    let mut active = [false; 4];
-    let mut weak = [false; 4];
-    let mut weights = [0.0; 4];
+    let active = [true; 4];
+    let weak = [false; 4];
+    let weights = [1.0; 4];
     let mad = [mad_s, mad_f, mad_r, mad_c];
     let median = [med_s, med_f, med_r, med_c];
     let mean = [mean_s, mean_f, mean_r, mean_c];
     let std_dev = [std_s, std_f, std_r, std_c];
-
-    for i in 0..4 {
-        if mad[i] > eps_mad {
-            // Strong Active
-            active[i] = true;
-            weak[i] = false;
-            weights[i] = 1.0;
-        } else if std_dev[i] > eps_std {
-            // Weak Active
-            active[i] = true;
-            weak[i] = true;
-            weights[i] = alpha_weak;
-        } else {
-            // Degenerate
-            active[i] = false;
-            weak[i] = false;
-            weights[i] = 0.0;
-        }
-    }
-
-    let mad_zero_count = active
-        .iter()
-        .zip(mad.iter())
-        .filter(|&(&a, &m)| a && m <= eps_mad)
-        .count();
+    let mad_zero_count = mad.iter().filter(|&&m| m <= eps_mad).count();
 
     let stats = GlobalRobustStats {
         median,
@@ -3078,7 +3104,7 @@ fn normalize_by_depth(
         weak_dims: weak,
         weights,
         mad_zero_count,
-        alpha_used: alpha_weak,
+        alpha_used: alpha,
     };
 
     let normalized_raw = candidates
@@ -3087,19 +3113,8 @@ fn normalize_by_depth(
             let mut f = [0.0; 4];
             let raw = [obj.f_struct, obj.f_field, obj.f_risk, obj.f_shape];
             for i in 0..4 {
-                if active[i] {
-                    if !weak[i] {
-                        // Strong: (x - median) / MAD
-                        // MAD is guaranteed > eps_mad
-                        f[i] = (raw[i] - median[i]) / mad[i];
-                    } else {
-                        // Weak: (x - mean) / max(std, eps_std)
-                        let den = std_dev[i].max(eps_std);
-                        f[i] = (raw[i] - mean[i]) / den;
-                    }
-                } else {
-                    f[i] = 0.0;
-                }
+                // Phase4 freeze: robust z = (x - median) / (MAD + eps)
+                f[i] = (raw[i] - median[i]) / (mad[i] + eps_mad);
             }
             (state, f)
         })
@@ -3121,13 +3136,9 @@ fn normalize_by_depth(
     let normalized = normalized_raw
         .into_iter()
         .enumerate()
-        .map(|(idx, (state, _vals))| {
+        .map(|(idx, (state, _))| {
             let mut out = [0.0; 4];
             for i in 0..4 {
-                if !active[i] {
-                    out[i] = 0.0;
-                    continue;
-                }
                 out[i] = if idx < dim_scaled[i].len() && dim_scaled[i][idx].is_finite() {
                     dim_scaled[i][idx].clamp(0.0, 1.0)
                 } else {
@@ -3217,9 +3228,10 @@ pub fn build_target_field_with_diversity(
     lambda: f64,
     diversity: f64,
 ) -> (TargetField, diversity::DiversityAdjustment) {
-    let global_categories = categories_from_rules(shm.rules.iter().map(|r| r.category.clone()));
+    let global_categories =
+        categories_from_rules(HybridVM::rules(shm).iter().map(|r| r.category.clone()));
     let local_categories = categories_from_rules(
-        shm.applicable_rules(state)
+        HybridVM::applicable_rules(shm, state)
             .into_iter()
             .map(|rule| rule.category.clone()),
     );
@@ -3300,14 +3312,14 @@ pub fn profile_modulation(stability_index: f64) -> f64 {
 }
 
 fn make_dense_trace_chm(shm: &Shm, seed: u64) -> Chm {
-    let mut chm = Chm::default();
-    let ids: Vec<Uuid> = shm.rules.iter().map(|r| r.id).collect();
+    let mut chm = HybridVM::empty_chm();
+    let ids: Vec<Uuid> = HybridVM::rules(shm).iter().map(|r| r.id).collect();
     for (i, from) in ids.iter().enumerate() {
         for (j, to) in ids.iter().enumerate() {
             if i == j {
                 continue;
             }
-            chm.insert_edge(*from, *to, pseudo_strength(seed, *from, *to));
+            HybridVM::chm_insert_edge(&mut chm, *from, *to, pseudo_strength(seed, *from, *to));
         }
     }
     chm
@@ -3543,7 +3555,7 @@ fn build_soft_candidates_for_frontier(
 
     for (state_idx, state) in frontier.iter().enumerate() {
         let (selected_rules, per_state_counts, _availability_counts) = select_rules_category_soft(
-            ctx.shm.applicable_rules(state),
+            HybridVM::applicable_rules(ctx.shm, state),
             (beam.max(1) * 5).max(1),
             selection.alpha,
             selection.temperature,
@@ -4337,13 +4349,11 @@ mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use chm::Chm;
     use core_types::ObjectiveVector;
-    use evaluator::{Evaluator, StructuralEvaluator};
+    use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator, Transformation};
     use field_engine::FieldEngine;
     use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid};
     use profile::PreferenceProfile;
-    use shm::Shm;
 
     use crate::{
         BeamSearch, MacroOperator, ParetoFront, Phase45Controller, ProfileUpdateType, SearchConfig,
@@ -4420,9 +4430,9 @@ mod tests {
 
     #[test]
     fn deterministic_result_verification() {
-        let shm = Shm::with_default_rules();
-        let mut chm = Chm::default();
-        chm.insert_edge(Uuid::from_u128(1001), Uuid::from_u128(1002), -0.2);
+        let shm = HybridVM::default_shm();
+        let mut chm = HybridVM::empty_chm();
+        HybridVM::chm_insert_edge(&mut chm, Uuid::from_u128(1001), Uuid::from_u128(1002), -0.2);
 
         let field = FieldEngine::new(16);
         let evaluator1 =
@@ -4461,9 +4471,9 @@ mod tests {
 
     #[test]
     fn no_mutation_of_original_state() {
-        let shm = Shm::with_default_rules();
+        let shm = HybridVM::default_shm();
         let state = base_state();
-        let rule = shm.rules.first().expect("rule exists");
+        let rule = HybridVM::rules(&shm).first().expect("rule exists");
 
         let before_nodes = state.graph.nodes().len();
         let before_edges = state.graph.edges().len();
@@ -4524,8 +4534,8 @@ mod tests {
 
     #[test]
     fn auto_manual_mode_behavior() {
-        let shm = Shm::with_default_rules();
-        let chm = Chm::default();
+        let shm = HybridVM::default_shm();
+        let chm = HybridVM::empty_chm();
         let field = FieldEngine::new(8);
         let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::new(20, 40));
         let engine = BeamSearch {
@@ -4549,8 +4559,8 @@ mod tests {
 
     #[test]
     fn system_evaluator_uses_chm_and_field() {
-        let mut chm = Chm::default();
-        chm.insert_edge(Uuid::from_u128(1001), Uuid::from_u128(1002), -0.8);
+        let mut chm = HybridVM::empty_chm();
+        HybridVM::chm_insert_edge(&mut chm, Uuid::from_u128(1001), Uuid::from_u128(1002), -0.8);
 
         let field = FieldEngine::new(8);
         let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
@@ -4571,8 +4581,8 @@ mod tests {
         let op = MacroOperator {
             id: Uuid::from_u128(7000),
             steps: vec![
-                shm::Transformation::AddNode,
-                shm::Transformation::AddConstraint,
+                Transformation::AddNode,
+                Transformation::AddConstraint,
             ],
             max_activations: 2,
         };
@@ -4595,7 +4605,7 @@ mod tests {
 
     #[test]
     fn target_field_uses_global_and_local_categories() {
-        let shm = Shm::with_default_rules();
+        let shm = HybridVM::default_shm();
         let state = base_state();
         let field = FieldEngine::new(16);
 

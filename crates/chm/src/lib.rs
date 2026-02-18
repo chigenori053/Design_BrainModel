@@ -1,6 +1,10 @@
 use std::collections::BTreeMap;
+use std::io;
 
-use shm::RuleId;
+use memory_space::Uuid;
+use memory_store::{Codec, FileStore, InMemoryStore, Store};
+
+pub type RuleId = Uuid;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CausalEdge {
@@ -8,6 +12,88 @@ pub struct CausalEdge {
     pub to_rule: RuleId,
     pub strength: f64,
 }
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct ChmKey(pub RuleId);
+
+impl Codec for ChmKey {
+    fn encode(&self) -> Vec<u8> {
+        self.0.as_u128().to_le_bytes().to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() != 16 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid chm key"));
+        }
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(bytes);
+        Ok(Self(Uuid::from_u128(u128::from_le_bytes(buf))))
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct ChmEdgeList(pub Vec<CausalEdge>);
+
+impl Codec for ChmEdgeList {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + self.0.len() * 40);
+        out.extend_from_slice(&(self.0.len() as u64).to_le_bytes());
+        for edge in &self.0 {
+            out.extend_from_slice(&edge.from_rule.as_u128().to_le_bytes());
+            out.extend_from_slice(&edge.to_rule.as_u128().to_le_bytes());
+            out.extend_from_slice(&edge.strength.to_le_bytes());
+        }
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() < 8 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid chm edge list"));
+        }
+        let mut idx = 0usize;
+        let count = read_u64(bytes, &mut idx)? as usize;
+        let mut edges = Vec::with_capacity(count);
+        for _ in 0..count {
+            let from = read_u128(bytes, &mut idx)?;
+            let to = read_u128(bytes, &mut idx)?;
+            let strength = read_f64(bytes, &mut idx)?;
+            edges.push(CausalEdge {
+                from_rule: Uuid::from_u128(from),
+                to_rule: Uuid::from_u128(to),
+                strength,
+            });
+        }
+        Ok(Self(edges))
+    }
+}
+
+#[derive(Debug)]
+pub struct ChmStore<S>
+where
+    S: Store<ChmKey, ChmEdgeList>,
+{
+    inner: S,
+}
+
+impl<S> ChmStore<S>
+where
+    S: Store<ChmKey, ChmEdgeList>,
+{
+    pub fn new(inner: S) -> Self {
+        Self { inner }
+    }
+
+    pub fn put(&self, key: ChmKey, value: ChmEdgeList) -> io::Result<()> {
+        self.inner.put(key, value)
+    }
+
+    pub fn get(&self, key: &ChmKey) -> io::Result<Option<ChmEdgeList>> {
+        self.inner.get(key)
+    }
+}
+
+pub type InMemoryChmStore = ChmStore<InMemoryStore<ChmKey, ChmEdgeList>>;
+pub type FileChmStore = ChmStore<FileStore<ChmKey, ChmEdgeList>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct Chm {
@@ -69,11 +155,41 @@ fn clamp_strength(value: f64) -> f64 {
     value.clamp(-1.0, 1.0)
 }
 
+fn read_u64(raw: &[u8], idx: &mut usize) -> io::Result<u64> {
+    if idx.saturating_add(8) > raw.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "u64"));
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&raw[*idx..*idx + 8]);
+    *idx += 8;
+    Ok(u64::from_le_bytes(buf))
+}
+
+fn read_u128(raw: &[u8], idx: &mut usize) -> io::Result<u128> {
+    if idx.saturating_add(16) > raw.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "u128"));
+    }
+    let mut buf = [0u8; 16];
+    buf.copy_from_slice(&raw[*idx..*idx + 16]);
+    *idx += 16;
+    Ok(u128::from_le_bytes(buf))
+}
+
+fn read_f64(raw: &[u8], idx: &mut usize) -> io::Result<f64> {
+    if idx.saturating_add(8) > raw.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "f64"));
+    }
+    let mut buf = [0u8; 8];
+    buf.copy_from_slice(&raw[*idx..*idx + 8]);
+    *idx += 8;
+    Ok(f64::from_le_bytes(buf))
+}
+
 #[cfg(test)]
 mod tests {
     use memory_space::Uuid;
 
-    use crate::Chm;
+    use crate::{Chm, ChmEdgeList, ChmKey, ChmStore, InMemoryChmStore};
 
     #[test]
     fn edge_insertion() {
@@ -118,5 +234,15 @@ mod tests {
 
         let related = chm.related_rules(r1);
         assert_eq!(related, vec![r2, r3]);
+    }
+
+    #[test]
+    fn chm_store_roundtrip() {
+        let store: InMemoryChmStore = ChmStore::new(memory_store::InMemoryStore::new());
+        let key = ChmKey(Uuid::from_u128(5));
+        let value = ChmEdgeList::default();
+        store.put(key.clone(), value.clone()).expect("put");
+        let out = store.get(&key).expect("get");
+        assert_eq!(out, Some(value));
     }
 }

@@ -6,8 +6,6 @@ edition = "2024"
 [dependencies]
 core_types = { workspace = true }
 memory_space = { workspace = true }
-shm = { workspace = true }
-chm = { workspace = true }
-evaluator = { workspace = true }
+hybrid_vm = { workspace = true }
 field_engine = { workspace = true }
 profile = { workspace = true }

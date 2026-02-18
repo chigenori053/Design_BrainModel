@@ -5,13 +5,13 @@ use agent_core::{
     BeamSearch, ParetoFront, Phase45Controller, ProfileUpdateType, SearchConfig, SearchMode,
     SystemEvaluator, apply_atomic, build_target_field, stability_index,
 };
-use chm::Chm;
+use hybrid_vm::Chm;
 use core_types::ObjectiveVector;
-use evaluator::{Evaluator, StructuralEvaluator};
+use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use field_engine::FieldEngine;
 use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid, Value};
 use profile::PreferenceProfile;
-use shm::Shm;
+use hybrid_vm::Shm;
 
 trait ScalarScoreExt {
     fn score(&self) -> f64;
@@ -173,7 +173,7 @@ fn run_trace(
     seed: u64,
 ) -> (Trace, Trace) {
     let run_once = |seed_val: u64| -> Trace {
-        let shm = Shm::with_default_rules();
+        let shm = hybrid_vm::HybridVM::default_shm();
         let chm = make_chm(&shm, mode, seed_val);
         let field = FieldEngine::new(256);
         let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
@@ -199,7 +199,7 @@ fn run_trace(
             pareto_ids: Vec::new(),
         };
 
-        let n_edge_obs = chm.rule_graph.values().map(|v| v.len()).sum::<usize>();
+        let n_edge_obs = HybridVM::chm_edge_count(&chm);
 
         for d in 1..=depth {
             controller.on_profile_update(
@@ -214,7 +214,7 @@ fn run_trace(
 
             let mut candidates: Vec<(DesignState, ObjectiveVector)> = Vec::new();
             for state in &frontier {
-                for rule in shm.applicable_rules(state) {
+                for rule in hybrid_vm::HybridVM::applicable_rules(&shm, state) {
                     let new_state = apply_atomic(rule, state);
                     let obj = evaluator.evaluate(&new_state);
                     candidates.push((new_state, obj));
@@ -333,8 +333,8 @@ fn run_trace(
 }
 
 fn make_chm(shm: &Shm, mode: ChmMode, seed: u64) -> Chm {
-    let mut chm = Chm::default();
-    let ids: Vec<Uuid> = shm.rules.iter().map(|r| r.id).collect();
+    let mut chm = hybrid_vm::HybridVM::empty_chm();
+    let ids: Vec<Uuid> = hybrid_vm::HybridVM::rules(shm).iter().map(|r| r.id).collect();
 
     match mode {
         ChmMode::Empty => chm,
@@ -345,7 +345,7 @@ fn make_chm(shm: &Shm, mode: ChmMode, seed: u64) -> Chm {
                         continue;
                     }
                     let v = pseudo_strength(seed, *from, *to);
-                    chm.insert_edge(*from, *to, v);
+                    hybrid_vm::HybridVM::chm_insert_edge(&mut chm, *from, *to, v);
                 }
             }
             chm
@@ -423,7 +423,7 @@ fn moving_average_tail(v: &[f64], k: usize) -> f64 {
 
 #[test]
 fn smoke_beam_engine_depth50_runs() {
-    let shm = Shm::with_default_rules();
+    let shm = hybrid_vm::HybridVM::default_shm();
     let chm = make_chm(&shm, ChmMode::Dense, 7);
     let field = FieldEngine::new(128);
     let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());

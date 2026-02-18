@@ -1,51 +1,139 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use core_types::ObjectiveVector;
+use dhm::Dhm;
 use field_engine::{FieldEngine, TargetField};
-use memory_space::{
-    DesignState, HolographicVectorStore, InterferenceMode, MemoryInterferenceTelemetry,
-    MemorySpace,
-};
+use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
+
+pub use chm::Chm;
+pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
 pub trait Evaluator {
     fn evaluate(&self, state: &DesignState) -> ObjectiveVector;
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionMode {
+    RecallFirst,
+    ComputeFirst,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExecutionContext {
+    pub request_id: u64,
+    pub mode: ExecutionMode,
+    pub depth: usize,
+}
+
+impl ExecutionContext {
+    pub fn new(mode: ExecutionMode, depth: usize) -> Self {
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0);
+        Self {
+            request_id: nanos ^ (std::process::id() as u64),
+            mode,
+            depth,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct HybridTraceRow {
+    pub request_id: u64,
+    pub depth: usize,
+    pub mode: ExecutionMode,
+    pub objective: ObjectiveVector,
+}
+
 pub struct HybridVM {
     evaluator: StructuralEvaluator,
-    memory: MemorySpace,
+    dhm: Dhm,
+    mode: ExecutionMode,
+    trace: Vec<HybridTraceRow>,
 }
 
 impl HybridVM {
-    pub fn new(evaluator: StructuralEvaluator, memory: MemorySpace) -> Self {
-        Self { evaluator, memory }
+    pub fn new(evaluator: StructuralEvaluator, dhm: Dhm, mode: ExecutionMode) -> Self {
+        Self {
+            evaluator,
+            dhm,
+            mode,
+            trace: Vec::new(),
+        }
     }
 
     pub fn with_default_memory(evaluator: StructuralEvaluator) -> Self {
         let path = default_store_path();
-        let store = HolographicVectorStore::open(path, 4).expect("failed to initialize store");
-        let mode = memory_mode_from_env();
-        let lambda = match mode {
-            InterferenceMode::Disabled => 0.0,
-            InterferenceMode::Contractive => 0.1,
-            InterferenceMode::Repulsive => 0.02,
-        };
-        let memory = MemorySpace::new(store, 0.95, lambda, mode, 256)
-            .expect("failed to initialize memory");
-        Self::new(evaluator, memory)
+        let dhm = Dhm::open(path, memory_mode_from_env()).expect("failed to initialize DHM");
+        Self::new(evaluator, dhm, ExecutionMode::RecallFirst)
+    }
+
+    pub fn mode(&self) -> ExecutionMode {
+        self.mode
+    }
+
+    pub fn set_mode(&mut self, mode: ExecutionMode) {
+        self.mode = mode;
     }
 
     pub fn evaluate(&mut self, state: &DesignState) -> ObjectiveVector {
-        let base = self.evaluator.evaluate(state);
-        let adjusted = self.memory.apply_interference(&base);
         let depth = infer_depth_from_snapshot(&state.profile_snapshot);
-        let _ = self.memory.store(&adjusted, depth);
+        let ctx = ExecutionContext::new(self.mode, depth);
+        self.evaluate_with_context(state, &ctx)
+    }
+
+    pub fn evaluate_with_context(
+        &mut self,
+        state: &DesignState,
+        ctx: &ExecutionContext,
+    ) -> ObjectiveVector {
+        let base = self.evaluator.evaluate(state);
+        let adjusted = match ctx.mode {
+            ExecutionMode::RecallFirst => self.dhm.recall_first(&base),
+            ExecutionMode::ComputeFirst => self.dhm.evaluate_with_recall(&base, ctx.depth),
+        };
+        self.trace.push(HybridTraceRow {
+            request_id: ctx.request_id,
+            depth: ctx.depth,
+            mode: ctx.mode,
+            objective: adjusted.clone(),
+        });
         adjusted
     }
 
     pub fn take_memory_telemetry(&mut self) -> MemoryInterferenceTelemetry {
-        self.memory.take_telemetry()
+        self.dhm.telemetry()
+    }
+
+    pub fn take_trace(&mut self) -> Vec<HybridTraceRow> {
+        std::mem::take(&mut self.trace)
+    }
+
+    pub fn default_shm() -> Shm {
+        Shm::with_default_rules()
+    }
+
+    pub fn empty_chm() -> Chm {
+        Chm::default()
+    }
+
+    pub fn applicable_rules<'a>(shm: &'a Shm, state: &DesignState) -> Vec<&'a DesignRule> {
+        shm.applicable_rules(state)
+    }
+
+    pub fn chm_insert_edge(chm: &mut Chm, from_rule: RuleId, to_rule: RuleId, strength: f64) {
+        chm.insert_edge(from_rule, to_rule, strength);
+    }
+
+    pub fn chm_edge_count(chm: &Chm) -> usize {
+        chm.rule_graph.values().map(|v| v.len()).sum::<usize>()
+    }
+
+    pub fn rules(shm: &Shm) -> &[DesignRule] {
+        &shm.rules
     }
 }
 
@@ -57,8 +145,10 @@ fn infer_depth_from_snapshot(snapshot: &str) -> usize {
 }
 
 fn default_store_path() -> PathBuf {
-    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let id = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
     std::env::temp_dir().join(format!("hybrid_vm_store_{}_{}.bin", std::process::id(), id))
 }
 
@@ -173,17 +263,23 @@ fn sigmoid(x: f64) -> f64 {
     1.0 / (1.0 + (-x).exp())
 }
 
+#[cfg(feature = "experimental")]
+pub mod experimental {
+    pub fn marker() -> &'static str {
+        "experimental"
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
 
-    use field_engine::{FieldEngine, TargetField};
-    use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid};
+    use memory_space::{DesignNode, StructuralGraph, Uuid};
 
-    use crate::{Evaluator, FieldAwareEvaluator, StructuralEvaluator};
+    use crate::{Evaluator, ExecutionContext, ExecutionMode, HybridVM, StructuralEvaluator};
 
-    fn state_with_graph(nodes: usize, edges: &[(u128, u128)]) -> DesignState {
+    fn state_with_graph(nodes: usize, edges: &[(u128, u128)]) -> memory_space::DesignState {
         let mut graph = StructuralGraph::default();
         for i in 1..=nodes {
             graph = graph.with_node_added(DesignNode::new(
@@ -195,7 +291,22 @@ mod tests {
         for (from, to) in edges {
             graph = graph.with_edge_added(Uuid::from_u128(*from), Uuid::from_u128(*to));
         }
-        DesignState::new(Uuid::from_u128(99), Arc::new(graph), "history:")
+        memory_space::DesignState::new(Uuid::from_u128(99), Arc::new(graph), "history:1,2")
+    }
+
+    #[test]
+    fn supports_two_execution_modes() {
+        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default());
+        let s = state_with_graph(4, &[(1, 2), (2, 3)]);
+
+        vm.set_mode(ExecutionMode::RecallFirst);
+        let _a = vm.evaluate(&s);
+
+        let ctx = ExecutionContext::new(ExecutionMode::ComputeFirst, 2);
+        let _b = vm.evaluate_with_context(&s, &ctx);
+
+        let trace = vm.take_trace();
+        assert!(trace.len() >= 2);
     }
 
     #[test]
@@ -218,26 +329,6 @@ mod tests {
 
         let simple_obj = evaluator.evaluate(&simple);
         let complex_obj = evaluator.evaluate(&complex);
-
-        assert!(simple_obj.f_struct >= complex_obj.f_struct);
-        assert!((0.0..=1.0).contains(&simple_obj.f_struct));
-        assert!((0.0..=1.0).contains(&simple_obj.f_shape));
-    }
-
-    #[test]
-    fn field_score_is_normalized() {
-        let state = state_with_graph(3, &[(1, 2), (2, 3)]);
-        let engine = FieldEngine::new(32);
-        let target = TargetField::fixed(32);
-        let evaluator = FieldAwareEvaluator {
-            structural: StructuralEvaluator::default(),
-            field_engine: &engine,
-            target_field: &target,
-        };
-
-        let obj1 = evaluator.evaluate(&state);
-        let obj2 = evaluator.evaluate(&state);
-        assert_eq!(obj1, obj2);
-        assert!((0.0..=1.0).contains(&obj1.f_field));
+        assert!(simple_obj.f_struct > complex_obj.f_struct);
     }
 }

@@ -239,6 +239,70 @@ impl StructuralGraph {
         (entropy / m.ln()).clamp(0.0, 1.0)
     }
 
+    pub fn normalized_degree_mass_entropy(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let neighbors = self.undirected_neighbors();
+        let mut degrees = Vec::with_capacity(n);
+        for node_id in self.nodes.keys() {
+            let d = neighbors.get(node_id).map(|set| set.len()).unwrap_or(0) as f64;
+            degrees.push(d);
+        }
+        let total_mass = degrees.iter().sum::<f64>();
+        if total_mass <= 1e-12 {
+            return 0.0;
+        }
+        let mut entropy = 0.0;
+        for d in degrees {
+            let p = d / total_mass;
+            if p > 0.0 {
+                entropy -= p * p.ln();
+            }
+        }
+        (entropy / (n as f64).ln()).clamp(0.0, 1.0)
+    }
+
+    pub fn normalized_degree_gini(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let neighbors = self.undirected_neighbors();
+        let mut degrees = Vec::with_capacity(n);
+        for node_id in self.nodes.keys() {
+            degrees.push(neighbors.get(node_id).map(|set| set.len()).unwrap_or(0) as f64);
+        }
+        let total = degrees.iter().sum::<f64>();
+        if total <= 1e-12 {
+            return 0.0;
+        }
+        degrees.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let n_f = n as f64;
+        let mut weighted_sum = 0.0;
+        for (idx, value) in degrees.iter().enumerate() {
+            let rank = (idx + 1) as f64;
+            weighted_sum += (2.0 * rank - n_f - 1.0) * *value;
+        }
+        (weighted_sum / (n_f * total)).clamp(0.0, 1.0)
+    }
+
+    pub fn normalized_max_degree(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let neighbors = self.undirected_neighbors();
+        let max_degree = self
+            .nodes
+            .keys()
+            .map(|node_id| neighbors.get(node_id).map(|set| set.len()).unwrap_or(0))
+            .max()
+            .unwrap_or(0);
+        (max_degree as f64 / (n - 1) as f64).clamp(0.0, 1.0)
+    }
+
     pub fn normalized_degree_variance(&self) -> f64 {
         let n = self.nodes.len();
         if n < 3 {
@@ -449,6 +513,42 @@ mod tests {
             .with_edge_added(b.id, c.id)
             .with_edge_added(c.id, d.id);
         let v = graph.normalized_degree_entropy();
+        assert!((0.0..=1.0).contains(&v));
+    }
+
+    #[test]
+    fn degree_mass_entropy_in_range() {
+        let a = sample_node(1, "A");
+        let b = sample_node(2, "B");
+        let c = sample_node(3, "C");
+        let d = sample_node(4, "D");
+        let graph = StructuralGraph::default()
+            .with_node_added(a.clone())
+            .with_node_added(b.clone())
+            .with_node_added(c.clone())
+            .with_node_added(d.clone())
+            .with_edge_added(a.id, b.id)
+            .with_edge_added(a.id, c.id)
+            .with_edge_added(a.id, d.id);
+        let v = graph.normalized_degree_mass_entropy();
+        assert!((0.0..=1.0).contains(&v));
+    }
+
+    #[test]
+    fn degree_gini_in_range() {
+        let a = sample_node(1, "A");
+        let b = sample_node(2, "B");
+        let c = sample_node(3, "C");
+        let d = sample_node(4, "D");
+        let graph = StructuralGraph::default()
+            .with_node_added(a.clone())
+            .with_node_added(b.clone())
+            .with_node_added(c.clone())
+            .with_node_added(d.clone())
+            .with_edge_added(a.id, b.id)
+            .with_edge_added(a.id, c.id)
+            .with_edge_added(a.id, d.id);
+        let v = graph.normalized_degree_gini();
         assert!((0.0..=1.0).contains(&v));
     }
 }

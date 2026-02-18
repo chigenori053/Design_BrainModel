@@ -1,0 +1,17 @@
+[package]
+name = "hybrid_vm"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+experimental = []
+
+[dependencies]
+core_types = { workspace = true }
+field_engine = { workspace = true }
+memory_space = { workspace = true }
+memory_store = { workspace = true }
+dhm = { workspace = true }
+shm = { workspace = true }
+chm = { workspace = true }

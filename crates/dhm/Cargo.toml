@@ -1,8 +1,9 @@
 [package]
-name = "shm"
-version = "1.0.0"
+name = "dhm"
+version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+core_types = { workspace = true }
 memory_space = { workspace = true }
 memory_store = { workspace = true }
