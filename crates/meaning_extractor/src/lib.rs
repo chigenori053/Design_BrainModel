@@ -107,7 +107,7 @@ fn tokenize(text: &str) -> Vec<Token> {
     let mut buf = String::new();
 
     for ch in text.chars() {
-        if ch.is_alphanumeric() || ch == '_' || is_japanese(ch) {
+        if ch.is_alphanumeric() || ch == '_' || ch == '-' || is_japanese(ch) {
             buf.push(ch);
             continue;
         }
@@ -397,7 +397,7 @@ fn compute_abstraction_score(tokens: &[Token]) -> f32 {
     }
     let abs = tokens
         .iter()
-        .filter(|t| is_abstract_word(&t.surface.to_ascii_lowercase()))
+        .filter(|t| is_abstract_word(&t.surface))
         .count();
     abs as f32 / tokens.len() as f32
 }
@@ -444,18 +444,53 @@ fn is_modifier(w: &str) -> bool {
 }
 
 fn is_abstract_word(w: &str) -> bool {
-    matches!(
-        w,
-        "構造"
-            | "責務"
-            | "設計"
-            | "最適化"
-            | "structure"
-            | "responsibility"
-            | "design"
-            | "optimization"
-    )
+    let lower = w.to_lowercase();
+    if ABSTRACT_WORDS.contains(&lower.as_str()) || singular_match(&lower) {
+        return true;
+    }
+
+    if lower.contains('-') {
+        return lower
+            .split('-')
+            .any(|part| ABSTRACT_WORDS.contains(&part) || singular_match(part));
+    }
+
+    false
 }
+
+fn singular_match(w: &str) -> bool {
+    if let Some(base) = w.strip_suffix('s') {
+        return !base.is_empty() && ABSTRACT_WORDS.contains(&base);
+    }
+    false
+}
+
+const ABSTRACT_WORDS: &[&str] = &[
+    "構造",
+    "責務",
+    "設計",
+    "最適化",
+    "abstraction",
+    "abstract",
+    "architecture",
+    "architectural",
+    "framework",
+    "structure",
+    "structural",
+    "model",
+    "system",
+    "design",
+    "pattern",
+    "concept",
+    "layer",
+    "modular",
+    "scalable",
+    "distributed",
+    "generalized",
+    "integration",
+    "architecture-level",
+    "high-level",
+];
 
 fn normalize_l2(v: &[f32]) -> Vec<f32> {
     let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
@@ -501,6 +536,42 @@ mod tests {
         let extractor = MeaningExtractor;
         let structure = extractor.extract(text, &embedding);
         assert!(structure.abstraction_score > 0.5);
+    }
+
+    #[test]
+    fn abstraction_dictionary_high_density_test() {
+        let text = "High-level architectural abstraction for modular systems.";
+        let embedding = vec![0.5f32; 384];
+        let extractor = MeaningExtractor;
+        let structure = extractor.extract(text, &embedding);
+        assert!(structure.abstraction_score >= 0.6);
+    }
+
+    #[test]
+    fn abstraction_dictionary_concrete_sentence_test() {
+        let text = "Concrete database indexing optimization detail.";
+        let embedding = vec![0.5f32; 384];
+        let extractor = MeaningExtractor;
+        let structure = extractor.extract(text, &embedding);
+        assert!(structure.abstraction_score <= 0.3);
+    }
+
+    #[test]
+    fn abstraction_dictionary_case_mixed_test() {
+        let text = "ARCHITECTURAL Design ABSTRACTION";
+        let embedding = vec![0.5f32; 384];
+        let extractor = MeaningExtractor;
+        let structure = extractor.extract(text, &embedding);
+        assert!(structure.abstraction_score >= 0.9);
+    }
+
+    #[test]
+    fn abstraction_dictionary_hyphen_test() {
+        let text = "Architecture-level high-level pattern";
+        let embedding = vec![0.5f32; 384];
+        let extractor = MeaningExtractor;
+        let structure = extractor.extract(text, &embedding);
+        assert!(structure.abstraction_score >= 0.9);
     }
 
     #[test]

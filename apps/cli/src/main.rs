@@ -13,6 +13,12 @@ enum Commands {
     Recommend { concept_id: String, top_k: usize },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct ParsedCommand {
+    command: Commands,
+    json: bool,
+}
+
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     match parse_command(&args).and_then(run) {
@@ -24,18 +30,28 @@ fn main() {
     }
 }
 
-fn run(command: Commands) -> Result<String, String> {
+fn run(parsed: ParsedCommand) -> Result<String, String> {
     let mut vm = HybridVM::for_cli_storage(cli_store_dir()).map_err(|e| e.to_string())?;
 
-    match command {
+    match parsed.command {
         Commands::Analyze { text } => {
             let concept = vm.analyze_text(&text).map_err(|e| e.to_string())?;
-            let level = abstraction_phrase(concept.a);
-            Ok(format!(
-                "[Concept Created]\nID: C{}\nAbstraction: {:.2} ({level})",
-                concept.id.0,
-                round2(concept.a),
-            ))
+            let concept_id = concept_id_string(concept.id);
+            let abstraction = round2(concept.a);
+            let abstraction_label = abstraction_phrase(concept.a);
+            if parsed.json {
+                Ok(format!(
+                    "{{\n    \"type\": \"analyze\",\n    \"concept_id\": \"{}\",\n    \"abstraction\": {},\n    \"abstraction_label\": \"{}\"\n}}",
+                    concept_id,
+                    json_num(abstraction),
+                    escape_json(abstraction_label),
+                ))
+            } else {
+                Ok(format!(
+                    "[Concept Created]\nID: {}\nAbstraction: {:.2} ({})",
+                    concept_id, abstraction, abstraction_label,
+                ))
+            }
         }
         Commands::Explain { concept_id } => {
             let id = parse_concept_id(&concept_id)?;
@@ -43,20 +59,42 @@ fn run(command: Commands) -> Result<String, String> {
                 return Err("Concept not found".to_string());
             };
             let explanation = HybridVM::recomposer().explain_concept(&concept);
-            Ok(format!(
-                "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
-                explanation.summary, explanation.reasoning, explanation.abstraction_note,
-            ))
+            if parsed.json {
+                Ok(format!(
+                    "{{\n    \"type\": \"explain\",\n    \"concept_id\": \"{}\",\n    \"summary\": \"{}\",\n    \"reasoning\": \"{}\",\n    \"abstraction_note\": \"{}\"\n}}",
+                    concept_id_string(concept.id),
+                    escape_json(&explanation.summary),
+                    escape_json(&explanation.reasoning),
+                    escape_json(&explanation.abstraction_note),
+                ))
+            } else {
+                Ok(format!(
+                    "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
+                    explanation.summary, explanation.reasoning, explanation.abstraction_note,
+                ))
+            }
         }
         Commands::Compare { left_id, right_id } => {
             let left = parse_concept_id(&left_id)?;
             let right = parse_concept_id(&right_id)?;
             let report = vm.compare(left, right).map_err(|e| e.to_string())?;
-            let explanation = HybridVM::recomposer().explain_resonance(&report);
-            Ok(format!(
-                "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
-                explanation.summary, explanation.reasoning, explanation.abstraction_note,
-            ))
+            if parsed.json {
+                Ok(format!(
+                    "{{\n    \"type\": \"compare\",\n    \"concept_a\": \"{}\",\n    \"concept_b\": \"{}\",\n    \"semantic_similarity\": {},\n    \"structural_similarity\": {},\n    \"abstraction_difference\": {},\n    \"alignment_label\": \"{}\"\n}}",
+                    concept_id_string(report.c1),
+                    concept_id_string(report.c2),
+                    json_num(round2(report.v_sim)),
+                    json_num(round2(report.s_sim)),
+                    json_num(round2(report.a_diff)),
+                    escape_json(alignment_phrase(report.score)),
+                ))
+            } else {
+                let explanation = HybridVM::recomposer().explain_resonance(&report);
+                Ok(format!(
+                    "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
+                    explanation.summary, explanation.reasoning, explanation.abstraction_note,
+                ))
+            }
         }
         Commands::Multi { concept_ids } => {
             let ids = dedup_parsed_ids(&concept_ids)?;
@@ -64,102 +102,156 @@ fn run(command: Commands) -> Result<String, String> {
                 return Err("multi requires at least 2 unique concept ids".to_string());
             }
             let out = vm.explain_multiple(&ids).map_err(|e| e.to_string())?;
-            Ok(format!(
-                "Summary:\n{}\n\nStructural Analysis:\n{}\n\nAbstraction Analysis:\n{}\n\nConflict Analysis:\n{}",
-                out.summary,
-                out.structural_analysis,
-                out.abstraction_analysis,
-                out.conflict_analysis,
-            ))
+            if parsed.json {
+                let mean_resonance = parse_metric(&out.metrics.pairwise_mean_r)?;
+                let mean_abstraction = parse_metric(&out.metrics.mean_abstraction)?;
+                let concept_ids_json = ids
+                    .iter()
+                    .map(|id| format!("\"{}\"", concept_id_string(*id)))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Ok(format!(
+                    "{{\n    \"type\": \"multi\",\n    \"concept_ids\": [{}],\n    \"mean_resonance\": {},\n    \"mean_abstraction\": {},\n    \"conflict_pairs\": {},\n    \"coherence_label\": \"{}\",\n    \"abstraction_label\": \"{}\"\n}}",
+                    concept_ids_json,
+                    json_num(mean_resonance),
+                    json_num(mean_abstraction),
+                    out.metrics.conflict_pairs,
+                    escape_json(coherence_phrase(mean_resonance)),
+                    escape_json(abstraction_tendency_phrase(mean_abstraction)),
+                ))
+            } else {
+                Ok(format!(
+                    "Summary:\n{}\n\nStructural Analysis:\n{}\n\nAbstraction Analysis:\n{}\n\nConflict Analysis:\n{}",
+                    out.summary,
+                    out.structural_analysis,
+                    out.abstraction_analysis,
+                    out.conflict_analysis,
+                ))
+            }
         }
         Commands::Recommend { concept_id, top_k } => {
             let id = parse_concept_id(&concept_id)?;
             let report = vm.recommend(id, top_k).map_err(|e| e.to_string())?;
-            let mut out = String::from("[Recommendations]\n");
-            if report.recommendations.is_empty() {
-                out.push_str("No candidates available.");
-                return Ok(out);
-            }
-            for (idx, rec) in report.recommendations.iter().enumerate() {
-                let line = match rec.action {
-                    ActionType::Merge => {
+            if parsed.json {
+                let recommendations = report
+                    .recommendations
+                    .iter()
+                    .map(|rec| {
                         format!(
-                            "{}. Merge with C{} (R={:.2})",
-                            idx + 1,
-                            rec.target.0,
-                            round2(rec.score)
+                            "        {{\n            \"target\": \"{}\",\n            \"action\": \"{}\",\n            \"score\": {}\n        }}",
+                            concept_id_string(rec.target),
+                            action_label(rec.action),
+                            json_num(round2(rec.score)),
                         )
-                    }
-                    ActionType::Refine => format!(
-                        "{}. Refine with C{} (R={:.2})",
-                        idx + 1,
-                        rec.target.0,
-                        round2(rec.score)
-                    ),
-                    ActionType::ApplyPattern => {
-                        format!("{}. ApplyPattern from C{}", idx + 1, rec.target.0)
-                    }
-                    ActionType::Separate => {
-                        format!(
-                            "{}. Separate from C{} (R={:.2})",
-                            idx + 1,
-                            rec.target.0,
-                            round2(rec.score)
-                        )
-                    }
-                };
-                out.push_str(&line);
-                if idx + 1 != report.recommendations.len() {
-                    out.push('\n');
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                Ok(format!(
+                    "{{\n    \"type\": \"recommend\",\n    \"query\": \"{}\",\n    \"recommendations\": [\n{}\n    ],\n    \"summary\": \"{}\"\n}}",
+                    concept_id_string(id),
+                    recommendations,
+                    escape_json(&report.summary),
+                ))
+            } else {
+                let mut out = String::from("[Recommendations]\n");
+                if report.recommendations.is_empty() {
+                    out.push_str("No candidates available.");
+                    return Ok(out);
                 }
+                for (idx, rec) in report.recommendations.iter().enumerate() {
+                    let line = match rec.action {
+                        ActionType::Merge => {
+                            format!(
+                                "{}. Merge with {} (R={:.2})",
+                                idx + 1,
+                                concept_id_string(rec.target),
+                                round2(rec.score)
+                            )
+                        }
+                        ActionType::Refine => format!(
+                            "{}. Refine with {} (R={:.2})",
+                            idx + 1,
+                            concept_id_string(rec.target),
+                            round2(rec.score)
+                        ),
+                        ActionType::ApplyPattern => {
+                            format!(
+                                "{}. ApplyPattern from {}",
+                                idx + 1,
+                                concept_id_string(rec.target)
+                            )
+                        }
+                        ActionType::Separate => {
+                            format!(
+                                "{}. Separate from {} (R={:.2})",
+                                idx + 1,
+                                concept_id_string(rec.target),
+                                round2(rec.score)
+                            )
+                        }
+                    };
+                    out.push_str(&line);
+                    if idx + 1 != report.recommendations.len() {
+                        out.push('\n');
+                    }
+                }
+                Ok(out)
             }
-            Ok(out)
         }
     }
 }
 
-fn parse_command(args: &[String]) -> Result<Commands, String> {
-    let Some(cmd) = args.first() else {
+fn parse_command(args: &[String]) -> Result<ParsedCommand, String> {
+    let json = args.iter().any(|arg| arg == "--json");
+    let filtered = args
+        .iter()
+        .filter(|arg| arg.as_str() != "--json")
+        .cloned()
+        .collect::<Vec<_>>();
+
+    let Some(cmd) = filtered.first() else {
         return Err(help_text());
     };
 
-    match cmd.as_str() {
+    let command = match cmd.as_str() {
         "analyze" => {
-            if args.len() < 2 {
+            if filtered.len() < 2 {
                 return Err("analyze requires text".to_string());
             }
-            Ok(Commands::Analyze {
-                text: args[1..].join(" "),
-            })
+            Commands::Analyze {
+                text: filtered[1..].join(" "),
+            }
         }
         "explain" => {
-            if args.len() != 2 {
+            if filtered.len() != 2 {
                 return Err("explain requires one concept id".to_string());
             }
-            Ok(Commands::Explain {
-                concept_id: args[1].clone(),
-            })
+            Commands::Explain {
+                concept_id: filtered[1].clone(),
+            }
         }
         "compare" => {
-            if args.len() != 3 {
+            if filtered.len() != 3 {
                 return Err("compare requires two concept ids".to_string());
             }
-            Ok(Commands::Compare {
-                left_id: args[1].clone(),
-                right_id: args[2].clone(),
-            })
+            Commands::Compare {
+                left_id: filtered[1].clone(),
+                right_id: filtered[2].clone(),
+            }
         }
         "multi" => {
-            if args.len() < 3 {
+            if filtered.len() < 3 {
                 return Err("multi requires at least 2 concept ids".to_string());
             }
-            Ok(Commands::Multi {
-                concept_ids: args[1..].to_vec(),
-            })
+            Commands::Multi {
+                concept_ids: filtered[1..].to_vec(),
+            }
         }
-        "recommend" => parse_recommend_command(args),
-        _ => Err(help_text()),
-    }
+        "recommend" => parse_recommend_command(&filtered)?,
+        _ => return Err(help_text()),
+    };
+
+    Ok(ParsedCommand { command, json })
 }
 
 fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
@@ -190,7 +282,7 @@ fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
 }
 
 fn help_text() -> String {
-    "Usage: design <command>\n  analyze <text>\n  explain <ConceptId>\n  compare <ConceptId> <ConceptId>\n  multi <ConceptId> <ConceptId> [ConceptId ...]\n  recommend <ConceptId> [--top N]".to_string()
+    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]".to_string()
 }
 
 fn cli_store_dir() -> PathBuf {
@@ -220,6 +312,10 @@ fn dedup_parsed_ids(raw_ids: &[String]) -> Result<Vec<ConceptId>, String> {
     Ok(set.into_iter().collect())
 }
 
+fn concept_id_string(id: ConceptId) -> String {
+    format!("C{}", id.0)
+}
+
 fn abstraction_phrase(a: f32) -> &'static str {
     if a < 0.30 {
         "concrete design element"
@@ -230,13 +326,76 @@ fn abstraction_phrase(a: f32) -> &'static str {
     }
 }
 
+fn alignment_phrase(score: f32) -> &'static str {
+    if score >= 0.75 {
+        "strongly aligned"
+    } else if score >= 0.40 {
+        "moderately aligned"
+    } else if score >= 0.10 {
+        "weakly aligned"
+    } else if score > -0.10 {
+        "structurally neutral"
+    } else {
+        "structurally conflicting"
+    }
+}
+
+fn coherence_phrase(r_mean: f32) -> &'static str {
+    if r_mean >= 0.60 {
+        "globally coherent"
+    } else if r_mean >= 0.30 {
+        "moderately coherent"
+    } else if r_mean >= 0.0 {
+        "loosely connected"
+    } else {
+        "structurally conflicting"
+    }
+}
+
+fn abstraction_tendency_phrase(a_mean: f32) -> &'static str {
+    if a_mean < 0.30 {
+        "primarily concrete"
+    } else if a_mean < 0.70 {
+        "mixed abstraction levels"
+    } else {
+        "primarily high-level"
+    }
+}
+
+fn action_label(action: ActionType) -> &'static str {
+    match action {
+        ActionType::Merge => "Merge",
+        ActionType::Refine => "Refine",
+        ActionType::ApplyPattern => "ApplyPattern",
+        ActionType::Separate => "Separate",
+    }
+}
+
+fn escape_json(raw: &str) -> String {
+    raw.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+}
+
+fn parse_metric(raw: &str) -> Result<f32, String> {
+    raw.parse::<f32>()
+        .map(round2)
+        .map_err(|_| format!("invalid metric value: {raw}"))
+}
+
+fn json_num(v: f32) -> String {
+    format!("{:.2}", round2(v))
+}
+
 fn round2(v: f32) -> f32 {
     (v * 100.0).round() / 100.0
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{Commands, dedup_parsed_ids, parse_command, parse_concept_id};
+    use super::{
+        Commands, ParsedCommand, dedup_parsed_ids, parse_command, parse_concept_id, parse_metric,
+    };
 
     #[test]
     fn concept_id_parses_prefix() {
@@ -255,10 +414,43 @@ mod tests {
 
     #[test]
     fn command_shape_is_stable() {
-        let cmd = parse_command(&["analyze".to_string(), "hello".to_string()]).expect("cmd");
-        match cmd {
-            Commands::Analyze { text } => assert_eq!(text, "hello"),
-            _ => panic!("unexpected variant"),
-        }
+        let parsed = parse_command(&["analyze".to_string(), "hello".to_string()]).expect("cmd");
+        assert_eq!(
+            parsed,
+            ParsedCommand {
+                command: Commands::Analyze {
+                    text: "hello".to_string()
+                },
+                json: false,
+            }
+        );
+    }
+
+    #[test]
+    fn json_flag_is_global() {
+        let parsed = parse_command(&[
+            "recommend".to_string(),
+            "C1".to_string(),
+            "--top".to_string(),
+            "3".to_string(),
+            "--json".to_string(),
+        ])
+        .expect("parsed");
+
+        assert_eq!(
+            parsed,
+            ParsedCommand {
+                command: Commands::Recommend {
+                    concept_id: "C1".to_string(),
+                    top_k: 3,
+                },
+                json: true,
+            }
+        );
+    }
+
+    #[test]
+    fn metric_rounding_works() {
+        assert_eq!(parse_metric("0.416").expect("metric"), 0.42);
     }
 }
