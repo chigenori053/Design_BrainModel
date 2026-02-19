@@ -5,13 +5,13 @@ use agent_core::{
     BeamSearch, ParetoFront, Phase45Controller, ProfileUpdateType, SearchConfig, SearchMode,
     SystemEvaluator, apply_atomic, build_target_field, stability_index,
 };
-use hybrid_vm::Chm;
 use core_types::ObjectiveVector;
-use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use field_engine::FieldEngine;
+use hybrid_vm::Chm;
+use hybrid_vm::Shm;
+use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid, Value};
 use profile::PreferenceProfile;
-use hybrid_vm::Shm;
 
 trait ScalarScoreExt {
     fn score(&self) -> f64;
@@ -334,7 +334,10 @@ fn run_trace(
 
 fn make_chm(shm: &Shm, mode: ChmMode, seed: u64) -> Chm {
     let mut chm = hybrid_vm::HybridVM::empty_chm();
-    let ids: Vec<Uuid> = hybrid_vm::HybridVM::rules(shm).iter().map(|r| r.id).collect();
+    let ids: Vec<Uuid> = hybrid_vm::HybridVM::rules(shm)
+        .iter()
+        .map(|r| r.id)
+        .collect();
 
     match mode {
         ChmMode::Empty => chm,

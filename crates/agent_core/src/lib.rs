@@ -3,8 +3,8 @@ use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Instant;
 
 pub static DISTANCE_CALL_COUNT: AtomicUsize = AtomicUsize::new(0);
@@ -21,19 +21,19 @@ mod diversity;
 mod normalization;
 mod stability;
 
-use hybrid_vm::Chm;
 use core_types::{
     ObjectiveVector, P_INFER_ALPHA, P_INFER_BETA, P_INFER_GAMMA,
     stability_index as core_stability_index,
 };
 use diversity::apply_diversity_pressure;
-use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use field_engine::{FieldEngine, FieldVector, NodeCategory, TargetField, resonance_score};
+use hybrid_vm::Chm;
+use hybrid_vm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
+use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator};
 use memory_space::{
     DesignNode, DesignState, MemoryInterferenceTelemetry, StateId, StructuralGraph, Uuid, Value,
 };
 use profile::PreferenceProfile;
-use hybrid_vm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 use stability::*;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -191,7 +191,9 @@ fn objective_distance(a: &ObjectiveVector, b: &ObjectiveVector) -> f64 {
 }
 
 fn selection_score(quality: f64, pressure: f64, stability: f64) -> f64 {
-    SELECTION_W1_QUALITY * quality + SELECTION_W2_PRESSURE * pressure + SELECTION_W3_STABILITY * stability
+    SELECTION_W1_QUALITY * quality
+        + SELECTION_W2_PRESSURE * pressure
+        + SELECTION_W3_STABILITY * stability
 }
 
 fn compute_selection_scores(objs: &[ObjectiveVector]) -> Vec<f64> {
@@ -222,7 +224,9 @@ fn compute_selection_scores(objs: &[ObjectiveVector]) -> Vec<f64> {
         };
         let global_distance = objective_distance(&objs[i], &centroid);
         let integrated_distance = 0.5 * local_distance + 0.5 * global_distance;
-        let pressure = (-SELECTION_PRESSURE_LAMBDA * integrated_distance).exp().clamp(0.0, 1.0);
+        let pressure = (-SELECTION_PRESSURE_LAMBDA * integrated_distance)
+            .exp()
+            .clamp(0.0, 1.0);
         let stability = stable_flag(local_distance, global_distance, SELECTION_STABILITY_EPS);
         let quality = scalar_score(&objs[i]).clamp(0.0, 1.0);
         out.push(selection_score(quality, pressure, stability));
@@ -4350,8 +4354,8 @@ mod tests {
     use std::sync::Arc;
 
     use core_types::ObjectiveVector;
-    use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator, Transformation};
     use field_engine::FieldEngine;
+    use hybrid_vm::{Evaluator, HybridVM, StructuralEvaluator, Transformation};
     use memory_space::{DesignNode, DesignState, StructuralGraph, Uuid};
     use profile::PreferenceProfile;
 
@@ -4435,8 +4439,7 @@ mod tests {
         HybridVM::chm_insert_edge(&mut chm, Uuid::from_u128(1001), Uuid::from_u128(1002), -0.2);
 
         let field = FieldEngine::new(16);
-        let evaluator1 =
-            SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::new(20, 40));
+        let evaluator1 = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::new(20, 40));
         let engine1 = BeamSearch {
             shm: &shm,
             chm: &chm,
@@ -4447,8 +4450,7 @@ mod tests {
                 norm_alpha: 0.25,
             },
         };
-        let evaluator2 =
-            SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::new(20, 40));
+        let evaluator2 = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::new(20, 40));
         let engine2 = BeamSearch {
             shm: &shm,
             chm: &chm,
@@ -4580,10 +4582,7 @@ mod tests {
         let initial = base_state();
         let op = MacroOperator {
             id: Uuid::from_u128(7000),
-            steps: vec![
-                Transformation::AddNode,
-                Transformation::AddConstraint,
-            ],
+            steps: vec![Transformation::AddNode, Transformation::AddConstraint],
             max_activations: 2,
         };
 

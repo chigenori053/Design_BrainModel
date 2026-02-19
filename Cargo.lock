@@ -33,8 +33,7 @@ version = "1.0.0"
 name = "design_cli"
 version = "0.1.0"
 dependencies = [
- "agent_core",
- "interface_ui",
+ "hybrid_vm",
 ]
 
 [[package]]
@@ -84,6 +83,7 @@ dependencies = [
  "dhm",
  "field_engine",
  "language_dhm",
+ "meaning_extractor",
  "memory_space",
  "memory_store",
  "recomposer",

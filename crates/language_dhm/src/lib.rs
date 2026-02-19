@@ -41,7 +41,8 @@ pub struct LanguageUnit {
 
 impl Codec for LanguageUnit {
     fn encode(&self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(8 + 4 + self.embedding.len() * 4 + 8 + 4 + self.raw_text.len());
+        let mut out =
+            Vec::with_capacity(8 + 4 + self.embedding.len() * 4 + 8 + 4 + self.raw_text.len());
         out.extend_from_slice(&self.id.0.to_le_bytes());
         out.extend_from_slice(&(self.embedding.len() as u32).to_le_bytes());
         for v in &self.embedding {
@@ -123,7 +124,9 @@ where
             raw_text: text.to_string(),
             timestamp: now_ts(),
         };
-        self.store.put(id, unit).expect("failed to store LanguageUnit");
+        self.store
+            .put(id, unit)
+            .expect("failed to store LanguageUnit");
         id
     }
 

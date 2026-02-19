@@ -20,7 +20,10 @@ impl Codec for ConceptId {
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() != 8 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid ConceptId"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid ConceptId",
+            ));
         }
         let mut buf = [0u8; 8];
         buf.copy_from_slice(bytes);
@@ -185,6 +188,12 @@ where
 
     pub fn get(&self, id: ConceptId) -> Option<ConceptUnit> {
         self.store.get(&id).unwrap_or(None)
+    }
+
+    pub fn all_concepts(&self) -> Vec<ConceptUnit> {
+        let mut entries = self.store.entries().unwrap_or_default();
+        entries.sort_by(|(lid, _), (rid, _)| lid.cmp(rid));
+        entries.into_iter().map(|(_, concept)| concept).collect()
     }
 
     pub fn recall(&self, query: &ConceptQuery, top_k: usize) -> Vec<(ConceptId, f32)> {

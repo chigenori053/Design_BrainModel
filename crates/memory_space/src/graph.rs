@@ -479,17 +479,25 @@ mod tests {
     #[test]
     fn category_entropy_is_normalized() {
         let mut a = sample_node(1, "A");
-        a.attributes
-            .insert("category".to_string(), crate::types::Value::Text("X".to_string()));
+        a.attributes.insert(
+            "category".to_string(),
+            crate::types::Value::Text("X".to_string()),
+        );
         let mut b = sample_node(2, "B");
-        b.attributes
-            .insert("category".to_string(), crate::types::Value::Text("X".to_string()));
+        b.attributes.insert(
+            "category".to_string(),
+            crate::types::Value::Text("X".to_string()),
+        );
         let mut c = sample_node(3, "C");
-        c.attributes
-            .insert("category".to_string(), crate::types::Value::Text("Y".to_string()));
+        c.attributes.insert(
+            "category".to_string(),
+            crate::types::Value::Text("Y".to_string()),
+        );
         let mut d = sample_node(4, "D");
-        d.attributes
-            .insert("category".to_string(), crate::types::Value::Text("Y".to_string()));
+        d.attributes.insert(
+            "category".to_string(),
+            crate::types::Value::Text("Y".to_string()),
+        );
         let graph = StructuralGraph::default()
             .with_node_added(a)
             .with_node_added(b)

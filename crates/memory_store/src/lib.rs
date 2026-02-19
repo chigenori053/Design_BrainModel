@@ -142,7 +142,10 @@ where
             let k_len = read_u32(&raw, &mut idx)? as usize;
             let key_end = idx.saturating_add(k_len);
             if key_end > raw.len() {
-                return Err(io::Error::new(io::ErrorKind::InvalidData, "corrupt key length"));
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "corrupt key length",
+                ));
             }
             let key = K::decode(&raw[idx..key_end])?;
             idx = key_end;
@@ -256,9 +259,7 @@ mod tests {
         ));
         {
             let store = FileStore::<String, String>::open(&path).expect("open write");
-            store
-                .put("k1".to_string(), "v1".to_string())
-                .expect("put");
+            store.put("k1".to_string(), "v1".to_string()).expect("put");
         }
         {
             let store = FileStore::<String, String>::open(&path).expect("open read");

@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -5,12 +6,15 @@ use core_types::ObjectiveVector;
 use dhm::Dhm;
 use field_engine::{FieldEngine, TargetField};
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
-use memory_store::{FileStore, InMemoryStore};
+use meaning_extractor::MeaningExtractor;
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
-use semantic_dhm::{ConceptId, ConceptUnit, SemanticDhm};
-use recomposer::Recomposer;
+use memory_store::{FileStore, InMemoryStore};
+use recomposer::{MultiConceptInput, RecommendationInput, Recomposer, ResonanceReport};
+use semantic_dhm::{ConceptUnit, SemanticDhm};
 
 pub use chm::Chm;
+pub use recomposer::ActionType;
+pub use semantic_dhm::ConceptId;
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
 pub trait Evaluator {
@@ -55,15 +59,27 @@ pub struct HybridTraceRow {
 pub struct HybridVM {
     evaluator: StructuralEvaluator,
     dhm: Dhm,
+    language_dhm: LanguageDhm<FileStore<LangId, LanguageUnit>>,
+    semantic_dhm: SemanticDhm<FileStore<ConceptId, ConceptUnit>>,
+    meaning_extractor: MeaningExtractor,
+    recomposer: Recomposer,
     mode: ExecutionMode,
     trace: Vec<HybridTraceRow>,
 }
 
 impl HybridVM {
     pub fn new(evaluator: StructuralEvaluator, dhm: Dhm, mode: ExecutionMode) -> Self {
+        let language_dhm = Self::language_dhm_file(default_language_store_path())
+            .expect("failed to initialize LanguageDHM");
+        let semantic_dhm = Self::semantic_dhm_file(default_semantic_store_path())
+            .expect("failed to initialize SemanticDHM");
         Self {
             evaluator,
             dhm,
+            language_dhm,
+            semantic_dhm,
+            meaning_extractor: MeaningExtractor,
+            recomposer: Recomposer,
             mode,
             trace: Vec::new(),
         }
@@ -116,6 +132,107 @@ impl HybridVM {
         std::mem::take(&mut self.trace)
     }
 
+    pub fn analyze_text(&mut self, text: &str) -> Result<ConceptUnit, HybridVmError> {
+        let embedding = embedding_from_text(text);
+        let _ = self.language_dhm.insert(text, embedding.clone());
+        let meaning = self.meaning_extractor.extract(text, &embedding);
+        let concept_id = self.semantic_dhm.insert_meaning(&meaning);
+        self.semantic_dhm
+            .get(concept_id)
+            .ok_or(HybridVmError::ConceptNotFound(concept_id))
+    }
+
+    pub fn get_concept(&self, id: ConceptId) -> Option<ConceptUnit> {
+        self.semantic_dhm.get(id)
+    }
+
+    pub fn compare(
+        &self,
+        left: ConceptId,
+        right: ConceptId,
+    ) -> Result<ResonanceReport, HybridVmError> {
+        let Some(c1) = self.semantic_dhm.get(left) else {
+            return Err(HybridVmError::ConceptNotFound(left));
+        };
+        let Some(c2) = self.semantic_dhm.get(right) else {
+            return Err(HybridVmError::ConceptNotFound(right));
+        };
+        let query = semantic_dhm::ConceptQuery {
+            v: c1.v.clone(),
+            a: c1.a,
+            s: c1.s.clone(),
+        };
+        let score = semantic_dhm::resonance(&query, &c2, self.semantic_dhm.weights());
+        let v_sim = dot_norm(&c1.v, &c2.v);
+        let s_sim = dot_norm(&c1.s, &c2.s);
+        let a_diff = (c1.a - c2.a).abs();
+
+        Ok(ResonanceReport {
+            c1: left,
+            c2: right,
+            score,
+            v_sim,
+            s_sim,
+            a_diff,
+        })
+    }
+
+    pub fn explain_multiple(
+        &self,
+        concept_ids: &[ConceptId],
+    ) -> Result<recomposer::MultiExplanation, HybridVmError> {
+        let ids = dedup_ids(concept_ids);
+        if ids.len() < 2 {
+            return Err(HybridVmError::InvalidInput(
+                "multi explanation requires at least 2 unique concept ids",
+            ));
+        }
+        let mut concepts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(c) = self.semantic_dhm.get(id) else {
+                return Err(HybridVmError::ConceptNotFound(id));
+            };
+            concepts.push(c);
+        }
+        let input = MultiConceptInput {
+            concepts,
+            weights: None,
+        };
+        Ok(self
+            .recomposer
+            .explain_multiple(&input, &self.semantic_dhm.weights()))
+    }
+
+    pub fn recommend(
+        &self,
+        query_id: ConceptId,
+        top_k: usize,
+    ) -> Result<recomposer::RecommendationReport, HybridVmError> {
+        let Some(query) = self.semantic_dhm.get(query_id) else {
+            return Err(HybridVmError::ConceptNotFound(query_id));
+        };
+        let mut candidates = self
+            .semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .filter(|c| c.id != query_id)
+            .collect::<Vec<_>>();
+        candidates.sort_by(|l, r| l.id.cmp(&r.id));
+
+        let cap = candidates.len();
+        let requested = top_k.max(1);
+        let clamped_top_k = requested.min(cap);
+
+        let input = RecommendationInput {
+            query,
+            candidates,
+            top_k: clamped_top_k,
+        };
+        Ok(self
+            .recomposer
+            .recommend(&input, &self.semantic_dhm.weights()))
+    }
+
     pub fn default_shm() -> Shm {
         Shm::with_default_rules()
     }
@@ -140,8 +257,8 @@ impl HybridVM {
         shm.rules()
     }
 
-    pub fn language_dhm_in_memory(
-    ) -> std::io::Result<LanguageDhm<InMemoryStore<LangId, LanguageUnit>>> {
+    pub fn language_dhm_in_memory()
+    -> std::io::Result<LanguageDhm<InMemoryStore<LangId, LanguageUnit>>> {
         LanguageDhm::in_memory()
     }
 
@@ -151,8 +268,8 @@ impl HybridVM {
         LanguageDhm::file(path)
     }
 
-    pub fn semantic_dhm_in_memory(
-    ) -> std::io::Result<SemanticDhm<InMemoryStore<ConceptId, ConceptUnit>>> {
+    pub fn semantic_dhm_in_memory()
+    -> std::io::Result<SemanticDhm<InMemoryStore<ConceptId, ConceptUnit>>> {
         SemanticDhm::in_memory()
     }
 
@@ -164,6 +281,49 @@ impl HybridVM {
 
     pub fn recomposer() -> Recomposer {
         Recomposer
+    }
+
+    pub fn for_cli_storage(base_dir: impl AsRef<Path>) -> io::Result<Self> {
+        let base = base_dir.as_ref();
+        std::fs::create_dir_all(base)?;
+        let dhm = Dhm::open(base.join("dhm.bin"), memory_mode_from_env())?;
+        let language_dhm = Self::language_dhm_file(base.join("language_dhm.bin"))?;
+        let semantic_dhm = Self::semantic_dhm_file(base.join("semantic_dhm.bin"))?;
+        Ok(Self {
+            evaluator: StructuralEvaluator::default(),
+            dhm,
+            language_dhm,
+            semantic_dhm,
+            meaning_extractor: MeaningExtractor,
+            recomposer: Recomposer,
+            mode: ExecutionMode::RecallFirst,
+            trace: Vec::new(),
+        })
+    }
+}
+
+#[derive(Debug)]
+pub enum HybridVmError {
+    Io(io::Error),
+    ConceptNotFound(ConceptId),
+    InvalidInput(&'static str),
+}
+
+impl std::fmt::Display for HybridVmError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(err) => write!(f, "{err}"),
+            Self::ConceptNotFound(_) => write!(f, "Concept not found"),
+            Self::InvalidInput(msg) => write!(f, "{msg}"),
+        }
+    }
+}
+
+impl std::error::Error for HybridVmError {}
+
+impl From<io::Error> for HybridVmError {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
     }
 }
 
@@ -180,6 +340,49 @@ fn default_store_path() -> PathBuf {
         .map(|d| d.as_nanos())
         .unwrap_or(0);
     std::env::temp_dir().join(format!("hybrid_vm_store_{}_{}.bin", std::process::id(), id))
+}
+
+fn default_language_store_path() -> PathBuf {
+    std::env::temp_dir().join("hybrid_vm_language_dhm.bin")
+}
+
+fn default_semantic_store_path() -> PathBuf {
+    std::env::temp_dir().join("hybrid_vm_semantic_dhm.bin")
+}
+
+fn embedding_from_text(text: &str) -> Vec<f32> {
+    let mut out = vec![0.0f32; language_dhm::EMBEDDING_DIM];
+    for (i, b) in text.bytes().enumerate() {
+        let idx = (i.saturating_mul(131).saturating_add(b as usize)) % out.len();
+        let sign = if i % 2 == 0 { 1.0 } else { -1.0 };
+        let value = (b as f32 / 255.0) - 0.5;
+        out[idx] += sign * value;
+    }
+    out
+}
+
+fn dot_norm(a: &[f32], b: &[f32]) -> f32 {
+    let an = normalize(a);
+    let bn = normalize(b);
+    an.iter().zip(bn.iter()).map(|(l, r)| l * r).sum::<f32>()
+}
+
+fn normalize(v: &[f32]) -> Vec<f32> {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if norm <= f32::EPSILON {
+        return vec![0.0; v.len()];
+    }
+    v.iter().map(|x| x / norm).collect()
+}
+
+fn dedup_ids(ids: &[ConceptId]) -> Vec<ConceptId> {
+    let mut out = Vec::new();
+    for id in ids {
+        if !out.contains(id) {
+            out.push(*id);
+        }
+    }
+    out
 }
 
 fn memory_mode_from_env() -> InterferenceMode {

@@ -53,6 +53,10 @@ jobs:
             echo "Boundary violation: recomposer must depend only on semantic_dhm"
             exit 1
           fi
+          if rg -n "use (semantic_dhm|recomposer|language_dhm)::" apps/cli/src apps/cli/tests; then
+            echo "Boundary violation: CLI must depend only on hybrid_vm"
+            exit 1
+          fi
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

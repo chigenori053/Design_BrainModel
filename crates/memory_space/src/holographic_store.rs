@@ -117,7 +117,10 @@ impl HolographicVectorStore {
         }
         let version = read_u32(file)?;
         if version != VERSION {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid version"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid version",
+            ));
         }
         let _ = read_u64(file)?;
         Ok(())

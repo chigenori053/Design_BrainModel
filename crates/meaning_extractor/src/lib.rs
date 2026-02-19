@@ -177,9 +177,7 @@ fn build_nodes(tokens: &[Token], roles: &[RoleType], embedding: &[f32]) -> Vec<M
         let span = if role == RoleType::Object
             && idx > 0
             && roles[idx - 1] == RoleType::Modifier
-            && !nodes
-                .iter()
-                .any(|n| n.token_span == (idx - 1, idx))
+            && !nodes.iter().any(|n| n.token_span == (idx - 1, idx))
         {
             (idx - 1, idx + 1)
         } else {
@@ -231,9 +229,18 @@ fn assign_semantic_vectors(nodes: &mut [MeaningNode], embedding: &[f32]) {
 fn build_edges(tokens: &[Token], roles: &[RoleType], nodes: &[MeaningNode]) -> Vec<MeaningEdge> {
     let mut edges = Vec::new();
 
-    let subject = nodes.iter().find(|n| n.role == RoleType::Subject).map(|n| n.id);
-    let action = nodes.iter().find(|n| n.role == RoleType::Action).map(|n| n.id);
-    let object = nodes.iter().find(|n| n.role == RoleType::Object).map(|n| n.id);
+    let subject = nodes
+        .iter()
+        .find(|n| n.role == RoleType::Subject)
+        .map(|n| n.id);
+    let action = nodes
+        .iter()
+        .find(|n| n.role == RoleType::Action)
+        .map(|n| n.id);
+    let object = nodes
+        .iter()
+        .find(|n| n.role == RoleType::Object)
+        .map(|n| n.id);
 
     if let (Some(s), Some(a)) = (subject, action) {
         edges.push(MeaningEdge {
@@ -251,7 +258,9 @@ fn build_edges(tokens: &[Token], roles: &[RoleType], nodes: &[MeaningNode]) -> V
     }
 
     for node in nodes.iter().filter(|n| n.role == RoleType::Modifier) {
-        if let Some(target) = nearest_right_by_roles(node, nodes, &[RoleType::Object, RoleType::Subject]) {
+        if let Some(target) =
+            nearest_right_by_roles(node, nodes, &[RoleType::Object, RoleType::Subject])
+        {
             edges.push(MeaningEdge {
                 from: node.id,
                 to: target.id,
@@ -271,9 +280,12 @@ fn build_edges(tokens: &[Token], roles: &[RoleType], nodes: &[MeaningNode]) -> V
     }
 
     for node in nodes.iter().filter(|n| n.role == RoleType::Abstraction) {
-        let target = nodes
-            .iter()
-            .find(|n| matches!(n.role, RoleType::Subject | RoleType::Object | RoleType::Action));
+        let target = nodes.iter().find(|n| {
+            matches!(
+                n.role,
+                RoleType::Subject | RoleType::Object | RoleType::Action
+            )
+        });
         if let Some(target) = target {
             edges.push(MeaningEdge {
                 from: node.id,
@@ -391,17 +403,30 @@ fn compute_abstraction_score(tokens: &[Token]) -> f32 {
 }
 
 fn is_condition(w: &str) -> bool {
-    matches!(w, "if" | "when" | "unless" | "while" | "because" | "ifthen" | "もし" | "なら")
+    matches!(
+        w,
+        "if" | "when" | "unless" | "while" | "because" | "ifthen" | "もし" | "なら"
+    )
 }
 
 fn is_constraint(w: &str) -> bool {
-    matches!(w, "must" | "should" | "shall" | "limit" | "constraint" | "制約" | "必須")
+    matches!(
+        w,
+        "must" | "should" | "shall" | "limit" | "constraint" | "制約" | "必須"
+    )
 }
 
 fn is_action(w: &str) -> bool {
     matches!(
         w,
-        "is" | "are" | "be" | "improves" | "improve" | "optimize" | "optimizes" | "design" | "build"
+        "is" | "are"
+            | "be"
+            | "improves"
+            | "improve"
+            | "optimize"
+            | "optimizes"
+            | "design"
+            | "build"
     ) || w.ends_with("ed")
         || w.ends_with("ize")
         || w.ends_with("izes")
@@ -410,8 +435,10 @@ fn is_action(w: &str) -> bool {
 }
 
 fn is_modifier(w: &str) -> bool {
-    matches!(w, "structural" | "semantic" | "causal" | "dynamic" | "static")
-        || w.ends_with("al")
+    matches!(
+        w,
+        "structural" | "semantic" | "causal" | "dynamic" | "static"
+    ) || w.ends_with("al")
         || w.ends_with("ive")
         || w.ends_with("ous")
 }

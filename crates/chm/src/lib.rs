@@ -23,7 +23,10 @@ impl Codec for ChmKey {
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() != 16 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid chm key"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chm key",
+            ));
         }
         let mut buf = [0u8; 16];
         buf.copy_from_slice(bytes);
@@ -48,7 +51,10 @@ impl Codec for ChmEdgeList {
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() < 8 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid chm edge list"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid chm edge list",
+            ));
         }
         let mut idx = 0usize;
         let count = read_u64(bytes, &mut idx)? as usize;

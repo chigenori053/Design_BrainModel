@@ -2,7 +2,9 @@ use std::io;
 use std::path::Path;
 
 use core_types::ObjectiveVector;
-use memory_space::{HolographicVectorStore, InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
+use memory_space::{
+    HolographicVectorStore, InterferenceMode, MemoryInterferenceTelemetry, MemorySpace,
+};
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -15,7 +17,10 @@ impl Codec for DhmKey {
 
     fn decode(bytes: &[u8]) -> io::Result<Self> {
         if bytes.len() != 8 {
-            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid dhm key"));
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid dhm key",
+            ));
         }
         let mut buf = [0u8; 8];
         buf.copy_from_slice(bytes);
@@ -103,7 +108,11 @@ impl Dhm {
         Ok(Self { memory })
     }
 
-    pub fn evaluate_with_recall(&mut self, base: &ObjectiveVector, depth: usize) -> ObjectiveVector {
+    pub fn evaluate_with_recall(
+        &mut self,
+        base: &ObjectiveVector,
+        depth: usize,
+    ) -> ObjectiveVector {
         let adjusted = self.memory.apply_interference(base);
         let _ = self.memory.store(&adjusted, depth);
         adjusted

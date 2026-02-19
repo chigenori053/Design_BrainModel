@@ -1,886 +1,264 @@
+use std::collections::BTreeSet;
 use std::env;
-use std::fs;
 use std::path::PathBuf;
 
-use agent_core::{
-    BenchConfig, BenchResult, Phase1Config, Phase1RawRow, Phase1SummaryRow, SoftTraceParams,
-    TraceRow, TraceRunConfig, generate_trace, generate_trace_baseline_off,
-    generate_trace_baseline_off_balanced, generate_trace_baseline_off_soft, run_bench,
-    run_bench_baseline_off, run_bench_baseline_off_balanced, run_bench_baseline_off_soft,
-    run_phase1_matrix,
-};
-use interface_ui::{UiEvent, UserInterface, VmBridge};
+use hybrid_vm::{ActionType, ConceptId, HybridVM};
 
-const MAX_DEPTH: usize = 1000;
-const MAX_BEAM: usize = 100;
-const MAX_BENCH_ITER: usize = 1000;
-
-#[derive(Clone, Debug)]
-pub struct TraceConfig {
-    pub enabled: bool,
-    pub output: Option<PathBuf>,
-    pub depth: usize,
-    pub beam: usize,
-    pub seed: u64,
-    pub norm_alpha: f64,
-    pub adaptive_alpha: bool,
-    pub baseline_off: bool,
-    pub category_balanced: bool,
-    pub category_m: usize,
-    pub category_soft: bool,
-    pub category_alpha: f64,
-    pub temperature: f64,
-    pub entropy_beta: f64,
-    pub lambda_min: f64,
-    pub lambda_target_entropy: f64,
-    pub lambda_k: f64,
-    pub lambda_ema: f64,
-    pub log_per_depth: bool,
-    pub field_profile: bool,
-    pub raw_output: Option<PathBuf>,
-}
-
-#[derive(Clone, Debug)]
-pub struct BenchCliConfig {
-    pub enabled: bool,
-    pub depth: usize,
-    pub beam: usize,
-    pub iter: usize,
-    pub warmup: usize,
-    pub norm_alpha: f64,
-    pub adaptive_alpha: bool,
-    pub depth_set: bool,
-    pub beam_set: bool,
-    pub baseline_off: bool,
-    pub category_balanced: bool,
-    pub category_m: usize,
-    pub category_soft: bool,
-    pub category_alpha: f64,
-    pub temperature: f64,
-    pub entropy_beta: f64,
-    pub lambda_min: f64,
-    pub lambda_target_entropy: f64,
-    pub lambda_k: f64,
-    pub lambda_ema: f64,
-    pub log_per_depth: bool,
-    pub field_profile: bool,
-}
-
-struct CliUi {
-    bridge: VmBridge,
-}
-
-impl CliUi {
-    fn new() -> Self {
-        Self {
-            bridge: VmBridge::new(),
-        }
-    }
-}
-
-impl UserInterface for CliUi {
-    fn render(&mut self) {
-        println!("tick={}", self.bridge.current_tick());
-    }
-
-    fn handle_input(&mut self, input: UiEvent) {
-        if let UiEvent::Tick = input {
-            self.bridge.tick();
-        }
-    }
+#[derive(Debug, PartialEq, Eq)]
+enum Commands {
+    Analyze { text: String },
+    Explain { concept_id: String },
+    Compare { left_id: String, right_id: String },
+    Multi { concept_ids: Vec<String> },
+    Recommend { concept_id: String, top_k: usize },
 }
 
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
-    let trace_cfg = parse_trace_config(&args);
-    let bench_cfg = parse_bench_config(&args);
-    validate_cli_configs(&trace_cfg, &bench_cfg);
-
-    if bench_cfg.enabled {
-        run_bench_mode(&bench_cfg);
-        return;
-    }
-
-    if args.iter().any(|a| a == "--phase1") {
-        run_phase1_mode();
-        return;
-    }
-
-    if trace_cfg.enabled {
-        let rows = if trace_cfg.baseline_off {
-            if trace_cfg.category_soft {
-                generate_trace_baseline_off_soft(
-                    TraceRunConfig {
-                        depth: trace_cfg.depth,
-                        beam: trace_cfg.beam,
-                        seed: trace_cfg.seed,
-                        norm_alpha: trace_cfg.norm_alpha,
-                        adaptive_alpha: trace_cfg.adaptive_alpha,
-                        raw_output_path: trace_cfg.raw_output.clone(),
-                    },
-                    SoftTraceParams {
-                        alpha: trace_cfg.category_alpha,
-                        temperature: trace_cfg.temperature,
-                        entropy_beta: trace_cfg.entropy_beta,
-                        lambda_min: trace_cfg.lambda_min,
-                        lambda_target_entropy: trace_cfg.lambda_target_entropy,
-                        lambda_k: trace_cfg.lambda_k,
-                        lambda_ema: trace_cfg.lambda_ema,
-                        field_profile: trace_cfg.field_profile,
-                    },
-                )
-            } else if trace_cfg.category_balanced {
-                generate_trace_baseline_off_balanced(
-                    TraceRunConfig {
-                        depth: trace_cfg.depth,
-                        beam: trace_cfg.beam,
-                        seed: trace_cfg.seed,
-                        norm_alpha: trace_cfg.norm_alpha,
-                        adaptive_alpha: trace_cfg.adaptive_alpha,
-                        raw_output_path: trace_cfg.raw_output.clone(),
-                    },
-                    trace_cfg.category_m,
-                )
-            } else {
-                generate_trace_baseline_off(TraceRunConfig {
-                    depth: trace_cfg.depth,
-                    beam: trace_cfg.beam,
-                    seed: trace_cfg.seed,
-                    norm_alpha: trace_cfg.norm_alpha,
-                    adaptive_alpha: trace_cfg.adaptive_alpha,
-                    raw_output_path: trace_cfg.raw_output.clone(),
-                })
-            }
-        } else {
-            generate_trace(TraceRunConfig {
-                depth: trace_cfg.depth,
-                beam: trace_cfg.beam,
-                seed: trace_cfg.seed,
-                norm_alpha: trace_cfg.norm_alpha,
-                adaptive_alpha: trace_cfg.adaptive_alpha,
-                raw_output_path: trace_cfg.raw_output.clone(),
-            })
-        };
-        let rows = if trace_cfg.log_per_depth {
-            rows
-        } else {
-            rows.into_iter().last().into_iter().collect()
-        };
-
-        let csv = render_csv(&rows);
-        if let Some(path) = trace_cfg.output {
-            fs::write(&path, csv).expect("failed to write trace output");
-            println!("trace written: {}", path.display());
-        } else {
-            print!("{csv}");
+    match parse_command(&args).and_then(run) {
+        Ok(out) => println!("{out}"),
+        Err(err) => {
+            eprintln!("{err}");
+            std::process::exit(1);
         }
-        return;
     }
-
-    let mut ui = CliUi::new();
-    ui.render();
-    ui.handle_input(UiEvent::Tick);
-    ui.render();
 }
 
-fn run_phase1_mode() {
-    let cfg = Phase1Config {
-        depth: 100,
-        beam: 5,
-        seed: 42,
-        norm_alpha: 3.0,
-        alpha: 3.0,
-        temperature: 0.8,
-        entropy_beta: 0.0,
-        lambda_min: 0.05,
-        lambda_target_entropy: 0.8,
-        lambda_k: 0.05,
-        lambda_ema: 0.1,
-    };
-    let (raw, summary) = run_phase1_matrix(cfg);
-    fs::create_dir_all("report").expect("failed to create report directory");
-    fs::write("report/trace_phase1_raw.csv", render_phase1_raw_csv(&raw))
-        .expect("failed to write trace_phase1_raw.csv");
-    fs::write(
-        "report/trace_phase1_summary.csv",
-        render_phase1_summary_csv(&summary),
-    )
-    .expect("failed to write trace_phase1_summary.csv");
-    println!("phase1 written: report/trace_phase1_raw.csv");
-    println!("phase1 written: report/trace_phase1_summary.csv");
-}
+fn run(command: Commands) -> Result<String, String> {
+    let mut vm = HybridVM::for_cli_storage(cli_store_dir()).map_err(|e| e.to_string())?;
 
-fn render_phase1_raw_csv(rows: &[Phase1RawRow]) -> String {
-    let mut out = String::from(
-        "variant,depth,beam_index,rule_id,objective_vector_raw,objective_vector_norm\n",
-    );
-    for r in rows {
-        out.push_str(&format!(
-            "{},{},{},{},\"{}\",\"{}\"\n",
-            r.variant,
-            r.depth,
-            r.beam_index,
-            r.rule_id,
-            r.objective_vector_raw,
-            r.objective_vector_norm
-        ));
-    }
-    out
-}
-
-fn render_phase1_summary_csv(rows: &[Phase1SummaryRow]) -> String {
-    let mut out = String::from(
-        "variant,depth,corr_matrix_flat,mean_nn_dist,spacing,pareto_front_size,collapse_flag\n",
-    );
-    for r in rows {
-        out.push_str(&format!(
-            "{},{},\"{}\",{:.9},{:.9},{},{}\n",
-            r.variant,
-            r.depth,
-            r.corr_matrix_flat,
-            r.mean_nn_dist,
-            r.spacing,
-            r.pareto_front_size,
-            r.collapse_flag
-        ));
-    }
-    out
-}
-
-fn run_bench_mode(cfg: &BenchCliConfig) {
-    if cfg!(debug_assertions) {
-        eprintln!("warning: benchmark should be run with --release for valid numbers");
-    }
-
-    let presets = [(10usize, 5usize), (50, 5), (50, 10), (100, 5)];
-    let runs: Vec<(usize, usize)> = if !cfg.depth_set && !cfg.beam_set {
-        presets.to_vec()
-    } else {
-        vec![(cfg.depth, cfg.beam)]
-    };
-
-    for (depth, beam) in runs {
-        let result = if cfg.baseline_off {
-            if cfg.category_soft {
-                run_bench_baseline_off_soft(
-                    BenchConfig {
-                        depth,
-                        beam,
-                        iterations: cfg.iter,
-                        warmup: cfg.warmup,
-                        seed: 42,
-                        norm_alpha: cfg.norm_alpha,
-                    },
-                    SoftTraceParams {
-                        alpha: cfg.category_alpha,
-                        temperature: cfg.temperature,
-                        entropy_beta: cfg.entropy_beta,
-                        lambda_min: cfg.lambda_min,
-                        lambda_target_entropy: cfg.lambda_target_entropy,
-                        lambda_k: cfg.lambda_k,
-                        lambda_ema: cfg.lambda_ema,
-                        field_profile: cfg.field_profile,
-                    },
-                )
-            } else if cfg.category_balanced {
-                run_bench_baseline_off_balanced(
-                    BenchConfig {
-                        depth,
-                        beam,
-                        iterations: cfg.iter,
-                        warmup: cfg.warmup,
-                        seed: 42,
-                        norm_alpha: cfg.norm_alpha,
-                    },
-                    cfg.category_m,
-                )
-            } else {
-                run_bench_baseline_off(BenchConfig {
-                    depth,
-                    beam,
-                    iterations: cfg.iter,
-                    warmup: cfg.warmup,
-                    seed: 42,
-                    norm_alpha: cfg.norm_alpha,
-                })
+    match command {
+        Commands::Analyze { text } => {
+            let concept = vm.analyze_text(&text).map_err(|e| e.to_string())?;
+            let level = abstraction_phrase(concept.a);
+            Ok(format!(
+                "[Concept Created]\nID: C{}\nAbstraction: {:.2} ({level})",
+                concept.id.0,
+                round2(concept.a),
+            ))
+        }
+        Commands::Explain { concept_id } => {
+            let id = parse_concept_id(&concept_id)?;
+            let Some(concept) = vm.get_concept(id) else {
+                return Err("Concept not found".to_string());
+            };
+            let explanation = HybridVM::recomposer().explain_concept(&concept);
+            Ok(format!(
+                "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
+                explanation.summary, explanation.reasoning, explanation.abstraction_note,
+            ))
+        }
+        Commands::Compare { left_id, right_id } => {
+            let left = parse_concept_id(&left_id)?;
+            let right = parse_concept_id(&right_id)?;
+            let report = vm.compare(left, right).map_err(|e| e.to_string())?;
+            let explanation = HybridVM::recomposer().explain_resonance(&report);
+            Ok(format!(
+                "Summary:\n{}\n\nReasoning:\n{}\n\nAbstraction:\n{}",
+                explanation.summary, explanation.reasoning, explanation.abstraction_note,
+            ))
+        }
+        Commands::Multi { concept_ids } => {
+            let ids = dedup_parsed_ids(&concept_ids)?;
+            if ids.len() < 2 {
+                return Err("multi requires at least 2 unique concept ids".to_string());
             }
-        } else {
-            run_bench(BenchConfig {
-                depth,
-                beam,
-                iterations: cfg.iter,
-                warmup: cfg.warmup,
-                seed: 42,
-                norm_alpha: cfg.norm_alpha,
-            })
-        };
-        print_bench_result(&result);
+            let out = vm.explain_multiple(&ids).map_err(|e| e.to_string())?;
+            Ok(format!(
+                "Summary:\n{}\n\nStructural Analysis:\n{}\n\nAbstraction Analysis:\n{}\n\nConflict Analysis:\n{}",
+                out.summary,
+                out.structural_analysis,
+                out.abstraction_analysis,
+                out.conflict_analysis,
+            ))
+        }
+        Commands::Recommend { concept_id, top_k } => {
+            let id = parse_concept_id(&concept_id)?;
+            let report = vm.recommend(id, top_k).map_err(|e| e.to_string())?;
+            let mut out = String::from("[Recommendations]\n");
+            if report.recommendations.is_empty() {
+                out.push_str("No candidates available.");
+                return Ok(out);
+            }
+            for (idx, rec) in report.recommendations.iter().enumerate() {
+                let line = match rec.action {
+                    ActionType::Merge => {
+                        format!(
+                            "{}. Merge with C{} (R={:.2})",
+                            idx + 1,
+                            rec.target.0,
+                            round2(rec.score)
+                        )
+                    }
+                    ActionType::Refine => format!(
+                        "{}. Refine with C{} (R={:.2})",
+                        idx + 1,
+                        rec.target.0,
+                        round2(rec.score)
+                    ),
+                    ActionType::ApplyPattern => {
+                        format!("{}. ApplyPattern from C{}", idx + 1, rec.target.0)
+                    }
+                    ActionType::Separate => {
+                        format!(
+                            "{}. Separate from C{} (R={:.2})",
+                            idx + 1,
+                            rec.target.0,
+                            round2(rec.score)
+                        )
+                    }
+                };
+                out.push_str(&line);
+                if idx + 1 != report.recommendations.len() {
+                    out.push('\n');
+                }
+            }
+            Ok(out)
+        }
     }
 }
 
-fn print_bench_result(r: &BenchResult) {
-    let phase_sum_us = r.avg_field_us
-        + r.avg_resonance_us
-        + r.avg_chm_us
-        + r.avg_dhm_us
-        + r.avg_pareto_us
-        + r.avg_lambda_us;
-    let resonance_ratio = if phase_sum_us > 0.0 {
-        r.avg_resonance_us / phase_sum_us
-    } else {
-        0.0
-    };
-    let chm_ratio = if phase_sum_us > 0.0 {
-        r.avg_chm_us / phase_sum_us
-    } else {
-        0.0
-    };
-    let dhm_ratio = if phase_sum_us > 0.0 {
-        r.avg_dhm_us / phase_sum_us
-    } else {
-        0.0
+fn parse_command(args: &[String]) -> Result<Commands, String> {
+    let Some(cmd) = args.first() else {
+        return Err(help_text());
     };
 
-    println!("=== Bench Result ===");
-    println!("depth: {}", r.depth);
-    println!("beam: {}", r.beam);
-    println!("iterations: {}", r.iterations);
-    println!("avg_total_ms: {:.3}", r.avg_total_ms);
-    println!("avg_per_depth_ms: {:.3}", r.avg_per_depth_ms);
-    println!("avg_field_us: {:.3}", r.avg_field_us);
-    println!("avg_resonance_us: {:.3}", r.avg_resonance_us);
-    println!("avg_chm_us: {:.3}", r.avg_chm_us);
-    println!("avg_dhm_us: {:.3}", r.avg_dhm_us);
-    println!("avg_pareto_us: {:.3}", r.avg_pareto_us);
-    println!("avg_lambda_us: {:.3}", r.avg_lambda_us);
-    println!("lambda_final: {:.6}", r.lambda_final);
-    println!("resonance_ratio: {:.4}", resonance_ratio);
-    println!("chm_ratio: {:.4}", chm_ratio);
-    println!("dhm_ratio: {:.4}", dhm_ratio);
+    match cmd.as_str() {
+        "analyze" => {
+            if args.len() < 2 {
+                return Err("analyze requires text".to_string());
+            }
+            Ok(Commands::Analyze {
+                text: args[1..].join(" "),
+            })
+        }
+        "explain" => {
+            if args.len() != 2 {
+                return Err("explain requires one concept id".to_string());
+            }
+            Ok(Commands::Explain {
+                concept_id: args[1].clone(),
+            })
+        }
+        "compare" => {
+            if args.len() != 3 {
+                return Err("compare requires two concept ids".to_string());
+            }
+            Ok(Commands::Compare {
+                left_id: args[1].clone(),
+                right_id: args[2].clone(),
+            })
+        }
+        "multi" => {
+            if args.len() < 3 {
+                return Err("multi requires at least 2 concept ids".to_string());
+            }
+            Ok(Commands::Multi {
+                concept_ids: args[1..].to_vec(),
+            })
+        }
+        "recommend" => parse_recommend_command(args),
+        _ => Err(help_text()),
+    }
 }
 
-fn parse_trace_config(args: &[String]) -> TraceConfig {
-    let mut enabled = false;
-    let mut output = None;
-    let mut depth = 50usize;
-    let mut beam = 5usize;
-    let mut seed = 42u64;
-    let mut norm_alpha = 0.25f64;
-    let mut adaptive_alpha = false;
-    let mut baseline_off = false;
-    let mut category_balanced = false;
-    let mut category_m = 1usize;
-    let mut category_soft = false;
-    let mut category_alpha = 3.0f64;
-    let mut temperature = 0.8f64;
-    let mut entropy_beta = 0.02f64;
-    let mut lambda_min = 0.05f64;
-    let mut lambda_target_entropy = 0.8f64;
-    let mut lambda_k = 0.05f64;
-    let mut lambda_ema = 0.1f64;
-    let mut log_per_depth = false;
-    let mut field_profile = false;
-    let mut raw_output = None;
+fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
+    if args.len() < 2 {
+        return Err("recommend requires concept id".to_string());
+    }
 
-    let mut i = 0usize;
+    let concept_id = args[1].clone();
+    let mut top_k = 3usize;
+
+    let mut i = 2usize;
     while i < args.len() {
         match args[i].as_str() {
-            "--trace" => {
-                enabled = true;
-                i += 1;
-            }
-            "--trace-output" => {
+            "--top" => {
                 if i + 1 >= args.len() {
-                    panic!("--trace-output requires a path");
+                    return Err("--top requires a number".to_string());
                 }
-                output = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            "--trace-depth" => {
-                if i + 1 >= args.len() {
-                    panic!("--trace-depth requires a number");
-                }
-                depth = args[i + 1]
+                top_k = args[i + 1]
                     .parse::<usize>()
-                    .expect("--trace-depth must be usize");
+                    .map_err(|_| "--top must be a positive integer".to_string())?;
                 i += 2;
             }
-            "--trace-beam" => {
-                if i + 1 >= args.len() {
-                    panic!("--trace-beam requires a number");
-                }
-                beam = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--trace-beam must be usize");
-                i += 2;
-            }
-            "--seed" => {
-                if i + 1 >= args.len() {
-                    panic!("--seed requires a number");
-                }
-                seed = args[i + 1].parse::<u64>().expect("--seed must be u64");
-                i += 2;
-            }
-            "--norm-alpha" => {
-                if i + 1 >= args.len() {
-                    panic!("--norm-alpha requires a number");
-                }
-                norm_alpha = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--norm-alpha must be f64");
-                i += 2;
-            }
-            "--adaptive" => {
-                adaptive_alpha = true;
-                i += 1;
-            }
-            "--baseline-off" => {
-                baseline_off = true;
-                i += 1;
-            }
-            "--category-balanced" => {
-                category_balanced = true;
-                i += 1;
-            }
-            "--category-m" => {
-                if i + 1 >= args.len() {
-                    panic!("--category-m requires a number");
-                }
-                category_m = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--category-m must be usize");
-                i += 2;
-            }
-            "--category-soft" => {
-                category_soft = true;
-                i += 1;
-            }
-            "--category-alpha" => {
-                if i + 1 >= args.len() {
-                    panic!("--category-alpha requires a number");
-                }
-                category_alpha = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--category-alpha must be f64");
-                i += 2;
-            }
-            "--temperature" => {
-                if i + 1 >= args.len() {
-                    panic!("--temperature requires a number");
-                }
-                temperature = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--temperature must be f64");
-                i += 2;
-            }
-            "--entropy-beta" => {
-                if i + 1 >= args.len() {
-                    panic!("--entropy-beta requires a number");
-                }
-                entropy_beta = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--entropy-beta must be f64");
-                i += 2;
-            }
-            "--lambda-min" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-min requires a number");
-                }
-                lambda_min = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-min must be f64");
-                i += 2;
-            }
-            "--lambda-target-entropy" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-target-entropy requires a number");
-                }
-                lambda_target_entropy = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-target-entropy must be f64");
-                i += 2;
-            }
-            "--lambda-k" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-k requires a number");
-                }
-                lambda_k = args[i + 1].parse::<f64>().expect("--lambda-k must be f64");
-                i += 2;
-            }
-            "--lambda-ema" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-ema requires a number");
-                }
-                lambda_ema = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-ema must be f64");
-                i += 2;
-            }
-            "--log-per-depth" => {
-                log_per_depth = true;
-                i += 1;
-            }
-            "--field-profile" => {
-                field_profile = true;
-                i += 1;
-            }
-            "--raw-trace-output" => {
-                if i + 1 >= args.len() {
-                    panic!("--raw-trace-output requires a path");
-                }
-                raw_output = Some(PathBuf::from(&args[i + 1]));
-                i += 2;
-            }
-            _ => i += 1,
+            unknown => return Err(format!("unknown option for recommend: {unknown}")),
         }
     }
 
-    TraceConfig {
-        enabled,
-        output,
-        depth,
-        beam,
-        seed,
-        norm_alpha,
-        adaptive_alpha,
-        baseline_off,
-        category_balanced,
-        category_m,
-        category_soft,
-        category_alpha,
-        temperature,
-        entropy_beta,
-        lambda_min,
-        lambda_target_entropy,
-        lambda_k,
-        lambda_ema,
-        log_per_depth,
-        field_profile,
-        raw_output,
+    Ok(Commands::Recommend { concept_id, top_k })
+}
+
+fn help_text() -> String {
+    "Usage: design <command>\n  analyze <text>\n  explain <ConceptId>\n  compare <ConceptId> <ConceptId>\n  multi <ConceptId> <ConceptId> [ConceptId ...]\n  recommend <ConceptId> [--top N]".to_string()
+}
+
+fn cli_store_dir() -> PathBuf {
+    match std::env::var("DESIGN_STORE_DIR") {
+        Ok(path) if !path.trim().is_empty() => PathBuf::from(path),
+        _ => PathBuf::from(".design_store"),
     }
 }
 
-fn parse_bench_config(args: &[String]) -> BenchCliConfig {
-    let mut enabled = false;
-    let mut depth = 50usize;
-    let mut beam = 5usize;
-    let mut iter = 3usize;
-    let mut warmup = 1usize;
-    let norm_alpha = 0.25f64;
-    let adaptive_alpha = false;
-    let mut depth_set = false;
-    let mut beam_set = false;
-    let mut baseline_off = false;
-    let mut category_balanced = false;
-    let mut category_m = 1usize;
-    let mut category_soft = false;
-    let mut category_alpha = 3.0f64;
-    let mut temperature = 0.8f64;
-    let mut entropy_beta = 0.02f64;
-    let mut lambda_min = 0.05f64;
-    let mut lambda_target_entropy = 0.8f64;
-    let mut lambda_k = 0.05f64;
-    let mut lambda_ema = 0.1f64;
-    let mut log_per_depth = false;
-    let mut field_profile = false;
+fn parse_concept_id(raw: &str) -> Result<ConceptId, String> {
+    let trimmed = raw.trim();
+    let numeric = trimmed
+        .strip_prefix('C')
+        .or_else(|| trimmed.strip_prefix('c'))
+        .unwrap_or(trimmed);
+    let parsed = numeric
+        .parse::<u64>()
+        .map_err(|_| format!("invalid concept id: {raw}"))?;
+    Ok(ConceptId(parsed))
+}
 
-    let mut i = 0usize;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--bench" => {
-                enabled = true;
-                i += 1;
-            }
-            "--bench-depth" => {
-                if i + 1 >= args.len() {
-                    panic!("--bench-depth requires a number");
-                }
-                depth = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--bench-depth must be usize");
-                depth_set = true;
-                i += 2;
-            }
-            "--bench-beam" => {
-                if i + 1 >= args.len() {
-                    panic!("--bench-beam requires a number");
-                }
-                beam = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--bench-beam must be usize");
-                beam_set = true;
-                i += 2;
-            }
-            "--bench-iter" => {
-                if i + 1 >= args.len() {
-                    panic!("--bench-iter requires a number");
-                }
-                iter = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--bench-iter must be usize");
-                i += 2;
-            }
-            "--bench-warmup" => {
-                if i + 1 >= args.len() {
-                    panic!("--bench-warmup requires a number");
-                }
-                warmup = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--bench-warmup must be usize");
-                i += 2;
-            }
-            "--baseline-off" => {
-                baseline_off = true;
-                i += 1;
-            }
-            "--category-balanced" => {
-                category_balanced = true;
-                i += 1;
-            }
-            "--category-m" => {
-                if i + 1 >= args.len() {
-                    panic!("--category-m requires a number");
-                }
-                category_m = args[i + 1]
-                    .parse::<usize>()
-                    .expect("--category-m must be usize");
-                i += 2;
-            }
-            "--category-soft" => {
-                category_soft = true;
-                i += 1;
-            }
-            "--category-alpha" => {
-                if i + 1 >= args.len() {
-                    panic!("--category-alpha requires a number");
-                }
-                category_alpha = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--category-alpha must be f64");
-                i += 2;
-            }
-            "--temperature" => {
-                if i + 1 >= args.len() {
-                    panic!("--temperature requires a number");
-                }
-                temperature = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--temperature must be f64");
-                i += 2;
-            }
-            "--entropy-beta" => {
-                if i + 1 >= args.len() {
-                    panic!("--entropy-beta requires a number");
-                }
-                entropy_beta = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--entropy-beta must be f64");
-                i += 2;
-            }
-            "--lambda-min" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-min requires a number");
-                }
-                lambda_min = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-min must be f64");
-                i += 2;
-            }
-            "--lambda-target-entropy" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-target-entropy requires a number");
-                }
-                lambda_target_entropy = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-target-entropy must be f64");
-                i += 2;
-            }
-            "--lambda-k" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-k requires a number");
-                }
-                lambda_k = args[i + 1].parse::<f64>().expect("--lambda-k must be f64");
-                i += 2;
-            }
-            "--lambda-ema" => {
-                if i + 1 >= args.len() {
-                    panic!("--lambda-ema requires a number");
-                }
-                lambda_ema = args[i + 1]
-                    .parse::<f64>()
-                    .expect("--lambda-ema must be f64");
-                i += 2;
-            }
-            "--log-per-depth" => {
-                log_per_depth = true;
-                i += 1;
-            }
-            "--field-profile" => {
-                field_profile = true;
-                i += 1;
-            }
-            _ => i += 1,
+fn dedup_parsed_ids(raw_ids: &[String]) -> Result<Vec<ConceptId>, String> {
+    let mut set = BTreeSet::new();
+    for raw in raw_ids {
+        set.insert(parse_concept_id(raw)?);
+    }
+    Ok(set.into_iter().collect())
+}
+
+fn abstraction_phrase(a: f32) -> &'static str {
+    if a < 0.30 {
+        "concrete design element"
+    } else if a < 0.70 {
+        "mid-level structural concept"
+    } else {
+        "high-level architectural abstraction"
+    }
+}
+
+fn round2(v: f32) -> f32 {
+    (v * 100.0).round() / 100.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Commands, dedup_parsed_ids, parse_command, parse_concept_id};
+
+    #[test]
+    fn concept_id_parses_prefix() {
+        assert_eq!(parse_concept_id("C42").expect("id").0, 42);
+        assert_eq!(parse_concept_id("42").expect("id").0, 42);
+    }
+
+    #[test]
+    fn dedup_ids_works() {
+        let ids = dedup_parsed_ids(&["C9".to_string(), "c9".to_string(), "C10".to_string()])
+            .expect("ids");
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0].0, 9);
+        assert_eq!(ids[1].0, 10);
+    }
+
+    #[test]
+    fn command_shape_is_stable() {
+        let cmd = parse_command(&["analyze".to_string(), "hello".to_string()]).expect("cmd");
+        match cmd {
+            Commands::Analyze { text } => assert_eq!(text, "hello"),
+            _ => panic!("unexpected variant"),
         }
     }
-
-    BenchCliConfig {
-        enabled,
-        depth,
-        beam,
-        iter,
-        warmup,
-        norm_alpha,
-        adaptive_alpha,
-        depth_set,
-        beam_set,
-        baseline_off,
-        category_balanced,
-        category_m,
-        category_soft,
-        category_alpha,
-        temperature,
-        entropy_beta,
-        lambda_min,
-        lambda_target_entropy,
-        lambda_k,
-        lambda_ema,
-        log_per_depth,
-        field_profile,
-    }
-}
-
-fn validate_cli_configs(trace: &TraceConfig, bench: &BenchCliConfig) {
-    if trace.depth == 0 || trace.depth > MAX_DEPTH {
-        panic!("trace depth must be in 1..={MAX_DEPTH}");
-    }
-    if trace.beam == 0 || trace.beam > MAX_BEAM {
-        panic!("trace beam must be in 1..={MAX_BEAM}");
-    }
-    if bench.depth == 0 || bench.depth > MAX_DEPTH {
-        panic!("bench depth must be in 1..={MAX_DEPTH}");
-    }
-    if bench.beam == 0 || bench.beam > MAX_BEAM {
-        panic!("bench beam must be in 1..={MAX_BEAM}");
-    }
-    if bench.iter == 0 || bench.iter > MAX_BENCH_ITER {
-        panic!("bench iter must be in 1..={MAX_BENCH_ITER}");
-    }
-    for (name, value) in [
-        ("trace.category_alpha", trace.category_alpha),
-        ("trace.temperature", trace.temperature),
-        ("trace.entropy_beta", trace.entropy_beta),
-        ("trace.lambda_min", trace.lambda_min),
-        ("trace.lambda_target_entropy", trace.lambda_target_entropy),
-        ("trace.lambda_k", trace.lambda_k),
-        ("trace.lambda_ema", trace.lambda_ema),
-        ("bench.category_alpha", bench.category_alpha),
-        ("bench.temperature", bench.temperature),
-        ("bench.entropy_beta", bench.entropy_beta),
-        ("bench.lambda_min", bench.lambda_min),
-        ("bench.lambda_target_entropy", bench.lambda_target_entropy),
-        ("bench.lambda_k", bench.lambda_k),
-        ("bench.lambda_ema", bench.lambda_ema),
-    ] {
-        if !value.is_finite() {
-            panic!("{name} must be finite");
-        }
-    }
-    if !(0.0..=20.0).contains(&trace.category_alpha)
-        || !(0.0..=20.0).contains(&bench.category_alpha)
-    {
-        panic!("category-alpha must be in [0,20]");
-    }
-    if !(0.0..=1.0).contains(&trace.entropy_beta) || !(0.0..=1.0).contains(&bench.entropy_beta) {
-        panic!("entropy-beta must be in [0,1]");
-    }
-    if !(0.0..=1.0).contains(&trace.lambda_min) || !(0.0..=1.0).contains(&bench.lambda_min) {
-        panic!("lambda-min must be in [0,1]");
-    }
-    if !(0.0..=1.0).contains(&trace.lambda_ema) || !(0.0..=1.0).contains(&bench.lambda_ema) {
-        panic!("lambda-ema must be in [0,1]");
-    }
-    if !(0.0..=1.0).contains(&trace.lambda_k) || !(0.0..=1.0).contains(&bench.lambda_k) {
-        panic!("lambda-k must be in [0,1]");
-    }
-    if trace.temperature <= 0.0 || bench.temperature <= 0.0 {
-        panic!("temperature must be > 0");
-    }
-}
-
-fn render_csv(rows: &[TraceRow]) -> String {
-    let mut out = String::from(
-        "depth,lambda,delta_lambda,tau_prime,conf_chm,density,k,h_profile,pareto_size,diversity,resonance_avg,pressure,epsilon_effect,target_local_weight,target_global_weight,local_global_distance,field_min_distance,field_rejected_count,mu,dhm_k,dhm_norm,dhm_resonance_mean,dhm_score_ratio,dhm_build_us,expanded_categories_count,selected_rules_count,per_category_selected,entropy_per_depth,unique_category_count_per_depth,pareto_front_size_per_depth,mean_nn_dist,pareto_spacing,pareto_hv_2d,field_extract_us,field_score_us,field_aggregate_us,field_total_us,norm_median_0,norm_median_1,norm_median_2,norm_median_3,norm_mad_0,norm_mad_1,norm_mad_2,norm_mad_3,median_nn_dist_all_depth,collapse_flag,normalization_mode,unique_norm_vec_count,norm_dim_mad_zero_count,mean_nn_dist_raw,mean_nn_dist_norm,pareto_spacing_raw,pareto_spacing_norm,distance_calls,nn_distance_calls,weak_dim_count,effective_dim_count,alpha_t,weak_contrib_ratio,collapse_proxy,avg_tau_mem,avg_delta_norm,memory_hit_rate\n",
-    );
-
-    for row in rows {
-        out.push_str(&format!(
-            "{},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{},{:.9},{},{:.9},{:.9},{:.9},{:.9},{},{},\"{}\",{:.9},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9},\"{}\",{},{},{},{:.9},{:.9},{:.9},{:.9},{},{},{},{},{:.9},{:.9},{:.9},{:.9},{:.9},{:.9}\n",
-            row.depth,
-            row.lambda,
-            row.delta_lambda,
-            row.tau_prime,
-            row.conf_chm,
-            row.density,
-            row.k,
-            row.h_profile,
-            row.pareto_size,
-            row.diversity,
-            row.resonance_avg,
-            row.pressure,
-            row.epsilon_effect,
-            row.target_local_weight,
-            row.target_global_weight,
-            row.local_global_distance,
-            row.field_min_distance,
-            row.field_rejected_count,
-            row.mu,
-            row.dhm_k,
-            row.dhm_norm,
-            row.dhm_resonance_mean,
-            row.dhm_score_ratio,
-            row.dhm_build_us,
-            row.expanded_categories_count,
-            row.selected_rules_count,
-            row.per_category_selected,
-            row.entropy_per_depth,
-            row.unique_category_count_per_depth,
-            row.pareto_front_size_per_depth,
-            row.pareto_mean_nn_dist,
-            row.pareto_spacing,
-            row.pareto_hv_2d,
-            row.field_extract_us,
-            row.field_score_us,
-            row.field_aggregate_us,
-            row.field_total_us,
-            row.norm_median_0,
-            row.norm_median_1,
-            row.norm_median_2,
-            row.norm_median_3,
-            row.norm_mad_0,
-            row.norm_mad_1,
-            row.norm_mad_2,
-            row.norm_mad_3,
-            row.median_nn_dist_all_depth,
-            row.collapse_flag,
-            row.normalization_mode,
-            row.unique_norm_vec_count,
-            row.norm_dim_mad_zero_count,
-            row.mean_nn_dist_raw,
-            row.mean_nn_dist_norm,
-            row.pareto_spacing_raw,
-            row.pareto_spacing_norm,
-            row.distance_calls,
-            row.nn_distance_calls,
-            row.weak_dim_count,
-            row.effective_dim_count,
-            row.alpha_t,
-            row.weak_contrib_ratio,
-            row.collapse_proxy,
-            row.avg_tau_mem,
-            row.avg_delta_norm,
-            row.memory_hit_rate,
-        ));
-    }
-
-    out
 }
