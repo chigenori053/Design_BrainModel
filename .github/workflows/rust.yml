@@ -45,6 +45,14 @@ jobs:
             echo "Boundary violation: agent_core must not use language_dhm directly"
             exit 1
           fi
+          if rg -n "use semantic_dhm::|SemanticDhm::" crates/agent_core/src crates/agent_core/tests; then
+            echo "Boundary violation: agent_core must not use semantic_dhm directly"
+            exit 1
+          fi
+          if rg -n "use language_dhm::|use shm::|use chm::|use meaning_extractor::" crates/recomposer/src; then
+            echo "Boundary violation: recomposer must depend only on semantic_dhm"
+            exit 1
+          fi
 
       - name: Clippy
         run: cargo clippy --workspace --all-targets -- -D warnings

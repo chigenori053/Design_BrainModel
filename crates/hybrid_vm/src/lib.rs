@@ -7,6 +7,8 @@ use field_engine::{FieldEngine, TargetField};
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use memory_store::{FileStore, InMemoryStore};
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
+use semantic_dhm::{ConceptId, ConceptUnit, SemanticDhm};
+use recomposer::Recomposer;
 
 pub use chm::Chm;
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
@@ -147,6 +149,21 @@ impl HybridVM {
         path: impl AsRef<Path>,
     ) -> std::io::Result<LanguageDhm<FileStore<LangId, LanguageUnit>>> {
         LanguageDhm::file(path)
+    }
+
+    pub fn semantic_dhm_in_memory(
+    ) -> std::io::Result<SemanticDhm<InMemoryStore<ConceptId, ConceptUnit>>> {
+        SemanticDhm::in_memory()
+    }
+
+    pub fn semantic_dhm_file(
+        path: impl AsRef<Path>,
+    ) -> std::io::Result<SemanticDhm<FileStore<ConceptId, ConceptUnit>>> {
+        SemanticDhm::file(path)
+    }
+
+    pub fn recomposer() -> Recomposer {
+        Recomposer
     }
 }
 

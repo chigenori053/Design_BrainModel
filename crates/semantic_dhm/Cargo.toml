@@ -1,0 +1,8 @@
+[package]
+name = "semantic_dhm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+meaning_extractor = { workspace = true }
+memory_store = { workspace = true }

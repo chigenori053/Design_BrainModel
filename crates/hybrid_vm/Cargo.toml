@@ -16,3 +16,5 @@ dhm = { workspace = true }
 shm = { workspace = true }
 chm = { workspace = true }
 language_dhm = { workspace = true }
+semantic_dhm = { workspace = true }
+recomposer = { workspace = true }

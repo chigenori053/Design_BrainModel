@@ -86,6 +86,8 @@ dependencies = [
  "language_dhm",
  "memory_space",
  "memory_store",
+ "recomposer",
+ "semantic_dhm",
  "shm",
 ]
 
@@ -101,6 +103,13 @@ name = "language_dhm"
 version = "0.1.0"
 dependencies = [
  "memory_store",
+]
+
+[[package]]
+name = "meaning_extractor"
+version = "0.1.0"
+dependencies = [
+ "language_dhm",
 ]
 
 [[package]]
@@ -126,10 +135,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "recomposer"
+version = "0.1.0"
+dependencies = [
+ "semantic_dhm",
+]
+
+[[package]]
 name = "runtime_vm"
 version = "0.1.0"
 dependencies = [
  "brain_core",
+]
+
+[[package]]
+name = "semantic_dhm"
+version = "0.1.0"
+dependencies = [
+ "meaning_extractor",
+ "memory_store",
 ]
 
 [[package]]
