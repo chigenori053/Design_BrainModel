@@ -10,6 +10,7 @@ enum Commands {
     Explain { concept_id: String },
     Compare { left_id: String, right_id: String },
     Multi { concept_ids: Vec<String> },
+    Report { concept_ids: Vec<String> },
     Recommend { concept_id: String, top_k: usize },
 }
 
@@ -32,6 +33,7 @@ fn main() {
 
 fn run(parsed: ParsedCommand) -> Result<String, String> {
     let mut vm = HybridVM::for_cli_storage(cli_store_dir()).map_err(|e| e.to_string())?;
+    let report_top_k = 3usize;
 
     match parsed.command {
         Commands::Analyze { text } => {
@@ -198,6 +200,67 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                 Ok(out)
             }
         }
+        Commands::Report { concept_ids } => {
+            let ids = dedup_parsed_ids(&concept_ids)?;
+            if ids.is_empty() {
+                return Err("report requires at least 1 concept id".to_string());
+            }
+            let report = vm
+                .design_report(&ids, report_top_k)
+                .map_err(|e| e.to_string())?;
+            if parsed.json {
+                let rec_items = report
+                    .recommendations
+                    .recommendations
+                    .iter()
+                    .map(|rec| {
+                        format!(
+                            "            {{\n                \"target\": \"{}\",\n                \"action\": \"{}\",\n                \"score\": {}\n            }}",
+                            concept_id_string(rec.target),
+                            action_label(rec.action),
+                            json_num(round2(rec.score)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",\n");
+                Ok(format!(
+                    "{{\n    \"summary\": \"{}\",\n    \"abstraction_mean\": {},\n    \"abstraction_variance\": {},\n    \"consistency\": {{\n        \"directional_conflicts\": {},\n        \"structural_conflicts\": {},\n        \"tradeoffs\": {},\n        \"stability\": {}\n    }},\n    \"global_coherence\": {},\n    \"recommendations\": {{\n        \"summary\": \"{}\",\n        \"items\": [\n{}\n        ]\n    }}\n}}",
+                    escape_json(&report.summary),
+                    json_num(round2(report.abstraction_mean)),
+                    json_num(round2(report.abstraction_variance)),
+                    report.consistency.directional_conflicts,
+                    report.consistency.structural_conflicts,
+                    report.consistency.tradeoffs,
+                    json_num(round2(report.consistency.stability_score)),
+                    json_num(round2(report.global_coherence)),
+                    escape_json(&report.recommendations.summary),
+                    rec_items,
+                ))
+            } else {
+                let mut out = format!(
+                    "=== Design Report ===\n\nSummary:\n{}\n\nAbstraction:\nMean: {:.2}\nVariance: {:.2}\n\nConsistency:\nDirectional conflicts: {}\nStructural conflicts: {}\nTradeoffs: {}\nStability: {:.2}\n\nGlobal coherence: {:.2}\n\nTop Recommendations:\n",
+                    report.summary,
+                    round2(report.abstraction_mean),
+                    round2(report.abstraction_variance),
+                    report.consistency.directional_conflicts,
+                    report.consistency.structural_conflicts,
+                    report.consistency.tradeoffs,
+                    round2(report.consistency.stability_score),
+                    round2(report.global_coherence),
+                );
+                if report.recommendations.recommendations.is_empty() {
+                    out.push_str("1. No recommendation candidates available.");
+                } else {
+                    for (idx, rec) in report.recommendations.recommendations.iter().enumerate() {
+                        out.push_str(&format!("{}. {}", idx + 1, rec.rationale));
+                        if idx + 1 != report.recommendations.recommendations.len() {
+                            out.push('\n');
+                        }
+                    }
+                }
+                Ok(out)
+            }
+        }
     }
 }
 
@@ -247,6 +310,14 @@ fn parse_command(args: &[String]) -> Result<ParsedCommand, String> {
                 concept_ids: filtered[1..].to_vec(),
             }
         }
+        "report" => {
+            if filtered.len() < 2 {
+                return Err("report requires at least 1 concept id".to_string());
+            }
+            Commands::Report {
+                concept_ids: filtered[1..].to_vec(),
+            }
+        }
         "recommend" => parse_recommend_command(&filtered)?,
         _ => return Err(help_text()),
     };
@@ -282,7 +353,7 @@ fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
 }
 
 fn help_text() -> String {
-    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]".to_string()
+    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  report <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]".to_string()
 }
 
 fn cli_store_dir() -> PathBuf {

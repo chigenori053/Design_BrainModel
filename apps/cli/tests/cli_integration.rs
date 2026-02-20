@@ -253,3 +253,61 @@ fn json_mode_is_deterministic() {
     let (_, second, _) = run_cli(&store_dir, &["explain", "C1", "--json"]);
     assert_eq!(first, second);
 }
+
+#[test]
+fn report_text_output_format_is_fixed() {
+    let store_dir = unique_store_dir("report_text");
+    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
+    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
+    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
+
+    let (ok, stdout, _) = run_cli(&store_dir, &["report", "C1", "C2", "C3"]);
+    assert!(ok);
+    assert!(stdout.starts_with("=== Design Report ===\n\nSummary:\n"));
+    assert!(stdout.contains("\n\nAbstraction:\nMean: "));
+    assert!(stdout.contains("\nVariance: "));
+    assert!(stdout.contains("\n\nConsistency:\nDirectional conflicts: "));
+    assert!(stdout.contains("\nStructural conflicts: "));
+    assert!(stdout.contains("\nTradeoffs: "));
+    assert!(stdout.contains("\nStability: "));
+    assert!(stdout.contains("\n\nGlobal coherence: "));
+    assert!(stdout.contains("\n\nTop Recommendations:\n"));
+}
+
+#[test]
+fn report_json_output_has_fixed_key_order() {
+    let store_dir = unique_store_dir("report_json_order");
+    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
+    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
+
+    let (ok, stdout, _) = run_cli(&store_dir, &["report", "C1", "C2", "--json"]);
+    assert!(ok);
+    let lines = stdout.lines().collect::<Vec<_>>();
+    assert_eq!(lines[0], "{");
+    assert!(lines[1].starts_with("    \"summary\": "));
+    assert!(lines[2].starts_with("    \"abstraction_mean\": "));
+    assert!(lines[3].starts_with("    \"abstraction_variance\": "));
+    assert!(lines[4].starts_with("    \"consistency\": "));
+    assert!(lines[10].starts_with("    \"global_coherence\": "));
+    assert!(lines[11].starts_with("    \"recommendations\": "));
+}
+
+#[test]
+fn report_json_is_order_stable_for_concept_ids() {
+    let store_dir = unique_store_dir("report_order_stable");
+    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
+    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
+    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
+
+    let (_, first, _) = run_cli(&store_dir, &["report", "C3", "C1", "C2", "--json"]);
+    let (_, second, _) = run_cli(&store_dir, &["report", "C1", "C2", "C3", "--json"]);
+    assert_eq!(first, second);
+}
+
+#[test]
+fn report_n0_returns_error() {
+    let store_dir = unique_store_dir("report_n0");
+    let (ok, _, stderr) = run_cli(&store_dir, &["report"]);
+    assert!(!ok);
+    assert!(stderr.contains("report requires at least 1 concept id"));
+}

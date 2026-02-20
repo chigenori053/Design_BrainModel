@@ -9,7 +9,9 @@ use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use meaning_extractor::MeaningExtractor;
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
 use memory_store::{FileStore, InMemoryStore};
-use recomposer::{MultiConceptInput, RecommendationInput, Recomposer, ResonanceReport};
+use recomposer::{
+    DesignReport, MultiConceptInput, RecommendationInput, Recomposer, ResonanceReport,
+};
 use semantic_dhm::{ConceptUnit, SemanticDhm};
 
 pub use chm::Chm;
@@ -231,6 +233,31 @@ impl HybridVM {
         Ok(self
             .recomposer
             .recommend(&input, &self.semantic_dhm.weights()))
+    }
+
+    pub fn design_report(
+        &self,
+        concept_ids: &[ConceptId],
+        top_k: usize,
+    ) -> Result<DesignReport, HybridVmError> {
+        let mut ids = dedup_ids(concept_ids);
+        ids.sort_unstable();
+        if ids.is_empty() {
+            return Err(HybridVmError::InvalidInput(
+                "report requires at least 1 concept id",
+            ));
+        }
+
+        let mut concepts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(c) = self.semantic_dhm.get(id) else {
+                return Err(HybridVmError::ConceptNotFound(id));
+            };
+            concepts.push(c);
+        }
+        Ok(self
+            .recomposer
+            .generate_report(&concepts, &self.semantic_dhm.weights(), top_k))
     }
 
     pub fn default_shm() -> Shm {
