@@ -1,6 +1,10 @@
 use semantic_dhm::{ConceptId, ConceptQuery, ConceptUnit, ResonanceWeights, resonance};
 
 use crate::Recomposer;
+use crate::constants::{
+    DIRECTIONAL_CONFLICT_NEG_THRESHOLD, DIRECTIONAL_CONFLICT_POS_THRESHOLD,
+    STRUCTURAL_CONFLICT_THRESHOLD,
+};
 use crate::explain::round2;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -14,6 +18,7 @@ pub struct RecommendationInput {
 pub enum ActionType {
     Merge,
     Refine,
+    ResolveDirectionalConflict,
     ApplyPattern,
     Separate,
 }
@@ -74,22 +79,29 @@ fn recommend_one(
     c: &ConceptUnit,
     weights: &ResonanceWeights,
 ) -> Recommendation {
+    let v_sim = dot_norm(&query.v, &c.v);
     let s_sim = dot_norm(&query.s, &c.s);
     let a_diff = (query.a - c.a).abs();
     let r = resonance(query, c, *weights);
 
+    let directional_conflict = (v_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD
+        && s_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD)
+        || (v_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD
+            && s_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD);
+
+    // Priority: Merge -> Refine -> ResolveDirectionalConflict -> ApplyPattern -> Separate
     let action = if r >= 0.60 && a_diff < 0.40 {
         ActionType::Merge
     } else if r >= 0.60 && a_diff >= 0.40 {
         ActionType::Refine
+    } else if directional_conflict {
+        ActionType::ResolveDirectionalConflict
     } else if (0.10..0.60).contains(&r) && s_sim >= 0.60 {
         ActionType::ApplyPattern
-    } else if r < -0.10 {
+    } else if r < STRUCTURAL_CONFLICT_THRESHOLD {
         ActionType::Separate
-    } else if r >= 0.10 {
-        ActionType::ApplyPattern
     } else {
-        ActionType::Separate
+        ActionType::ApplyPattern
     };
 
     let rationale = match action {
@@ -102,6 +114,12 @@ fn recommend_one(
             "Consider refining abstraction alignment with Concept {}. High resonance but abstraction gap detected (Δa={:.2}).",
             c.id.0,
             round2(a_diff)
+        ),
+        ActionType::ResolveDirectionalConflict => format!(
+            "Consider resolving directional conflict with Concept {}. Semantic and structural directions diverge (v_sim={:.2}, s_sim={:.2}).",
+            c.id.0,
+            round2(v_sim),
+            round2(s_sim)
         ),
         ActionType::ApplyPattern => format!(
             "Consider applying structural pattern from Concept {}. Structural similarity detected (s_sim={:.2}).",
@@ -126,21 +144,21 @@ fn recommend_one(
 pub(crate) fn recommendation_summary(recs: &[Recommendation]) -> String {
     let mut merge_refine = 0usize;
     let mut apply = 0usize;
-    let mut separate = 0usize;
+    let mut conflict_related = 0usize;
 
     for r in recs {
         match r.action {
             ActionType::Merge | ActionType::Refine => merge_refine += 1,
             ActionType::ApplyPattern => apply += 1,
-            ActionType::Separate => separate += 1,
+            ActionType::ResolveDirectionalConflict | ActionType::Separate => conflict_related += 1,
         }
     }
 
-    if merge_refine > apply && merge_refine > separate {
+    if merge_refine > apply && merge_refine > conflict_related {
         "Strong integration opportunities detected.".to_string()
-    } else if apply > merge_refine && apply > separate {
+    } else if apply > merge_refine && apply > conflict_related {
         "Structural reuse opportunities detected.".to_string()
-    } else if separate > merge_refine && separate > apply {
+    } else if conflict_related > merge_refine && conflict_related > apply {
         "Conflict areas require attention.".to_string()
     } else {
         "Mixed structural signals detected.".to_string()
@@ -229,6 +247,19 @@ mod tests {
                 s
             },
         });
+        let c_directional_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[0] = 1.0;
+                v
+            },
+            a: 0.20,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[0] = -1.0;
+                s
+            },
+        });
         let c_apply_id = dhm.insert_query(&ConceptQuery {
             v: {
                 let mut v = vec![0.0; 384];
@@ -269,6 +300,7 @@ mod tests {
                     dhm.get(c_sep_id).expect("s"),
                     dhm.get(c_merge_id).expect("m"),
                     dhm.get(c_apply_id).expect("a"),
+                    dhm.get(c_directional_id).expect("d"),
                 ],
                 top_k: 10,
             },
@@ -284,8 +316,132 @@ mod tests {
 
         assert_eq!(action_of(c_merge_id), Some(ActionType::Merge));
         assert_eq!(action_of(c_refine_id), Some(ActionType::Refine));
+        assert_eq!(
+            action_of(c_directional_id),
+            Some(ActionType::ResolveDirectionalConflict)
+        );
         assert_eq!(action_of(c_apply_id), Some(ActionType::ApplyPattern));
         assert_eq!(action_of(c_sep_id), Some(ActionType::Separate));
+    }
+
+    #[test]
+    fn no_separate_when_r_above_conflict_threshold() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let q_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[0] = 1.0;
+                v
+            },
+            a: 0.2,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[0] = 1.0;
+                s
+            },
+        });
+        let c_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[0] = 0.0567;
+                v[1] = 0.9984;
+                v
+            },
+            a: 0.2,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[0] = 0.0;
+                s[1] = 1.0;
+                s
+            },
+        });
+
+        let query = dhm.get(q_id).expect("q");
+        let candidate = dhm.get(c_id).expect("c");
+        let r = Recomposer;
+        let rec = r.recommend(
+            &RecommendationInput {
+                query,
+                candidates: vec![candidate],
+                top_k: 1,
+            },
+            &dhm.weights(),
+        );
+        assert!(
+            rec.recommendations
+                .iter()
+                .all(|r| r.action != ActionType::Separate)
+        );
+    }
+
+    #[test]
+    fn separate_threshold_boundary_is_strict() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let q_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[0] = 1.0;
+                v
+            },
+            a: 0.10,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[0] = 1.0;
+                s
+            },
+        });
+        let query = dhm.get(q_id).expect("q");
+
+        // R = -0.15
+        let boundary_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[1] = 1.0;
+                v
+            },
+            a: 0.85,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[1] = 1.0;
+                s
+            },
+        });
+        // R < -0.15
+        let below_id = dhm.insert_query(&ConceptQuery {
+            v: {
+                let mut v = vec![0.0; 384];
+                v[1] = 1.0;
+                v
+            },
+            a: 0.85005,
+            s: {
+                let mut s = vec![0.0; 384];
+                s[1] = 1.0;
+                s
+            },
+        });
+
+        let r = Recomposer;
+        let rec = r.recommend(
+            &RecommendationInput {
+                query,
+                candidates: vec![
+                    dhm.get(boundary_id).expect("boundary"),
+                    dhm.get(below_id).expect("below"),
+                ],
+                top_k: 2,
+            },
+            &dhm.weights(),
+        );
+
+        let action_of = |id| {
+            rec.recommendations
+                .iter()
+                .find(|x| x.target == id)
+                .map(|x| x.action)
+        };
+        assert_ne!(action_of(boundary_id), Some(ActionType::Separate));
+        assert_eq!(action_of(below_id), Some(ActionType::Separate));
     }
 
     #[test]

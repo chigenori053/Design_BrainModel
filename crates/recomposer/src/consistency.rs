@@ -1,12 +1,22 @@
-use semantic_dhm::{ConceptQuery, ConceptUnit, ResonanceWeights, resonance};
+use semantic_dhm::{ConceptId, ConceptQuery, ConceptUnit, ResonanceWeights, resonance};
 
+use crate::constants::{
+    DIRECTIONAL_CONFLICT_NEG_THRESHOLD, DIRECTIONAL_CONFLICT_POS_THRESHOLD,
+    STRUCTURAL_CONFLICT_THRESHOLD,
+};
 use crate::recommend::dot_norm;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct TradeoffDetail {
+    pub pair: (ConceptId, ConceptId),
+    pub tension: f32,
+}
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsistencyReport {
     pub directional_conflicts: usize,
     pub structural_conflicts: usize,
-    pub tradeoffs: usize,
+    pub tradeoffs: Vec<TradeoffDetail>,
     pub stability_score: f32,
 }
 
@@ -25,7 +35,7 @@ pub(crate) fn compute_consistency(
             report: ConsistencyReport {
                 directional_conflicts: 0,
                 structural_conflicts: 0,
-                tradeoffs: 0,
+                tradeoffs: Vec::new(),
                 stability_score: 1.0,
             },
             global_coherence: 1.0,
@@ -37,7 +47,7 @@ pub(crate) fn compute_consistency(
 
     let mut directional_conflicts = 0usize;
     let mut structural_conflicts = 0usize;
-    let mut tradeoffs = 0usize;
+    let mut tradeoffs = Vec::new();
     let mut r_sum = 0.0f32;
     let mut pair_count = 0usize;
 
@@ -56,14 +66,27 @@ pub(crate) fn compute_consistency(
             let s_sim = dot_norm(&c1.s, &c2.s);
             let a_diff = (c1.a - c2.a).abs();
 
-            if r < -0.10 {
+            if r < STRUCTURAL_CONFLICT_THRESHOLD {
                 structural_conflicts += 1;
             }
-            if (v_sim >= 0.10 && s_sim <= -0.10) || (v_sim <= -0.10 && s_sim >= 0.10) {
+
+            let directional_conflict = (v_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD
+                && s_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD)
+                || (v_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD
+                    && s_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD);
+            if directional_conflict {
                 directional_conflicts += 1;
             }
-            if a_diff >= 0.40 && r >= 0.10 {
-                tradeoffs += 1;
+
+            let t_a = a_diff;
+            let t_s = (-r).max(0.0);
+            let tension = (t_a * t_a + t_s * t_s).sqrt();
+            let same_direction = v_sim * s_sim > 0.0;
+            if same_direction && r > STRUCTURAL_CONFLICT_THRESHOLD && tension > 0.30 {
+                tradeoffs.push(TradeoffDetail {
+                    pair: (c1.id, c2.id),
+                    tension,
+                });
             }
 
             r_sum += r;
@@ -73,8 +96,9 @@ pub(crate) fn compute_consistency(
 
     let pair_f = pair_count as f32;
     let global_coherence = if pair_count == 0 { 1.0 } else { r_sum / pair_f };
-    let penalty =
-        (structural_conflicts as f32) + (directional_conflicts as f32) + (tradeoffs as f32 * 0.5);
+    let penalty = (structural_conflicts as f32)
+        + (directional_conflicts as f32)
+        + (tradeoffs.len() as f32 * 0.5);
     let stability_score = if pair_count == 0 {
         1.0
     } else {
@@ -89,5 +113,99 @@ pub(crate) fn compute_consistency(
             stability_score,
         },
         global_coherence,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use semantic_dhm::{ConceptQuery, SemanticDhm};
+
+    use super::compute_consistency;
+    use crate::constants::STRUCTURAL_CONFLICT_THRESHOLD;
+
+    fn query(v0: f32, v1: f32, a: f32, s0: f32, s1: f32) -> ConceptQuery {
+        let mut v = vec![0.0f32; 384];
+        let mut s = vec![0.0f32; 384];
+        v[0] = v0;
+        v[1] = v1;
+        s[0] = s0;
+        s[1] = s1;
+        ConceptQuery { v, a, s }
+    }
+
+    #[test]
+    fn a_abstract_gap_detects_tradeoff() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.10, 1.0, 0.0));
+        let id2 = dhm.insert_query(&query(1.0, 0.0, 0.60, 1.0, 0.0));
+        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+
+        let out = compute_consistency(&concepts, &dhm.weights());
+        assert_eq!(out.report.structural_conflicts, 0);
+        assert_eq!(out.report.tradeoffs.len(), 1);
+    }
+
+    #[test]
+    fn b_mild_negative_structure_reflected_in_tension() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.20, 1.0, 0.0));
+        let id2 = dhm.insert_query(&query(0.10, 0.995, 0.70, 0.10, 0.995));
+        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+
+        let out = compute_consistency(&concepts, &dhm.weights());
+        assert_eq!(out.report.structural_conflicts, 0);
+        assert_eq!(out.report.tradeoffs.len(), 1);
+        let tension = out.report.tradeoffs[0].tension;
+        assert!(tension > 0.30);
+    }
+
+    #[test]
+    fn c_structural_conflict_not_tradeoff() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.20, 1.0, 0.0));
+        let id2 = dhm.insert_query(&query(-1.0, 0.0, 0.20, -1.0, 0.0));
+        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+
+        let out = compute_consistency(&concepts, &dhm.weights());
+        assert_eq!(out.report.structural_conflicts, 1);
+        assert!(out.report.tradeoffs.is_empty());
+    }
+
+    #[test]
+    fn d_opposite_direction_excluded_from_tradeoff() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.10, 1.0, 0.0));
+        let id2 = dhm.insert_query(&query(1.0, 0.0, 0.60, -1.0, 0.0));
+        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+
+        let out = compute_consistency(&concepts, &dhm.weights());
+        assert_eq!(out.report.directional_conflicts, 1);
+        assert!(out.report.tradeoffs.is_empty());
+    }
+
+    #[test]
+    fn e_tension_boundary() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.10, 1.0, 0.0));
+
+        // T = 0.30 => not detected (strictly >)
+        let id2 = dhm.insert_query(&query(1.0, 0.0, 0.40, 1.0, 0.0));
+        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+        let out = compute_consistency(&concepts, &dhm.weights());
+        assert!(out.report.tradeoffs.is_empty());
+
+        // T = 0.30001 => detected
+        let id3 = dhm.insert_query(&query(1.0, 0.0, 0.40001, 1.0, 0.0));
+        let concepts2 = vec![dhm.get(id1).expect("c1"), dhm.get(id3).expect("c3")];
+        let out2 = compute_consistency(&concepts2, &dhm.weights());
+        assert_eq!(out2.report.tradeoffs.len(), 1);
+    }
+
+    #[test]
+    fn threshold_constant_matches_spec() {
+        let boundary = "-0.15".parse::<f32>().expect("boundary");
+        let below = "-0.15001".parse::<f32>().expect("below");
+        assert!(boundary >= STRUCTURAL_CONFLICT_THRESHOLD);
+        assert!(below < STRUCTURAL_CONFLICT_THRESHOLD);
     }
 }

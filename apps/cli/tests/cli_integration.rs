@@ -288,8 +288,9 @@ fn report_json_output_has_fixed_key_order() {
     assert!(lines[2].starts_with("    \"abstraction_mean\": "));
     assert!(lines[3].starts_with("    \"abstraction_variance\": "));
     assert!(lines[4].starts_with("    \"consistency\": "));
-    assert!(lines[10].starts_with("    \"global_coherence\": "));
-    assert!(lines[11].starts_with("    \"recommendations\": "));
+    assert!(stdout.contains("\"tradeoffs\": ["));
+    assert!(stdout.contains("\"global_coherence\": "));
+    assert!(stdout.contains("\"recommendations\": "));
 }
 
 #[test]

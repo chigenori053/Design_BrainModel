@@ -183,6 +183,13 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                                 concept_id_string(rec.target)
                             )
                         }
+                        ActionType::ResolveDirectionalConflict => {
+                            format!(
+                                "{}. ResolveDirectionalConflict with {}",
+                                idx + 1,
+                                concept_id_string(rec.target)
+                            )
+                        }
                         ActionType::Separate => {
                             format!(
                                 "{}. Separate from {} (R={:.2})",
@@ -209,6 +216,20 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                 .design_report(&ids, report_top_k)
                 .map_err(|e| e.to_string())?;
             if parsed.json {
+                let tradeoff_items = report
+                    .consistency
+                    .tradeoffs
+                    .iter()
+                    .map(|t| {
+                        format!(
+                            "            {{\n                \"pair\": [\"{}\", \"{}\"],\n                \"tension\": {}\n            }}",
+                            concept_id_string(t.pair.0),
+                            concept_id_string(t.pair.1),
+                            json_num(round2(t.tension)),
+                        )
+                    })
+                    .collect::<Vec<_>>()
+                    .join(",\n");
                 let rec_items = report
                     .recommendations
                     .recommendations
@@ -224,13 +245,13 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                     .collect::<Vec<_>>()
                     .join(",\n");
                 Ok(format!(
-                    "{{\n    \"summary\": \"{}\",\n    \"abstraction_mean\": {},\n    \"abstraction_variance\": {},\n    \"consistency\": {{\n        \"directional_conflicts\": {},\n        \"structural_conflicts\": {},\n        \"tradeoffs\": {},\n        \"stability\": {}\n    }},\n    \"global_coherence\": {},\n    \"recommendations\": {{\n        \"summary\": \"{}\",\n        \"items\": [\n{}\n        ]\n    }}\n}}",
+                    "{{\n    \"summary\": \"{}\",\n    \"abstraction_mean\": {},\n    \"abstraction_variance\": {},\n    \"consistency\": {{\n        \"directional_conflicts\": {},\n        \"structural_conflicts\": {},\n        \"tradeoffs\": [\n{}\n        ],\n        \"stability\": {}\n    }},\n    \"global_coherence\": {},\n    \"recommendations\": {{\n        \"summary\": \"{}\",\n        \"items\": [\n{}\n        ]\n    }}\n}}",
                     escape_json(&report.summary),
                     json_num(round2(report.abstraction_mean)),
                     json_num(round2(report.abstraction_variance)),
                     report.consistency.directional_conflicts,
                     report.consistency.structural_conflicts,
-                    report.consistency.tradeoffs,
+                    tradeoff_items,
                     json_num(round2(report.consistency.stability_score)),
                     json_num(round2(report.global_coherence)),
                     escape_json(&report.recommendations.summary),
@@ -244,10 +265,19 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                     round2(report.abstraction_variance),
                     report.consistency.directional_conflicts,
                     report.consistency.structural_conflicts,
-                    report.consistency.tradeoffs,
+                    report.consistency.tradeoffs.len(),
                     round2(report.consistency.stability_score),
                     round2(report.global_coherence),
                 );
+                for t in &report.consistency.tradeoffs {
+                    out.push_str(&format!(
+                        "\n - {} ↔ {} (tension={:.2})",
+                        concept_id_string(t.pair.0),
+                        concept_id_string(t.pair.1),
+                        round2(t.tension),
+                    ));
+                }
+                out.push('\n');
                 if report.recommendations.recommendations.is_empty() {
                     out.push_str("1. No recommendation candidates available.");
                 } else {
@@ -437,6 +467,7 @@ fn action_label(action: ActionType) -> &'static str {
     match action {
         ActionType::Merge => "Merge",
         ActionType::Refine => "Refine",
+        ActionType::ResolveDirectionalConflict => "ResolveDirectionalConflict",
         ActionType::ApplyPattern => "ApplyPattern",
         ActionType::Separate => "Separate",
     }
