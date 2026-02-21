@@ -10,12 +10,14 @@ use meaning_extractor::MeaningExtractor;
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
 use memory_store::{FileStore, InMemoryStore};
 use recomposer::{
-    DesignReport, MultiConceptInput, RecommendationInput, Recomposer, ResonanceReport,
+    DecisionReport, DecisionWeights, DesignReport, MultiConceptInput, RecommendationInput,
+    Recomposer, ResonanceReport,
 };
 use semantic_dhm::{ConceptUnit, SemanticDhm};
 
 pub use chm::Chm;
 pub use recomposer::ActionType;
+pub use recomposer::{DecisionReport as VmDecisionReport, DecisionWeights as VmDecisionWeights};
 pub use semantic_dhm::ConceptId;
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
@@ -258,6 +260,32 @@ impl HybridVM {
         Ok(self
             .recomposer
             .generate_report(&concepts, &self.semantic_dhm.weights(), top_k))
+    }
+
+    pub fn decide(
+        &self,
+        concept_ids: &[ConceptId],
+        weights: DecisionWeights,
+    ) -> Result<DecisionReport, HybridVmError> {
+        let mut ids = dedup_ids(concept_ids);
+        ids.sort_unstable();
+        if ids.is_empty() {
+            return Err(HybridVmError::InvalidInput(
+                "decide requires at least 1 concept id",
+            ));
+        }
+
+        let mut concepts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(c) = self.semantic_dhm.get(id) else {
+                return Err(HybridVmError::ConceptNotFound(id));
+            };
+            concepts.push(c);
+        }
+
+        Ok(self
+            .recomposer
+            .decide(&concepts, weights, &self.semantic_dhm.weights()))
     }
 
     pub fn default_shm() -> Shm {
