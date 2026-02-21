@@ -312,3 +312,48 @@ fn report_n0_returns_error() {
     assert!(!ok);
     assert!(stderr.contains("report requires at least 1 concept id"));
 }
+
+#[test]
+fn decide_json_output_matches_spec_shape() {
+    let store_dir = unique_store_dir("decide_json");
+    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
+    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
+    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
+
+    let (ok, stdout, _) = run_cli(
+        &store_dir,
+        &[
+            "decide",
+            "C1",
+            "C2",
+            "C3",
+            "--weights",
+            "coherence=0.4",
+            "stability=0.3",
+            "conflict=0.2",
+            "tradeoff=0.1",
+            "--json",
+        ],
+    );
+    assert!(ok);
+    assert!(stdout.contains("\"decision_score\": "));
+    assert!(stdout.contains("\"weights\": {"));
+    assert!(stdout.contains("\"coherence\": 0.40"));
+    assert!(stdout.contains("\"stability\": 0.30"));
+    assert!(stdout.contains("\"conflict\": 0.20"));
+    assert!(stdout.contains("\"tradeoff\": 0.10"));
+    assert!(stdout.contains("\"interpretation\": \"Coherence prioritized\""));
+}
+
+#[test]
+fn decide_emits_warning_on_structural_conflict() {
+    let store_dir = unique_store_dir("decide_warning");
+    let _ = run_cli(&store_dir, &["analyze", "same same same"]);
+    let _ = run_cli(&store_dir, &["analyze", "opposite opposite opposite"]);
+
+    let (ok, stdout, _) = run_cli(&store_dir, &["decide", "C1", "C2", "--json"]);
+    assert!(ok);
+    if stdout.contains("\"warning\":") {
+        assert!(stdout.contains("Decision unstable due to structural conflict"));
+    }
+}

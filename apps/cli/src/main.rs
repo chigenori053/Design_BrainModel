@@ -2,19 +2,37 @@ use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
-use hybrid_vm::{ActionType, ConceptId, HybridVM};
+use hybrid_vm::{ActionType, ConceptId, HybridVM, VmDecisionWeights};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Commands {
-    Analyze { text: String },
-    Explain { concept_id: String },
-    Compare { left_id: String, right_id: String },
-    Multi { concept_ids: Vec<String> },
-    Report { concept_ids: Vec<String> },
-    Recommend { concept_id: String, top_k: usize },
+    Analyze {
+        text: String,
+    },
+    Explain {
+        concept_id: String,
+    },
+    Compare {
+        left_id: String,
+        right_id: String,
+    },
+    Multi {
+        concept_ids: Vec<String>,
+    },
+    Report {
+        concept_ids: Vec<String>,
+    },
+    Recommend {
+        concept_id: String,
+        top_k: usize,
+    },
+    Decide {
+        concept_ids: Vec<String>,
+        weights: VmDecisionWeights,
+    },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct ParsedCommand {
     command: Commands,
     json: bool,
@@ -207,6 +225,61 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                 Ok(out)
             }
         }
+
+        Commands::Decide {
+            concept_ids,
+            weights,
+        } => {
+            let ids = dedup_parsed_ids(&concept_ids)?;
+            if ids.is_empty() {
+                return Err("decide requires at least 1 concept id".to_string());
+            }
+            let report = vm.decide(&ids, weights).map_err(|e| e.to_string())?;
+            if parsed.json {
+                let warning = match report.warning {
+                    Some(w) => format!(
+                        ",
+    \"warning\": \"{}\"",
+                        escape_json(&w)
+                    ),
+                    None => String::new(),
+                };
+                Ok(format!(
+                    "{{
+    \"decision_score\": {},
+    \"weights\": {{
+        \"coherence\": {},
+        \"stability\": {},
+        \"conflict\": {},
+        \"tradeoff\": {}
+    }},
+    \"interpretation\": \"{}\"{}
+}}",
+                    json_num(round2(report.decision_score)),
+                    json_num(round2(report.weights.coherence)),
+                    json_num(round2(report.weights.stability)),
+                    json_num(round2(report.weights.conflict)),
+                    json_num(round2(report.weights.tradeoff)),
+                    escape_json(&report.interpretation),
+                    warning,
+                ))
+            } else {
+                let mut out = format!(
+                    "[Decision]
+Score: {:.2}
+Interpretation: {}",
+                    round2(report.decision_score),
+                    report.interpretation
+                );
+                if let Some(w) = report.warning {
+                    out.push_str(&format!(
+                        "
+Warning: {w}"
+                    ));
+                }
+                Ok(out)
+            }
+        }
         Commands::Report { concept_ids } => {
             let ids = dedup_parsed_ids(&concept_ids)?;
             if ids.is_empty() {
@@ -349,6 +422,7 @@ fn parse_command(args: &[String]) -> Result<ParsedCommand, String> {
             }
         }
         "recommend" => parse_recommend_command(&filtered)?,
+        "decide" => parse_decide_command(&filtered)?,
         _ => return Err(help_text()),
     };
 
@@ -382,8 +456,61 @@ fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
     Ok(Commands::Recommend { concept_id, top_k })
 }
 
+fn parse_decide_command(args: &[String]) -> Result<Commands, String> {
+    if args.len() < 2 {
+        return Err("decide requires at least 1 concept id".to_string());
+    }
+
+    let mut concept_ids = Vec::new();
+    let mut weights = VmDecisionWeights::default();
+
+    let mut i = 1usize;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--weights" => {
+                i += 1;
+                while i < args.len() {
+                    if args[i].starts_with("--") {
+                        break;
+                    }
+                    let (k, v) = args[i]
+                        .split_once('=')
+                        .ok_or_else(|| format!("invalid weight: {}", args[i]))?;
+                    let value = v
+                        .parse::<f32>()
+                        .map_err(|_| format!("invalid weight value: {v}"))?;
+                    match k {
+                        "coherence" => weights.coherence = value,
+                        "stability" => weights.stability = value,
+                        "conflict" => weights.conflict = value,
+                        "tradeoff" => weights.tradeoff = value,
+                        _ => return Err(format!("unknown weight key: {k}")),
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            value if value.starts_with("--") => {
+                return Err(format!("unknown option for decide: {value}"));
+            }
+            value => concept_ids.push(value.to_string()),
+        }
+        i += 1;
+    }
+
+    if concept_ids.is_empty() {
+        return Err("decide requires at least 1 concept id".to_string());
+    }
+
+    Ok(Commands::Decide {
+        concept_ids,
+        weights,
+    })
+}
+
 fn help_text() -> String {
-    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  report <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]".to_string()
+    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  report <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]
+  decide <ConceptId> [ConceptId ...] [--weights coherence=0.4 stability=0.3 conflict=0.2 tradeoff=0.1] [--json]".to_string()
 }
 
 fn cli_store_dir() -> PathBuf {
@@ -554,5 +681,34 @@ mod tests {
     #[test]
     fn metric_rounding_works() {
         assert_eq!(parse_metric("0.416").expect("metric"), 0.42);
+    }
+
+    #[test]
+    fn decide_command_parses_weights() {
+        let parsed = parse_command(&[
+            "decide".to_string(),
+            "C1".to_string(),
+            "C2".to_string(),
+            "--weights".to_string(),
+            "coherence=0.7".to_string(),
+            "stability=0.1".to_string(),
+            "conflict=0.1".to_string(),
+            "tradeoff=0.1".to_string(),
+        ])
+        .expect("parsed");
+
+        match parsed.command {
+            Commands::Decide {
+                concept_ids,
+                weights,
+            } => {
+                assert_eq!(concept_ids, vec!["C1".to_string(), "C2".to_string()]);
+                assert_eq!(weights.coherence, 0.7);
+                assert_eq!(weights.stability, 0.1);
+                assert_eq!(weights.conflict, 0.1);
+                assert_eq!(weights.tradeoff, 0.1);
+            }
+            _ => panic!("unexpected command"),
+        }
     }
 }
