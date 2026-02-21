@@ -59,16 +59,13 @@ pub(crate) fn compute_consistency(
                 v: c1.v.clone(),
                 a: c1.a,
                 s: c1.s.clone(),
+                polarity: c1.polarity,
             }
             .normalized();
             let r = resonance(&query, c2, *weights);
             let v_sim = dot_norm(&c1.v, &c2.v);
             let s_sim = dot_norm(&c1.s, &c2.s);
             let a_diff = (c1.a - c2.a).abs();
-
-            if r < STRUCTURAL_CONFLICT_THRESHOLD {
-                structural_conflicts += 1;
-            }
 
             let directional_conflict = (v_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD
                 && s_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD)
@@ -78,11 +75,24 @@ pub(crate) fn compute_consistency(
                 directional_conflicts += 1;
             }
 
+            if (c1.polarity as i16) * (c2.polarity as i16) < 0 {
+                structural_conflicts += 1;
+                r_sum += r;
+                pair_count += 1;
+                continue;
+            }
+
+            if r < STRUCTURAL_CONFLICT_THRESHOLD {
+                structural_conflicts += 1;
+                r_sum += r;
+                pair_count += 1;
+                continue;
+            }
+
             let t_a = a_diff;
             let t_s = (-r).max(0.0);
             let tension = (t_a * t_a + t_s * t_s).sqrt();
-            let same_direction = v_sim * s_sim > 0.0;
-            if same_direction && r > STRUCTURAL_CONFLICT_THRESHOLD && tension > 0.30 {
+            if tension > 0.30 {
                 tradeoffs.push(TradeoffDetail {
                     pair: (c1.id, c2.id),
                     tension,
@@ -130,7 +140,12 @@ mod tests {
         v[1] = v1;
         s[0] = s0;
         s[1] = s1;
-        ConceptQuery { v, a, s }
+        ConceptQuery {
+            v,
+            a,
+            s,
+            polarity: 0,
+        }
     }
 
     #[test]
@@ -146,17 +161,18 @@ mod tests {
     }
 
     #[test]
-    fn b_mild_negative_structure_reflected_in_tension() {
+    fn b_polarity_opposition_is_structural_conflict() {
         let mut dhm = SemanticDhm::in_memory().expect("mem");
         let id1 = dhm.insert_query(&query(1.0, 0.0, 0.20, 1.0, 0.0));
-        let id2 = dhm.insert_query(&query(0.10, 0.995, 0.70, 0.10, 0.995));
-        let concepts = vec![dhm.get(id1).expect("c1"), dhm.get(id2).expect("c2")];
+        let id2 = dhm.insert_query(&query(0.0, 1.0, 0.20, 1.0, 0.0));
+        let mut c1 = dhm.get(id1).expect("c1");
+        let mut c2 = dhm.get(id2).expect("c2");
+        c1.polarity = -1;
+        c2.polarity = 1;
 
-        let out = compute_consistency(&concepts, &dhm.weights());
-        assert_eq!(out.report.structural_conflicts, 0);
-        assert_eq!(out.report.tradeoffs.len(), 1);
-        let tension = out.report.tradeoffs[0].tension;
-        assert!(tension > 0.30);
+        let out = compute_consistency(&[c1, c2], &dhm.weights());
+        assert_eq!(out.report.structural_conflicts, 1);
+        assert!(out.report.tradeoffs.is_empty());
     }
 
     #[test]
@@ -172,7 +188,24 @@ mod tests {
     }
 
     #[test]
-    fn d_opposite_direction_excluded_from_tradeoff() {
+    fn f_polarity_reversal_detected_as_structural_conflict() {
+        let mut dhm = SemanticDhm::in_memory().expect("mem");
+        let id1 = dhm.insert_query(&query(1.0, 0.0, 0.30, 1.0, 0.0));
+        // opposite polarity must be conflict regardless of embedding gate.
+        let id2 = dhm.insert_query(&query(1.0, 0.0, 0.90, -1.0, 0.0));
+
+        let mut c1 = dhm.get(id1).expect("c1");
+        let mut c2 = dhm.get(id2).expect("c2");
+        c1.polarity = 1;
+        c2.polarity = -1;
+
+        let out = compute_consistency(&[c1, c2], &dhm.weights());
+        assert_eq!(out.report.structural_conflicts, 1);
+        assert!(out.report.tradeoffs.is_empty());
+    }
+
+    #[test]
+    fn d_opposite_direction_still_allows_tradeoff_in_v2_1() {
         let mut dhm = SemanticDhm::in_memory().expect("mem");
         let id1 = dhm.insert_query(&query(1.0, 0.0, 0.10, 1.0, 0.0));
         let id2 = dhm.insert_query(&query(1.0, 0.0, 0.60, -1.0, 0.0));
@@ -180,7 +213,7 @@ mod tests {
 
         let out = compute_consistency(&concepts, &dhm.weights());
         assert_eq!(out.report.directional_conflicts, 1);
-        assert!(out.report.tradeoffs.is_empty());
+        assert_eq!(out.report.tradeoffs.len(), 1);
     }
 
     #[test]

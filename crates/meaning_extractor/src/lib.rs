@@ -11,6 +11,7 @@ pub struct MeaningStructure {
     pub nodes: Vec<MeaningNode>,
     pub edges: Vec<MeaningEdge>,
     pub abstraction_score: f32,
+    pub polarity: i8,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -66,6 +67,7 @@ impl MeaningExtractor {
                 }],
                 edges: Vec::new(),
                 abstraction_score: 0.0,
+                polarity: 0,
             };
         }
 
@@ -73,6 +75,7 @@ impl MeaningExtractor {
         promote_subject_object_roles(&mut roles);
 
         let abstraction_score = compute_abstraction_score(&tokens);
+        let polarity = detect_polarity(&tokens);
 
         let mut nodes = build_nodes(&tokens, &roles, embedding);
         let mut edges = build_edges(&tokens, &roles, &nodes);
@@ -93,6 +96,7 @@ impl MeaningExtractor {
             nodes,
             edges,
             abstraction_score,
+            polarity,
         }
     }
 }
@@ -402,6 +406,42 @@ fn compute_abstraction_score(tokens: &[Token]) -> f32 {
     abs as f32 / tokens.len() as f32
 }
 
+fn detect_polarity(tokens: &[Token]) -> i8 {
+    let mut has_positive = false;
+    let mut has_negative = false;
+    let lowered = tokens
+        .iter()
+        .map(|t| t.surface.to_lowercase())
+        .collect::<Vec<_>>();
+
+    for token in &lowered {
+        if POSITIVE_POLARITY_WORDS.contains(&token.as_str()) {
+            has_positive = true;
+        }
+        if NEGATIVE_POLARITY_WORDS.contains(&token.as_str()) {
+            has_negative = true;
+        }
+    }
+
+    for (idx, token) in lowered.iter().enumerate() {
+        if token != "enforce" {
+            continue;
+        }
+        if lowered[idx + 1..]
+            .iter()
+            .any(|next| next.as_str() == "isolation")
+        {
+            has_negative = true;
+        }
+    }
+
+    match (has_positive, has_negative) {
+        (true, false) => 1,
+        (false, true) => -1,
+        _ => 0,
+    }
+}
+
 fn is_condition(w: &str) -> bool {
     matches!(
         w,
@@ -490,6 +530,30 @@ const ABSTRACT_WORDS: &[&str] = &[
     "integration",
     "architecture-level",
     "high-level",
+];
+
+const POSITIVE_POLARITY_WORDS: &[&str] = &[
+    "increase",
+    "maximize",
+    "improve",
+    "enhance",
+    "introduce",
+    "enable",
+    "add",
+    "expand",
+    "support",
+];
+
+const NEGATIVE_POLARITY_WORDS: &[&str] = &[
+    "avoid",
+    "eliminate",
+    "remove",
+    "reduce",
+    "minimize",
+    "restrict",
+    "prevent",
+    "prohibit",
+    "disable",
 ];
 
 fn normalize_l2(v: &[f32]) -> Vec<f32> {
@@ -594,5 +658,29 @@ mod tests {
                 .any(|e| e.from == node.id || e.to == node.id);
             assert!(connected);
         }
+    }
+
+    #[test]
+    fn polarity_positive_test() {
+        let extractor = MeaningExtractor;
+        let m = extractor.extract("increase throughput and improve latency", &[0.1; 384]);
+        assert_eq!(m.polarity, 1);
+    }
+
+    #[test]
+    fn polarity_negative_phrase_test() {
+        let extractor = MeaningExtractor;
+        let m = extractor.extract(
+            "enforce strict security isolation for data flow",
+            &[0.1f32; 384],
+        );
+        assert_eq!(m.polarity, -1);
+    }
+
+    #[test]
+    fn polarity_conflict_to_neutral_test() {
+        let extractor = MeaningExtractor;
+        let m = extractor.extract("improve and reduce at once", &[0.1; 384]);
+        assert_eq!(m.polarity, 0);
     }
 }

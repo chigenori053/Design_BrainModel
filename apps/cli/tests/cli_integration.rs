@@ -185,9 +185,8 @@ fn recommend_json_snapshot_matches_spec() {
     assert!(stdout.contains("\"type\": \"recommend\""));
     assert!(stdout.contains("\"query\": \"C1\""));
     assert!(stdout.contains("\"recommendations\": ["));
-    assert!(stdout.contains("\"target\": \"C2\""));
     assert!(stdout.contains("\"action\": "));
-    assert!(stdout.contains("\"score\": "));
+    assert!(stdout.contains("\"target\": \"C2\"") || stdout.contains("\"target_pair\": ["));
     assert!(stdout.contains("\"summary\": "));
 }
 
@@ -311,4 +310,45 @@ fn report_n0_returns_error() {
     let (ok, _, stderr) = run_cli(&store_dir, &["report"]);
     assert!(!ok);
     assert!(stderr.contains("report requires at least 1 concept id"));
+}
+
+#[test]
+fn help_contains_decide_command() {
+    let store_dir = unique_store_dir("help_decide");
+    let (ok, stdout, _) = run_cli(&store_dir, &["--help"]);
+    assert!(!ok);
+    assert!(stdout.is_empty());
+
+    let (_, _, stderr) = run_cli(&store_dir, &["help"]);
+    assert!(stderr.contains("decide <ConceptId> <ConceptId>"));
+}
+
+#[test]
+fn decide_json_output_matches_contract() {
+    let store_dir = unique_store_dir("decide_json");
+    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
+    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
+
+    let (ok, stdout, _) = run_cli(
+        &store_dir,
+        &[
+            "decide",
+            "C1",
+            "C2",
+            "--weights",
+            "coherence=0.4",
+            "stability=0.3",
+            "conflict=0.2",
+            "tradeoff=0.1",
+            "--json",
+        ],
+    );
+    assert!(ok);
+    assert!(stdout.contains("\"decision_score\": "));
+    assert!(stdout.contains("\"weights\": {"));
+    assert!(stdout.contains("\"coherence\": 0.40"));
+    assert!(stdout.contains("\"stability\": 0.30"));
+    assert!(stdout.contains("\"conflict\": 0.20"));
+    assert!(stdout.contains("\"tradeoff\": 0.10"));
+    assert!(stdout.contains("\"interpretation\": "));
 }

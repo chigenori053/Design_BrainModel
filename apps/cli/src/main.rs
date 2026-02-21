@@ -2,19 +2,37 @@ use std::collections::BTreeSet;
 use std::env;
 use std::path::PathBuf;
 
-use hybrid_vm::{ActionType, ConceptId, HybridVM};
+use hybrid_vm::{ActionType, ConceptId, DecisionWeights, HybridVM, HybridVmError};
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 enum Commands {
-    Analyze { text: String },
-    Explain { concept_id: String },
-    Compare { left_id: String, right_id: String },
-    Multi { concept_ids: Vec<String> },
-    Report { concept_ids: Vec<String> },
-    Recommend { concept_id: String, top_k: usize },
+    Analyze {
+        text: String,
+    },
+    Explain {
+        concept_id: String,
+    },
+    Compare {
+        left_id: String,
+        right_id: String,
+    },
+    Multi {
+        concept_ids: Vec<String>,
+    },
+    Report {
+        concept_ids: Vec<String>,
+    },
+    Recommend {
+        concept_id: String,
+        top_k: usize,
+    },
+    Decide {
+        concept_ids: Vec<String>,
+        weights: DecisionWeights,
+    },
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq)]
 struct ParsedCommand {
     command: Commands,
     json: bool,
@@ -138,14 +156,7 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                 let recommendations = report
                     .recommendations
                     .iter()
-                    .map(|rec| {
-                        format!(
-                            "        {{\n            \"target\": \"{}\",\n            \"action\": \"{}\",\n            \"score\": {}\n        }}",
-                            concept_id_string(rec.target),
-                            action_label(rec.action),
-                            json_num(round2(rec.score)),
-                        )
-                    })
+                    .map(json_recommendation_item)
                     .collect::<Vec<_>>()
                     .join(",\n");
                 Ok(format!(
@@ -162,40 +173,52 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                 }
                 for (idx, rec) in report.recommendations.iter().enumerate() {
                     let line = match rec.action {
+                        ActionType::ResolveStructuralConflict => {
+                            if let Some((left, right)) = rec.target_pair {
+                                format!(
+                                    "{}. Resolve structural conflict between {} and {}",
+                                    idx + 1,
+                                    concept_id_string(left),
+                                    concept_id_string(right)
+                                )
+                            } else {
+                                format!("{}. Resolve structural conflict", idx + 1)
+                            }
+                        }
+                        ActionType::HighlightTradeoff => {
+                            if let Some((left, right)) = rec.target_pair {
+                                format!(
+                                    "{}. Highlight tradeoff between {} and {} (tension={:.2})",
+                                    idx + 1,
+                                    concept_id_string(left),
+                                    concept_id_string(right),
+                                    round2(rec.score)
+                                )
+                            } else {
+                                format!("{}. Highlight tradeoff", idx + 1)
+                            }
+                        }
                         ActionType::Merge => {
+                            let target = rec.target.ok_or("Missing recommendation target")?;
                             format!(
                                 "{}. Merge with {} (R={:.2})",
                                 idx + 1,
-                                concept_id_string(rec.target),
+                                concept_id_string(target),
                                 round2(rec.score)
                             )
                         }
                         ActionType::Refine => format!(
                             "{}. Refine with {} (R={:.2})",
                             idx + 1,
-                            concept_id_string(rec.target),
+                            concept_id_string(rec.target.ok_or("Missing recommendation target")?),
                             round2(rec.score)
                         ),
                         ActionType::ApplyPattern => {
+                            let target = rec.target.ok_or("Missing recommendation target")?;
                             format!(
                                 "{}. ApplyPattern from {}",
                                 idx + 1,
-                                concept_id_string(rec.target)
-                            )
-                        }
-                        ActionType::ResolveDirectionalConflict => {
-                            format!(
-                                "{}. ResolveDirectionalConflict with {}",
-                                idx + 1,
-                                concept_id_string(rec.target)
-                            )
-                        }
-                        ActionType::Separate => {
-                            format!(
-                                "{}. Separate from {} (R={:.2})",
-                                idx + 1,
-                                concept_id_string(rec.target),
-                                round2(rec.score)
+                                concept_id_string(target)
                             )
                         }
                     };
@@ -234,14 +257,7 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                     .recommendations
                     .recommendations
                     .iter()
-                    .map(|rec| {
-                        format!(
-                            "            {{\n                \"target\": \"{}\",\n                \"action\": \"{}\",\n                \"score\": {}\n            }}",
-                            concept_id_string(rec.target),
-                            action_label(rec.action),
-                            json_num(round2(rec.score)),
-                        )
-                    })
+                    .map(json_report_recommendation_item)
                     .collect::<Vec<_>>()
                     .join(",\n");
                 Ok(format!(
@@ -287,6 +303,54 @@ fn run(parsed: ParsedCommand) -> Result<String, String> {
                             out.push('\n');
                         }
                     }
+                }
+                Ok(out)
+            }
+        }
+        Commands::Decide {
+            concept_ids,
+            weights,
+        } => {
+            let ids =
+                dedup_parsed_ids(&concept_ids).map_err(|_| "invalid concept id".to_string())?;
+            if ids.len() < 2 {
+                return Err("at least two concepts required".to_string());
+            }
+            let normalized = weights.normalized().map_err(|e| e.to_string())?;
+            let report = vm.decide(&ids, normalized).map_err(|e| match e {
+                HybridVmError::ConceptNotFound(_) => "invalid concept id".to_string(),
+                _ => e.to_string(),
+            })?;
+            if parsed.json {
+                let mut out = format!(
+                    "{{\n    \"decision_score\": {},\n    \"weights\": {{\n        \"coherence\": {},\n        \"stability\": {},\n        \"conflict\": {},\n        \"tradeoff\": {}\n    }},\n    \"interpretation\": \"{}\"",
+                    json_num(round2(report.decision_score)),
+                    json_num(round2(normalized.coherence)),
+                    json_num(round2(normalized.stability)),
+                    json_num(round2(normalized.conflict)),
+                    json_num(round2(normalized.tradeoff)),
+                    escape_json(&report.interpretation),
+                );
+                if let Some(warning) = report.warning {
+                    out.push_str(&format!(
+                        ",\n    \"warning\": \"{}\"",
+                        escape_json(&warning)
+                    ));
+                }
+                out.push_str("\n}");
+                Ok(out)
+            } else {
+                let mut out = format!(
+                    "=== Decision Report ===\n\nScore: {:.2}\n\nWeights:\ncoherence: {:.2}\nstability: {:.2}\nconflict: {:.2}\ntradeoff: {:.2}\n\nInterpretation:\n{}",
+                    round2(report.decision_score),
+                    round2(normalized.coherence),
+                    round2(normalized.stability),
+                    round2(normalized.conflict),
+                    round2(normalized.tradeoff),
+                    report.interpretation,
+                );
+                if let Some(warning) = report.warning {
+                    out.push_str(&format!("\n\nWarning:\n{warning}"));
                 }
                 Ok(out)
             }
@@ -349,6 +413,7 @@ fn parse_command(args: &[String]) -> Result<ParsedCommand, String> {
             }
         }
         "recommend" => parse_recommend_command(&filtered)?,
+        "decide" => parse_decide_command(&filtered)?,
         _ => return Err(help_text()),
     };
 
@@ -382,8 +447,60 @@ fn parse_recommend_command(args: &[String]) -> Result<Commands, String> {
     Ok(Commands::Recommend { concept_id, top_k })
 }
 
+fn parse_decide_command(args: &[String]) -> Result<Commands, String> {
+    let mut i = 1usize;
+    let mut concept_ids = Vec::new();
+    while i < args.len() && !args[i].starts_with("--") {
+        concept_ids.push(args[i].clone());
+        i += 1;
+    }
+    if concept_ids.len() < 2 {
+        return Err("at least two concepts required".to_string());
+    }
+
+    let mut weights = DecisionWeights::default();
+    while i < args.len() {
+        match args[i].as_str() {
+            "--weights" => {
+                i += 1;
+                let start = i;
+                while i < args.len() && !args[i].starts_with("--") {
+                    apply_weight_kv(&mut weights, &args[i])?;
+                    i += 1;
+                }
+                if start == i {
+                    return Err("invalid weight format".to_string());
+                }
+            }
+            unknown => return Err(format!("unknown option for decide: {unknown}")),
+        }
+    }
+
+    Ok(Commands::Decide {
+        concept_ids,
+        weights,
+    })
+}
+
+fn apply_weight_kv(weights: &mut DecisionWeights, raw: &str) -> Result<(), String> {
+    let Some((key, value_raw)) = raw.split_once('=') else {
+        return Err("invalid weight format".to_string());
+    };
+    let value = value_raw
+        .parse::<f32>()
+        .map_err(|_| "invalid weight format".to_string())?;
+    match key {
+        "coherence" => weights.coherence = value,
+        "stability" => weights.stability = value,
+        "conflict" => weights.conflict = value,
+        "tradeoff" => weights.tradeoff = value,
+        _ => return Err("invalid weight format".to_string()),
+    }
+    Ok(())
+}
+
 fn help_text() -> String {
-    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  report <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]".to_string()
+    "Usage: design <command>\n  analyze <text> [--json]\n  explain <ConceptId> [--json]\n  compare <ConceptId> <ConceptId> [--json]\n  multi <ConceptId> <ConceptId> [ConceptId ...] [--json]\n  report <ConceptId> [ConceptId ...] [--json]\n  recommend <ConceptId> [--top N] [--json]\n  decide <ConceptId> <ConceptId> [ConceptId ...] [--weights coherence=<f32> stability=<f32> conflict=<f32> tradeoff=<f32>] [--json]".to_string()
 }
 
 fn cli_store_dir() -> PathBuf {
@@ -465,11 +582,57 @@ fn abstraction_tendency_phrase(a_mean: f32) -> &'static str {
 
 fn action_label(action: ActionType) -> &'static str {
     match action {
+        ActionType::ResolveStructuralConflict => "ResolveStructuralConflict",
+        ActionType::HighlightTradeoff => "HighlightTradeoff",
         ActionType::Merge => "Merge",
         ActionType::Refine => "Refine",
-        ActionType::ResolveDirectionalConflict => "ResolveDirectionalConflict",
         ActionType::ApplyPattern => "ApplyPattern",
-        ActionType::Separate => "Separate",
+    }
+}
+
+fn json_recommendation_item(rec: &hybrid_vm::Recommendation) -> String {
+    if let Some((left, right)) = rec.target_pair {
+        format!(
+            "        {{\n            \"action\": \"{}\",\n            \"target_pair\": [\"{}\", \"{}\"]\n        }}",
+            action_label(rec.action),
+            concept_id_string(left),
+            concept_id_string(right),
+        )
+    } else if let Some(target) = rec.target {
+        format!(
+            "        {{\n            \"target\": \"{}\",\n            \"action\": \"{}\",\n            \"score\": {}\n        }}",
+            concept_id_string(target),
+            action_label(rec.action),
+            json_num(round2(rec.score)),
+        )
+    } else {
+        format!(
+            "        {{\n            \"action\": \"{}\"\n        }}",
+            action_label(rec.action)
+        )
+    }
+}
+
+fn json_report_recommendation_item(rec: &hybrid_vm::Recommendation) -> String {
+    if let Some((left, right)) = rec.target_pair {
+        format!(
+            "            {{\n                \"action\": \"{}\",\n                \"target_pair\": [\"{}\", \"{}\"]\n            }}",
+            action_label(rec.action),
+            concept_id_string(left),
+            concept_id_string(right),
+        )
+    } else if let Some(target) = rec.target {
+        format!(
+            "            {{\n                \"target\": \"{}\",\n                \"action\": \"{}\",\n                \"score\": {}\n            }}",
+            concept_id_string(target),
+            action_label(rec.action),
+            json_num(round2(rec.score)),
+        )
+    } else {
+        format!(
+            "            {{\n                \"action\": \"{}\"\n            }}",
+            action_label(rec.action)
+        )
     }
 }
 
@@ -498,6 +661,7 @@ mod tests {
     use super::{
         Commands, ParsedCommand, dedup_parsed_ids, parse_command, parse_concept_id, parse_metric,
     };
+    use hybrid_vm::DecisionWeights;
 
     #[test]
     fn concept_id_parses_prefix() {
@@ -554,5 +718,35 @@ mod tests {
     #[test]
     fn metric_rounding_works() {
         assert_eq!(parse_metric("0.416").expect("metric"), 0.42);
+    }
+
+    #[test]
+    fn decide_command_parses_with_weights() {
+        let parsed = parse_command(&[
+            "decide".to_string(),
+            "C1".to_string(),
+            "C2".to_string(),
+            "--weights".to_string(),
+            "coherence=0.4".to_string(),
+            "stability=0.3".to_string(),
+            "conflict=0.2".to_string(),
+            "tradeoff=0.1".to_string(),
+        ])
+        .expect("parsed");
+        assert_eq!(
+            parsed,
+            ParsedCommand {
+                command: Commands::Decide {
+                    concept_ids: vec!["C1".to_string(), "C2".to_string()],
+                    weights: DecisionWeights {
+                        coherence: 0.4,
+                        stability: 0.3,
+                        conflict: 0.2,
+                        tradeoff: 0.1,
+                    },
+                },
+                json: false,
+            }
+        );
     }
 }

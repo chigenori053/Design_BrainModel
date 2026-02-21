@@ -100,7 +100,12 @@ mod tests {
         v[1] = 1.0 - seed;
         s[0] = 1.0 - seed;
         s[1] = seed;
-        ConceptQuery { v, a, s }
+        ConceptQuery {
+            v,
+            a,
+            s,
+            polarity: 0,
+        }
     }
 
     #[test]

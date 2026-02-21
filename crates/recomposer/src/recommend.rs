@@ -1,10 +1,8 @@
 use semantic_dhm::{ConceptId, ConceptQuery, ConceptUnit, ResonanceWeights, resonance};
 
 use crate::Recomposer;
-use crate::constants::{
-    DIRECTIONAL_CONFLICT_NEG_THRESHOLD, DIRECTIONAL_CONFLICT_POS_THRESHOLD,
-    STRUCTURAL_CONFLICT_THRESHOLD,
-};
+use crate::consistency::compute_consistency;
+use crate::constants::STRUCTURAL_CONFLICT_THRESHOLD;
 use crate::explain::round2;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -16,16 +14,17 @@ pub struct RecommendationInput {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ActionType {
+    ResolveStructuralConflict,
+    HighlightTradeoff,
     Merge,
     Refine,
-    ResolveDirectionalConflict,
     ApplyPattern,
-    Separate,
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Recommendation {
-    pub target: ConceptId,
+    pub target: Option<ConceptId>,
+    pub target_pair: Option<(ConceptId, ConceptId)>,
     pub action: ActionType,
     pub score: f32,
     pub rationale: String,
@@ -47,11 +46,59 @@ impl Recomposer {
             v: input.query.v.clone(),
             a: input.query.a,
             s: input.query.s.clone(),
+            polarity: input.query.polarity,
         }
         .normalized();
 
         let mut candidates = input.candidates.clone();
         candidates.sort_by(|l, r| l.id.cmp(&r.id));
+
+        if candidates.is_empty() {
+            return RecommendationReport {
+                summary: "No recommendation candidates available.".to_string(),
+                recommendations: Vec::new(),
+            };
+        }
+
+        let mut all_concepts = Vec::with_capacity(candidates.len() + 1);
+        all_concepts.push(input.query.clone());
+        all_concepts.extend(candidates.clone());
+        all_concepts.sort_by(|l, r| l.id.cmp(&r.id));
+
+        if let Some((left, right, score)) = first_structural_conflict_pair(&all_concepts, weights) {
+            return RecommendationReport {
+                summary: "Conflict areas require attention.".to_string(),
+                recommendations: vec![Recommendation {
+                    target: None,
+                    target_pair: Some((left, right)),
+                    action: ActionType::ResolveStructuralConflict,
+                    score: round2(score),
+                    rationale: format!(
+                        "Resolve structural conflict between Concept {} and Concept {}.",
+                        left.0, right.0
+                    ),
+                }],
+            };
+        }
+
+        let consistency = compute_consistency(&all_concepts, weights);
+        if let Some(t) = consistency.report.tradeoffs.first() {
+            return RecommendationReport {
+                summary: "Mixed structural signals detected.".to_string(),
+                recommendations: vec![Recommendation {
+                    target: None,
+                    target_pair: Some(t.pair),
+                    action: ActionType::HighlightTradeoff,
+                    score: round2(t.tension),
+                    rationale: format!(
+                        "Design tension detected between Concept {} and Concept {} (tension={:.2}). Consider prioritization.",
+                        t.pair.0.0,
+                        t.pair.1.0,
+                        round2(t.tension)
+                    ),
+                }],
+            };
+        }
 
         let mut recommendations = candidates
             .into_iter()
@@ -79,27 +126,15 @@ fn recommend_one(
     c: &ConceptUnit,
     weights: &ResonanceWeights,
 ) -> Recommendation {
-    let v_sim = dot_norm(&query.v, &c.v);
     let s_sim = dot_norm(&query.s, &c.s);
     let a_diff = (query.a - c.a).abs();
     let r = resonance(query, c, *weights);
 
-    let directional_conflict = (v_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD
-        && s_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD)
-        || (v_sim <= DIRECTIONAL_CONFLICT_NEG_THRESHOLD
-            && s_sim >= DIRECTIONAL_CONFLICT_POS_THRESHOLD);
-
-    // Priority: Merge -> Refine -> ResolveDirectionalConflict -> ApplyPattern -> Separate
+    // Step3 fallback (no structural conflict/tradeoff in the set): Merge -> Refine -> ApplyPattern
     let action = if r >= 0.60 && a_diff < 0.40 {
         ActionType::Merge
     } else if r >= 0.60 && a_diff >= 0.40 {
         ActionType::Refine
-    } else if directional_conflict {
-        ActionType::ResolveDirectionalConflict
-    } else if (0.10..0.60).contains(&r) && s_sim >= 0.60 {
-        ActionType::ApplyPattern
-    } else if r < STRUCTURAL_CONFLICT_THRESHOLD {
-        ActionType::Separate
     } else {
         ActionType::ApplyPattern
     };
@@ -115,30 +150,48 @@ fn recommend_one(
             c.id.0,
             round2(a_diff)
         ),
-        ActionType::ResolveDirectionalConflict => format!(
-            "Consider resolving directional conflict with Concept {}. Semantic and structural directions diverge (v_sim={:.2}, s_sim={:.2}).",
-            c.id.0,
-            round2(v_sim),
-            round2(s_sim)
-        ),
         ActionType::ApplyPattern => format!(
             "Consider applying structural pattern from Concept {}. Structural similarity detected (s_sim={:.2}).",
             c.id.0,
             round2(s_sim)
         ),
-        ActionType::Separate => format!(
-            "Consider separating from Concept {}. Structural conflict detected (R={:.2}).",
-            c.id.0,
-            round2(r)
-        ),
+        ActionType::ResolveStructuralConflict | ActionType::HighlightTradeoff => {
+            "See global recommendation context.".to_string()
+        }
     };
 
     Recommendation {
-        target: c.id,
+        target: Some(c.id),
+        target_pair: None,
         action,
         score: round2(r),
         rationale,
     }
+}
+
+fn first_structural_conflict_pair(
+    concepts: &[ConceptUnit],
+    weights: &ResonanceWeights,
+) -> Option<(ConceptId, ConceptId, f32)> {
+    for i in 0..concepts.len() {
+        for j in (i + 1)..concepts.len() {
+            let c1 = &concepts[i];
+            let c2 = &concepts[j];
+            let query = ConceptQuery {
+                v: c1.v.clone(),
+                a: c1.a,
+                s: c1.s.clone(),
+                polarity: c1.polarity,
+            }
+            .normalized();
+            let r = resonance(&query, c2, *weights);
+            let polarity_conflict = (c1.polarity as i16) * (c2.polarity as i16) < 0;
+            if polarity_conflict || r < STRUCTURAL_CONFLICT_THRESHOLD {
+                return Some((c1.id, c2.id, r));
+            }
+        }
+    }
+    None
 }
 
 pub(crate) fn recommendation_summary(recs: &[Recommendation]) -> String {
@@ -148,9 +201,10 @@ pub(crate) fn recommendation_summary(recs: &[Recommendation]) -> String {
 
     for r in recs {
         match r.action {
+            ActionType::ResolveStructuralConflict => conflict_related += 2,
+            ActionType::HighlightTradeoff => conflict_related += 1,
             ActionType::Merge | ActionType::Refine => merge_refine += 1,
             ActionType::ApplyPattern => apply += 1,
-            ActionType::ResolveDirectionalConflict | ActionType::Separate => conflict_related += 1,
         }
     }
 
@@ -185,7 +239,7 @@ fn l2_norm(v: &[f32]) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use semantic_dhm::{ConceptQuery, SemanticDhm};
+    use semantic_dhm::{ConceptId, ConceptQuery, SemanticDhm};
 
     use super::{ActionType, RecommendationInput, Recomposer};
 
@@ -196,11 +250,16 @@ mod tests {
         v[1] = 1.0 - seed;
         s[0] = 1.0 - seed;
         s[1] = seed;
-        ConceptQuery { v, a, s }
+        ConceptQuery {
+            v,
+            a,
+            s,
+            polarity: 0,
+        }
     }
 
     #[test]
-    fn recommend_merge_refine_apply_separate_and_priority() {
+    fn case_d_homogeneous_prefers_merge_or_apply() {
         let mut dhm = SemanticDhm::in_memory().expect("mem");
         let q_id = dhm.insert_query(&ConceptQuery {
             v: {
@@ -214,6 +273,7 @@ mod tests {
                 s[0] = 1.0;
                 s
             },
+            polarity: 0,
         });
         let query = dhm.get(q_id).expect("q");
 
@@ -231,34 +291,7 @@ mod tests {
                 s[1] = 0.03;
                 s
             },
-        });
-        let c_refine_id = dhm.insert_query(&ConceptQuery {
-            v: {
-                let mut v = vec![0.0; 384];
-                v[0] = 0.98;
-                v[1] = 0.02;
-                v
-            },
-            a: 0.85,
-            s: {
-                let mut s = vec![0.0; 384];
-                s[0] = 0.96;
-                s[1] = 0.04;
-                s
-            },
-        });
-        let c_directional_id = dhm.insert_query(&ConceptQuery {
-            v: {
-                let mut v = vec![0.0; 384];
-                v[0] = 1.0;
-                v
-            },
-            a: 0.20,
-            s: {
-                let mut s = vec![0.0; 384];
-                s[0] = -1.0;
-                s
-            },
+            polarity: 0,
         });
         let c_apply_id = dhm.insert_query(&ConceptQuery {
             v: {
@@ -274,21 +307,7 @@ mod tests {
                 s[1] = 0.60;
                 s
             },
-        });
-        let c_sep_id = dhm.insert_query(&ConceptQuery {
-            v: {
-                let mut v = vec![0.0; 384];
-                v[0] = -0.9;
-                v[1] = -0.1;
-                v
-            },
-            a: 0.95,
-            s: {
-                let mut s = vec![0.0; 384];
-                s[0] = -0.9;
-                s[1] = -0.1;
-                s
-            },
+            polarity: 0,
         });
 
         let r = Recomposer;
@@ -296,36 +315,27 @@ mod tests {
             &RecommendationInput {
                 query,
                 candidates: vec![
-                    dhm.get(c_refine_id).expect("r"),
-                    dhm.get(c_sep_id).expect("s"),
                     dhm.get(c_merge_id).expect("m"),
                     dhm.get(c_apply_id).expect("a"),
-                    dhm.get(c_directional_id).expect("d"),
                 ],
                 top_k: 10,
             },
             &dhm.weights(),
         );
 
-        let action_of = |id| {
+        let action_of = |id| -> Option<ActionType> {
             rec.recommendations
                 .iter()
-                .find(|x| x.target == id)
+                .find(|x| x.target == Some(id))
                 .map(|x| x.action)
         };
 
         assert_eq!(action_of(c_merge_id), Some(ActionType::Merge));
-        assert_eq!(action_of(c_refine_id), Some(ActionType::Refine));
-        assert_eq!(
-            action_of(c_directional_id),
-            Some(ActionType::ResolveDirectionalConflict)
-        );
         assert_eq!(action_of(c_apply_id), Some(ActionType::ApplyPattern));
-        assert_eq!(action_of(c_sep_id), Some(ActionType::Separate));
     }
 
     #[test]
-    fn no_separate_when_r_above_conflict_threshold() {
+    fn case_a_tradeoff_prefers_highlight_tradeoff() {
         let mut dhm = SemanticDhm::in_memory().expect("mem");
         let q_id = dhm.insert_query(&ConceptQuery {
             v: {
@@ -339,21 +349,21 @@ mod tests {
                 s[0] = 1.0;
                 s
             },
+            polarity: 0,
         });
         let c_id = dhm.insert_query(&ConceptQuery {
             v: {
                 let mut v = vec![0.0; 384];
-                v[0] = 0.0567;
-                v[1] = 0.9984;
+                v[0] = 1.0;
                 v
             },
-            a: 0.2,
+            a: 0.60,
             s: {
                 let mut s = vec![0.0; 384];
-                s[0] = 0.0;
-                s[1] = 1.0;
+                s[0] = 1.0;
                 s
             },
+            polarity: 0,
         });
 
         let query = dhm.get(q_id).expect("q");
@@ -367,15 +377,17 @@ mod tests {
             },
             &dhm.weights(),
         );
-        assert!(
-            rec.recommendations
-                .iter()
-                .all(|r| r.action != ActionType::Separate)
+
+        assert_eq!(rec.recommendations.len(), 1);
+        assert_eq!(rec.recommendations[0].action, ActionType::HighlightTradeoff);
+        assert_eq!(
+            rec.recommendations[0].target_pair,
+            Some((ConceptId(1), ConceptId(2)))
         );
     }
 
     #[test]
-    fn separate_threshold_boundary_is_strict() {
+    fn case_b_structural_conflict_prefers_resolve_conflict() {
         let mut dhm = SemanticDhm::in_memory().expect("mem");
         let q_id = dhm.insert_query(&ConceptQuery {
             v: {
@@ -389,59 +401,44 @@ mod tests {
                 s[0] = 1.0;
                 s
             },
+            polarity: -1,
         });
         let query = dhm.get(q_id).expect("q");
 
-        // R = -0.15
-        let boundary_id = dhm.insert_query(&ConceptQuery {
+        let conflict_id = dhm.insert_query(&ConceptQuery {
             v: {
                 let mut v = vec![0.0; 384];
-                v[1] = 1.0;
+                v[0] = 1.0;
                 v
             },
-            a: 0.85,
+            a: 0.90,
             s: {
                 let mut s = vec![0.0; 384];
-                s[1] = 1.0;
+                s[0] = -1.0;
                 s
             },
-        });
-        // R < -0.15
-        let below_id = dhm.insert_query(&ConceptQuery {
-            v: {
-                let mut v = vec![0.0; 384];
-                v[1] = 1.0;
-                v
-            },
-            a: 0.85005,
-            s: {
-                let mut s = vec![0.0; 384];
-                s[1] = 1.0;
-                s
-            },
+            polarity: 1,
         });
 
         let r = Recomposer;
         let rec = r.recommend(
             &RecommendationInput {
                 query,
-                candidates: vec![
-                    dhm.get(boundary_id).expect("boundary"),
-                    dhm.get(below_id).expect("below"),
-                ],
+                candidates: vec![dhm.get(conflict_id).expect("conflict")],
                 top_k: 2,
             },
             &dhm.weights(),
         );
 
-        let action_of = |id| {
-            rec.recommendations
-                .iter()
-                .find(|x| x.target == id)
-                .map(|x| x.action)
-        };
-        assert_ne!(action_of(boundary_id), Some(ActionType::Separate));
-        assert_eq!(action_of(below_id), Some(ActionType::Separate));
+        assert_eq!(rec.recommendations.len(), 1);
+        assert_eq!(
+            rec.recommendations[0].action,
+            ActionType::ResolveStructuralConflict
+        );
+        assert_eq!(
+            rec.recommendations[0].target_pair,
+            Some((ConceptId(1), ConceptId(2)))
+        );
     }
 
     #[test]

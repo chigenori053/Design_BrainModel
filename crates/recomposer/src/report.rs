@@ -127,7 +127,12 @@ mod tests {
         v[1] = v1;
         s[0] = s0;
         s[1] = s1;
-        ConceptQuery { v, a, s }
+        ConceptQuery {
+            v,
+            a,
+            s,
+            polarity: 0,
+        }
     }
 
     #[test]

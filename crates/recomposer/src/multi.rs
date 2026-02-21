@@ -208,6 +208,7 @@ mod tests {
                 s[0] = 0.9;
                 s
             },
+            polarity: 0,
         });
         let id2 = dhm.insert_query(&ConceptQuery {
             v: {
@@ -222,6 +223,7 @@ mod tests {
                 s[1] = 1.0;
                 s
             },
+            polarity: 0,
         });
         let c1 = dhm.get(id1).expect("c1");
         let c2 = dhm.get(id2).expect("c2");
