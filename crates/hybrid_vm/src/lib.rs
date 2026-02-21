@@ -6,17 +6,19 @@ use core_types::ObjectiveVector;
 use dhm::Dhm;
 use field_engine::{FieldEngine, TargetField};
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
-use meaning_extractor::MeaningExtractor;
 use memory_space::{DesignState, InterferenceMode, MemoryInterferenceTelemetry};
 use memory_store::{FileStore, InMemoryStore};
 use recomposer::{
-    DesignReport, MultiConceptInput, RecommendationInput, Recomposer, ResonanceReport,
+    DecisionReport, DesignReport, MultiConceptInput, RecommendationInput, Recomposer,
+    ResonanceReport,
 };
-use semantic_dhm::{ConceptUnit, SemanticDhm};
+use semantic_dhm::{ConceptUnit, RequirementRole, SemanticDhm, SemanticL1Dhm, SemanticUnitL1};
 
 pub use chm::Chm;
-pub use recomposer::ActionType;
-pub use semantic_dhm::ConceptId;
+pub use recomposer::{ActionType, DecisionWeights, Recommendation};
+pub use semantic_dhm::{
+    ConceptId, L1Id, RequirementRole as L1RequirementRole, SemanticUnitL1Input,
+};
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
 pub trait Evaluator {
@@ -63,7 +65,7 @@ pub struct HybridVM {
     dhm: Dhm,
     language_dhm: LanguageDhm<FileStore<LangId, LanguageUnit>>,
     semantic_dhm: SemanticDhm<FileStore<ConceptId, ConceptUnit>>,
-    meaning_extractor: MeaningExtractor,
+    semantic_l1_dhm: SemanticL1Dhm<FileStore<L1Id, SemanticUnitL1>>,
     recomposer: Recomposer,
     mode: ExecutionMode,
     trace: Vec<HybridTraceRow>,
@@ -75,12 +77,14 @@ impl HybridVM {
             .expect("failed to initialize LanguageDHM");
         let semantic_dhm = Self::semantic_dhm_file(default_semantic_store_path())
             .expect("failed to initialize SemanticDHM");
+        let semantic_l1_dhm = Self::semantic_l1_dhm_file(default_l1_store_path())
+            .expect("failed to initialize SemanticL1DHM");
         Self {
             evaluator,
             dhm,
             language_dhm,
             semantic_dhm,
-            meaning_extractor: MeaningExtractor,
+            semantic_l1_dhm,
             recomposer: Recomposer,
             mode,
             trace: Vec::new(),
@@ -137,11 +141,33 @@ impl HybridVM {
     pub fn analyze_text(&mut self, text: &str) -> Result<ConceptUnit, HybridVmError> {
         let embedding = embedding_from_text(text);
         let _ = self.language_dhm.insert(text, embedding.clone());
-        let meaning = self.meaning_extractor.extract(text, &embedding);
-        let concept_id = self.semantic_dhm.insert_meaning(&meaning);
+        let fragments = extract_l1_fragments(text);
+        let mut units = Vec::new();
+        for fragment in fragments {
+            let l1_id = self.semantic_l1_dhm.insert(&SemanticUnitL1Input {
+                role: infer_requirement_role(&fragment),
+                polarity: infer_polarity(&fragment),
+                abstraction: infer_abstraction(&fragment),
+                vector: embedding_from_text(&fragment),
+                source_text: fragment.clone(),
+            });
+            let Some(unit) = self.semantic_l1_dhm.get(l1_id) else {
+                return Err(HybridVmError::InvalidInput("failed to persist l1 unit"));
+            };
+            units.push(unit);
+        }
+        let concept_id = self.semantic_dhm.insert_from_l1_units(&units);
         self.semantic_dhm
             .get(concept_id)
             .ok_or(HybridVmError::ConceptNotFound(concept_id))
+    }
+
+    pub fn get_l1_unit(&self, id: L1Id) -> Option<SemanticUnitL1> {
+        self.semantic_l1_dhm.get(id)
+    }
+
+    pub fn all_l1_units(&self) -> Vec<SemanticUnitL1> {
+        self.semantic_l1_dhm.all_units()
     }
 
     pub fn get_concept(&self, id: ConceptId) -> Option<ConceptUnit> {
@@ -163,6 +189,7 @@ impl HybridVM {
             v: c1.v.clone(),
             a: c1.a,
             s: c1.s.clone(),
+            polarity: c1.polarity,
         };
         let score = semantic_dhm::resonance(&query, &c2, self.semantic_dhm.weights());
         let v_sim = dot_norm(&c1.v, &c2.v);
@@ -260,6 +287,29 @@ impl HybridVM {
             .generate_report(&concepts, &self.semantic_dhm.weights(), top_k))
     }
 
+    pub fn decide(
+        &self,
+        ids: &[ConceptId],
+        weights: DecisionWeights,
+    ) -> Result<DecisionReport, HybridVmError> {
+        let ids = dedup_ids(ids);
+        if ids.len() < 2 {
+            return Err(HybridVmError::InvalidInput(
+                "at least two concepts required",
+            ));
+        }
+        let mut concepts = Vec::with_capacity(ids.len());
+        for id in ids {
+            let Some(c) = self.semantic_dhm.get(id) else {
+                return Err(HybridVmError::ConceptNotFound(id));
+            };
+            concepts.push(c);
+        }
+        self.recomposer
+            .decide(&concepts, weights, &self.semantic_dhm.weights())
+            .map_err(HybridVmError::Decision)
+    }
+
     pub fn default_shm() -> Shm {
         Shm::with_default_rules()
     }
@@ -300,10 +350,21 @@ impl HybridVM {
         SemanticDhm::in_memory()
     }
 
+    pub fn semantic_l1_dhm_in_memory()
+    -> std::io::Result<SemanticL1Dhm<InMemoryStore<L1Id, SemanticUnitL1>>> {
+        SemanticL1Dhm::in_memory()
+    }
+
     pub fn semantic_dhm_file(
         path: impl AsRef<Path>,
     ) -> std::io::Result<SemanticDhm<FileStore<ConceptId, ConceptUnit>>> {
         SemanticDhm::file(path)
+    }
+
+    pub fn semantic_l1_dhm_file(
+        path: impl AsRef<Path>,
+    ) -> std::io::Result<SemanticL1Dhm<FileStore<L1Id, SemanticUnitL1>>> {
+        SemanticL1Dhm::file(path)
     }
 
     pub fn recomposer() -> Recomposer {
@@ -316,12 +377,13 @@ impl HybridVM {
         let dhm = Dhm::open(base.join("dhm.bin"), memory_mode_from_env())?;
         let language_dhm = Self::language_dhm_file(base.join("language_dhm.bin"))?;
         let semantic_dhm = Self::semantic_dhm_file(base.join("semantic_dhm.bin"))?;
+        let semantic_l1_dhm = Self::semantic_l1_dhm_file(base.join("semantic_l1_dhm.bin"))?;
         Ok(Self {
             evaluator: StructuralEvaluator::default(),
             dhm,
             language_dhm,
             semantic_dhm,
-            meaning_extractor: MeaningExtractor,
+            semantic_l1_dhm,
             recomposer: Recomposer,
             mode: ExecutionMode::RecallFirst,
             trace: Vec::new(),
@@ -334,6 +396,7 @@ pub enum HybridVmError {
     Io(io::Error),
     ConceptNotFound(ConceptId),
     InvalidInput(&'static str),
+    Decision(recomposer::DecisionError),
 }
 
 impl std::fmt::Display for HybridVmError {
@@ -342,6 +405,7 @@ impl std::fmt::Display for HybridVmError {
             Self::Io(err) => write!(f, "{err}"),
             Self::ConceptNotFound(_) => write!(f, "Concept not found"),
             Self::InvalidInput(msg) => write!(f, "{msg}"),
+            Self::Decision(err) => write!(f, "{err}"),
         }
     }
 }
@@ -377,6 +441,10 @@ fn default_semantic_store_path() -> PathBuf {
     std::env::temp_dir().join("hybrid_vm_semantic_dhm.bin")
 }
 
+fn default_l1_store_path() -> PathBuf {
+    std::env::temp_dir().join("hybrid_vm_semantic_l1_dhm.bin")
+}
+
 fn embedding_from_text(text: &str) -> Vec<f32> {
     let mut out = vec![0.0f32; language_dhm::EMBEDDING_DIM];
     for (i, b) in text.bytes().enumerate() {
@@ -386,6 +454,106 @@ fn embedding_from_text(text: &str) -> Vec<f32> {
         out[idx] += sign * value;
     }
     out
+}
+
+fn extract_l1_fragments(text: &str) -> Vec<String> {
+    let mut cleaned = text.replace('\n', " ");
+    for sep in [
+        "。",
+        "、",
+        ",",
+        ";",
+        " and ",
+        " but ",
+        " しかし ",
+        " ただし ",
+        " また ",
+    ] {
+        cleaned = cleaned.replace(sep, "|");
+    }
+    let mut out = cleaned
+        .split('|')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<Vec<_>>();
+    if out.is_empty() {
+        out.push(text.trim().to_string());
+    }
+    out
+}
+
+fn infer_requirement_role(text: &str) -> RequirementRole {
+    let t = text.to_ascii_lowercase();
+    if t.contains("avoid")
+        || t.contains("prohibit")
+        || t.contains("forbid")
+        || t.contains("禁止")
+        || t.contains("避け")
+    {
+        RequirementRole::Prohibition
+    } else if t.contains("must")
+        || t.contains("以下")
+        || t.contains("上限")
+        || t.contains("constraint")
+        || t.contains("制約")
+    {
+        RequirementRole::Constraint
+    } else if t.contains("optimiz")
+        || t.contains("best")
+        || t.contains("できるだけ")
+        || t.contains("省エネ")
+    {
+        RequirementRole::Optimization
+    } else {
+        RequirementRole::Goal
+    }
+}
+
+fn infer_polarity(text: &str) -> i8 {
+    let t = text.to_ascii_lowercase();
+    let negative = t.contains("not")
+        || t.contains("avoid")
+        || t.contains("no ")
+        || t.contains("不要")
+        || t.contains("禁止")
+        || t.contains("避け");
+    let positive = t.contains("improve")
+        || t.contains("enhance")
+        || t.contains("高速")
+        || t.contains("強化")
+        || t.contains("向上");
+    match (positive, negative) {
+        (true, false) => 1,
+        (false, true) => -1,
+        _ => 0,
+    }
+}
+
+fn infer_abstraction(text: &str) -> f32 {
+    let t = text.to_ascii_lowercase();
+    if t.contains("react")
+        || t.contains("api")
+        || t.contains("sql")
+        || t.contains("実装")
+        || t.contains("library")
+    {
+        0.1
+    } else if t.contains("ui")
+        || t.contains("frontend")
+        || t.contains("back-end")
+        || t.contains("web")
+    {
+        0.4
+    } else if t.contains("usability")
+        || t.contains("使いやす")
+        || t.contains("architecture")
+        || t.contains("品質")
+    {
+        0.8
+    } else {
+        0.5
+    }
 }
 
 fn dot_norm(a: &[f32], b: &[f32]) -> f32 {
@@ -590,5 +758,18 @@ mod tests {
         let simple_obj = evaluator.evaluate(&simple);
         let complex_obj = evaluator.evaluate(&complex);
         assert!(simple_obj.f_struct > complex_obj.f_struct);
+    }
+
+    #[test]
+    fn analyze_text_creates_l1_and_l2_link() {
+        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default());
+        let concept = vm
+            .analyze_text("高速化したい。クラウド依存は避ける")
+            .expect("analyze");
+        assert!(!concept.l1_refs.is_empty());
+        let all_l1 = vm.all_l1_units();
+        assert!(all_l1.len() >= concept.l1_refs.len());
+        let first = vm.get_l1_unit(concept.l1_refs[0]).expect("l1");
+        assert!(!first.source_text.is_empty());
     }
 }

@@ -11,6 +11,96 @@ pub const D_SEM: usize = 384;
 pub const D_STRUCT: usize = 384;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct L1Id(pub u128);
+
+impl Codec for L1Id {
+    fn encode(&self) -> Vec<u8> {
+        self.0.to_le_bytes().to_vec()
+    }
+
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        if bytes.len() != 16 {
+            return Err(io::Error::new(io::ErrorKind::InvalidData, "invalid L1Id"));
+        }
+        let mut buf = [0u8; 16];
+        buf.copy_from_slice(bytes);
+        Ok(Self(u128::from_le_bytes(buf)))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RequirementRole {
+    Goal,
+    Constraint,
+    Optimization,
+    Prohibition,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticUnitL1 {
+    pub id: L1Id,
+    pub role: RequirementRole,
+    pub polarity: i8,
+    pub abstraction: f32,
+    pub vector: Vec<f32>,
+    pub source_text: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticUnitL1Input {
+    pub role: RequirementRole,
+    pub polarity: i8,
+    pub abstraction: f32,
+    pub vector: Vec<f32>,
+    pub source_text: String,
+}
+
+impl Codec for SemanticUnitL1 {
+    fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(&self.id.0.to_le_bytes());
+        out.push(role_to_u8(self.role));
+        out.push(self.polarity as u8);
+        out.extend_from_slice(&self.abstraction.to_le_bytes());
+        out.extend_from_slice(&(self.vector.len() as u32).to_le_bytes());
+        for x in &self.vector {
+            out.extend_from_slice(&x.to_le_bytes());
+        }
+        let src = self.source_text.as_bytes();
+        out.extend_from_slice(&(src.len() as u32).to_le_bytes());
+        out.extend_from_slice(src);
+        out
+    }
+
+    fn decode(bytes: &[u8]) -> io::Result<Self> {
+        let mut idx = 0usize;
+        let id = read_u128(bytes, &mut idx)?;
+        let role = role_from_u8(read_u8(bytes, &mut idx)?)?;
+        let polarity = normalize_polarity_i8(read_u8(bytes, &mut idx)? as i8);
+        let abstraction = read_f32(bytes, &mut idx)?.clamp(0.0, 1.0);
+        let v_len = read_u32(bytes, &mut idx)? as usize;
+        let mut vector = Vec::with_capacity(v_len);
+        for _ in 0..v_len {
+            vector.push(read_f32(bytes, &mut idx)?);
+        }
+        let src_len = read_u32(bytes, &mut idx)? as usize;
+        if idx.saturating_add(src_len) > bytes.len() {
+            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "source_text"));
+        }
+        let source_text = String::from_utf8(bytes[idx..idx + src_len].to_vec())
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "source_text"))?;
+        Ok(Self {
+            id: L1Id(id),
+            role,
+            polarity,
+            abstraction,
+            vector: normalize_with_dim(&vector, D_SEM),
+            source_text,
+        })
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ConceptId(pub u64);
 
 impl Codec for ConceptId {
@@ -34,9 +124,11 @@ impl Codec for ConceptId {
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConceptUnit {
     pub id: ConceptId,
+    pub l1_refs: Vec<L1Id>,
     pub v: Vec<f32>,
     pub a: f32,
     pub s: Vec<f32>,
+    pub polarity: i8,
     pub timestamp: u64,
 }
 
@@ -53,7 +145,12 @@ impl Codec for ConceptUnit {
         for x in &self.s {
             out.extend_from_slice(&x.to_le_bytes());
         }
+        out.push(self.polarity as u8);
         out.extend_from_slice(&self.timestamp.to_le_bytes());
+        out.extend_from_slice(&(self.l1_refs.len() as u32).to_le_bytes());
+        for id in &self.l1_refs {
+            out.extend_from_slice(&id.0.to_le_bytes());
+        }
         out
     }
 
@@ -75,13 +172,31 @@ impl Codec for ConceptUnit {
             s.push(read_f32(bytes, &mut idx)?);
         }
 
-        let timestamp = read_u64(bytes, &mut idx)?;
+        let (polarity, timestamp) = if idx.saturating_add(8) == bytes.len() {
+            (0, read_u64(bytes, &mut idx)?)
+        } else {
+            let p = read_u8(bytes, &mut idx)? as i8;
+            (normalize_polarity_i8(p), read_u64(bytes, &mut idx)?)
+        };
+
+        let l1_refs = if idx < bytes.len() {
+            let refs_len = read_u32(bytes, &mut idx)? as usize;
+            let mut refs = Vec::with_capacity(refs_len);
+            for _ in 0..refs_len {
+                refs.push(L1Id(read_u128(bytes, &mut idx)?));
+            }
+            refs
+        } else {
+            Vec::new()
+        };
 
         Ok(Self {
             id: ConceptId(id),
+            l1_refs,
             v,
             a,
             s,
+            polarity,
             timestamp,
         })
     }
@@ -120,6 +235,7 @@ pub struct ConceptQuery {
     pub v: Vec<f32>,
     pub a: f32,
     pub s: Vec<f32>,
+    pub polarity: i8,
 }
 
 impl ConceptQuery {
@@ -128,6 +244,7 @@ impl ConceptQuery {
             v: normalize_with_dim(&self.v, D_SEM),
             a: self.a.clamp(0.0, 1.0),
             s: normalize_with_dim(&self.s, D_STRUCT),
+            polarity: normalize_polarity_i8(self.polarity),
         }
     }
 }
@@ -139,6 +256,14 @@ where
     store: S,
     next_id: u64,
     weights: ResonanceWeights,
+}
+
+pub struct SemanticL1Dhm<S>
+where
+    S: Store<L1Id, SemanticUnitL1>,
+{
+    store: S,
+    next_id: u128,
 }
 
 impl<S> SemanticDhm<S>
@@ -176,9 +301,11 @@ where
 
         let unit = ConceptUnit {
             id,
+            l1_refs: Vec::new(),
             v: q.v,
             a: q.a,
             s: q.s,
+            polarity: q.polarity,
             timestamp: now_ts(),
         };
 
@@ -220,6 +347,23 @@ where
     pub fn weights(&self) -> ResonanceWeights {
         self.weights
     }
+
+    pub fn insert_from_l1_units(&mut self, l1_units: &[SemanticUnitL1]) -> ConceptId {
+        let query = query_from_l1_units(l1_units);
+        let id = ConceptId(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        let unit = ConceptUnit {
+            id,
+            l1_refs: l1_units.iter().map(|u| u.id).collect(),
+            v: query.v,
+            a: query.a,
+            s: query.s,
+            polarity: query.polarity,
+            timestamp: now_ts(),
+        };
+        self.store.put(id, unit).expect("failed to store concept");
+        id
+    }
 }
 
 impl SemanticDhm<InMemoryStore<ConceptId, ConceptUnit>> {
@@ -231,6 +375,59 @@ impl SemanticDhm<InMemoryStore<ConceptId, ConceptUnit>> {
 impl SemanticDhm<FileStore<ConceptId, ConceptUnit>> {
     pub fn file(path: impl AsRef<Path>) -> io::Result<Self> {
         Self::new(FileStore::open(path)?, ResonanceWeights::default())
+    }
+}
+
+impl<S> SemanticL1Dhm<S>
+where
+    S: Store<L1Id, SemanticUnitL1>,
+{
+    pub(crate) fn new(store: S) -> io::Result<Self> {
+        let next_id = store
+            .entries()?
+            .into_iter()
+            .map(|(id, _)| id.0)
+            .max()
+            .map(|v| v.saturating_add(1))
+            .unwrap_or(1);
+        Ok(Self { store, next_id })
+    }
+
+    pub fn insert(&mut self, input: &SemanticUnitL1Input) -> L1Id {
+        let id = L1Id(self.next_id);
+        self.next_id = self.next_id.saturating_add(1);
+        let unit = SemanticUnitL1 {
+            id,
+            role: input.role,
+            polarity: normalize_polarity_i8(input.polarity),
+            abstraction: input.abstraction.clamp(0.0, 1.0),
+            vector: normalize_with_dim(&input.vector, D_SEM),
+            source_text: input.source_text.clone(),
+        };
+        self.store.put(id, unit).expect("failed to store l1 unit");
+        id
+    }
+
+    pub fn get(&self, id: L1Id) -> Option<SemanticUnitL1> {
+        self.store.get(&id).unwrap_or(None)
+    }
+
+    pub fn all_units(&self) -> Vec<SemanticUnitL1> {
+        let mut entries = self.store.entries().unwrap_or_default();
+        entries.sort_by(|(l, _), (r, _)| l.cmp(r));
+        entries.into_iter().map(|(_, unit)| unit).collect()
+    }
+}
+
+impl SemanticL1Dhm<InMemoryStore<L1Id, SemanticUnitL1>> {
+    pub fn in_memory() -> io::Result<Self> {
+        Self::new(InMemoryStore::new())
+    }
+}
+
+impl SemanticL1Dhm<FileStore<L1Id, SemanticUnitL1>> {
+    pub fn file(path: impl AsRef<Path>) -> io::Result<Self> {
+        Self::new(FileStore::open(path)?)
     }
 }
 
@@ -265,6 +462,46 @@ pub fn phi(m: &MeaningStructure) -> ConceptQuery {
         v,
         a: m.abstraction_score.clamp(0.0, 1.0),
         s,
+        polarity: normalize_polarity_i8(m.polarity),
+    }
+}
+
+pub fn query_from_l1_units(units: &[SemanticUnitL1]) -> ConceptQuery {
+    if units.is_empty() {
+        return ConceptQuery {
+            v: vec![0.0; D_SEM],
+            a: 0.0,
+            s: vec![0.0; D_STRUCT],
+            polarity: 0,
+        };
+    }
+
+    let mut v_acc = vec![0.0f32; D_SEM];
+    let mut s_acc = vec![0.0f32; D_STRUCT];
+    let mut a_sum = 0.0f32;
+    let mut p_sum = 0i32;
+
+    for unit in units {
+        let v = normalize_with_dim(&unit.vector, D_SEM);
+        add_scaled(&mut v_acc, &v, 1.0);
+        add_scaled(&mut s_acc, &v, role_weight_from_requirement(unit.role));
+        a_sum += unit.abstraction.clamp(0.0, 1.0);
+        p_sum += unit.polarity as i32;
+    }
+
+    let polarity = if p_sum > 0 {
+        1
+    } else if p_sum < 0 {
+        -1
+    } else {
+        0
+    };
+
+    ConceptQuery {
+        v: normalize_with_dim(&v_acc, D_SEM),
+        a: (a_sum / units.len() as f32).clamp(0.0, 1.0),
+        s: normalize_with_dim(&s_acc, D_STRUCT),
+        polarity,
     }
 }
 
@@ -285,7 +522,17 @@ pub fn fuse(a: &ConceptUnit, b: &ConceptUnit) -> ConceptQuery {
     let v = normalize_with_dim(&add_vec(&a.v, &b.v), D_SEM);
     let s = normalize_with_dim(&add_vec(&a.s, &b.s), D_STRUCT);
     let abs = ((a.a + b.a) * 0.5).clamp(0.0, 1.0);
-    ConceptQuery { v, a: abs, s }
+    let polarity = if a.polarity == b.polarity {
+        a.polarity
+    } else {
+        0
+    };
+    ConceptQuery {
+        v,
+        a: abs,
+        s,
+        polarity,
+    }
 }
 
 pub fn abstract_move(c: &ConceptUnit, delta: f32) -> ConceptQuery {
@@ -293,6 +540,7 @@ pub fn abstract_move(c: &ConceptUnit, delta: f32) -> ConceptQuery {
         v: normalize_with_dim(&c.v, D_SEM),
         a: (c.a + delta).clamp(0.0, 1.0),
         s: normalize_with_dim(&c.s, D_STRUCT),
+        polarity: normalize_polarity_i8(c.polarity),
     }
 }
 
@@ -306,6 +554,7 @@ pub fn repulse(c: &ConceptUnit, conflict: &[f32], lambda: f32) -> ConceptQuery {
         v: normalize_with_dim(&shifted, D_SEM),
         a: c.a.clamp(0.0, 1.0),
         s: normalize_with_dim(&c.s, D_STRUCT),
+        polarity: normalize_polarity_i8(c.polarity),
     }
 }
 
@@ -409,6 +658,16 @@ fn read_u64(raw: &[u8], idx: &mut usize) -> io::Result<u64> {
     Ok(u64::from_le_bytes(buf))
 }
 
+fn read_u128(raw: &[u8], idx: &mut usize) -> io::Result<u128> {
+    if idx.saturating_add(16) > raw.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "u128"));
+    }
+    let mut buf = [0u8; 16];
+    buf.copy_from_slice(&raw[*idx..*idx + 16]);
+    *idx += 16;
+    Ok(u128::from_le_bytes(buf))
+}
+
 fn read_f32(raw: &[u8], idx: &mut usize) -> io::Result<f32> {
     if idx.saturating_add(4) > raw.len() {
         return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "f32"));
@@ -417,6 +676,51 @@ fn read_f32(raw: &[u8], idx: &mut usize) -> io::Result<f32> {
     buf.copy_from_slice(&raw[*idx..*idx + 4]);
     *idx += 4;
     Ok(f32::from_le_bytes(buf))
+}
+
+fn read_u8(raw: &[u8], idx: &mut usize) -> io::Result<u8> {
+    if idx.saturating_add(1) > raw.len() {
+        return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "u8"));
+    }
+    let value = raw[*idx];
+    *idx += 1;
+    Ok(value)
+}
+
+fn normalize_polarity_i8(p: i8) -> i8 {
+    match p.cmp(&0) {
+        std::cmp::Ordering::Less => -1,
+        std::cmp::Ordering::Greater => 1,
+        std::cmp::Ordering::Equal => 0,
+    }
+}
+
+fn role_to_u8(role: RequirementRole) -> u8 {
+    match role {
+        RequirementRole::Goal => 0,
+        RequirementRole::Constraint => 1,
+        RequirementRole::Optimization => 2,
+        RequirementRole::Prohibition => 3,
+    }
+}
+
+fn role_from_u8(raw: u8) -> io::Result<RequirementRole> {
+    match raw {
+        0 => Ok(RequirementRole::Goal),
+        1 => Ok(RequirementRole::Constraint),
+        2 => Ok(RequirementRole::Optimization),
+        3 => Ok(RequirementRole::Prohibition),
+        _ => Err(io::Error::new(io::ErrorKind::InvalidData, "invalid role")),
+    }
+}
+
+fn role_weight_from_requirement(role: RequirementRole) -> f32 {
+    match role {
+        RequirementRole::Goal => 1.0,
+        RequirementRole::Constraint => 1.2,
+        RequirementRole::Optimization => 0.9,
+        RequirementRole::Prohibition => 1.3,
+    }
 }
 
 #[cfg(test)]
@@ -462,6 +766,7 @@ mod tests {
                 },
             ],
             abstraction_score: 0.4,
+            polarity: 0,
         }
     }
 
@@ -551,5 +856,27 @@ mod tests {
     fn stability_condition() {
         assert!(is_stable(0.5001, 0.50015, 0.001));
         assert!(!is_stable(0.5, 0.8, 0.001));
+    }
+
+    #[test]
+    fn l1_store_roundtrip_and_l2_refs() {
+        let mut l1 = SemanticL1Dhm::in_memory().expect("l1");
+        let l1_id = l1.insert(&SemanticUnitL1Input {
+            role: RequirementRole::Goal,
+            polarity: 1,
+            abstraction: 0.8,
+            vector: vec![1.0; D_SEM],
+            source_text: "高速化したい".to_string(),
+        });
+        let unit = l1.get(l1_id).expect("unit");
+        assert_eq!(unit.role, RequirementRole::Goal);
+        assert_eq!(unit.polarity, 1);
+        assert_eq!(unit.source_text, "高速化したい");
+
+        let mut dhm = SemanticDhm::in_memory().expect("dhm");
+        let c_id = dhm.insert_from_l1_units(&[unit]);
+        let concept = dhm.get(c_id).expect("concept");
+        assert_eq!(concept.l1_refs.len(), 1);
+        assert_eq!(concept.l1_refs[0], l1_id);
     }
 }
