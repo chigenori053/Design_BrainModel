@@ -56,14 +56,14 @@ pub(crate) fn compute_consistency(
             let c1 = &sorted[i];
             let c2 = &sorted[j];
             let query = ConceptQuery {
-                v: c1.v.clone(),
+                v: c1.integrated_vector.clone(),
                 a: c1.a,
                 s: c1.s.clone(),
                 polarity: c1.polarity,
             }
             .normalized();
             let r = resonance(&query, c2, *weights);
-            let v_sim = dot_norm(&c1.v, &c2.v);
+            let v_sim = dot_norm(&c1.integrated_vector, &c2.integrated_vector);
             let s_sim = dot_norm(&c1.s, &c2.s);
             let a_diff = (c1.a - c2.a).abs();
 

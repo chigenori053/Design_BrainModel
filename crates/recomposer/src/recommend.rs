@@ -43,7 +43,7 @@ impl Recomposer {
         weights: &ResonanceWeights,
     ) -> RecommendationReport {
         let q = ConceptQuery {
-            v: input.query.v.clone(),
+            v: input.query.integrated_vector.clone(),
             a: input.query.a,
             s: input.query.s.clone(),
             polarity: input.query.polarity,
@@ -178,7 +178,7 @@ fn first_structural_conflict_pair(
             let c1 = &concepts[i];
             let c2 = &concepts[j];
             let query = ConceptQuery {
-                v: c1.v.clone(),
+                v: c1.integrated_vector.clone(),
                 a: c1.a,
                 s: c1.s.clone(),
                 polarity: c1.polarity,

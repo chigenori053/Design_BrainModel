@@ -17,9 +17,32 @@ use semantic_dhm::{ConceptUnit, RequirementRole, SemanticDhm, SemanticL1Dhm, Sem
 pub use chm::Chm;
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
 pub use semantic_dhm::{
-    ConceptId, L1Id, RequirementRole as L1RequirementRole, SemanticUnitL1Input,
+    ConceptId, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode, MeaningLayerSnapshot,
+    RequirementKind, RequirementRole as L1RequirementRole, SemanticUnitL1Input, Snapshotable,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
+
+const ABS_PRECISION: f64 = 1000.0;
+const ABSTRACTION_RULE_WEIGHT: f32 = 0.6;
+const ABSTRACTION_VECTOR_WEIGHT: f32 = 0.4;
+const SCORE_PRECISION: f64 = 1000.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DesignHypothesis {
+    pub requirements: Vec<DerivedRequirement>,
+    pub total_score: f64,
+    pub normalized_score: f64,
+    pub constraint_violation: bool,
+}
+
+impl DesignHypothesis {
+    pub fn dominant_requirement(&self) -> Option<RequirementKind> {
+        self.requirements
+            .iter()
+            .max_by(|l, r| l.strength.abs().total_cmp(&r.strength.abs()))
+            .map(|d| d.kind)
+    }
+}
 
 pub trait Evaluator {
     fn evaluate(&self, state: &DesignState) -> ObjectiveVector;
@@ -144,9 +167,10 @@ impl HybridVM {
         let fragments = extract_l1_fragments(text);
         let mut units = Vec::new();
         for fragment in fragments {
+            let role = infer_requirement_role(&fragment);
             let l1_id = self.semantic_l1_dhm.insert(&SemanticUnitL1Input {
-                role: infer_requirement_role(&fragment),
-                polarity: infer_polarity(&fragment),
+                role,
+                polarity: infer_polarity(role),
                 abstraction: infer_abstraction(&fragment),
                 vector: embedding_from_text(&fragment),
                 source_text: fragment.clone(),
@@ -156,10 +180,26 @@ impl HybridVM {
             };
             units.push(unit);
         }
-        let concept_id = self.semantic_dhm.insert_from_l1_units(&units);
         self.semantic_dhm
-            .get(concept_id)
-            .ok_or(HybridVmError::ConceptNotFound(concept_id))
+            .rebuild_l2_from_l1(&self.semantic_l1_dhm.all_units())
+            .map_err(HybridVmError::Io)?;
+        let mut candidates = self
+            .semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .filter(|c| {
+                units
+                    .iter()
+                    .any(|unit| c.l1_refs.binary_search(&unit.id).is_ok())
+            })
+            .collect::<Vec<_>>();
+        candidates.sort_by(|l, r| l.id.cmp(&r.id));
+        candidates
+            .into_iter()
+            .next()
+            .ok_or(HybridVmError::InvalidInput(
+                "no l2 generated from inserted l1",
+            ))
     }
 
     pub fn get_l1_unit(&self, id: L1Id) -> Option<SemanticUnitL1> {
@@ -168,6 +208,71 @@ impl HybridVM {
 
     pub fn all_l1_units(&self) -> Vec<SemanticUnitL1> {
         self.semantic_l1_dhm.all_units()
+    }
+
+    pub fn remove_l1(&mut self, id: L1Id) -> Result<(), HybridVmError> {
+        self.semantic_l1_dhm.remove(id).map_err(HybridVmError::Io)
+    }
+
+    pub fn rebuild_l2_from_l1(&mut self) -> Result<(), HybridVmError> {
+        let l1 = self.semantic_l1_dhm.all_units();
+        self.semantic_dhm
+            .rebuild_l2_from_l1(&l1)
+            .map_err(HybridVmError::Io)
+    }
+
+    pub fn rebuild_l2_from_l1_with_config(
+        &mut self,
+        config: L2Config,
+    ) -> Result<(), HybridVmError> {
+        let l1 = self.semantic_l1_dhm.all_units();
+        self.semantic_dhm
+            .rebuild_l2_from_l1_with_config(&l1, config)
+            .map_err(HybridVmError::Io)
+    }
+
+    pub fn rebuild_l2_from_l1_with_mode(&mut self, mode: L2Mode) -> Result<(), HybridVmError> {
+        let l1 = self.semantic_l1_dhm.all_units();
+        self.semantic_dhm
+            .rebuild_l2_from_l1_with_mode(&l1, mode)
+            .map_err(HybridVmError::Io)
+    }
+
+    pub fn snapshot(&self) -> MeaningLayerSnapshot {
+        semantic_dhm::MeaningLayerState {
+            algorithm_version: self.semantic_dhm.l2_config().algorithm_version,
+            l1_units: self.semantic_l1_dhm.all_units(),
+            l2_units: self.semantic_dhm.all_concepts(),
+        }
+        .snapshot()
+    }
+
+    pub fn project_phase_a(&self) -> DesignProjection {
+        semantic_dhm::project_phase_a(
+            &self.semantic_dhm.all_concepts(),
+            &self.semantic_l1_dhm.all_units(),
+        )
+    }
+
+    pub fn evaluate_hypothesis(&self, projection: &DesignProjection) -> DesignHypothesis {
+        let strengths = projection
+            .derived
+            .iter()
+            .map(|d| f64::from(d.strength))
+            .collect::<Vec<_>>();
+        let total = strengths.iter().copied().sum::<f64>();
+        let denom = strengths.iter().map(|s| s.abs()).sum::<f64>();
+        let normalized = if denom > 0.0 { total / denom } else { 0.0 };
+        let constraint_violation = projection
+            .derived
+            .iter()
+            .any(|d| is_constraint_kind(d.kind) && d.strength > 0.0);
+        DesignHypothesis {
+            requirements: projection.derived.clone(),
+            total_score: quantize_score(total),
+            normalized_score: quantize_score(normalized),
+            constraint_violation,
+        }
     }
 
     pub fn get_concept(&self, id: ConceptId) -> Option<ConceptUnit> {
@@ -186,13 +291,13 @@ impl HybridVM {
             return Err(HybridVmError::ConceptNotFound(right));
         };
         let query = semantic_dhm::ConceptQuery {
-            v: c1.v.clone(),
+            v: c1.integrated_vector.clone(),
             a: c1.a,
             s: c1.s.clone(),
             polarity: c1.polarity,
         };
         let score = semantic_dhm::resonance(&query, &c2, self.semantic_dhm.weights());
-        let v_sim = dot_norm(&c1.v, &c2.v);
+        let v_sim = dot_norm(&c1.integrated_vector, &c2.integrated_vector);
         let s_sim = dot_norm(&c1.s, &c2.s);
         let a_diff = (c1.a - c2.a).abs();
 
@@ -510,50 +615,111 @@ fn infer_requirement_role(text: &str) -> RequirementRole {
     }
 }
 
-fn infer_polarity(text: &str) -> i8 {
-    let t = text.to_ascii_lowercase();
-    let negative = t.contains("not")
-        || t.contains("avoid")
-        || t.contains("no ")
-        || t.contains("不要")
-        || t.contains("禁止")
-        || t.contains("避け");
-    let positive = t.contains("improve")
-        || t.contains("enhance")
-        || t.contains("高速")
-        || t.contains("強化")
-        || t.contains("向上");
-    match (positive, negative) {
-        (true, false) => 1,
-        (false, true) => -1,
-        _ => 0,
+fn infer_polarity(role: RequirementRole) -> i8 {
+    match role {
+        RequirementRole::Goal | RequirementRole::Optimization => 1,
+        RequirementRole::Constraint | RequirementRole::Prohibition => -1,
     }
 }
 
 fn infer_abstraction(text: &str) -> f32 {
+    let rule_score = rule_abstraction_score(text);
+    let vector_score = vector_abstraction_score(text);
+    let mixed = ABSTRACTION_RULE_WEIGHT * rule_score + ABSTRACTION_VECTOR_WEIGHT * vector_score;
+    quantize_abstraction(mixed.clamp(0.0, 1.0))
+}
+
+fn rule_abstraction_score(text: &str) -> f32 {
     let t = text.to_ascii_lowercase();
-    if t.contains("react")
-        || t.contains("api")
-        || t.contains("sql")
-        || t.contains("実装")
-        || t.contains("library")
-    {
-        0.1
-    } else if t.contains("ui")
-        || t.contains("frontend")
-        || t.contains("back-end")
-        || t.contains("web")
-    {
-        0.4
-    } else if t.contains("usability")
-        || t.contains("使いやす")
-        || t.contains("architecture")
-        || t.contains("品質")
-    {
-        0.8
-    } else {
-        0.5
+    let mut score = 0.5f32;
+
+    if text.chars().any(|c| c.is_ascii_digit()) {
+        score -= 0.4;
     }
+    if ["mb", "gb", "kb", "ms", "%", "件", "秒", "回"]
+        .iter()
+        .any(|u| t.contains(u) || text.contains(u))
+    {
+        score -= 0.3;
+    }
+    if [
+        "以下",
+        "以上",
+        "未満",
+        "以内",
+        "must",
+        "limit",
+        "constraint",
+        "禁止",
+        "avoid",
+        "forbid",
+        "prohibit",
+    ]
+    .iter()
+    .any(|w| t.contains(w) || text.contains(w))
+    {
+        score -= 0.3;
+    }
+    if [
+        "できるだけ",
+        "なるべく",
+        "as much as possible",
+        "preferably",
+    ]
+    .iter()
+    .any(|w| t.contains(w) || text.contains(w))
+    {
+        score += 0.3;
+    }
+    if [
+        "性能",
+        "安全",
+        "品質",
+        "performance",
+        "security",
+        "quality",
+        "高性能",
+        "高速",
+        "速く",
+        "fast",
+    ]
+    .iter()
+    .any(|w| t.contains(w) || text.contains(w))
+    {
+        score += 0.2;
+    }
+
+    score.clamp(0.0, 1.0)
+}
+
+fn vector_abstraction_score(text: &str) -> f32 {
+    let v = embedding_from_text(text);
+    let mu = generic_center_vector(v.len());
+    let cosine = dot_norm(&v, &mu).clamp(-1.0, 1.0);
+    let d = 1.0 - cosine;
+    (d / 2.0).clamp(0.0, 1.0)
+}
+
+fn generic_center_vector(dim: usize) -> Vec<f32> {
+    (0..dim)
+        .map(|i| {
+            let phase = ((i as f32 + 1.0) * 0.173_205_08).sin();
+            let bias = ((i as f32 + 1.0) * 0.031_25).cos() * 0.15;
+            phase + bias
+        })
+        .collect()
+}
+
+fn quantize_abstraction(v: f32) -> f32 {
+    ((v as f64 * ABS_PRECISION).round() / ABS_PRECISION) as f32
+}
+
+fn quantize_score(v: f64) -> f64 {
+    (v * SCORE_PRECISION).round() / SCORE_PRECISION
+}
+
+fn is_constraint_kind(kind: RequirementKind) -> bool {
+    matches!(kind, RequirementKind::Memory | RequirementKind::NoCloud)
 }
 
 fn dot_norm(a: &[f32], b: &[f32]) -> f32 {
@@ -702,10 +868,14 @@ pub mod experimental {
 mod tests {
     use std::collections::BTreeMap;
     use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     use memory_space::{DesignNode, StructuralGraph, Uuid};
 
-    use crate::{Evaluator, ExecutionContext, ExecutionMode, HybridVM, StructuralEvaluator};
+    use crate::{
+        Evaluator, ExecutionContext, ExecutionMode, HybridVM, RequirementRole, StructuralEvaluator,
+        infer_abstraction, infer_polarity,
+    };
 
     fn state_with_graph(nodes: usize, edges: &[(u128, u128)]) -> memory_space::DesignState {
         let mut graph = StructuralGraph::default();
@@ -771,5 +941,81 @@ mod tests {
         assert!(all_l1.len() >= concept.l1_refs.len());
         let first = vm.get_l1_unit(concept.l1_refs[0]).expect("l1");
         assert!(!first.source_text.is_empty());
+    }
+
+    #[test]
+    fn snapshot_matches_after_rebuild() {
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_snapshot_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+        let _ = vm.analyze_text("security 강화");
+        let before = vm.snapshot();
+        vm.rebuild_l2_from_l1().expect("rebuild");
+        let after = vm.snapshot();
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn abstraction_v2_monotonic_examples() {
+        let mem = infer_abstraction("メモリは512MB以下");
+        let fast_api = infer_abstraction("高速なAPI");
+        let high_perf = infer_abstraction("高性能にしたい");
+        let maybe_fast = infer_abstraction("できるだけ速く");
+
+        assert!(mem < fast_api);
+        assert!(high_perf > mem);
+        assert!(maybe_fast > 0.7);
+    }
+
+    #[test]
+    fn polarity_depends_on_role_only() {
+        assert_eq!(infer_polarity(RequirementRole::Goal), 1);
+        assert_eq!(infer_polarity(RequirementRole::Optimization), 1);
+        assert_eq!(infer_polarity(RequirementRole::Constraint), -1);
+        assert_eq!(infer_polarity(RequirementRole::Prohibition), -1);
+    }
+
+    fn hypothesis_from_text(text: &str) -> crate::DesignHypothesis {
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_hypothesis_test_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+        let _ = vm.analyze_text(text).expect("analyze");
+        let projection = vm.project_phase_a();
+        vm.evaluate_hypothesis(&projection)
+    }
+
+    #[test]
+    fn hypothesis_score_direction_examples() {
+        let perf = hypothesis_from_text("高速なAPI");
+        let memory = hypothesis_from_text("メモリ512MB以下");
+        assert!(perf.total_score > 0.0);
+        assert!(memory.total_score < 0.0);
+    }
+
+    #[test]
+    fn hypothesis_constraint_violation_baseline() {
+        let memory = hypothesis_from_text("メモリ512MB以下");
+        assert!(!memory.constraint_violation);
+    }
+
+    #[test]
+    fn hypothesis_normalized_score_examples() {
+        let perf = hypothesis_from_text("高速なAPI");
+        let memory = hypothesis_from_text("メモリ512MB以下");
+        let mixed = hypothesis_from_text("メモリ512MB以下。高速なAPI");
+
+        assert_eq!(perf.normalized_score, 1.0);
+        assert_eq!(memory.normalized_score, -1.0);
+        assert!(mixed.normalized_score > 0.0);
     }
 }

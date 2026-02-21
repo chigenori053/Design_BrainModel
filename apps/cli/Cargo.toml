@@ -4,8 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "design"
+name = "cli"
 path = "src/main.rs"
+
+[[bin]]
+name = "design"
+path = "src/design_main.rs"
 
 [dependencies]
 hybrid_vm = { workspace = true }
+semantic_dhm = { workspace = true }

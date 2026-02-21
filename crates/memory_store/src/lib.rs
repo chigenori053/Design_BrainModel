@@ -39,6 +39,7 @@ where
     fn put(&self, key: K, value: V) -> io::Result<()>;
     fn get(&self, key: &K) -> io::Result<Option<V>>;
     fn entries(&self) -> io::Result<Vec<(K, V)>>;
+    fn replace_all(&self, entries: Vec<(K, V)>) -> io::Result<()>;
 }
 
 #[derive(Debug, Default)]
@@ -90,6 +91,18 @@ where
             .read()
             .map_err(|_| io::Error::other("in-memory store poisoned"))?;
         Ok(guard.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+    }
+
+    fn replace_all(&self, entries: Vec<(K, V)>) -> io::Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| io::Error::other("in-memory store poisoned"))?;
+        guard.clear();
+        for (k, v) in entries {
+            guard.insert(k, v);
+        }
+        Ok(())
     }
 }
 
@@ -208,6 +221,11 @@ where
     fn entries(&self) -> io::Result<Vec<(K, V)>> {
         let map = self.read_map()?;
         Ok(map.into_iter().collect())
+    }
+
+    fn replace_all(&self, entries: Vec<(K, V)>) -> io::Result<()> {
+        let map = entries.into_iter().collect::<BTreeMap<_, _>>();
+        self.write_map(&map)
     }
 }
 

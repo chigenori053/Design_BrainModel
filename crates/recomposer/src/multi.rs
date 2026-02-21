@@ -64,7 +64,7 @@ impl Recomposer {
             for j in (i + 1)..pairs.len() {
                 let c1 = &pairs[i].0;
                 let c2 = &pairs[j].0;
-                let v_sim = dot_norm(&c1.v, &c2.v);
+                let v_sim = dot_norm(&c1.integrated_vector, &c2.integrated_vector);
                 let s_sim = dot_norm(&c1.s, &c2.s);
                 let a_diff = (c1.a - c2.a).abs();
                 let r = w.gamma1 * v_sim + w.gamma2 * s_sim - w.gamma3 * a_diff;
@@ -153,10 +153,14 @@ fn normalize_weights(weights: Option<&[f32]>, n: usize) -> Vec<f32> {
 }
 
 fn weighted_center_v(pairs: &[(ConceptUnit, f32)]) -> Vec<f32> {
-    let dim = pairs.iter().map(|(c, _)| c.v.len()).max().unwrap_or(0);
+    let dim = pairs
+        .iter()
+        .map(|(c, _)| c.integrated_vector.len())
+        .max()
+        .unwrap_or(0);
     let mut acc = vec![0.0f32; dim];
     for (c, w) in pairs {
-        let v = normalize(&c.v);
+        let v = normalize(&c.integrated_vector);
         for i in 0..dim.min(v.len()) {
             acc[i] += v[i] * *w;
         }
