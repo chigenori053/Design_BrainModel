@@ -7,3 +7,5 @@ edition = "2024"
 language_dhm = { workspace = true }
 memory_store = { workspace = true }
 semantic_dhm = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

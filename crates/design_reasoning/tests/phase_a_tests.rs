@@ -1,10 +1,12 @@
 use design_reasoning::{
-    DesignHypothesis, HypothesisEngine, LanguageEngine, LanguageState, MeaningEngine,
-    ProjectionEngine, SnapshotEngine,
+    DesignHypothesis, HypothesisEngine, LanguageEngine, LanguageState, LanguageStateV2,
+    MeaningEngine, ProjectionEngine, SnapshotEngine, TemplateId, TEMPLATE_SELECTION_EPSILON,
+    is_ambiguous_margin,
 };
 use semantic_dhm::{
     compare_snapshots, ConceptId, ConceptUnit, DerivedRequirement, L1Id, L2Config, MeaningLayerState,
-    RequirementKind, RequirementRole, SemanticUnitL1, Snapshotable, DEFAULT_L2_CONFIG,
+    RequirementKind, RequirementRole, SemanticUnitL1, SemanticUnitL1V2, Snapshotable,
+    ConceptUnitV2, DEFAULT_L2_CONFIG,
 };
 
 fn mk_l1(id: u128, text: &str, role: RequirementRole, abstraction: f32, polarity: i8) -> SemanticUnitL1 {
@@ -99,7 +101,7 @@ fn abstraction_prefers_qualitative_sentence() {
 
 #[test]
 fn language_state_stability_label_stable() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: Some("高速化".to_string()),
         requirement_count: 3,
@@ -111,7 +113,7 @@ fn language_state_stability_label_stable() {
 
 #[test]
 fn language_state_stability_label_mid() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: Some("高速化".to_string()),
         requirement_count: 3,
@@ -123,7 +125,7 @@ fn language_state_stability_label_mid() {
 
 #[test]
 fn language_state_stability_label_unstable() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: Some("高速化".to_string()),
         requirement_count: 3,
@@ -135,7 +137,7 @@ fn language_state_stability_label_unstable() {
 
 #[test]
 fn language_state_ambiguity_label_high() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: None,
         requirement_count: 0,
@@ -147,7 +149,7 @@ fn language_state_ambiguity_label_high() {
 
 #[test]
 fn language_state_ambiguity_label_mid() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: None,
         requirement_count: 0,
@@ -159,7 +161,7 @@ fn language_state_ambiguity_label_mid() {
 
 #[test]
 fn language_state_ambiguity_label_low() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let e = engine.explain_state(&LanguageState {
         selected_objective: None,
         requirement_count: 0,
@@ -171,7 +173,7 @@ fn language_state_ambiguity_label_low() {
 
 #[test]
 fn language_output_is_deterministic() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let state = LanguageState {
         selected_objective: Some("高速化".to_string()),
         requirement_count: 2,
@@ -264,7 +266,7 @@ fn snapshot_engine_compare_is_stable() {
 
 #[test]
 fn language_engine_build_state_with_empty_l1() {
-    let engine = LanguageEngine;
+    let engine = LanguageEngine::new();
     let projection = semantic_dhm::DesignProjection {
         source_l2_ids: vec![],
         derived: vec![],
@@ -278,4 +280,170 @@ fn language_engine_build_state_with_empty_l1() {
     let state = engine.build_state(&projection, &[], &hypothesis);
     assert_eq!(state.selected_objective, None);
     assert_eq!(state.requirement_count, 0);
+}
+
+#[test]
+fn snapshot_v2_same_input_same_hash() {
+    let engine = SnapshotEngine;
+    let l1 = vec![mk_l1(1, "goal", RequirementRole::Goal, 0.7, 1)];
+    let l2 = semantic_dhm::build_l2_cache(&l1);
+    let s1 = engine
+        .make_snapshot_v2(&l1, &l2)
+        .expect("snapshot v2 should succeed");
+    let s2 = engine
+        .make_snapshot_v2(&l1, &l2)
+        .expect("snapshot v2 should succeed");
+    let diff = engine.compare_snapshots_v2(&s1, &s2);
+    assert!(diff.identical);
+    assert!(!diff.l1_changed);
+    assert!(!diff.l2_changed);
+}
+
+#[test]
+fn snapshot_v2_l1_only_change_detected() {
+    let engine = SnapshotEngine;
+    let l1_a = vec![mk_l1(1, "goal", RequirementRole::Goal, 0.7, 1)];
+    let l1_b = vec![mk_l1(1, "goal changed", RequirementRole::Goal, 0.7, 1)];
+    let l2 = semantic_dhm::build_l2_cache(&l1_a);
+    let s1 = engine
+        .make_snapshot_v2(&l1_a, &l2)
+        .expect("snapshot v2 should succeed");
+    let s2 = engine
+        .make_snapshot_v2(&l1_b, &l2)
+        .expect("snapshot v2 should succeed");
+    let diff = engine.compare_snapshots_v2(&s1, &s2);
+    assert!(diff.l1_changed);
+    assert!(!diff.l2_changed);
+}
+
+#[test]
+fn snapshot_v2_l2_change_detected() {
+    let engine = SnapshotEngine;
+    let l1 = vec![mk_l1(1, "goal", RequirementRole::Goal, 0.7, 1)];
+    let mut l2_a = semantic_dhm::build_l2_cache(&l1);
+    let mut l2_b = l2_a.clone();
+    l2_b[0].integrated_vector[0] = 0.123;
+    let s1 = engine
+        .make_snapshot_v2(&l1, &l2_a)
+        .expect("snapshot v2 should succeed");
+    let s2 = engine
+        .make_snapshot_v2(&l1, &l2_b)
+        .expect("snapshot v2 should succeed");
+    let diff = engine.compare_snapshots_v2(&s1, &s2);
+    assert!(!diff.l1_changed);
+    assert!(diff.l2_changed);
+    l2_a[0].integrated_vector[0] = 0.123;
+}
+
+#[test]
+fn snapshot_v2_timestamp_is_ignored() {
+    let engine = SnapshotEngine;
+    let a = design_reasoning::MeaningLayerSnapshotV2 {
+        l1_hash: 10,
+        l2_hash: 20,
+        timestamp_ms: 1000,
+        version: 2,
+    };
+    let b = design_reasoning::MeaningLayerSnapshotV2 {
+        l1_hash: 10,
+        l2_hash: 20,
+        timestamp_ms: 9999,
+        version: 2,
+    };
+    let diff = engine.compare_snapshots_v2(&a, &b);
+    assert!(diff.identical);
+    assert!(!diff.version_changed);
+}
+
+#[test]
+fn snapshot_v2_version_difference_detected() {
+    let engine = SnapshotEngine;
+    let a = design_reasoning::MeaningLayerSnapshotV2 {
+        l1_hash: 10,
+        l2_hash: 20,
+        timestamp_ms: 1,
+        version: 2,
+    };
+    let b = design_reasoning::MeaningLayerSnapshotV2 {
+        l1_hash: 10,
+        l2_hash: 20,
+        timestamp_ms: 2,
+        version: 3,
+    };
+    let diff = engine.compare_snapshots_v2(&a, &b);
+    assert!(!diff.identical);
+    assert!(diff.version_changed);
+}
+
+#[test]
+fn semantic_unit_l1_v2_clamps_ambiguity() {
+    let l1 = mk_l1(10, "  FAST API  ", RequirementRole::Goal, 1.5, 1);
+    let v2 = SemanticUnitL1V2::try_from(l1).expect("l1 v2");
+    assert!((0.0..=1.0).contains(&v2.ambiguity_score));
+    assert!(v2.objective.is_some());
+}
+
+#[test]
+fn concept_unit_v2_clamps_stability() {
+    let c = ConceptUnit {
+        id: ConceptId(1),
+        l1_refs: vec![L1Id(1), L1Id(2)],
+        integrated_vector: vec![0.2; semantic_dhm::D_SEM],
+        a: 5.0,
+        s: vec![0.0; semantic_dhm::D_STRUCT],
+        polarity: -1,
+        timestamp: 0,
+    };
+    let v2 = ConceptUnitV2::try_from(c).expect("l2 v2");
+    assert!((0.0..=1.0).contains(&v2.stability_score));
+}
+
+#[test]
+fn template_selection_is_deterministic() {
+    let engine = LanguageEngine::new();
+    let state = LanguageStateV2 {
+        selected_objective: Some("高速化".to_string()),
+        requirement_count: 4,
+        stability_score: 0.9,
+        ambiguity_score: 0.2,
+    };
+    let h = engine.build_h_state(&state);
+    let a = engine.select_template(&h).expect("template a");
+    let b = engine.select_template(&h).expect("template b");
+    assert_eq!(a, b);
+}
+
+#[test]
+fn template_selection_fallback_for_ambiguous_margin() {
+    let engine = LanguageEngine::new();
+    let h = vec![0.0f32; language_dhm::EMBEDDING_DIM];
+    let selected = engine.select_template(&h).expect("template");
+    assert_eq!(selected, TemplateId::Fallback);
+}
+
+#[test]
+fn template_margin_epsilon_boundary() {
+    assert!(is_ambiguous_margin(TEMPLATE_SELECTION_EPSILON));
+    assert!(!is_ambiguous_margin(TEMPLATE_SELECTION_EPSILON * 2.0));
+}
+
+#[test]
+fn stability_label_boundary_is_consistent() {
+    let engine = LanguageEngine::new();
+    let s1 = LanguageState {
+        selected_objective: Some("obj".to_string()),
+        requirement_count: 1,
+        stability_score: 0.6000001,
+        ambiguity_score: 0.3,
+    };
+    let s2 = LanguageState {
+        selected_objective: Some("obj".to_string()),
+        requirement_count: 1,
+        stability_score: 0.6,
+        ambiguity_score: 0.3,
+    };
+    let e1 = engine.explain_state(&s1);
+    let e2 = engine.explain_state(&s2);
+    assert!(e1.summary.contains("構造安定性: 概ね安定"));
+    assert!(e2.summary.contains("構造安定性: 概ね安定"));
 }

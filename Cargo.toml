@@ -20,6 +20,7 @@ members = [
     "crates/recomposer",
     "crates/design_reasoning",
     "apps/cli",
+    "apps/gui",
     "apps/desktop",
     "apps/server",
     "apps/lsp"
@@ -46,3 +47,5 @@ num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime_vm" }
 shm = { path = "crates/shm" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

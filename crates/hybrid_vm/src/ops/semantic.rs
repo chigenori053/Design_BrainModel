@@ -1,6 +1,6 @@
 use design_reasoning::{
     DesignHypothesis, Explanation, HypothesisEngine, LanguageEngine, MeaningEngine, ProjectionEngine,
-    SnapshotEngine,
+    SnapshotEngine, SnapshotDiffV2, MeaningLayerSnapshotV2,
 };
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use memory_store::FileStore;
@@ -55,6 +55,22 @@ pub(crate) fn snapshot(
         semantic_l1_dhm.all_units(),
         semantic_dhm.all_concepts(),
     )
+}
+
+pub(crate) fn snapshot_v2(
+    snapshot_engine: &SnapshotEngine,
+    semantic_l1_dhm: &SemanticL1Dhm<FileStore<L1Id, SemanticUnitL1>>,
+    semantic_dhm: &SemanticDhm<FileStore<ConceptId, ConceptUnit>>,
+) -> Result<MeaningLayerSnapshotV2, SemanticError> {
+    snapshot_engine.make_snapshot_v2(&semantic_l1_dhm.all_units(), &semantic_dhm.all_concepts())
+}
+
+pub(crate) fn compare_snapshots_v2(
+    snapshot_engine: &SnapshotEngine,
+    a: &MeaningLayerSnapshotV2,
+    b: &MeaningLayerSnapshotV2,
+) -> SnapshotDiffV2 {
+    snapshot_engine.compare_snapshots_v2(a, b)
 }
 
 pub(crate) fn project_phase_a(

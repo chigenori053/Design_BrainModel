@@ -1,0 +1,12 @@
+decisions:
+  - id: AD-001
+    date: 2026-02-22
+    decision: Separate ResearchAgent and CodingAgent responsibilities
+    rationale: Prevent architecture drift between ideation and implementation
+    impact: All future tasks must specify owner explicitly
+
+  - id: AD-002
+    date: 2026-02-22
+    decision: Specs directory becomes single source of truth
+    rationale: Eliminate code-driven architecture mutation
+    impact: Implementation without spec reference prohibited

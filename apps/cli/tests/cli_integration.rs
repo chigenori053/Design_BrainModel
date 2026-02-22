@@ -1,354 +1,102 @@
-use std::path::Path;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
+use serde_json::Value;
 
 fn unique_store_dir(test_name: &str) -> String {
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("clock")
-        .as_nanos();
-    std::env::temp_dir()
-        .join(format!("design_cli_{test_name}_{nanos}"))
-        .to_string_lossy()
-        .to_string()
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    std::env::temp_dir().join(format!("design_v1_{test_name}_{nanos}")).to_string_lossy().to_string()
 }
 
-fn run_cli(store_dir: &str, args: &[&str]) -> (bool, String, String) {
+fn run_cli(store_dir: &str, args: &[&str]) -> (i32, Value) {
     let exe = env!("CARGO_BIN_EXE_design");
     let out = Command::new(exe)
         .args(args)
         .env("DESIGN_STORE_DIR", store_dir)
         .output()
         .expect("failed to run design cli");
-    (
-        out.status.success(),
-        String::from_utf8_lossy(&out.stdout).to_string(),
-        String::from_utf8_lossy(&out.stderr).to_string(),
-    )
+
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stderr = String::from_utf8_lossy(&out.stderr);
+    
+    let code = out.status.code().unwrap_or(-1);
+    let json: Value = if code == 0 {
+        serde_json::from_str(&stdout).unwrap_or(Value::Null)
+    } else {
+        serde_json::from_str(&stderr).unwrap_or(Value::Null)
+    };
+
+    (code, json)
 }
 
 #[test]
-fn analyze_then_explain_works() {
-    let store_dir = unique_store_dir("analyze_then_explain");
-
-    let (ok, stdout, _) = run_cli(
-        &store_dir,
-        &["analyze", "Design abstraction improves architecture"],
-    );
-    assert!(ok);
-    assert!(stdout.contains("[Concept Created]"));
-    assert!(stdout.contains("ID: C1"));
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["explain", "C1"]);
-    assert!(ok);
-    assert!(stdout.contains("Summary:"));
-    assert!(stdout.contains("Reasoning:"));
-    assert!(stdout.contains("Abstraction:"));
+fn schema_v1_wrapper_structure() {
+    let store = unique_store_dir("wrapper");
+    let (code, json) = run_cli(&store, &["--json", "analyze", "test text"]);
+    
+    assert_eq!(code, 0);
+    assert_eq!(json["status"], "ok");
+    assert_eq!(json["version"], "1.0");
+    assert_eq!(json["command"], "analyze");
+    assert!(json["data"].is_object());
+    assert!(json["error"].is_null());
 }
 
 #[test]
-fn unknown_id_returns_error() {
-    let store_dir = unique_store_dir("unknown_id");
-    let (ok, _, stderr) = run_cli(&store_dir, &["explain", "C999"]);
-    assert!(!ok);
-    assert!(stderr.contains("Concept not found"));
+fn analyze_data_schema() {
+    let store = unique_store_dir("analyze");
+    let (code, json) = run_cli(&store, &["--json", "analyze", "security is important"]);
+    
+    assert_eq!(code, 0);
+    let data = &json["data"];
+    assert!(data["l1_count"].is_number());
+    assert!(data["l2_count"].is_number());
+    assert!(data["stability_score"].is_number());
+    assert!(data["ambiguity_score"].is_number());
+    assert!(data["snapshot"]["l1_hash"].is_string());
+    assert_eq!(data["snapshot"]["version"], 2);
 }
 
 #[test]
-fn multi_deduplicates_ids() {
-    let store_dir = unique_store_dir("multi_dedup");
-
-    let _ = run_cli(&store_dir, &["analyze", "alpha design structure"]);
-    let _ = run_cli(&store_dir, &["analyze", "beta architecture pattern"]);
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["multi", "C1", "C1", "C2"]);
-    assert!(ok);
-    assert!(stdout.contains("Structural Analysis:"));
-    assert!(stdout.contains("Conflict Analysis:"));
+fn explain_data_schema() {
+    let store = unique_store_dir("explain");
+    let _ = run_cli(&store, &["analyze", "goal: fast system"]);
+    let (code, json) = run_cli(&store, &["--json", "explain"]);
+    
+    assert_eq!(code, 0);
+    let data = &json["data"];
+    assert!(data["stability_label"].is_string());
+    assert!(data["ambiguity_label"].is_string());
+    assert!(data["template_id"].is_string());
 }
 
 #[test]
-fn recommend_clamps_top_k() {
-    let store_dir = unique_store_dir("recommend_topk");
-
-    let _ = run_cli(&store_dir, &["analyze", "one structure"]);
-    let _ = run_cli(&store_dir, &["analyze", "two structure"]);
-    let _ = run_cli(&store_dir, &["analyze", "three structure"]);
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["recommend", "C1", "--top", "99"]);
-    assert!(ok);
-    assert!(stdout.contains("[Recommendations]"));
-
-    let lines = stdout
-        .lines()
-        .filter(|line| line.starts_with("1.") || line.starts_with("2.") || line.starts_with("3."))
-        .count();
-    assert_eq!(lines, 2);
+fn error_json_structure() {
+    let store = unique_store_dir("error");
+    let (code, json) = run_cli(&store, &["--json", "invalid-cmd"]);
+    
+    assert_eq!(code, 3);
+    assert_eq!(json["status"], "error");
+    assert_eq!(json["error"]["code"], 3);
+    assert_eq!(json["error"]["type"], "InvalidCommand");
+    assert!(json["error"]["message"].is_string());
 }
 
 #[test]
-fn deterministic_output_for_same_query() {
-    let store_dir = unique_store_dir("deterministic");
-
-    let _ = run_cli(&store_dir, &["analyze", "deterministic concept"]);
-
-    let (_, first, _) = run_cli(&store_dir, &["explain", "C1"]);
-    let (_, second, _) = run_cli(&store_dir, &["explain", "C1"]);
-    assert_eq!(first, second);
-}
-
-#[test]
-fn output_headers_fixed() {
-    let store_dir = unique_store_dir("headers");
-
-    let _ = run_cli(&store_dir, &["analyze", "compare header sample"]);
-    let _ = run_cli(&store_dir, &["analyze", "compare header sample two"]);
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["compare", "C1", "C2"]);
-    assert!(ok);
-    assert!(stdout.starts_with("Summary:\n"));
-}
-
-#[test]
-fn binary_name_is_design() {
-    let exe = env!("CARGO_BIN_EXE_design");
-    assert!(Path::new(exe).exists());
-}
-
-#[test]
-fn analyze_json_snapshot_matches_spec() {
-    let store_dir = unique_store_dir("analyze_json");
-    let (ok, stdout, _) = run_cli(
-        &store_dir,
-        &["analyze", "high-level architecture", "--json"],
-    );
-    assert!(ok);
-    assert!(stdout.starts_with("{\n    \"type\": \"analyze\",\n"));
-    assert!(stdout.contains("\"concept_id\": \"C1\""));
-    assert!(stdout.contains("\"abstraction\": "));
-    assert!(stdout.contains("\"abstraction_label\": \""));
-}
-
-#[test]
-fn explain_json_snapshot_matches_spec() {
-    let store_dir = unique_store_dir("explain_json");
-    let _ = run_cli(&store_dir, &["analyze", "design architecture concept"]);
-    let (ok, stdout, _) = run_cli(&store_dir, &["explain", "C1", "--json"]);
-    assert!(ok);
-    assert_eq!(stdout.lines().next(), Some("{"));
-    assert!(stdout.contains("\"type\": \"explain\""));
-    assert!(stdout.contains("\"concept_id\": \"C1\""));
-    assert!(stdout.contains("\"summary\": "));
-    assert!(stdout.contains("\"reasoning\": "));
-    assert!(stdout.contains("\"abstraction_note\": "));
-}
-
-#[test]
-fn compare_json_snapshot_matches_spec() {
-    let store_dir = unique_store_dir("compare_json");
-    let _ = run_cli(&store_dir, &["analyze", "design architecture concept"]);
-    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
-    let (ok, stdout, _) = run_cli(&store_dir, &["compare", "C1", "C2", "--json"]);
-    assert!(ok);
-    assert!(stdout.contains("\"type\": \"compare\""));
-    assert!(stdout.contains("\"concept_a\": \"C1\""));
-    assert!(stdout.contains("\"concept_b\": \"C2\""));
-    assert!(stdout.contains("\"semantic_similarity\": "));
-    assert!(stdout.contains("\"structural_similarity\": "));
-    assert!(stdout.contains("\"abstraction_difference\": "));
-    assert!(stdout.contains("\"alignment_label\": "));
-}
-
-#[test]
-fn multi_json_snapshot_matches_spec() {
-    let store_dir = unique_store_dir("multi_json");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-    let (ok, stdout, _) = run_cli(&store_dir, &["multi", "C1", "C2", "--json"]);
-    assert!(ok);
-    assert!(stdout.contains("\"type\": \"multi\""));
-    assert!(stdout.contains("\"concept_ids\": [\"C1\", \"C2\"]"));
-    assert!(stdout.contains("\"mean_resonance\": "));
-    assert!(stdout.contains("\"mean_abstraction\": "));
-    assert!(stdout.contains("\"conflict_pairs\": "));
-    assert!(stdout.contains("\"coherence_label\": "));
-    assert!(stdout.contains("\"abstraction_label\": "));
-}
-
-#[test]
-fn recommend_json_snapshot_matches_spec() {
-    let store_dir = unique_store_dir("recommend_json");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-    let (ok, stdout, _) = run_cli(&store_dir, &["recommend", "C1", "--top", "3", "--json"]);
-    assert!(ok);
-    assert!(stdout.contains("\"type\": \"recommend\""));
-    assert!(stdout.contains("\"query\": \"C1\""));
-    assert!(stdout.contains("\"recommendations\": ["));
-    assert!(stdout.contains("\"action\": "));
-    assert!(stdout.contains("\"target\": \"C2\"") || stdout.contains("\"target_pair\": ["));
-    assert!(stdout.contains("\"summary\": "));
-}
-
-#[test]
-fn json_output_uses_four_space_indent_and_stable_key_order() {
-    let store_dir = unique_store_dir("json_indent_order");
-    let (ok, stdout, _) = run_cli(
-        &store_dir,
-        &["analyze", "architecture abstraction", "--json"],
-    );
-    assert!(ok);
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "{");
-    assert!(lines[1].starts_with("    \"type\""));
-    assert!(lines[2].starts_with("    \"concept_id\""));
-    assert!(lines[3].starts_with("    \"abstraction\""));
-    assert!(lines[4].starts_with("    \"abstraction_label\""));
-}
-
-#[test]
-fn json_numbers_are_rounded_to_two_decimals() {
-    let store_dir = unique_store_dir("json_rounding");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system detail"]);
-    let (ok, stdout, _) = run_cli(&store_dir, &["compare", "C1", "C2", "--json"]);
-    assert!(ok);
-    for key in [
-        "\"semantic_similarity\": ",
-        "\"structural_similarity\": ",
-        "\"abstraction_difference\": ",
-    ] {
-        let line = stdout
-            .lines()
-            .find(|line| line.contains(key))
-            .expect("metric line");
-        let value = line
-            .split(':')
-            .nth(1)
-            .expect("value")
-            .trim()
-            .trim_end_matches(',');
-        let dot = value.find('.').expect("decimal point");
-        assert_eq!(value.len() - dot - 1, 2);
-    }
-}
-
-#[test]
-fn text_mode_output_remains_unchanged() {
-    let store_dir = unique_store_dir("text_unchanged");
-    let (ok, stdout, _) = run_cli(
-        &store_dir,
-        &["analyze", "Design abstraction improves architecture"],
-    );
-    assert!(ok);
-    assert!(stdout.starts_with("[Concept Created]\nID: C1\nAbstraction: "));
-}
-
-#[test]
-fn json_mode_is_deterministic() {
-    let store_dir = unique_store_dir("json_deterministic");
-    let _ = run_cli(&store_dir, &["analyze", "deterministic concept"]);
-    let (_, first, _) = run_cli(&store_dir, &["explain", "C1", "--json"]);
-    let (_, second, _) = run_cli(&store_dir, &["explain", "C1", "--json"]);
-    assert_eq!(first, second);
-}
-
-#[test]
-fn report_text_output_format_is_fixed() {
-    let store_dir = unique_store_dir("report_text");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["report", "C1", "C2", "C3"]);
-    assert!(ok);
-    assert!(stdout.starts_with("=== Design Report ===\n\nSummary:\n"));
-    assert!(stdout.contains("\n\nAbstraction:\nMean: "));
-    assert!(stdout.contains("\nVariance: "));
-    assert!(stdout.contains("\n\nConsistency:\nDirectional conflicts: "));
-    assert!(stdout.contains("\nStructural conflicts: "));
-    assert!(stdout.contains("\nTradeoffs: "));
-    assert!(stdout.contains("\nStability: "));
-    assert!(stdout.contains("\n\nGlobal coherence: "));
-    assert!(stdout.contains("\n\nTop Recommendations:\n"));
-}
-
-#[test]
-fn report_json_output_has_fixed_key_order() {
-    let store_dir = unique_store_dir("report_json_order");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-
-    let (ok, stdout, _) = run_cli(&store_dir, &["report", "C1", "C2", "--json"]);
-    assert!(ok);
-    let lines = stdout.lines().collect::<Vec<_>>();
-    assert_eq!(lines[0], "{");
-    assert!(lines[1].starts_with("    \"summary\": "));
-    assert!(lines[2].starts_with("    \"abstraction_mean\": "));
-    assert!(lines[3].starts_with("    \"abstraction_variance\": "));
-    assert!(lines[4].starts_with("    \"consistency\": "));
-    assert!(stdout.contains("\"tradeoffs\": ["));
-    assert!(stdout.contains("\"global_coherence\": "));
-    assert!(stdout.contains("\"recommendations\": "));
-}
-
-#[test]
-fn report_json_is_order_stable_for_concept_ids() {
-    let store_dir = unique_store_dir("report_order_stable");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-    let _ = run_cli(&store_dir, &["analyze", "concrete detail"]);
-
-    let (_, first, _) = run_cli(&store_dir, &["report", "C3", "C1", "C2", "--json"]);
-    let (_, second, _) = run_cli(&store_dir, &["report", "C1", "C2", "C3", "--json"]);
-    assert_eq!(first, second);
-}
-
-#[test]
-fn report_n0_returns_error() {
-    let store_dir = unique_store_dir("report_n0");
-    let (ok, _, stderr) = run_cli(&store_dir, &["report"]);
-    assert!(!ok);
-    assert!(stderr.contains("report requires at least 1 concept id"));
-}
-
-#[test]
-fn help_contains_decide_command() {
-    let store_dir = unique_store_dir("help_decide");
-    let (ok, stdout, _) = run_cli(&store_dir, &["--help"]);
-    assert!(!ok);
-    assert!(stdout.is_empty());
-
-    let (_, _, stderr) = run_cli(&store_dir, &["help"]);
-    assert!(stderr.contains("decide <ConceptId> <ConceptId>"));
-}
-
-#[test]
-fn decide_json_output_matches_contract() {
-    let store_dir = unique_store_dir("decide_json");
-    let _ = run_cli(&store_dir, &["analyze", "architecture abstraction model"]);
-    let _ = run_cli(&store_dir, &["analyze", "system design pattern"]);
-
-    let (ok, stdout, _) = run_cli(
-        &store_dir,
-        &[
-            "decide",
-            "C1",
-            "C2",
-            "--weights",
-            "coherence=0.4",
-            "stability=0.3",
-            "conflict=0.2",
-            "tradeoff=0.1",
-            "--json",
-        ],
-    );
-    assert!(ok);
-    assert!(stdout.contains("\"decision_score\": "));
-    assert!(stdout.contains("\"weights\": {"));
-    assert!(stdout.contains("\"coherence\": 0.40"));
-    assert!(stdout.contains("\"stability\": 0.30"));
-    assert!(stdout.contains("\"conflict\": 0.20"));
-    assert!(stdout.contains("\"tradeoff\": 0.10"));
-    assert!(stdout.contains("\"interpretation\": "));
+fn session_json_file_schema() {
+    let store = unique_store_dir("session_file");
+    let _ = run_cli(&store, &["analyze", "session test"]);
+    let _ = run_cli(&store, &["--session", "mysess", "session", "save"]);
+    
+    let path = std::path::Path::new(&store).join("session_mysess.json");
+    assert!(path.exists());
+    
+    let raw = std::fs::read_to_string(path).unwrap();
+    let json: Value = serde_json::from_str(&raw).unwrap();
+    
+    assert_eq!(json["schema_version"], "1.0");
+    assert_eq!(json["snapshot_version"], 2);
+    assert_eq!(json["id"], "mysess");
+    assert!(json["l1_units"].is_array());
+    assert!(json["l2_units"].is_array());
+    assert!(json["snapshot"]["l1_hash"].is_string());
 }

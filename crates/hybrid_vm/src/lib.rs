@@ -19,12 +19,12 @@ use semantic_dhm::{ConceptUnit, SemanticDhm, SemanticL1Dhm, SemanticUnitL1};
 mod ops;
 
 pub use chm::Chm;
-pub use design_reasoning::{DesignHypothesis, Explanation};
+pub use design_reasoning::{DesignHypothesis, Explanation, MeaningLayerSnapshotV2, SnapshotDiffV2};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
 pub use semantic_dhm::{
     ConceptId, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode, MeaningLayerSnapshot,
     RequirementKind, RequirementRole as L1RequirementRole, SemanticError, SemanticUnitL1Input,
-    Snapshotable,
+    Snapshotable, ConceptUnitV2, SemanticUnitL1V2,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
@@ -104,7 +104,7 @@ impl HybridVM {
             meaning_engine: MeaningEngine,
             projection_engine: ProjectionEngine,
             hypothesis_engine: HypothesisEngine,
-            language_engine: LanguageEngine,
+            language_engine: LanguageEngine::new(),
             snapshot_engine: SnapshotEngine,
             recomposer: Recomposer,
             mode,
@@ -169,20 +169,47 @@ impl HybridVM {
         )
     }
 
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use get_l1_unit_v2")]
     pub fn get_l1_unit(&self, id: L1Id) -> Option<SemanticUnitL1> {
         self.semantic_l1_dhm.get(id)
     }
 
+    pub fn get_l1_unit_v2(&self, id: L1Id) -> Result<Option<SemanticUnitL1V2>, SemanticError> {
+        self.semantic_l1_dhm
+            .get(id)
+            .map(|u| SemanticUnitL1V2::try_from(u))
+            .transpose()
+    }
+
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use all_l1_units_v2")]
     pub fn all_l1_units(&self) -> Vec<SemanticUnitL1> {
         self.semantic_l1_dhm.all_units()
+    }
+
+    pub fn all_l1_units_v2(&self) -> Result<Vec<SemanticUnitL1V2>, SemanticError> {
+        self.semantic_l1_dhm
+            .all_units()
+            .into_iter()
+            .map(SemanticUnitL1V2::try_from)
+            .collect()
     }
 
     pub fn remove_l1(&mut self, id: L1Id) -> Result<(), HybridVmError> {
         self.semantic_l1_dhm.remove(id).map_err(HybridVmError::Io)
     }
 
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use rebuild_l2_from_l1_v2")]
     pub fn rebuild_l2_from_l1(&mut self) -> Result<(), SemanticError> {
         ops::semantic::rebuild_l2_from_l1(&self.semantic_l1_dhm, &mut self.semantic_dhm)
+    }
+
+    pub fn rebuild_l2_from_l1_v2(&mut self) -> Result<Vec<ConceptUnitV2>, SemanticError> {
+        ops::semantic::rebuild_l2_from_l1(&self.semantic_l1_dhm, &mut self.semantic_dhm)?;
+        self.semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .map(ConceptUnitV2::try_from)
+            .collect()
     }
 
     pub fn rebuild_l2_from_l1_with_config(
@@ -204,10 +231,16 @@ impl HybridVM {
         )
     }
 
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use snapshot_v2")]
     pub fn snapshot(&self) -> Result<MeaningLayerSnapshot, SemanticError> {
         ops::semantic::snapshot(&self.snapshot_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
     }
 
+    pub fn snapshot_v2(&self) -> Result<MeaningLayerSnapshotV2, SemanticError> {
+        ops::semantic::snapshot_v2(&self.snapshot_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
+    }
+
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use compare_snapshots_v2")]
     pub fn compare_snapshots(
         &self,
         left: &MeaningLayerSnapshot,
@@ -216,8 +249,25 @@ impl HybridVM {
         self.snapshot_engine.compare(left, right)
     }
 
+    pub fn compare_snapshots_v2(
+        &self,
+        left: &MeaningLayerSnapshotV2,
+        right: &MeaningLayerSnapshotV2,
+    ) -> SnapshotDiffV2 {
+        ops::semantic::compare_snapshots_v2(&self.snapshot_engine, left, right)
+    }
+
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use project_phase_a_v2")]
     pub fn project_phase_a(&self) -> DesignProjection {
         ops::semantic::project_phase_a(&self.projection_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
+    }
+
+    pub fn project_phase_a_v2(&self) -> Result<Vec<ConceptUnitV2>, SemanticError> {
+        self.semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .map(ConceptUnitV2::try_from)
+            .collect()
     }
 
     pub fn evaluate_hypothesis(
@@ -239,7 +289,7 @@ impl HybridVM {
         )
     }
 
-    pub fn explain_design(&mut self, text: &str) -> Result<Explanation, SemanticError> {
+    pub fn explain_design_v2(&mut self, text: &str) -> Result<Explanation, SemanticError> {
         ops::semantic::explain_design(
             text,
             &self.meaning_engine,
@@ -250,6 +300,11 @@ impl HybridVM {
             &mut self.semantic_l1_dhm,
             &mut self.semantic_dhm,
         )
+    }
+
+    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use explain_design_v2")]
+    pub fn explain_design(&mut self, text: &str) -> Result<Explanation, SemanticError> {
+        self.explain_design_v2(text)
     }
 
     pub fn get_concept(&self, id: ConceptId) -> Option<ConceptUnit> {
@@ -372,7 +427,7 @@ impl HybridVM {
             meaning_engine: MeaningEngine,
             projection_engine: ProjectionEngine,
             hypothesis_engine: HypothesisEngine,
-            language_engine: LanguageEngine,
+            language_engine: LanguageEngine::new(),
             snapshot_engine: SnapshotEngine,
             recomposer: Recomposer,
             mode: ExecutionMode::RecallFirst,
@@ -527,7 +582,10 @@ mod tests {
     use memory_space::{DesignNode, StructuralGraph, Uuid};
     use semantic_dhm::RequirementRole;
 
-    use crate::{Evaluator, ExecutionContext, ExecutionMode, HybridVM, StructuralEvaluator};
+    use crate::{
+        Evaluator, ExecutionContext, ExecutionMode, Explanation, HybridVM, MeaningLayerSnapshotV2,
+        StructuralEvaluator,
+    };
 
     fn state_with_graph(nodes: usize, edges: &[(u128, u128)]) -> memory_space::DesignState {
         let mut graph = StructuralGraph::default();
@@ -672,5 +730,71 @@ mod tests {
         assert!(perf.normalized_score > 0.0);
         assert!(memory.normalized_score < 0.0);
         assert!(mixed.normalized_score > 0.0);
+    }
+
+    #[test]
+    fn snapshot_v2_compare_ignores_timestamp() {
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_snapshot_v2_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+        let mut a = vm.snapshot_v2().expect("snapshot_v2 a");
+        let b = vm.snapshot_v2().expect("snapshot_v2 b");
+        a.timestamp_ms = a.timestamp_ms.saturating_add(1_000);
+        let diff = vm.compare_snapshots_v2(&a, &b);
+        assert!(!diff.l1_changed);
+        assert!(!diff.l2_changed);
+    }
+
+    #[test]
+    fn l1_and_l2_v2_api_available() {
+        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
+        let concept = vm
+            .analyze_text("高性能かつクラウド依存禁止")
+            .expect("analyze");
+        let first_l1 = concept.l1_refs[0];
+        let l1_v2 = vm.get_l1_unit_v2(first_l1).expect("get l1 v2");
+        assert!(l1_v2.is_some());
+        let projected_v2 = vm.project_phase_a_v2().expect("project v2");
+        assert!(!projected_v2.is_empty());
+        let rebuilt_v2 = vm.rebuild_l2_from_l1_v2().expect("rebuild v2");
+        assert!(!rebuilt_v2.is_empty());
+    }
+
+    #[test]
+    fn deterministic_outputs_across_100_runs() {
+        let input = "高速なAPI。クラウド依存は禁止。メモリ512MB以下";
+        let mut first_snapshot: Option<MeaningLayerSnapshotV2> = None;
+        let mut first_explain: Option<Explanation> = None;
+        for n in 0..100 {
+            let store_dir = std::env::temp_dir().join(format!(
+                "hybrid_vm_det_{}_{}",
+                n,
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .expect("clock")
+                    .as_nanos()
+            ));
+            let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+            let _ = vm.analyze_text(input).expect("analyze");
+            let snapshot = vm.snapshot_v2().expect("snapshot_v2");
+            let explain = vm.explain_design_v2(input).expect("explain v2");
+            if let Some(expected) = &first_snapshot {
+                assert_eq!(expected.l1_hash, snapshot.l1_hash);
+                assert_eq!(expected.l2_hash, snapshot.l2_hash);
+                assert_eq!(expected.version, snapshot.version);
+            } else {
+                first_snapshot = Some(snapshot);
+            }
+            if let Some(expected) = &first_explain {
+                assert_eq!(expected, &explain);
+            } else {
+                first_explain = Some(explain);
+            }
+        }
     }
 }

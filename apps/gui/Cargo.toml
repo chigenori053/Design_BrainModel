@@ -1,0 +1,17 @@
+[package]
+name = "design_gui"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+eframe = "0.27"
+egui = "0.27"
+serde = { workspace = true }
+serde_json = { workspace = true }
+hybrid_vm = { workspace = true }
+design_reasoning = { workspace = true }
+semantic_dhm = { workspace = true }
+core_types = { workspace = true }
+
+[build-dependencies]
+# GUI固有のビルド設定が必要な場合

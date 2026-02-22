@@ -5,7 +5,10 @@ pub mod projection_engine;
 pub mod snapshot_engine;
 
 pub use hypothesis_engine::{DesignHypothesis, HypothesisEngine};
-pub use language_engine::{Explanation, LanguageEngine, LanguageState};
+pub use language_engine::{
+    Explanation, LanguageEngine, LanguagePatternStore, LanguageState, LanguageStateV2, TemplateId,
+    TEMPLATE_SELECTION_EPSILON, is_ambiguous_margin,
+};
 pub use meaning_engine::MeaningEngine;
 pub use projection_engine::ProjectionEngine;
-pub use snapshot_engine::SnapshotEngine;
+pub use snapshot_engine::{MeaningLayerSnapshotV2, SnapshotDiffV2, SnapshotEngine};

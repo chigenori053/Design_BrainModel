@@ -6,6 +6,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use meaning_extractor::{MeaningStructure, NodeId, RelationType, RoleType};
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug)]
 pub enum SemanticError {
@@ -92,7 +93,7 @@ pub trait Snapshotable {
     fn snapshot(&self) -> MeaningLayerSnapshot;
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum RequirementKind {
     Performance,
     Memory,
@@ -101,7 +102,7 @@ pub enum RequirementKind {
     Reliability,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DerivedRequirement {
     pub kind: RequirementKind,
     pub strength: f32,
@@ -113,7 +114,8 @@ pub struct DesignProjection {
     pub derived: Vec<DerivedRequirement>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct L1Id(pub u128);
 
 impl Codec for L1Id {
@@ -131,7 +133,7 @@ impl Codec for L1Id {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum RequirementRole {
     Goal,
     Constraint,
@@ -147,6 +149,18 @@ pub struct SemanticUnitL1 {
     pub abstraction: f32,
     pub vector: Vec<f32>,
     pub source_text: String,
+}
+
+pub type UnitId = L1Id;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticUnitL1V2 {
+    pub id: UnitId,
+    pub objective: Option<String>,
+    pub scope_in: Vec<String>,
+    pub scope_out: Vec<String>,
+    pub constraints: Vec<String>,
+    pub ambiguity_score: f64,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -203,7 +217,8 @@ impl Codec for SemanticUnitL1 {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[serde(transparent)]
 pub struct ConceptId(pub u64);
 pub type L2Id = ConceptId;
 
@@ -234,6 +249,21 @@ pub struct ConceptUnit {
     pub s: Vec<f32>,
     pub polarity: i8,
     pub timestamp: u64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct CausalEdge {
+    pub from: L1Id,
+    pub to: L1Id,
+    pub weight: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConceptUnitV2 {
+    pub id: ConceptId,
+    pub derived_requirements: Vec<DerivedRequirement>,
+    pub causal_links: Vec<CausalEdge>,
+    pub stability_score: f64,
 }
 
 impl Codec for ConceptUnit {
@@ -303,6 +333,113 @@ impl Codec for ConceptUnit {
             polarity,
             timestamp,
         })
+    }
+}
+
+impl TryFrom<&SemanticUnitL1> for SemanticUnitL1V2 {
+    type Error = SemanticError;
+
+    fn try_from(value: &SemanticUnitL1) -> Result<Self, Self::Error> {
+        let normalized = canonicalize_text_field(&value.source_text);
+        let objective = match value.role {
+            RequirementRole::Goal | RequirementRole::Optimization if !normalized.is_empty() => {
+                Some(normalized.clone())
+            }
+            _ => None,
+        };
+        let scope_in = match value.role {
+            RequirementRole::Goal | RequirementRole::Optimization if !normalized.is_empty() => {
+                vec![normalized.clone()]
+            }
+            _ => Vec::new(),
+        };
+        let scope_out = match value.role {
+            RequirementRole::Prohibition if !normalized.is_empty() => vec![normalized.clone()],
+            _ => Vec::new(),
+        };
+        let constraints = match value.role {
+            RequirementRole::Constraint | RequirementRole::Prohibition if !normalized.is_empty() => {
+                vec![normalized]
+            }
+            _ => Vec::new(),
+        };
+        Ok(Self {
+            id: value.id,
+            objective,
+            scope_in: canonicalize_string_vec(scope_in),
+            scope_out: canonicalize_string_vec(scope_out),
+            constraints: canonicalize_string_vec(constraints),
+            ambiguity_score: f64::from(value.abstraction).clamp(0.0, 1.0),
+        })
+    }
+}
+
+impl TryFrom<SemanticUnitL1> for SemanticUnitL1V2 {
+    type Error = SemanticError;
+
+    fn try_from(value: SemanticUnitL1) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
+    }
+}
+
+impl TryFrom<&ConceptUnit> for ConceptUnitV2 {
+    type Error = SemanticError;
+
+    fn try_from(value: &ConceptUnit) -> Result<Self, Self::Error> {
+        let mut refs = value.l1_refs.clone();
+        refs.sort();
+        let mut causal_links = Vec::new();
+        for window in refs.windows(2) {
+            if let [from, to] = window {
+                causal_links.push(CausalEdge {
+                    from: *from,
+                    to: *to,
+                    weight: 1.0,
+                });
+            }
+        }
+        let mut derived_requirements = Vec::new();
+        let dims = normalize_with_dim(&value.integrated_vector, D_SEM);
+        let strength_at = |idx: usize| -> f32 {
+            dims.get(idx).copied().unwrap_or(0.0).clamp(-1.0, 1.0)
+        };
+        derived_requirements.push(DerivedRequirement {
+            kind: RequirementKind::Performance,
+            strength: strength_at(0),
+        });
+        derived_requirements.push(DerivedRequirement {
+            kind: RequirementKind::Memory,
+            strength: -strength_at(1),
+        });
+        derived_requirements.push(DerivedRequirement {
+            kind: RequirementKind::Security,
+            strength: strength_at(2),
+        });
+        derived_requirements.push(DerivedRequirement {
+            kind: RequirementKind::Reliability,
+            strength: strength_at(3),
+        });
+        derived_requirements.push(DerivedRequirement {
+            kind: RequirementKind::NoCloud,
+            strength: if value.polarity < 0 { 1.0 } else { -1.0 } * value.a.clamp(0.0, 1.0),
+        });
+        derived_requirements.sort_by(|l, r| l.kind.cmp(&r.kind));
+
+        let stability_score = (1.0 - f64::from(value.a).abs() * 0.3).clamp(0.0, 1.0);
+        Ok(Self {
+            id: value.id,
+            derived_requirements,
+            causal_links,
+            stability_score,
+        })
+    }
+}
+
+impl TryFrom<ConceptUnit> for ConceptUnitV2 {
+    type Error = SemanticError;
+
+    fn try_from(value: ConceptUnit) -> Result<Self, Self::Error> {
+        Self::try_from(&value)
     }
 }
 
@@ -1162,6 +1299,24 @@ fn infer_requirement_kind(l1: &SemanticUnitL1) -> RequirementKind {
     } else {
         RequirementKind::Performance
     }
+}
+
+fn canonicalize_text_field(text: &str) -> String {
+    text.to_lowercase()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+fn canonicalize_string_vec(values: Vec<String>) -> Vec<String> {
+    let mut out = values
+        .into_iter()
+        .map(|v| canonicalize_text_field(&v))
+        .filter(|v| !v.is_empty())
+        .collect::<Vec<_>>();
+    out.sort();
+    out.dedup();
+    out
 }
 
 fn quantize_f32(value: f32, precision: f32) -> f32 {

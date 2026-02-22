@@ -1,14 +1,18 @@
-use semantic_dhm::{DesignProjection, SemanticUnitL1};
+use serde::{Deserialize, Serialize};
+use language_dhm::{EMBEDDING_DIM, LangId, LanguageDhm, LanguageUnit};
+use semantic_dhm::{DesignProjection, SemanticError, SemanticUnitL1};
 
 use crate::DesignHypothesis;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+pub const TEMPLATE_SELECTION_EPSILON: f32 = 1e-6;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Explanation {
     pub summary: String,
     pub detail: String,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct LanguageState {
     pub selected_objective: Option<String>,
     pub requirement_count: usize,
@@ -16,10 +20,123 @@ pub struct LanguageState {
     pub ambiguity_score: f64,
 }
 
-#[derive(Clone, Default)]
-pub struct LanguageEngine;
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct LanguageStateV2 {
+    pub selected_objective: Option<String>,
+    pub requirement_count: usize,
+    pub stability_score: f64,
+    pub ambiguity_score: f64,
+}
+
+impl From<LanguageState> for LanguageStateV2 {
+    fn from(value: LanguageState) -> Self {
+        Self {
+            selected_objective: value.selected_objective,
+            requirement_count: value.requirement_count,
+            stability_score: value.stability_score.clamp(0.0, 1.0),
+            ambiguity_score: value.ambiguity_score.clamp(0.0, 1.0),
+        }
+    }
+}
+
+impl From<&LanguageState> for LanguageStateV2 {
+    fn from(value: &LanguageState) -> Self {
+        Self {
+            selected_objective: value.selected_objective.clone(),
+            requirement_count: value.requirement_count,
+            stability_score: value.stability_score.clamp(0.0, 1.0),
+            ambiguity_score: value.ambiguity_score.clamp(0.0, 1.0),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TemplateId {
+    StableClear,
+    StableAmbiguous,
+    UnstableClear,
+    UnstableAmbiguous,
+    Fallback,
+}
+
+impl TemplateId {
+    fn as_label(self) -> &'static str {
+        match self {
+            TemplateId::StableClear => "stable_clear",
+            TemplateId::StableAmbiguous => "stable_ambiguous",
+            TemplateId::UnstableClear => "unstable_clear",
+            TemplateId::UnstableAmbiguous => "unstable_ambiguous",
+            TemplateId::Fallback => "fallback",
+        }
+    }
+}
+
+pub struct LanguagePatternStore {
+    dhm: LanguageDhm<memory_store::InMemoryStore<LangId, LanguageUnit>>,
+    mapping: std::collections::BTreeMap<LangId, TemplateId>,
+}
+
+impl LanguagePatternStore {
+    pub fn new() -> Result<Self, SemanticError> {
+        let mut dhm = LanguageDhm::in_memory().map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
+        let mut mapping = std::collections::BTreeMap::new();
+        for (template, vec) in [
+            (TemplateId::StableClear, vec![1.0, 0.0, 0.2, 1.0]),
+            (TemplateId::StableAmbiguous, vec![1.0, 1.0, 0.2, 1.0]),
+            (TemplateId::UnstableClear, vec![0.0, 0.0, 0.8, 1.0]),
+            (TemplateId::UnstableAmbiguous, vec![0.0, 1.0, 0.8, 1.0]),
+            (TemplateId::Fallback, vec![0.5, 0.5, 0.5, 0.0]),
+        ] {
+            let mut emb = vec![0.0f32; EMBEDDING_DIM];
+            for (idx, value) in vec.into_iter().enumerate() {
+                emb[idx] = value;
+            }
+            let id = dhm
+                .insert(template.as_label(), emb)
+                .map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
+            mapping.insert(id, template);
+        }
+        Ok(Self { dhm, mapping })
+    }
+
+    pub fn select_template(&self, h: &[f32]) -> Result<TemplateId, SemanticError> {
+        let top = self.dhm.recall(h, 3);
+        if top.is_empty() {
+            return Ok(TemplateId::Fallback);
+        }
+        let top1 = top[0];
+        let top2 = top.get(1).copied();
+        let first = self
+            .mapping
+            .get(&top1.0)
+            .copied()
+            .ok_or(SemanticError::InconsistentState("template mapping missing"))?;
+        if let Some(second) = top2 {
+            let margin = (top1.1 - second.1).abs();
+            if is_ambiguous_margin(margin) {
+                return Ok(TemplateId::Fallback);
+            }
+        }
+        Ok(first)
+    }
+}
+
+pub struct LanguageEngine {
+    patterns: Option<LanguagePatternStore>,
+}
+
+impl Default for LanguageEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 impl LanguageEngine {
+    pub fn new() -> Self {
+        Self {
+            patterns: LanguagePatternStore::new().ok(),
+        }
+    }
     pub fn build_state(
         &self,
         projection: &DesignProjection,
@@ -53,6 +170,11 @@ impl LanguageEngine {
     }
 
     pub fn explain_state(&self, state: &LanguageState) -> Explanation {
+        let state_v2 = LanguageStateV2::from(state);
+        let h = self.build_h_state(&state_v2);
+        let template = self
+            .select_template(&h)
+            .unwrap_or(TemplateId::Fallback);
         let objective = state
             .selected_objective
             .as_deref()
@@ -77,8 +199,10 @@ impl LanguageEngine {
             state.requirement_count
         );
         let detail = format!(
-            "stability_score={:.3}, ambiguity_score={:.3}",
-            state.stability_score, state.ambiguity_score
+            "template={}, stability_score={:.3}, ambiguity_score={:.3}",
+            template.as_label(),
+            state.stability_score,
+            state.ambiguity_score
         );
         Explanation { summary, detail }
     }
@@ -92,4 +216,25 @@ impl LanguageEngine {
         };
         self.explain_state(&state)
     }
+
+    pub fn build_h_state(&self, state: &LanguageStateV2) -> Vec<f32> {
+        let mut h = vec![0.0f32; EMBEDDING_DIM];
+        let requirement_count_norm = (state.requirement_count as f64 / 16.0).clamp(0.0, 1.0);
+        h[0] = state.stability_score.clamp(0.0, 1.0) as f32;
+        h[1] = state.ambiguity_score.clamp(0.0, 1.0) as f32;
+        h[2] = requirement_count_norm as f32;
+        h[3] = if state.selected_objective.is_some() { 1.0 } else { 0.0 };
+        h
+    }
+
+    pub fn select_template(&self, h_state: &[f32]) -> Result<TemplateId, SemanticError> {
+        let Some(patterns) = &self.patterns else {
+            return Ok(TemplateId::Fallback);
+        };
+        patterns.select_template(h_state)
+    }
+}
+
+pub fn is_ambiguous_margin(margin: f32) -> bool {
+    margin <= TEMPLATE_SELECTION_EPSILON
 }

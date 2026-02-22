@@ -1,0 +1,11 @@
+{
+    "algorithm_version": 1,
+    "l1": [
+        {"id": 1, "role": "Constraint", "polarity": -1, "abstraction": 0.197, "vector_hash": 8598721311493853663},
+        {"id": 2, "role": "Goal", "polarity": 1, "abstraction": 0.617, "vector_hash": 13459209436630411370}
+    ],
+    "l2": [
+        {"id": 1, "l1_refs": [1], "integrated_vector_hash": 8598721311493853663},
+        {"id": 2, "l1_refs": [2], "integrated_vector_hash": 13459209436630411370}
+    ]
+}
