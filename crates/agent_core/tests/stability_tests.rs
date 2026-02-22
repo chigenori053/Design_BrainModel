@@ -176,7 +176,8 @@ fn run_trace(
         let shm = hybrid_vm::HybridVM::default_shm();
         let chm = make_chm(&shm, mode, seed_val);
         let field = FieldEngine::new(256);
-        let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
+        let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default())
+            .expect("system evaluator init");
 
         let mut controller = Phase45Controller::new(0.5);
         let mut profile = balanced_profile();
@@ -429,7 +430,8 @@ fn smoke_beam_engine_depth50_runs() {
     let shm = hybrid_vm::HybridVM::default_shm();
     let chm = make_chm(&shm, ChmMode::Dense, 7);
     let field = FieldEngine::new(128);
-    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default());
+    let evaluator = SystemEvaluator::with_base(&chm, &field, StructuralEvaluator::default())
+        .expect("system evaluator init");
 
     let engine = BeamSearch {
         shm: &shm,

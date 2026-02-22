@@ -18,6 +18,7 @@ members = [
     "crates/meaning_extractor",
     "crates/semantic_dhm",
     "crates/recomposer",
+    "crates/design_reasoning",
     "apps/cli",
     "apps/desktop",
     "apps/server",
@@ -40,6 +41,7 @@ language_dhm = { path = "crates/language_dhm" }
 meaning_extractor = { path = "crates/meaning_extractor" }
 semantic_dhm = { path = "crates/semantic_dhm" }
 recomposer = { path = "crates/recomposer" }
+design_reasoning = { path = "crates/design_reasoning" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime_vm" }

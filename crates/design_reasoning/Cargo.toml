@@ -1,0 +1,9 @@
+[package]
+name = "design_reasoning"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+language_dhm = { workspace = true }
+memory_store = { workspace = true }
+semantic_dhm = { workspace = true }

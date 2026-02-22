@@ -109,12 +109,13 @@ where
         Ok(Self { store, next_id })
     }
 
-    pub fn insert(&mut self, text: &str, embedding: Vec<f32>) -> LangId {
-        assert_eq!(
-            embedding.len(),
-            EMBEDDING_DIM,
-            "embedding length must be EMBEDDING_DIM"
-        );
+    pub fn insert(&mut self, text: &str, embedding: Vec<f32>) -> io::Result<LangId> {
+        if embedding.len() != EMBEDDING_DIM {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "embedding length must be EMBEDDING_DIM",
+            ));
+        }
         let id = LangId(self.next_id);
         self.next_id = self.next_id.saturating_add(1);
 
@@ -124,10 +125,8 @@ where
             raw_text: text.to_string(),
             timestamp: now_ts(),
         };
-        self.store
-            .put(id, unit)
-            .expect("failed to store LanguageUnit");
-        id
+        self.store.put(id, unit)?;
+        Ok(id)
     }
 
     pub fn recall(&self, query_embedding: &[f32], top_k: usize) -> Vec<(LangId, f32)> {
@@ -243,7 +242,7 @@ mod tests {
     #[test]
     fn normalization_test() {
         let mut dhm = LanguageDhm::in_memory().expect("in-memory");
-        let id = dhm.insert("x", vec_with(2.0));
+        let id = dhm.insert("x", vec_with(2.0)).expect("insert");
         let unit = dhm.get(id).expect("unit");
         let norm = unit.embedding.iter().map(|x| x * x).sum::<f32>().sqrt();
         assert!((norm - 1.0).abs() < 1e-4);
@@ -265,8 +264,8 @@ mod tests {
         let mut near_b = vec![0.0; EMBEDDING_DIM];
         near_b[1] = 1.0;
 
-        let a_id = dhm.insert("A", near_a.clone());
-        let _ = dhm.insert("B", near_b);
+        let a_id = dhm.insert("A", near_a.clone()).expect("insert a");
+        let _ = dhm.insert("B", near_b).expect("insert b");
 
         let out = dhm.recall(&near_a, 1);
         assert_eq!(out.first().map(|(id, _)| *id), Some(a_id));
@@ -285,7 +284,7 @@ mod tests {
             let mut dhm = LanguageDhm::file(&path).expect("open write");
             let mut a = vec![0.0; EMBEDDING_DIM];
             a[3] = 1.0;
-            let _ = dhm.insert("persist", a);
+            let _ = dhm.insert("persist", a).expect("insert persist");
         }
         {
             let dhm = LanguageDhm::file(&path).expect("open read");

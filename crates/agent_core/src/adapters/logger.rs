@@ -10,16 +10,17 @@ pub struct LoggerTelemetry {
 
 impl LoggerTelemetry {
     pub fn take(&self) -> Vec<TelemetryEvent> {
-        let mut guard = self.events.lock().expect("telemetry mutex poisoned");
-        std::mem::take(&mut *guard)
+        match self.events.lock() {
+            Ok(mut guard) => std::mem::take(&mut *guard),
+            Err(_) => Vec::new(),
+        }
     }
 }
 
 impl TelemetryPort for LoggerTelemetry {
     fn emit(&self, event: &TelemetryEvent) {
-        self.events
-            .lock()
-            .expect("telemetry mutex poisoned")
-            .push(event.clone());
+        if let Ok(mut guard) = self.events.lock() {
+            guard.push(event.clone());
+        }
     }
 }

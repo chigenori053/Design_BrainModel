@@ -23,7 +23,8 @@ pub use design_reasoning::{DesignHypothesis, Explanation};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
 pub use semantic_dhm::{
     ConceptId, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode, MeaningLayerSnapshot,
-    RequirementKind, RequirementRole as L1RequirementRole, SemanticUnitL1Input, Snapshotable,
+    RequirementKind, RequirementRole as L1RequirementRole, SemanticError, SemanticUnitL1Input,
+    Snapshotable,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
@@ -83,14 +84,18 @@ pub struct HybridVM {
 }
 
 impl HybridVM {
-    pub fn new(evaluator: StructuralEvaluator, dhm: Dhm, mode: ExecutionMode) -> Self {
+    pub fn new(
+        evaluator: StructuralEvaluator,
+        dhm: Dhm,
+        mode: ExecutionMode,
+    ) -> Result<Self, SemanticError> {
         let language_dhm = Self::language_dhm_file(ops::util::default_language_store_path())
-            .expect("failed to initialize LanguageDHM");
-        let semantic_dhm = Self::semantic_dhm_file(ops::util::default_semantic_store_path())
-            .expect("failed to initialize SemanticDHM");
-        let semantic_l1_dhm = Self::semantic_l1_dhm_file(ops::util::default_l1_store_path())
-            .expect("failed to initialize SemanticL1DHM");
-        Self {
+            .map_err(SemanticError::from)?;
+        let semantic_dhm =
+            Self::semantic_dhm_file(ops::util::default_semantic_store_path()).map_err(SemanticError::from)?;
+        let semantic_l1_dhm =
+            Self::semantic_l1_dhm_file(ops::util::default_l1_store_path()).map_err(SemanticError::from)?;
+        Ok(Self {
             evaluator,
             dhm,
             language_dhm,
@@ -104,13 +109,12 @@ impl HybridVM {
             recomposer: Recomposer,
             mode,
             trace: Vec::new(),
-        }
+        })
     }
 
-    pub fn with_default_memory(evaluator: StructuralEvaluator) -> Self {
+    pub fn with_default_memory(evaluator: StructuralEvaluator) -> Result<Self, SemanticError> {
         let path = ops::util::default_store_path();
-        let dhm =
-            Dhm::open(path, ops::util::memory_mode_from_env()).expect("failed to initialize DHM");
+        let dhm = Dhm::open(path, ops::util::memory_mode_from_env()).map_err(SemanticError::from)?;
         Self::new(evaluator, dhm, ExecutionMode::RecallFirst)
     }
 
@@ -155,7 +159,7 @@ impl HybridVM {
         std::mem::take(&mut self.trace)
     }
 
-    pub fn analyze_text(&mut self, text: &str) -> Result<ConceptUnit, HybridVmError> {
+    pub fn analyze_text(&mut self, text: &str) -> Result<ConceptUnit, SemanticError> {
         ops::semantic::analyze_text(
             &self.meaning_engine,
             text,
@@ -177,14 +181,14 @@ impl HybridVM {
         self.semantic_l1_dhm.remove(id).map_err(HybridVmError::Io)
     }
 
-    pub fn rebuild_l2_from_l1(&mut self) -> Result<(), HybridVmError> {
+    pub fn rebuild_l2_from_l1(&mut self) -> Result<(), SemanticError> {
         ops::semantic::rebuild_l2_from_l1(&self.semantic_l1_dhm, &mut self.semantic_dhm)
     }
 
     pub fn rebuild_l2_from_l1_with_config(
         &mut self,
         config: L2Config,
-    ) -> Result<(), HybridVmError> {
+    ) -> Result<(), SemanticError> {
         ops::semantic::rebuild_l2_from_l1_with_config(
             &self.semantic_l1_dhm,
             &mut self.semantic_dhm,
@@ -192,7 +196,7 @@ impl HybridVM {
         )
     }
 
-    pub fn rebuild_l2_from_l1_with_mode(&mut self, mode: L2Mode) -> Result<(), HybridVmError> {
+    pub fn rebuild_l2_from_l1_with_mode(&mut self, mode: L2Mode) -> Result<(), SemanticError> {
         ops::semantic::rebuild_l2_from_l1_with_mode(
             &self.semantic_l1_dhm,
             &mut self.semantic_dhm,
@@ -200,7 +204,7 @@ impl HybridVM {
         )
     }
 
-    pub fn snapshot(&self) -> MeaningLayerSnapshot {
+    pub fn snapshot(&self) -> Result<MeaningLayerSnapshot, SemanticError> {
         ops::semantic::snapshot(&self.snapshot_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
     }
 
@@ -208,7 +212,7 @@ impl HybridVM {
         &self,
         left: &MeaningLayerSnapshot,
         right: &MeaningLayerSnapshot,
-    ) -> semantic_dhm::SnapshotDiff {
+    ) -> Result<semantic_dhm::SnapshotDiff, SemanticError> {
         self.snapshot_engine.compare(left, right)
     }
 
@@ -216,11 +220,14 @@ impl HybridVM {
         ops::semantic::project_phase_a(&self.projection_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
     }
 
-    pub fn evaluate_hypothesis(&self, projection: &DesignProjection) -> DesignHypothesis {
+    pub fn evaluate_hypothesis(
+        &self,
+        projection: &DesignProjection,
+    ) -> Result<DesignHypothesis, SemanticError> {
         self.hypothesis_engine.evaluate_hypothesis(projection)
     }
 
-    pub fn evaluate_design(&mut self, text: &str) -> Result<DesignHypothesis, HybridVmError> {
+    pub fn evaluate_design(&mut self, text: &str) -> Result<DesignHypothesis, SemanticError> {
         ops::semantic::evaluate_design(
             text,
             &self.meaning_engine,
@@ -232,7 +239,7 @@ impl HybridVM {
         )
     }
 
-    pub fn explain_design(&mut self, text: &str) -> Result<Explanation, HybridVmError> {
+    pub fn explain_design(&mut self, text: &str) -> Result<Explanation, SemanticError> {
         ops::semantic::explain_design(
             text,
             &self.meaning_engine,
@@ -539,7 +546,7 @@ mod tests {
 
     #[test]
     fn supports_two_execution_modes() {
-        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default());
+        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
         let s = state_with_graph(4, &[(1, 2), (2, 3)]);
 
         vm.set_mode(ExecutionMode::RecallFirst);
@@ -577,7 +584,7 @@ mod tests {
 
     #[test]
     fn analyze_text_creates_l1_and_l2_link() {
-        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default());
+        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
         let concept = vm
             .analyze_text("高速化したい。クラウド依存は避ける")
             .expect("analyze");
@@ -599,9 +606,9 @@ mod tests {
         ));
         let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
         let _ = vm.analyze_text("security 강화");
-        let before = vm.snapshot();
+        let before = vm.snapshot().expect("snapshot");
         vm.rebuild_l2_from_l1().expect("rebuild");
-        let after = vm.snapshot();
+        let after = vm.snapshot().expect("snapshot");
         assert_eq!(before, after);
     }
 
@@ -639,6 +646,7 @@ mod tests {
         let _ = vm.analyze_text(text).expect("analyze");
         let projection = vm.project_phase_a();
         vm.evaluate_hypothesis(&projection)
+            .expect("hypothesis evaluation should succeed")
     }
 
     #[test]

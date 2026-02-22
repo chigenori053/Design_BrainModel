@@ -52,6 +52,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "design_reasoning"
+version = "0.1.0"
+dependencies = [
+ "language_dhm",
+ "memory_store",
+ "semantic_dhm",
+]
+
+[[package]]
 name = "design_server"
 version = "0.1.0"
 dependencies = [
@@ -81,6 +90,7 @@ version = "0.1.0"
 dependencies = [
  "chm",
  "core_types",
+ "design_reasoning",
  "dhm",
  "field_engine",
  "language_dhm",

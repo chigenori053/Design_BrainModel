@@ -7,6 +7,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use meaning_extractor::{MeaningStructure, NodeId, RelationType, RoleType};
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
 
+#[derive(Debug)]
+pub enum SemanticError {
+    InvalidInput(String),
+    MissingField(&'static str),
+    InconsistentState(&'static str),
+    EvaluationError(String),
+    SnapshotError(String),
+}
+
+impl std::fmt::Display for SemanticError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidInput(msg) => write!(f, "{msg}"),
+            Self::MissingField(name) => write!(f, "missing field: {name}"),
+            Self::InconsistentState(msg) => write!(f, "inconsistent state: {msg}"),
+            Self::EvaluationError(msg) => write!(f, "evaluation error: {msg}"),
+            Self::SnapshotError(msg) => write!(f, "snapshot error: {msg}"),
+        }
+    }
+}
+
+impl std::error::Error for SemanticError {}
+
+impl From<io::Error> for SemanticError {
+    fn from(value: io::Error) -> Self {
+        SemanticError::EvaluationError(value.to_string())
+    }
+}
+
 pub const D_SEM: usize = 384;
 pub const D_STRUCT: usize = 384;
 pub const SIM_PRECISION: f64 = 1000.0;
@@ -386,7 +415,7 @@ where
             timestamp: now_ts(),
         };
 
-        self.store.put(id, unit).expect("failed to store concept");
+        let _ = self.store.put(id, unit);
         id
     }
 
@@ -432,12 +461,12 @@ where
     pub fn insert_from_l1_units(&mut self, l1_units: &[SemanticUnitL1]) -> ConceptId {
         let unit = build_l2_unit_from_l1(l1_units, self.l2_config);
         let id = unit.id;
-        self.store.put(id, unit).expect("failed to store concept");
+        let _ = self.store.put(id, unit);
         self.next_id = self.next_id.max(id.0.saturating_add(1));
         id
     }
 
-    pub fn rebuild_l2_from_l1(&mut self, l1_units: &[SemanticUnitL1]) -> io::Result<()> {
+    pub fn rebuild_l2_from_l1(&mut self, l1_units: &[SemanticUnitL1]) -> Result<(), SemanticError> {
         self.rebuild_l2_from_l1_with_config(l1_units, DEFAULT_L2_CONFIG)
     }
 
@@ -445,16 +474,19 @@ where
         &mut self,
         l1_units: &[SemanticUnitL1],
         config: L2Config,
-    ) -> io::Result<()> {
+    ) -> Result<(), SemanticError> {
         let rebuilt = build_l2_cache_with_config(l1_units, config);
         let entries = rebuilt
             .into_iter()
             .map(|unit| (unit.id, unit))
             .collect::<Vec<_>>();
-        self.store.replace_all(entries)?;
+        self.store
+            .replace_all(entries)
+            .map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
         self.next_id = self
             .store
-            .entries()?
+            .entries()
+            .map_err(|e| SemanticError::EvaluationError(e.to_string()))?
             .into_iter()
             .map(|(id, _)| id.0)
             .max()
@@ -468,7 +500,7 @@ where
         &mut self,
         l1_units: &[SemanticUnitL1],
         mode: L2Mode,
-    ) -> io::Result<()> {
+    ) -> Result<(), SemanticError> {
         match mode {
             L2Mode::Stable => self.rebuild_l2_from_l1_with_config(l1_units, DEFAULT_L2_CONFIG),
             L2Mode::Experimental(config) => self.rebuild_l2_from_l1_with_config(l1_units, config),
@@ -514,7 +546,7 @@ where
             vector: normalize_with_dim(&input.vector, D_SEM),
             source_text: input.source_text.clone(),
         };
-        self.store.put(id, unit).expect("failed to store l1 unit");
+        let _ = self.store.put(id, unit);
         id
     }
 
@@ -751,13 +783,21 @@ impl Snapshotable for MeaningLayerState {
     }
 }
 
-pub fn compare_snapshots(a: &MeaningLayerSnapshot, b: &MeaningLayerSnapshot) -> SnapshotDiff {
-    SnapshotDiff {
+pub fn compare_snapshots(
+    a: &MeaningLayerSnapshot,
+    b: &MeaningLayerSnapshot,
+) -> Result<SnapshotDiff, SemanticError> {
+    if a.algorithm_version == b.algorithm_version && (a.l1.is_empty() != b.l1.is_empty()) {
+        return Err(SemanticError::SnapshotError(
+            "l1 snapshot cardinality mismatch".to_string(),
+        ));
+    }
+    Ok(SnapshotDiff {
         identical: a == b,
         algorithm_version_changed: a.algorithm_version != b.algorithm_version,
         l1_changed: a.l1 != b.l1,
         l2_changed: a.l2 != b.l2,
-    }
+    })
 }
 
 pub fn project_phase_a(l2_units: &[ConceptUnit], l1_units: &[SemanticUnitL1]) -> DesignProjection {
@@ -805,7 +845,8 @@ pub fn generate_l2_id(l1_refs: &[L1Id], algorithm_version: u32) -> ConceptId {
     let mut sorted = l1_refs.to_vec();
     sorted.sort();
     if sorted.len() == 1 && algorithm_version == DEFAULT_L2_CONFIG.algorithm_version {
-        return ConceptId((sorted[0].0 as u64).max(1));
+        let only = sorted.first().copied().unwrap_or(L1Id(1));
+        return ConceptId((only.0 as u64).max(1));
     }
     let mut hash: u64 = 1469598103934665603;
     for b in algorithm_version.to_le_bytes() {
@@ -1489,7 +1530,7 @@ mod tests {
         }
         .snapshot();
         assert_eq!(s1, s2);
-        let diff = compare_snapshots(&s1, &s2);
+        let diff = compare_snapshots(&s1, &s2).expect("snapshot compare should succeed");
         assert!(diff.identical);
     }
 

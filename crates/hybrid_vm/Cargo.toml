@@ -19,3 +19,4 @@ language_dhm = { workspace = true }
 meaning_extractor = { workspace = true }
 semantic_dhm = { workspace = true }
 recomposer = { workspace = true }
+design_reasoning = { workspace = true }

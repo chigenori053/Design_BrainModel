@@ -29,7 +29,10 @@ fn run_phase1_variant(
     let shm = hybrid_vm::HybridVM::default_shm();
     let chm = crate::runtime::trace_helpers::make_dense_trace_chm(&shm, config.seed);
     let field = field_engine::FieldEngine::new(256);
-    let mut hybrid_vm = hybrid_vm::HybridVM::with_default_memory(hybrid_vm::StructuralEvaluator::default());
+    let mut hybrid_vm = match hybrid_vm::HybridVM::with_default_memory(hybrid_vm::StructuralEvaluator::default()) {
+        Ok(vm) => vm,
+        Err(_) => return (Vec::new(), Vec::new()),
+    };
     let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
     let mut lambda = 0.5f64;
     let mut field_cache: std::collections::BTreeMap<(u128, u128, usize, usize), field_engine::FieldVector> =

@@ -50,7 +50,22 @@ pub fn execute_soft_search_core(
     let shm = HybridVM::default_shm();
     let _chm = crate::runtime::trace_helpers::make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
-    let mut hybrid_vm = HybridVM::with_default_memory(StructuralEvaluator::default());
+    let mut hybrid_vm = match HybridVM::with_default_memory(StructuralEvaluator::default()) {
+        Ok(vm) => vm,
+        Err(err) => {
+            return SearchCoreResult {
+                best: Hypothesis {
+                    id: "soft-trace-init-error".to_string(),
+                    content: format!("hybrid vm init failed: {err}"),
+                },
+                trace: Vec::new(),
+                events: vec![AgentEvent::EmitTelemetry(crate::domain::TelemetryEvent {
+                    name: "trace.hybrid_vm.init_error".to_string(),
+                    value: err.to_string(),
+                })],
+            };
+        }
+    };
 
     let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
     let mut rows = Vec::with_capacity(config.depth);

@@ -96,8 +96,8 @@ pub fn execute_soft_trace(
             objectives,
         } = event
         {
-            crate::adapters::file_storage::append_raw_objectives(path.as_path(), depth, &objectives)
-                .expect("failed to append raw trace rows");
+            let _ =
+                crate::adapters::file_storage::append_raw_objectives(path.as_path(), depth, &objectives);
         }
     }
     result.trace
