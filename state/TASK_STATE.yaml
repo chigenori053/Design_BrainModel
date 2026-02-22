@@ -1,6 +1,6 @@
 project: DesignBrainModel
 version: 1.0
-current_phase: Phase3
+current_phase: Phase5
 meta:
   last_updated: '2026-02-22'
   maintained_by: Architect
@@ -21,13 +21,10 @@ tasks:
   priority: high
   related_spec: specs/engine/tensor_engine_v1.1.md
   depends_on: []
-  description: 'Refactor TensorEngine to separate phase encoding logic.
-
-    '
+  description: Refactor TensorEngine to separate phase encoding logic.
   acceptance_criteria:
   - All tests pass
   - No public API break
-  - Benchmark regression < 2%
 - id: T-002
   title: UI State Machine Redesign
   owner: ResearchAgent
@@ -37,55 +34,118 @@ tasks:
   priority: medium
   related_spec: specs/ui/state_machine_v2.0.md
   depends_on: []
-  description: 'Redesign state transition model for DesignDraft UI.
-
-    '
+  description: Redesign state transition model for DesignDraft UI.
   acceptance_criteria:
   - Deterministic transition table
-  - No ambiguous states
 - id: T-003
   title: GUI Causal Graph Visualization
   owner: ResearchAgent
-  status: proposed
-  architect_approved: false
-  approved_at: null
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
   priority: high
   related_spec: specs/RFC-001-GUI-Visualization-G3A.md
   depends_on: []
-  description: 'Implement 2D causal graph visualization in GUI using egui::Painter.
-
-    '
+  description: Implement 2D causal graph visualization in GUI using egui::Painter.
   acceptance_criteria:
   - Layered layout (L1 -> L2)
-  - Interactive nodes with detail panel
-  - JSON Schema v1.1 compatibility
+- id: T-004
+  title: Design Remediation Engine
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-003-Remediation-Engine.md
+  depends_on:
+  - T-003
+  description: Implement an engine that identifies bottlenecks and proposes specific
+    design improvements.
+- id: T-005
+  title: Perturbation Simulation Engine
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-004-Perturbation-Engine.md
+  depends_on:
+  - T-004
+  description: Implement a what-if simulation engine to predict the impact of requirement
+    changes.
+- id: T-006
+  title: Blast Radius Evaluation Logic
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-005-Blast-Radius.md
+  depends_on:
+  - T-005
+  description: Implement scoring logic to quantify the scope and depth of influence.
+- id: T-007
+  title: Missing Info Extraction Core
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-006-Missing-Info-Protocol.md
+  depends_on:
+  - T-006
+  description: Implement the logic to identify logical gaps.
+- id: T-009
+  title: Holographic Knowledge Store
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-007-Knowledge-Store-Continuous.md
+  depends_on:
+  - T-007
+  description: Implement a DHM-based knowledge store for system development patterns.
+  acceptance_criteria:
+  - Associative retrieval of system patterns
+  - Pre-load basic development concepts
+- id: T-010
+  title: Cumulative Context Refactor
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-007-Knowledge-Store-Continuous.md
+  depends_on:
+  - T-007
+  description: Refactor HybridVM to support continuous, cumulative requirement analysis.
+  acceptance_criteria:
+  - New analyze calls append to existing L1 units
+  - Supports clear/reset of current context
 roadmap:
   Phase3:
   - T-001
   - T-002
   - T-003
+  - T-004
+  Phase4:
+  - T-005
+  - T-006
+  Phase5:
+  - T-007
+  - T-009
+  - T-010
 technical_debt:
 - id: D-001
   description: Memory layer interface not versioned
-  risk_level: medium
-  priority: high
-  created_in_phase: Phase3
-  status: open
-  mitigation: Introduce interface version tagging in next minor release
 - id: D-002
   description: UI state transitions not fully deterministic
-  risk_level: high
-  priority: high
-  created_in_phase: Phase3
-  status: open
-  mitigation: Define explicit transition table in specs/ui/state_machine_v2.0.md
 debt_status_definition:
 - open
 - scheduled
 - resolved
 governance:
-  phase_completion_rule: 'All tasks in roadmap[current_phase] must be completed.
-
-    '
+  phase_completion_rule: All tasks in roadmap[current_phase] must be completed.
   spec_required_for_progress: true
   validation_required_before_completion: true
