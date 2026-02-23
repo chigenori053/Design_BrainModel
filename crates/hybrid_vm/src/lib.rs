@@ -114,9 +114,11 @@ pub struct MissingInfo {
 #[derive(Clone, Debug, PartialEq)]
 pub struct DesignDraft {
     pub draft_id: String,
-    pub added_units: Vec<SemanticUnitL1V2>,
-    pub stability_impact: f64,
+    pub parent_l1: L1Id,
     pub prompt: String,
+    pub stability_impact: f64,
+    pub context_summary: String,
+    pub added_units: Vec<SemanticUnitL1V2>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -257,7 +259,8 @@ impl HybridVM {
     }
 
     pub fn add_knowledge(&mut self, topic: &str, vector: Vec<f32>) {
-        self.knowledge_store.add_knowledge(topic, vector);
+        let prompt = format!("{} に関する標準的な設計パターンを適用しますか？", topic);
+        self.knowledge_store.add_knowledge(topic, &prompt, vector);
     }
 
     pub fn record_feedback(&mut self, draft_id: &str, action: FeedbackAction) {
@@ -294,55 +297,35 @@ impl HybridVM {
         Ok(())
     }
 
+    /// 能動的に具体的な仕様候補を提案する
     pub fn generate_drafts(&self) -> Result<Vec<DesignDraft>, SemanticError> {
         let l1_units = self.all_l1_units_v2()?;
-        let l2_units = self.project_phase_a_v2()?;
-        let missing = self.extract_missing_information()?;
-        let objective_text = l1_units
-            .iter()
-            .filter_map(|u| u.objective.clone())
-            .collect::<Vec<_>>()
-            .join(" ")
-            .to_lowercase();
-        let stability = if l2_units.is_empty() {
-            0.0
-        } else {
-            l2_units.iter().map(|u| u.stability_score).sum::<f64>() / l2_units.len() as f64
-        };
-        let dashboard_trigger = objective_text.contains("ダッシュボード") || objective_text.contains("dashboard");
-        let trigger = stability < 0.75 || !missing.is_empty() || dashboard_trigger;
-        if !trigger {
-            return Ok(Vec::new());
+        let mut drafts = Vec::new();
+
+        for l1 in l1_units {
+            let objective = l1.objective.as_deref().unwrap_or("");
+            if objective.is_empty() { continue; }
+
+            let query_vec = vector_from_text(objective);
+            let related_labels = self.knowledge_store.top_related_labels(&query_vec, 3);
+
+            for label in related_labels {
+                if let Some(prompt) = self.knowledge_store.get_prompt_by_label(&label) {
+                    if objective.contains(&label) { continue; }
+
+                    drafts.push(DesignDraft {
+                        draft_id: format!("DRAFT-{}-{}", l1.id.0, label),
+                        parent_l1: l1.id,
+                        prompt,
+                        stability_impact: 0.15,
+                        context_summary: format!("「{}」の具体化案", l1.objective.as_deref().unwrap_or("未定義")),
+                        added_units: Vec::new(),
+                    });
+                }
+            }
         }
 
-        let mut related = self
-            .knowledge_store
-            .top_related_labels(&[0.7, 0.3, 0.2, 0.1], 3);
-        if dashboard_trigger && !related.iter().any(|s| s == "権限管理") {
-            related.insert(0, "権限管理".to_string());
-        }
-        let mut drafts = Vec::new();
-        for (idx, topic) in related.into_iter().enumerate() {
-            let added = SemanticUnitL1V2 {
-                id: L1Id(0),
-                objective: Some(format!("{topic} 機能を追加する")),
-                scope_in: vec!["system".to_string()],
-                scope_out: vec![],
-                constraints: vec!["既存API互換を維持する".to_string()],
-                ambiguity_score: 0.2,
-            };
-            let impact = 0.08 - (idx as f64 * 0.01);
-            drafts.push(DesignDraft {
-                draft_id: format!("DRAFT-{:03}-{}", idx + 1, topic),
-                added_units: vec![added],
-                stability_impact: impact,
-                prompt: format!(
-                    "{} を仮定すると、安定性が約{:.0}%向上する見込みです。採用しますか？",
-                    topic,
-                    (impact * 100.0).max(0.0)
-                ),
-            });
-        }
+        drafts.truncate(5);
         Ok(drafts)
     }
 
@@ -352,17 +335,17 @@ impl HybridVM {
             .into_iter()
             .find(|d| d.draft_id == draft_id)
             .ok_or_else(|| SemanticError::InvalidInput("draft not found".to_string()))?;
-        for unit in draft.added_units {
-            let objective = unit.objective.unwrap_or_else(|| "generated".to_string());
-            let input = SemanticUnitL1Input {
-                role: L1RequirementRole::Constraint,
-                polarity: 1,
-                abstraction: 0.35,
-                vector: vector_from_text(&objective),
-                source_text: objective,
-            };
-            let _ = self.semantic_l1_dhm.insert(&input);
-        }
+        
+        // ドラフトのプロンプトを新しいL1制約として追加
+        let input = SemanticUnitL1Input {
+            role: L1RequirementRole::Constraint,
+            polarity: 1,
+            abstraction: 0.3,
+            vector: vector_from_text(&draft.prompt),
+            source_text: format!("Adopted draft: {}", draft.prompt),
+        };
+        let _ = self.semantic_l1_dhm.insert(&input);
+        
         self.rebuild_l2_from_l1_v2()?;
         Ok(())
     }
@@ -630,34 +613,26 @@ impl HybridVM {
         let mut out = Vec::new();
 
         for l1 in &l1_units {
-            if l1.constraints.is_empty() && l1.ambiguity_score > 0.7 {
+            // 曖昧性が高い場合、KnowledgeStoreから関連キーワードを引いて問いかける
+            if l1.ambiguity_score > 0.6 {
+                let query_vec = vector_from_text(l1.objective.as_deref().unwrap_or(""));
+                let related = self.knowledge_store.top_related_labels(&query_vec, 2);
+                
+                let prompt = if related.is_empty() {
+                    "より具体的な制約や境界（Boundary）を教えてください。".to_string()
+                } else {
+                    format!(
+                        "「{}」に関連して、具体的な制約や要件（例: {}）はありますか？",
+                        l1.objective.as_deref().unwrap_or("この項目"),
+                        related.join(", ")
+                    )
+                };
+
                 out.push(MissingInfo {
                     target_id: Some(l1.id),
                     category: InfoCategory::Constraint,
-                    prompt: "制約は何ですか？（性能上限、コスト、期限、法規制など）".to_string(),
-                    importance: 0.95,
-                });
-            }
-            let objective_text = l1.objective.clone().unwrap_or_default().to_lowercase();
-            if objective_text.contains("開発したい")
-                || objective_text.contains("構築")
-                || objective_text.contains("develop")
-                || objective_text.contains("build")
-            {
-                let related = self.knowledge_store.top_related_labels(&[0.6, 0.4, 0.2, 0.1], 2);
-                let hint = if related.is_empty() {
-                    "対象範囲と非対象範囲（Boundary）を明示してください。".to_string()
-                } else {
-                    format!(
-                        "対象範囲と非対象範囲（Boundary）を明示してください。関連定石: {}",
-                        related.join(" / ")
-                    )
-                };
-                out.push(MissingInfo {
-                    target_id: Some(l1.id),
-                    category: InfoCategory::Boundary,
-                    prompt: hint,
-                    importance: 0.80,
+                    prompt,
+                    importance: 0.8 + l1.ambiguity_score * 0.2,
                 });
             }
         }
@@ -680,6 +655,39 @@ impl HybridVM {
 
         out.sort_by(|a, b| b.importance.total_cmp(&a.importance));
         Ok(out)
+    }
+
+    /// RFC-010: 能動的に具体的な仕様候補を提案する
+    pub fn generate_proactive_drafts(&self) -> Result<Vec<DesignDraft>, SemanticError> {
+        let l1_units = self.all_l1_units_v2()?;
+        let mut drafts = Vec::new();
+
+        for l1 in l1_units {
+            let objective = l1.objective.as_deref().unwrap_or("");
+            if objective.is_empty() { continue; }
+
+            let query_vec = vector_from_text(objective);
+            let related_labels = self.knowledge_store.top_related_labels(&query_vec, 3);
+
+            for label in related_labels {
+                if let Some(prompt) = self.knowledge_store.get_prompt_by_label(&label) {
+                    // すでに仕様として含まれているか簡易チェック
+                    if objective.contains(&label) { continue; }
+
+                    drafts.push(DesignDraft {
+                        draft_id: format!("DRAFT-{}-{}", l1.id.0, label),
+                        parent_l1: l1.id,
+                        prompt,
+                        stability_impact: 0.15,
+                        context_summary: format!("「{}」の具体化案", l1.objective.as_deref().unwrap_or("未定義")),
+                        added_units: Vec::new(),
+                    });
+                }
+            }
+        }
+
+        drafts.truncate(5);
+        Ok(drafts)
     }
 
     pub fn evaluate_hypothesis(

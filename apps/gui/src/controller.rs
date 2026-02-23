@@ -56,7 +56,7 @@ impl Controller {
         let l2 = session.vm.project_phase_a_v2().unwrap_or_default();
         let snap = session.vm.snapshot_v2().ok();
         let missing = session.vm.extract_missing_information().unwrap_or_default();
-        let drafts = session.vm.generate_drafts().unwrap_or_default();
+        let drafts = session.vm.generate_proactive_drafts().unwrap_or_default();
         let cards = session.vm.list_l2_details().unwrap_or_default();
 
         if let Some(s) = snap {

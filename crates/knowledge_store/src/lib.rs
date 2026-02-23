@@ -22,6 +22,7 @@ pub struct FeedbackEntry {
 pub struct KnowledgeStore {
     memory: Vec<Vec<f32>>,
     labels: Vec<String>,
+    prompts: Vec<String>, // 提案用の具体的なテキスト
     relevance_weights: HashMap<String, f32>,
     feedback_history: Vec<FeedbackEntry>,
 }
@@ -31,8 +32,9 @@ impl KnowledgeStore {
         Self::default()
     }
 
-    pub fn add_knowledge(&mut self, topic: &str, vector: Vec<f32>) {
+    pub fn add_knowledge(&mut self, topic: &str, prompt: &str, vector: Vec<f32>) {
         self.labels.push(topic.to_string());
+        self.prompts.push(prompt.to_string());
         self.memory.push(vector);
         self.relevance_weights.entry(topic.to_string()).or_insert(1.0);
     }
@@ -41,14 +43,46 @@ impl KnowledgeStore {
         if !self.labels.is_empty() {
             return;
         }
-        self.add_knowledge("ユーザー認証", vec![0.8, 0.1, 0.2, 0.0]);
-        self.add_knowledge("権限管理", vec![0.7, 0.2, 0.3, 0.1]);
-        self.add_knowledge("データベース永続化", vec![0.1, 0.9, 0.2, 0.2]);
-        self.add_knowledge("監査ログ", vec![0.4, 0.3, 0.9, 0.1]);
+        // 高度な設計パターンのシードデータ
+        self.add_knowledge(
+            "認証と認可",
+            "外部のIDプロバイダー（OAuth2.0/OIDC）との連携、およびJWTを用いたステートレスな認可機構を導入しますか？",
+            vec![1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "キャッシュ戦略",
+            "読み取り頻度の高いデータに対して、Redisを用いたライトスルーキャッシュを適用し、DB負荷を軽減しますか？",
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "スケーラビリティ",
+            "書き込み負荷を分散するため、データベースのシャーディング（Sharding）や、CQRSパターンによる読み書き分離を検討しますか？",
+            vec![0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "耐障害性",
+            "マイクロサービス間の通信にサーキットブレーカーを導入し、一部の障害がシステム全体に波及するのを防ぎますか？",
+            vec![0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "監査ログ",
+            "全ての重要なステート変更に対して、イミュータブルな監査ログを保存し、コンプライアンス要件を満たしますか？",
+            vec![0.5, 0.5, 0.0, 0.0, 0.5, 0.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "オフライン同期",
+            "モバイル/エッジ端末での利用を想定し、ローカルDB（SQLite/IndexedDB）との差分同期機能を実装しますか？",
+            vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
     }
 
     pub fn labels(&self) -> &[String] {
         &self.labels
+    }
+
+    pub fn get_prompt_by_label(&self, label: &str) -> Option<String> {
+        let idx = self.labels.iter().position(|l| l == label)?;
+        Some(self.prompts.get(idx)?.clone())
     }
 
     pub fn top_related_labels(&self, query: &[f32], top_k: usize) -> Vec<String> {
