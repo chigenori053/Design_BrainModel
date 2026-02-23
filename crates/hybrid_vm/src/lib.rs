@@ -1,6 +1,7 @@
 use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use std::collections::BTreeMap;
 
 use core_types::ObjectiveVector;
 use design_reasoning::{
@@ -8,6 +9,7 @@ use design_reasoning::{
 };
 use dhm::Dhm;
 use field_engine::{FieldEngine, TargetField};
+use knowledge_store::KnowledgeStore;
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use memory_space::{DesignState, MemoryInterferenceTelemetry};
 use memory_store::{FileStore, InMemoryStore};
@@ -18,13 +20,16 @@ use semantic_dhm::{ConceptUnit, SemanticDhm, SemanticL1Dhm, SemanticUnitL1};
 
 mod ops;
 
+use serde::{Deserialize, Serialize};
+
 pub use chm::Chm;
 pub use design_reasoning::{DesignHypothesis, Explanation, MeaningLayerSnapshotV2, SnapshotDiffV2};
+pub use knowledge_store::{FeedbackAction, FeedbackEntry};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
 pub use semantic_dhm::{
     ConceptId, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode, MeaningLayerSnapshot,
     RequirementKind, RequirementRole as L1RequirementRole, SemanticError, SemanticUnitL1Input,
-    Snapshotable, ConceptUnitV2, SemanticUnitL1V2,
+    Snapshotable, ConceptUnitV2, SemanticUnitL1V2, SemanticUnitL1Framework, SemanticUnitL2Detail,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
@@ -67,6 +72,74 @@ pub struct HybridTraceRow {
     pub objective: ObjectiveVector,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ConceptImpact {
+    pub concept_id: ConceptId,
+    pub original_stability: f64,
+    pub simulated_stability: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SimulationReport {
+    pub original_objectives: ObjectiveVector,
+    pub simulated_objectives: ObjectiveVector,
+    pub affected_concepts: Vec<ConceptImpact>,
+    pub total_concepts: usize,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlastRadiusScore {
+    pub coverage: f64,
+    pub intensity: f64,
+    pub structural_risk: f64,
+    pub total_score: f64,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InfoCategory {
+    Constraint,
+    Boundary,
+    Metric,
+    Objective,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissingInfo {
+    pub target_id: Option<L1Id>,
+    pub category: InfoCategory,
+    pub prompt: String,
+    pub importance: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DesignDraft {
+    pub draft_id: String,
+    pub added_units: Vec<SemanticUnitL1V2>,
+    pub stability_impact: f64,
+    pub prompt: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ArtifactFormat {
+    Rust,
+    Sql,
+    Mermaid,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GeneratedArtifact {
+    pub file_name: String,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct ParetoPoint {
+    idx: usize,
+    stability_gain: f64,
+    ambiguity_cost: f64,
+    complexity_cost: f64,
+}
+
 pub struct HybridVM {
     evaluator: StructuralEvaluator,
     dhm: Dhm,
@@ -79,6 +152,9 @@ pub struct HybridVM {
     language_engine: LanguageEngine,
     snapshot_engine: SnapshotEngine,
     recomposer: Recomposer,
+    knowledge_store: KnowledgeStore,
+    l2_grounding: BTreeMap<ConceptId, Vec<String>>,
+    l2_refinements: BTreeMap<ConceptId, Vec<String>>,
     mode: ExecutionMode,
     trace: Vec<HybridTraceRow>,
 }
@@ -107,6 +183,13 @@ impl HybridVM {
             language_engine: LanguageEngine::new(),
             snapshot_engine: SnapshotEngine,
             recomposer: Recomposer,
+            knowledge_store: {
+                let mut ks = KnowledgeStore::new();
+                ks.preload_defaults();
+                ks
+            },
+            l2_grounding: BTreeMap::new(),
+            l2_refinements: BTreeMap::new(),
             mode,
             trace: Vec::new(),
         })
@@ -167,6 +250,181 @@ impl HybridVM {
             &mut self.semantic_l1_dhm,
             &mut self.semantic_dhm,
         )
+    }
+
+    pub fn analyze_incremental(&mut self, text: &str) -> Result<ConceptUnit, SemanticError> {
+        self.analyze_text(text)
+    }
+
+    pub fn add_knowledge(&mut self, topic: &str, vector: Vec<f32>) {
+        self.knowledge_store.add_knowledge(topic, vector);
+    }
+
+    pub fn record_feedback(&mut self, draft_id: &str, action: FeedbackAction) {
+        self.knowledge_store.record_feedback(draft_id, action);
+    }
+
+    pub fn adjust_weights(&mut self) {
+        self.knowledge_store.adjust_weights();
+    }
+
+    pub fn feedback_entries(&self) -> Vec<FeedbackEntry> {
+        self.knowledge_store.feedback_entries().to_vec()
+    }
+
+    pub fn load_feedback_entries(&mut self, entries: Vec<FeedbackEntry>) {
+        self.knowledge_store.load_feedback_entries(entries);
+    }
+
+    pub fn clear_context(&mut self) -> Result<(), SemanticError> {
+        let ids = self
+            .semantic_l1_dhm
+            .all_units()
+            .into_iter()
+            .map(|u| u.id)
+            .collect::<Vec<_>>();
+        for id in ids {
+            self.semantic_l1_dhm
+                .remove(id)
+                .map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
+        }
+        self.semantic_dhm
+            .rebuild_l2_from_l1(&[])
+            .map_err(|e| SemanticError::EvaluationError(format!("{e:?}")))?;
+        Ok(())
+    }
+
+    pub fn generate_drafts(&self) -> Result<Vec<DesignDraft>, SemanticError> {
+        let l1_units = self.all_l1_units_v2()?;
+        let l2_units = self.project_phase_a_v2()?;
+        let missing = self.extract_missing_information()?;
+        let objective_text = l1_units
+            .iter()
+            .filter_map(|u| u.objective.clone())
+            .collect::<Vec<_>>()
+            .join(" ")
+            .to_lowercase();
+        let stability = if l2_units.is_empty() {
+            0.0
+        } else {
+            l2_units.iter().map(|u| u.stability_score).sum::<f64>() / l2_units.len() as f64
+        };
+        let dashboard_trigger = objective_text.contains("ダッシュボード") || objective_text.contains("dashboard");
+        let trigger = stability < 0.75 || !missing.is_empty() || dashboard_trigger;
+        if !trigger {
+            return Ok(Vec::new());
+        }
+
+        let mut related = self
+            .knowledge_store
+            .top_related_labels(&[0.7, 0.3, 0.2, 0.1], 3);
+        if dashboard_trigger && !related.iter().any(|s| s == "権限管理") {
+            related.insert(0, "権限管理".to_string());
+        }
+        let mut drafts = Vec::new();
+        for (idx, topic) in related.into_iter().enumerate() {
+            let added = SemanticUnitL1V2 {
+                id: L1Id(0),
+                objective: Some(format!("{topic} 機能を追加する")),
+                scope_in: vec!["system".to_string()],
+                scope_out: vec![],
+                constraints: vec!["既存API互換を維持する".to_string()],
+                ambiguity_score: 0.2,
+            };
+            let impact = 0.08 - (idx as f64 * 0.01);
+            drafts.push(DesignDraft {
+                draft_id: format!("DRAFT-{:03}-{}", idx + 1, topic),
+                added_units: vec![added],
+                stability_impact: impact,
+                prompt: format!(
+                    "{} を仮定すると、安定性が約{:.0}%向上する見込みです。採用しますか？",
+                    topic,
+                    (impact * 100.0).max(0.0)
+                ),
+            });
+        }
+        Ok(drafts)
+    }
+
+    pub fn commit_draft(&mut self, draft_id: &str) -> Result<(), SemanticError> {
+        let drafts = self.generate_drafts()?;
+        let draft = drafts
+            .into_iter()
+            .find(|d| d.draft_id == draft_id)
+            .ok_or_else(|| SemanticError::InvalidInput("draft not found".to_string()))?;
+        for unit in draft.added_units {
+            let objective = unit.objective.unwrap_or_else(|| "generated".to_string());
+            let input = SemanticUnitL1Input {
+                role: L1RequirementRole::Constraint,
+                polarity: 1,
+                abstraction: 0.35,
+                vector: vector_from_text(&objective),
+                source_text: objective,
+            };
+            let _ = self.semantic_l1_dhm.insert(&input);
+        }
+        self.rebuild_l2_from_l1_v2()?;
+        Ok(())
+    }
+
+    pub fn pareto_optimize_drafts(&self, drafts: Vec<DesignDraft>) -> Vec<DesignDraft> {
+        if drafts.len() <= 1 {
+            return drafts;
+        }
+
+        let points = drafts
+            .iter()
+            .enumerate()
+            .map(|(idx, d)| {
+                let ambiguity = if d.added_units.is_empty() {
+                    0.0
+                } else {
+                    d.added_units.iter().map(|u| u.ambiguity_score).sum::<f64>() / d.added_units.len() as f64
+                };
+                let complexity = d
+                    .added_units
+                    .iter()
+                    .map(|u| (u.constraints.len() + u.scope_in.len() + u.scope_out.len()) as f64)
+                    .sum::<f64>();
+                ParetoPoint {
+                    idx,
+                    stability_gain: d.stability_impact,
+                    ambiguity_cost: ambiguity,
+                    complexity_cost: complexity,
+                }
+            })
+            .collect::<Vec<_>>();
+
+        let mut rank = vec![0usize; drafts.len()];
+        for i in 0..points.len() {
+            rank[i] = points
+                .iter()
+                .enumerate()
+                .filter(|(j, p)| *j != i && dominates(p, &points[i]))
+                .count();
+        }
+
+        let mut indexed = drafts.into_iter().enumerate().collect::<Vec<_>>();
+        indexed.sort_by(|(li, l), (ri, r)| {
+            rank[*li]
+                .cmp(&rank[*ri])
+                .then_with(|| r.stability_impact.total_cmp(&l.stability_impact))
+                .then_with(|| l.draft_id.cmp(&r.draft_id))
+        });
+        indexed.into_iter().map(|(_, d)| d).collect()
+    }
+
+    pub fn generate_artifacts(
+        &self,
+        format: ArtifactFormat,
+    ) -> Result<Vec<GeneratedArtifact>, SemanticError> {
+        let l2_units = self.project_phase_a_v2()?;
+        let artifacts = match format {
+            ArtifactFormat::Rust => generate_rust_artifacts(&l2_units),
+            ArtifactFormat::Sql => generate_sql_artifacts(&l2_units),
+            ArtifactFormat::Mermaid => generate_mermaid_artifacts(&l2_units),
+        };
+        Ok(artifacts)
     }
 
     #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use get_l1_unit_v2")]
@@ -268,6 +526,160 @@ impl HybridVM {
             .into_iter()
             .map(ConceptUnitV2::try_from)
             .collect()
+    }
+
+    pub fn simulate_perturbation(
+        &self,
+        target_l1: L1Id,
+        delta_abstraction: f32,
+    ) -> Result<SimulationReport, SemanticError> {
+        let l1_units = self.all_l1_units_v2()?;
+        let l2_units = self.project_phase_a_v2()?;
+        let concepts = self.semantic_dhm.all_concepts();
+        let original = objective_from_units(&l1_units, &l2_units).clamped();
+
+        let mut impacts = Vec::new();
+        let mut simulated_stability = l2_units
+            .iter()
+            .map(|c| (c.id, c.stability_score))
+            .collect::<std::collections::BTreeMap<_, _>>();
+
+        for c in concepts {
+            if c.l1_refs.contains(&target_l1) {
+                let Some(base) = simulated_stability.get(&c.id).copied() else {
+                    continue;
+                };
+                let moved = (base + (delta_abstraction as f64) * 0.20).clamp(0.0, 1.0);
+                simulated_stability.insert(c.id, moved);
+                impacts.push(ConceptImpact {
+                    concept_id: c.id,
+                    original_stability: base,
+                    simulated_stability: moved,
+                });
+            }
+        }
+
+        let mean_stability = if simulated_stability.is_empty() {
+            0.0
+        } else {
+            simulated_stability.values().sum::<f64>() / simulated_stability.len() as f64
+        };
+        let mut simulated = original.clone();
+        simulated.f_struct = mean_stability.clamp(0.0, 1.0);
+        simulated.f_risk = (original.f_risk + impacts.len() as f64 / (simulated_stability.len().max(1) as f64) * 0.1)
+            .clamp(0.0, 1.0);
+        simulated.f_shape = (1.0 - mean_stability * 0.5).clamp(0.0, 1.0);
+
+        Ok(SimulationReport {
+            original_objectives: original,
+            simulated_objectives: simulated.clamped(),
+            affected_concepts: impacts,
+            total_concepts: simulated_stability.len(),
+        })
+    }
+
+    pub fn simulate_removal(&self, target_l1: L1Id) -> Result<SimulationReport, SemanticError> {
+        self.simulate_perturbation(target_l1, -1.0)
+    }
+
+    pub fn evaluate_blast_radius(&self, report: &SimulationReport) -> BlastRadiusScore {
+        let total = report.total_concepts.max(1) as f64;
+        let coverage = (report.affected_concepts.len() as f64 / total).clamp(0.0, 1.0);
+        let intensity = if report.affected_concepts.is_empty() {
+            0.0
+        } else {
+            report
+                .affected_concepts
+                .iter()
+                .map(|c| (c.simulated_stability - c.original_stability).abs())
+                .sum::<f64>()
+                / report.affected_concepts.len() as f64
+        }
+        .clamp(0.0, 1.0);
+
+        let l2_units = self.project_phase_a_v2().unwrap_or_default();
+        let avg_links = if l2_units.is_empty() {
+            0.0
+        } else {
+            l2_units.iter().map(|u| u.causal_links.len() as f64).sum::<f64>() / l2_units.len() as f64
+        };
+        let mut structural_risk = 0.0;
+        for impact in &report.affected_concepts {
+            if let Some(unit) = l2_units.iter().find(|u| u.id == impact.concept_id) {
+                let is_hub = avg_links > 0.0 && (unit.causal_links.len() as f64) >= avg_links * 2.0;
+                let dropped = (impact.original_stability - impact.simulated_stability).max(0.0);
+                if is_hub && dropped > 0.0 {
+                    structural_risk += dropped;
+                }
+            }
+        }
+        structural_risk = structural_risk.clamp(0.0, 1.0);
+
+        let total_score = (coverage * 0.4 + intensity * 0.35 + structural_risk * 0.25).clamp(0.0, 1.0);
+        BlastRadiusScore {
+            coverage,
+            intensity,
+            structural_risk,
+            total_score,
+        }
+    }
+
+    pub fn extract_missing_information(&self) -> Result<Vec<MissingInfo>, SemanticError> {
+        let l1_units = self.all_l1_units_v2()?;
+        let l2_units = self.project_phase_a_v2()?;
+        let mut out = Vec::new();
+
+        for l1 in &l1_units {
+            if l1.constraints.is_empty() && l1.ambiguity_score > 0.7 {
+                out.push(MissingInfo {
+                    target_id: Some(l1.id),
+                    category: InfoCategory::Constraint,
+                    prompt: "制約は何ですか？（性能上限、コスト、期限、法規制など）".to_string(),
+                    importance: 0.95,
+                });
+            }
+            let objective_text = l1.objective.clone().unwrap_or_default().to_lowercase();
+            if objective_text.contains("開発したい")
+                || objective_text.contains("構築")
+                || objective_text.contains("develop")
+                || objective_text.contains("build")
+            {
+                let related = self.knowledge_store.top_related_labels(&[0.6, 0.4, 0.2, 0.1], 2);
+                let hint = if related.is_empty() {
+                    "対象範囲と非対象範囲（Boundary）を明示してください。".to_string()
+                } else {
+                    format!(
+                        "対象範囲と非対象範囲（Boundary）を明示してください。関連定石: {}",
+                        related.join(" / ")
+                    )
+                };
+                out.push(MissingInfo {
+                    target_id: Some(l1.id),
+                    category: InfoCategory::Boundary,
+                    prompt: hint,
+                    importance: 0.80,
+                });
+            }
+        }
+
+        for l2 in &l2_units {
+            let has_pos = l2.derived_requirements.iter().any(|r| r.strength > 0.0);
+            let has_neg = l2.derived_requirements.iter().any(|r| r.strength < 0.0);
+            if has_pos && has_neg {
+                out.push(MissingInfo {
+                    target_id: None,
+                    category: InfoCategory::Objective,
+                    prompt: format!(
+                        "L2-{} で要件競合が検出されました。優先順位（何を先に最適化するか）を決めてください。",
+                        l2.id.0
+                    ),
+                    importance: 0.85,
+                });
+            }
+        }
+
+        out.sort_by(|a, b| b.importance.total_cmp(&a.importance));
+        Ok(out)
     }
 
     pub fn evaluate_hypothesis(
@@ -430,9 +842,413 @@ impl HybridVM {
             language_engine: LanguageEngine::new(),
             snapshot_engine: SnapshotEngine,
             recomposer: Recomposer,
+            knowledge_store: {
+                let mut ks = KnowledgeStore::new();
+                ks.preload_defaults();
+                ks
+            },
+            l2_grounding: BTreeMap::new(),
+            l2_refinements: BTreeMap::new(),
             mode: ExecutionMode::RecallFirst,
             trace: Vec::new(),
         })
+    }
+
+    pub fn create_l1_framework(&mut self, input: &str) -> Result<SemanticUnitL1Framework, SemanticError> {
+        let normalized = input.trim();
+        if normalized.is_empty() {
+            return Err(SemanticError::InvalidInput("empty input".to_string()));
+        }
+        let insert = SemanticUnitL1Input {
+            role: L1RequirementRole::Goal,
+            polarity: 1,
+            abstraction: 0.7,
+            vector: vector_from_text(normalized),
+            source_text: normalized.to_string(),
+        };
+        let id = self.semantic_l1_dhm.insert(&insert);
+        let l1 = self
+            .semantic_l1_dhm
+            .get(id)
+            .ok_or_else(|| SemanticError::EvaluationError("failed to read inserted L1".to_string()))?;
+        let l1_v2 = SemanticUnitL1V2::try_from(l1)?;
+        Ok(SemanticUnitL1Framework::from_l1_v2(&l1_v2))
+    }
+
+    pub fn derive_l2_detail(&mut self, l1_id: L1Id) -> Result<SemanticUnitL2Detail, SemanticError> {
+        self.rebuild_l2_from_l1_v2()?;
+        let concept = self
+            .semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .find(|c| c.l1_refs.contains(&l1_id))
+            .ok_or_else(|| SemanticError::MissingField("l2_detail_for_l1"))?;
+        let concept_v2 = ConceptUnitV2::try_from(concept.clone())?;
+        let mut detail = SemanticUnitL2Detail::from_concept_v2(l1_id, &concept_v2);
+        if let Some(grounding) = self.l2_grounding.get(&concept.id) {
+            detail.grounding_data = grounding.clone();
+        }
+        Ok(detail)
+    }
+
+    pub fn update_l2_with_grounding(&mut self, l2_id: ConceptId, knowledge: &str) -> Result<(), SemanticError> {
+        if knowledge.trim().is_empty() {
+            return Err(SemanticError::InvalidInput("grounding knowledge is empty".to_string()));
+        }
+        let exists = self.semantic_dhm.get(l2_id).is_some();
+        if !exists {
+            return Err(SemanticError::MissingField("l2_id"));
+        }
+        self.l2_grounding
+            .entry(l2_id)
+            .or_default()
+            .push(knowledge.trim().to_string());
+        Ok(())
+    }
+
+    pub fn list_l2_details(&mut self) -> Result<Vec<SemanticUnitL2Detail>, SemanticError> {
+        self.rebuild_l2_from_l1_v2()?;
+        let details = self
+            .semantic_dhm
+            .all_concepts()
+            .into_iter()
+            .filter_map(|concept| {
+                let parent_id = concept.l1_refs.first().copied()?;
+                let concept_id = concept.id;
+                let concept_v2 = ConceptUnitV2::try_from(concept).ok()?;
+                let mut detail = SemanticUnitL2Detail::from_concept_v2(parent_id, &concept_v2);
+                if let Some(g) = self.l2_grounding.get(&concept_id) {
+                    detail.grounding_data.extend(g.clone());
+                }
+                if let Some(r) = self.l2_refinements.get(&concept_id) {
+                    detail.methods.extend(r.clone());
+                }
+                Some(detail)
+            })
+            .collect::<Vec<_>>();
+        Ok(details)
+    }
+
+    pub fn card_has_knowledge_gap(&mut self, l2_id: ConceptId) -> Result<bool, SemanticError> {
+        let detail = self
+            .list_l2_details()?
+            .into_iter()
+            .find(|d| d.id == l2_id)
+            .ok_or(SemanticError::MissingField("card_id"))?;
+        Ok(detail.grounding_data.is_empty() && (!detail.metrics.is_empty() || !detail.methods.is_empty()))
+    }
+
+    pub fn run_grounding_search(
+        &mut self,
+        l2_id: ConceptId,
+        query: &str,
+    ) -> Result<Vec<String>, SemanticError> {
+        if query.trim().is_empty() {
+            return Err(SemanticError::InvalidInput("query is empty".to_string()));
+        }
+        let related = self
+            .knowledge_store
+            .top_related_labels(&vector_from_text(query), 3);
+        let mut out = Vec::new();
+        for label in related {
+            let line = format!("Grounded reference: {label} (query={})", query.trim());
+            self.update_l2_with_grounding(l2_id, &line)?;
+            out.push(line);
+        }
+        Ok(out)
+    }
+
+    pub fn refine_l2_detail(&mut self, l2_id: ConceptId, detail_text: &str) -> Result<(), SemanticError> {
+        let text = detail_text.trim();
+        if text.is_empty() {
+            return Err(SemanticError::InvalidInput("detail text is empty".to_string()));
+        }
+        let concept = self
+            .semantic_dhm
+            .get(l2_id)
+            .ok_or(SemanticError::MissingField("card_id"))?;
+        let parent = concept
+            .l1_refs
+            .first()
+            .copied()
+            .ok_or(SemanticError::MissingField("parent_l1"))?;
+        let input = SemanticUnitL1Input {
+            role: L1RequirementRole::Constraint,
+            polarity: -1,
+            abstraction: 0.35,
+            vector: vector_from_text(text),
+            source_text: format!("L2-{} refinement: {}", l2_id.0, text),
+        };
+        let _ = parent;
+        let _ = self.semantic_l1_dhm.insert(&input);
+        self.l2_refinements
+            .entry(l2_id)
+            .or_default()
+            .push(text.to_string());
+        self.rebuild_l2_from_l1_v2()?;
+        Ok(())
+    }
+
+    pub fn export_l2_grounding(&self) -> Vec<(u64, Vec<String>)> {
+        self.l2_grounding
+            .iter()
+            .map(|(k, v)| (k.0, v.clone()))
+            .collect()
+    }
+
+    pub fn load_l2_grounding(&mut self, data: Vec<(u64, Vec<String>)>) {
+        self.l2_grounding = data
+            .into_iter()
+            .map(|(k, v)| (ConceptId(k), v))
+            .collect::<BTreeMap<_, _>>();
+    }
+
+    pub fn export_l2_refinements(&self) -> Vec<(u64, Vec<String>)> {
+        self.l2_refinements
+            .iter()
+            .map(|(k, v)| (k.0, v.clone()))
+            .collect()
+    }
+
+    pub fn load_l2_refinements(&mut self, data: Vec<(u64, Vec<String>)>) {
+        self.l2_refinements = data
+            .into_iter()
+            .map(|(k, v)| (ConceptId(k), v))
+            .collect::<BTreeMap<_, _>>();
+    }
+
+    /// RFC-013: 内部構造をユーザー向けの「デザインカード」形式へ変換する
+    pub fn get_design_cards(&mut self) -> Result<Vec<DesignCard>, SemanticError> {
+        let l1_units = self.all_l1_units_v2()?;
+        let mut cards = Vec::new();
+
+        for l1 in l1_units {
+            let framework = semantic_dhm::SemanticUnitL1Framework::from_l1_v2(&l1);
+            let detail = self.derive_l2_detail(l1.id).ok(); // 詳細がない場合は None
+
+            let mut card = DesignCard {
+                id: format!("CARD-{}", l1.id.0),
+                title: framework.title.clone(),
+                overview: framework.objective.clone(),
+                details: Vec::new(),
+                status: CardStatus::Hypothetical,
+            };
+
+            if let Some(d) = detail {
+                for m in d.methods {
+                    card.details.push(format!("Method: {}", m));
+                }
+                for metric in d.metrics {
+                    card.details.push(format!("Metric: {}", metric));
+                }
+                if !d.grounding_data.is_empty() {
+                    card.status = CardStatus::Grounded;
+                    for g in d.grounding_data {
+                        card.details.push(format!("Grounding: {}", g));
+                    }
+                }
+            }
+
+            cards.push(card);
+        }
+
+        Ok(cards)
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum CardStatus {
+    Hypothetical,
+    Grounded,
+    Confirmed,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DesignCard {
+    pub id: String,
+    pub title: String,
+    pub overview: String,
+    pub details: Vec<String>,
+    pub status: CardStatus,
+}
+
+fn vector_from_text(text: &str) -> Vec<f32> {
+    let mut out = vec![0.0f32; 8];
+    let n = out.len();
+    for (i, b) in text.bytes().enumerate() {
+        out[i % n] += (b as f32) / 255.0;
+    }
+    let norm = out.iter().map(|v| v * v).sum::<f32>().sqrt();
+    if norm > 1e-6 {
+        for v in &mut out {
+            *v /= norm;
+        }
+    }
+    out
+}
+
+fn generate_rust_artifacts(l2_units: &[ConceptUnitV2]) -> Vec<GeneratedArtifact> {
+    l2_units
+        .iter()
+        .map(|concept| {
+            let mut content = String::new();
+            content.push_str("// Auto-generated by RFC-012 Artifact Transformer\n");
+            content.push_str(&format!(
+                "// source_concept: L2-{}, trace_hash: {:016x}\n\n",
+                concept.id.0,
+                trace_hash_for_concept(concept)
+            ));
+            content.push_str("#[derive(Debug, Clone)]\n");
+            content.push_str(&format!(
+                "pub struct Concept{}Service {{\n    pub concept_id: u64,\n}}\n\n",
+                concept.id.0
+            ));
+            content.push_str(&format!(
+                "pub trait Concept{}Behavior {{\n    fn execute(&self) -> Result<(), String>;\n}}\n\n",
+                concept.id.0
+            ));
+            content.push_str(&format!(
+                "impl Concept{}Behavior for Concept{}Service {{\n",
+                concept.id.0, concept.id.0
+            ));
+            content.push_str("    fn execute(&self) -> Result<(), String> {\n");
+            for req in &concept.derived_requirements {
+                content.push_str(&format!(
+                    "        // requirement: {:?} (strength={:.2})\n",
+                    req.kind, req.strength
+                ));
+            }
+            for link in &concept.causal_links {
+                content.push_str(&format!(
+                    "        // dependency: L1-{} -> L1-{} (weight={:.3})\n",
+                    link.from.0, link.to.0, link.weight
+                ));
+            }
+            content.push_str("        Ok(())\n    }\n}\n");
+
+            GeneratedArtifact {
+                file_name: format!("concept_{}.rs", concept.id.0),
+                content,
+            }
+        })
+        .collect()
+}
+
+fn generate_sql_artifacts(l2_units: &[ConceptUnitV2]) -> Vec<GeneratedArtifact> {
+    let mut content = String::new();
+    content.push_str("-- Auto-generated by RFC-012 Artifact Transformer\n\n");
+    content.push_str("CREATE TABLE IF NOT EXISTS l2_concepts (\n");
+    content.push_str("  id BIGINT PRIMARY KEY,\n");
+    content.push_str("  stability_score DOUBLE PRECISION NOT NULL,\n");
+    content.push_str("  trace_hash VARCHAR(32) NOT NULL\n");
+    content.push_str(");\n\n");
+    content.push_str("CREATE TABLE IF NOT EXISTS l2_derived_requirements (\n");
+    content.push_str("  concept_id BIGINT NOT NULL,\n");
+    content.push_str("  kind VARCHAR(32) NOT NULL,\n");
+    content.push_str("  strength DOUBLE PRECISION NOT NULL,\n");
+    content.push_str("  FOREIGN KEY (concept_id) REFERENCES l2_concepts(id)\n");
+    content.push_str(");\n\n");
+    content.push_str("CREATE TABLE IF NOT EXISTS l2_causal_links (\n");
+    content.push_str("  concept_id BIGINT NOT NULL,\n");
+    content.push_str("  from_l1 VARCHAR(64) NOT NULL,\n");
+    content.push_str("  to_l1 VARCHAR(64) NOT NULL,\n");
+    content.push_str("  weight DOUBLE PRECISION NOT NULL,\n");
+    content.push_str("  FOREIGN KEY (concept_id) REFERENCES l2_concepts(id)\n");
+    content.push_str(");\n\n");
+    for concept in l2_units {
+        content.push_str(&format!(
+            "INSERT INTO l2_concepts (id, stability_score, trace_hash) VALUES ({}, {:.6}, '{:016x}');\n",
+            concept.id.0,
+            concept.stability_score,
+            trace_hash_for_concept(concept)
+        ));
+        for req in &concept.derived_requirements {
+            content.push_str(&format!(
+                "INSERT INTO l2_derived_requirements (concept_id, kind, strength) VALUES ({}, '{:?}', {:.6});\n",
+                concept.id.0, req.kind, req.strength
+            ));
+        }
+        for link in &concept.causal_links {
+            content.push_str(&format!(
+                "INSERT INTO l2_causal_links (concept_id, from_l1, to_l1, weight) VALUES ({}, '{}', '{}', {:.6});\n",
+                concept.id.0, link.from.0, link.to.0, link.weight
+            ));
+        }
+    }
+    vec![GeneratedArtifact {
+        file_name: "schema.sql".to_string(),
+        content,
+    }]
+}
+
+fn generate_mermaid_artifacts(l2_units: &[ConceptUnitV2]) -> Vec<GeneratedArtifact> {
+    let mut content = String::new();
+    content.push_str("%% Auto-generated by RFC-012 Artifact Transformer\n");
+    content.push_str("graph TD\n");
+    for concept in l2_units {
+        content.push_str(&format!(
+            "  L2_{}[\"L2-{} stability={:.2}\"]\n",
+            concept.id.0, concept.id.0, concept.stability_score
+        ));
+    }
+    for concept in l2_units {
+        for link in &concept.causal_links {
+            content.push_str(&format!(
+                "  L2_{} -->|L1 {}->{} ({:.2})| L2_{}\n",
+                concept.id.0, link.from.0, link.to.0, link.weight, concept.id.0
+            ));
+        }
+    }
+    vec![GeneratedArtifact {
+        file_name: "graph.mmd".to_string(),
+        content,
+    }]
+}
+
+fn trace_hash_for_concept(concept: &ConceptUnitV2) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    let mut hasher = DefaultHasher::new();
+    concept.id.0.hash(&mut hasher);
+    concept.stability_score.to_bits().hash(&mut hasher);
+    concept.derived_requirements.len().hash(&mut hasher);
+    concept.causal_links.len().hash(&mut hasher);
+    hasher.finish()
+}
+
+fn dominates(a: &ParetoPoint, b: &ParetoPoint) -> bool {
+    let not_worse = a.stability_gain >= b.stability_gain
+        && a.ambiguity_cost <= b.ambiguity_cost
+        && a.complexity_cost <= b.complexity_cost;
+    let strictly_better = a.stability_gain > b.stability_gain
+        || a.ambiguity_cost < b.ambiguity_cost
+        || a.complexity_cost < b.complexity_cost;
+    not_worse && strictly_better
+}
+
+fn objective_from_units(l1_units: &[SemanticUnitL1V2], l2_units: &[ConceptUnitV2]) -> ObjectiveVector {
+    let f_struct = if l2_units.is_empty() {
+        0.0
+    } else {
+        l2_units.iter().map(|u| u.stability_score).sum::<f64>() / l2_units.len() as f64
+    };
+    let mean_ambiguity = if l1_units.is_empty() {
+        1.0
+    } else {
+        l1_units.iter().map(|u| u.ambiguity_score).sum::<f64>() / l1_units.len() as f64
+    };
+    let avg_links = if l2_units.is_empty() {
+        0.0
+    } else {
+        l2_units.iter().map(|u| u.causal_links.len() as f64).sum::<f64>() / l2_units.len() as f64
+    };
+    let max_links = l2_units.iter().map(|u| u.causal_links.len()).max().unwrap_or(1) as f64;
+    ObjectiveVector {
+        f_struct: f_struct.clamp(0.0, 1.0),
+        f_field: (1.0 - mean_ambiguity).clamp(0.0, 1.0),
+        f_risk: (avg_links / (max_links + 1.0)).clamp(0.0, 1.0),
+        f_shape: (1.0 - f_struct * 0.5).clamp(0.0, 1.0),
     }
 }
 
@@ -796,5 +1612,50 @@ mod tests {
                 first_explain = Some(explain);
             }
         }
+    }
+
+    #[test]
+    fn rfc014_framework_and_detail_flow() {
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_rfc014_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+        let framework = vm
+            .create_l1_framework("決済APIの信頼性を向上させる")
+            .expect("framework");
+        assert!(!framework.title.is_empty());
+        assert!(!framework.objective.is_empty());
+
+        let detail = vm.derive_l2_detail(framework.id).expect("detail");
+        assert_eq!(detail.parent_id, framework.id);
+        assert!(!detail.metrics.is_empty());
+        assert!(!detail.methods.is_empty());
+    }
+
+    #[test]
+    fn rfc014_grounding_update_is_reflected_in_detail() {
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_rfc014_grounding_{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("clock")
+                .as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
+        let framework = vm
+            .create_l1_framework("認可処理を強化する")
+            .expect("framework");
+        let detail = vm.derive_l2_detail(framework.id).expect("detail");
+        vm.update_l2_with_grounding(detail.id, "OWASP ASVS controls")
+            .expect("grounding update");
+        let detail_after = vm.derive_l2_detail(framework.id).expect("detail after");
+        assert!(detail_after
+            .grounding_data
+            .iter()
+            .any(|g| g.contains("OWASP ASVS controls")));
     }
 }

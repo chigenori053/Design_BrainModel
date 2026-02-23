@@ -16,7 +16,10 @@ dhm = { workspace = true }
 shm = { workspace = true }
 chm = { workspace = true }
 language_dhm = { workspace = true }
+knowledge_store = { workspace = true }
 meaning_extractor = { workspace = true }
 semantic_dhm = { workspace = true }
 recomposer = { workspace = true }
 design_reasoning = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

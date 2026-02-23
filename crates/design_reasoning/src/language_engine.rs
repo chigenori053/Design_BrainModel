@@ -60,13 +60,23 @@ pub enum TemplateId {
 }
 
 impl TemplateId {
-    fn as_label(self) -> &'static str {
+    pub fn as_label(self) -> &'static str {
         match self {
             TemplateId::StableClear => "stable_clear",
             TemplateId::StableAmbiguous => "stable_ambiguous",
             TemplateId::UnstableClear => "unstable_clear",
             TemplateId::UnstableAmbiguous => "unstable_ambiguous",
             TemplateId::Fallback => "fallback",
+        }
+    }
+
+    pub fn as_description(self) -> &'static str {
+        match self {
+            TemplateId::StableClear => "設計構造は極めて安定しており、意図が明確に反映されています。このまま実装または詳細設計へ進むことが可能です。",
+            TemplateId::StableAmbiguous => "構造的な安定性は確保されていますが、一部の要件に曖昧さが残っています。特に用語の定義や制約条件の具体化を検討してください。",
+            TemplateId::UnstableClear => "意図は明確ですが、設計構造に不安定な箇所が見られます。要件間の競合や複雑性が増大している可能性があるため、構造の再構成を検討してください。",
+            TemplateId::UnstableAmbiguous => "設計は極めて不安定で、かつ意図も不明確な状態です。核となる設計目標を再定義し、スモールステップでの分析を推奨します。",
+            TemplateId::Fallback => "分析結果から十分な傾向を読み取れませんでした。追加の要件を入力して分析を継続してください。",
         }
     }
 }

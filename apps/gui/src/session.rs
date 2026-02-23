@@ -55,6 +55,7 @@ impl History {
 pub struct GuiSession {
     pub id: String,
     pub vm: HybridVM,
+    #[allow(dead_code)]
     pub created_at: u64,
     pub last_modified: u64,
     pub history: History,

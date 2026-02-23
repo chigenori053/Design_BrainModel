@@ -13,3 +13,103 @@ changes:
   description: Completed T-002 UI State Machine Redesign
   related_tasks:
   - T-002
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-003 GUI Causal Graph Visualization
+  related_tasks:
+  - T-003
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-004 Design Remediation Engine
+  related_tasks:
+  - T-004
+- date: '2026-02-22'
+  type: governance
+  description: Approved T-005 Perturbation Simulation Engine specification (RFC-004)
+  related_tasks:
+  - T-005
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-005 Perturbation Simulation Engine
+  related_tasks:
+  - T-005
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-006 Blast Radius Evaluation Logic
+  related_tasks:
+  - T-006
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-007 Missing Info Extraction Core
+  related_tasks:
+  - T-007
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-008 Interactive Advisor UI
+  related_tasks:
+  - T-008
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-007 Missing Info Extraction Core
+  related_tasks:
+  - T-007
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-009 Holographic Knowledge Store
+  related_tasks:
+  - T-009
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-010 Cumulative Context Refactor
+  related_tasks:
+  - T-010
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-016 Synthetic Drafting Engine
+  related_tasks:
+  - T-016
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-017 Comparative Reasoner & Provocateur
+  related_tasks:
+  - T-017
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-018 Ghost Node Rendering
+  related_tasks:
+  - T-018
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-019 Decision Feedback Learning
+  related_tasks:
+  - T-019
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-020 Pareto Optimization Engine
+  related_tasks:
+  - T-020
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-021 Graph Direct Manipulation
+  related_tasks:
+  - T-021
+- date: '2026-02-22'
+  type: task_completion
+  description: Completed T-022 Structural Artifact Transformer
+  related_tasks:
+  - T-022
+- date: '2026-02-23'
+  type: task_completion
+  description: Completed T-025 SemanticUnit Structural Redefinition
+  related_tasks:
+  - T-025
+- date: '2026-02-23'
+  type: task_completion
+  description: Completed T-023 WebSearch-to-L2 Grounding Pipeline
+  related_tasks:
+  - T-023
+- date: '2026-02-23'
+  type: task_completion
+  description: Completed T-024 Interactive Card UI & In-place Editing
+  related_tasks:
+  - T-024

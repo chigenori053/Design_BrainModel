@@ -1,7 +1,8 @@
 use hybrid_vm::{
-    ConceptUnitV2, MeaningLayerSnapshotV2, SemanticUnitL1V2,
+    ConceptUnitV2, MeaningLayerSnapshotV2, SemanticUnitL1V2, SemanticUnitL2Detail,
 };
 use design_reasoning::Explanation;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiState {
@@ -18,6 +19,7 @@ pub enum UiEvent {
     Submit,
     AnalysisSucceeded,
     AnalysisFailed,
+    #[allow(dead_code)]
     Revise,
     Reset,
 }
@@ -29,8 +31,11 @@ pub enum UiEffect {
 
 #[derive(Debug, Clone)]
 pub struct TransitionResult {
+    #[allow(dead_code)]
     pub next_state: UiState,
+    #[allow(dead_code)]
     pub side_effects: Vec<UiEffect>,
+    #[allow(dead_code)]
     pub applied: bool,
 }
 
@@ -83,6 +88,15 @@ pub struct AppState {
 
     pub last_error: Option<String>,
     pub ui_state_machine: UiStateMachine,
+    pub graph: CausalGraph,
+    pub graph_positions: HashMap<String, (f32, f32)>,
+    pub selected_node: Option<String>,
+    pub selected_detail: Option<String>,
+    pub edge_builder_from: Option<String>,
+    pub cards: Vec<SemanticUnitL2Detail>,
+    pub card_edit_buffers: HashMap<String, String>,
+    pub missing_info: Vec<hybrid_vm::MissingInfo>,
+    pub drafts: Vec<hybrid_vm::DesignDraft>,
 }
 
 impl Default for AppState {
@@ -95,8 +109,53 @@ impl Default for AppState {
             snapshot: None,
             last_error: None,
             ui_state_machine: UiStateMachine::default(),
+            graph: CausalGraph::default(),
+            graph_positions: HashMap::new(),
+            selected_node: None,
+            selected_detail: None,
+            edge_builder_from: None,
+            cards: Vec::new(),
+            card_edit_buffers: HashMap::new(),
+            missing_info: Vec::new(),
+            drafts: Vec::new(),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphNodeType {
+    L1,
+    L2,
+    Ghost,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphEdgeType {
+    Mapping,
+    #[allow(dead_code)]
+    Causal,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphNode {
+    pub id: String,
+    pub node_type: GraphNodeType,
+    pub label: String,
+    pub score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GraphEdge {
+    pub from: String,
+    pub to: String,
+    pub edge_type: GraphEdgeType,
+    pub weight: Option<f64>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct CausalGraph {
+    pub nodes: Vec<GraphNode>,
+    pub edges: Vec<GraphEdge>,
 }
 
 #[cfg(test)]

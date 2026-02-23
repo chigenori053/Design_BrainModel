@@ -15,6 +15,7 @@ members = [
     "crates/runtime_vm",
     "crates/interface_ui",
     "crates/language_dhm",
+    "crates/knowledge_store",
     "crates/meaning_extractor",
     "crates/semantic_dhm",
     "crates/recomposer",
@@ -39,6 +40,7 @@ interface_ui = { path = "crates/interface_ui" }
 memory_store = { path = "crates/memory_store" }
 memory_space = { path = "crates/memory_space" }
 language_dhm = { path = "crates/language_dhm" }
+knowledge_store = { path = "crates/knowledge_store" }
 meaning_extractor = { path = "crates/meaning_extractor" }
 semantic_dhm = { path = "crates/semantic_dhm" }
 recomposer = { path = "crates/recomposer" }

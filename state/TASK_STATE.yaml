@@ -1,8 +1,8 @@
 project: DesignBrainModel
 version: 1.0
-current_phase: Phase5
+current_phase: Phase8
 meta:
-  last_updated: '2026-02-22'
+  last_updated: '2026-02-23'
   maintained_by: Architect
 task_status_definition:
 - proposed
@@ -12,130 +12,58 @@ task_status_definition:
 - review
 - completed
 tasks:
-- id: T-001
-  title: TensorEngine Interface Refactor
-  owner: CodingAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/engine/tensor_engine_v1.1.md
-  depends_on: []
-  description: Refactor TensorEngine to separate phase encoding logic.
-  acceptance_criteria:
-  - All tests pass
-  - No public API break
-- id: T-002
-  title: UI State Machine Redesign
+- id: T-022
+  title: Card-based Data Transformer
   owner: ResearchAgent
   status: completed
   architect_approved: true
   approved_at: '2026-02-22'
+  priority: high
+  related_spec: specs/RFC-013-Incremental-Card-Design.md
+- id: T-023
+  title: WebSearch-to-L2 Grounding Pipeline
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-23'
+  priority: high
+  related_spec: specs/RFC-013-Incremental-Card-Design.md
+  depends_on:
+  - T-022
+  description: 'Implement the automated flow: detect gap -> ask permission -> execute
+    search -> update L2 grounding data.'
+  acceptance_criteria:
+  - CLI "search" command works with card ID
+  - Search results are parsed and stored in L2Detail structure
+  - Deterministic evaluation of "knowledge sufficiency"
+- id: T-024
+  title: Interactive Card UI & In-place Editing
+  owner: ResearchAgent
+  status: completed
+  architect_approved: true
+  approved_at: '2026-02-23'
   priority: medium
-  related_spec: specs/ui/state_machine_v2.0.md
-  depends_on: []
-  description: Redesign state transition model for DesignDraft UI.
+  related_spec: specs/RFC-013-Incremental-Card-Design.md
+  depends_on:
+  - T-023
+  description: Refactor GUI to use Card-based UI and implement direct L2 editing features.
   acceptance_criteria:
-  - Deterministic transition table
-- id: T-003
-  title: GUI Causal Graph Visualization
+  - List view replaced by Card components
+  - Editing detail text on a card updates the underlying L2 units
+- id: T-025
+  title: SemanticUnit Structural Redefinition
   owner: ResearchAgent
   status: completed
   architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-001-GUI-Visualization-G3A.md
-  depends_on: []
-  description: Implement 2D causal graph visualization in GUI using egui::Painter.
-  acceptance_criteria:
-  - Layered layout (L1 -> L2)
-- id: T-004
-  title: Design Remediation Engine
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-003-Remediation-Engine.md
-  depends_on:
-  - T-003
-  description: Implement an engine that identifies bottlenecks and proposes specific
-    design improvements.
-- id: T-005
-  title: Perturbation Simulation Engine
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-004-Perturbation-Engine.md
-  depends_on:
-  - T-004
-  description: Implement a what-if simulation engine to predict the impact of requirement
-    changes.
-- id: T-006
-  title: Blast Radius Evaluation Logic
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-005-Blast-Radius.md
-  depends_on:
-  - T-005
-  description: Implement scoring logic to quantify the scope and depth of influence.
-- id: T-007
-  title: Missing Info Extraction Core
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-006-Missing-Info-Protocol.md
-  depends_on:
-  - T-006
-  description: Implement the logic to identify logical gaps.
-- id: T-009
-  title: Holographic Knowledge Store
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-007-Knowledge-Store-Continuous.md
-  depends_on:
-  - T-007
-  description: Implement a DHM-based knowledge store for system development patterns.
-  acceptance_criteria:
-  - Associative retrieval of system patterns
-  - Pre-load basic development concepts
-- id: T-010
-  title: Cumulative Context Refactor
-  owner: ResearchAgent
-  status: completed
-  architect_approved: true
-  approved_at: '2026-02-22'
-  priority: high
-  related_spec: specs/RFC-007-Knowledge-Store-Continuous.md
-  depends_on:
-  - T-007
-  description: Refactor HybridVM to support continuous, cumulative requirement analysis.
-  acceptance_criteria:
-  - New analyze calls append to existing L1 units
-  - Supports clear/reset of current context
+  approved_at: '2026-02-23'
+  priority: critical
+  related_spec: specs/RFC-014-SemanticUnit-Redefinition.md
 roadmap:
-  Phase3:
-  - T-001
-  - T-002
-  - T-003
-  - T-004
-  Phase4:
-  - T-005
-  - T-006
-  Phase5:
-  - T-007
-  - T-009
-  - T-010
+  Phase8:
+  - T-025
+  - T-022
+  - T-023
+  - T-024
 technical_debt:
 - id: D-001
   description: Memory layer interface not versioned

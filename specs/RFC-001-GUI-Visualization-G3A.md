@@ -1,5 +1,18 @@
 # RFC-001: 因果グラフ可視化プロトコル (G3-A)
 
+## Purpose
+GUI上で L1/L2 の構造関係を 2D グラフとして可視化し、設計構造の理解を向上させる。
+
+## Interfaces
+- GUI: `apps/gui` に層状レイアウトの因果グラフ描画を追加
+- GUI: Hover 強調、Click 詳細表示を提供
+- CLI: `design --json analyze` の `data.graph` に `nodes`/`edges` を含める
+
+## Data Structures
+- `graph.nodes[]`: `{ id, type, label, score }`
+- `graph.edges[]`: `{ from, to, type, weight? }`
+- `type` は `L1`/`L2`（node）と `mapping`/`causal`（edge）
+
 ## 1. 背景と目的
 現在の DesignBrainModel は、分析結果を数値（Stability/Ambiguity）とテキスト（Explanation）で出力する。しかし、どの要件がどの概念に影響を与えているか、概念同士がどのように結合しているかという「設計の構造」は、数値だけでは直感的に理解しにくい。
 本仕様では、これらを 2D グラフとして可視化するためのデータ構造と GUI 実装方針を定義する。

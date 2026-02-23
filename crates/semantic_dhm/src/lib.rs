@@ -163,6 +163,25 @@ pub struct SemanticUnitL1V2 {
     pub ambiguity_score: f64,
 }
 
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticUnitL1Framework {
+    pub id: L1Id,
+    pub title: String,
+    pub objective: String,
+    pub scope_in: Vec<String>,
+    pub scope_out: Vec<String>,
+    pub l2_refs: Vec<L2Id>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SemanticUnitL2Detail {
+    pub id: L2Id,
+    pub parent_id: L1Id,
+    pub metrics: Vec<String>,
+    pub methods: Vec<String>,
+    pub grounding_data: Vec<String>,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct SemanticUnitL1Input {
     pub role: RequirementRole,
@@ -264,6 +283,79 @@ pub struct ConceptUnitV2 {
     pub derived_requirements: Vec<DerivedRequirement>,
     pub causal_links: Vec<CausalEdge>,
     pub stability_score: f64,
+}
+
+impl SemanticUnitL1Framework {
+    pub fn from_l1_v2(unit: &SemanticUnitL1V2) -> Self {
+        let objective = unit
+            .objective
+            .clone()
+            .unwrap_or_else(|| "Objective not specified".to_string());
+        let title = objective
+            .split(['。', '.', ':'])
+            .next()
+            .unwrap_or("Untitled")
+            .trim()
+            .chars()
+            .take(32)
+            .collect::<String>();
+        Self {
+            id: unit.id,
+            title: if title.is_empty() {
+                format!("L1-{}", unit.id.0)
+            } else {
+                title
+            },
+            objective,
+            scope_in: unit.scope_in.clone(),
+            scope_out: unit.scope_out.clone(),
+            l2_refs: Vec::new(),
+        }
+    }
+}
+
+impl SemanticUnitL2Detail {
+    pub fn from_concept_v2(parent_id: L1Id, concept: &ConceptUnitV2) -> Self {
+        let metrics = concept
+            .derived_requirements
+            .iter()
+            .map(|r| format!("{:?}:{:.2}", r.kind, r.strength))
+            .collect::<Vec<_>>();
+        let mut methods = Vec::new();
+        for req in &concept.derived_requirements {
+            let method = match req.kind {
+                RequirementKind::Performance => "optimize hot path and avoid allocations",
+                RequirementKind::Memory => "use compact representation and bounded buffers",
+                RequirementKind::Security => "enforce validation and least privilege",
+                RequirementKind::NoCloud => "prefer local/on-prem deployment",
+                RequirementKind::Reliability => "apply retry and fallback strategies",
+            };
+            methods.push(method.to_string());
+        }
+        methods.sort();
+        methods.dedup();
+        Self {
+            id: concept.id,
+            parent_id,
+            metrics,
+            methods,
+            grounding_data: Vec::new(),
+        }
+    }
+}
+
+pub fn migrate_l1_v2_to_framework(units: &[SemanticUnitL1V2]) -> Vec<SemanticUnitL1Framework> {
+    units.iter().map(SemanticUnitL1Framework::from_l1_v2).collect()
+}
+
+pub fn migrate_l2_v2_to_detail(
+    units: &[ConceptUnitV2],
+    parent_map: &BTreeMap<L2Id, L1Id>,
+) -> Vec<SemanticUnitL2Detail> {
+    units
+        .iter()
+        .filter_map(|u| parent_map.get(&u.id).map(|parent| SemanticUnitL2Detail::from_concept_v2(*parent, u)))
+        .collect()
 }
 
 impl Codec for ConceptUnit {
@@ -1715,5 +1807,40 @@ mod tests {
         l2_rev.reverse();
         let p2 = project_phase_a(&l2_rev, &l1);
         assert_eq!(p1, p2);
+    }
+
+    #[test]
+    fn migration_l1_v2_to_framework_has_title_and_objective() {
+        let l1 = SemanticUnitL1V2 {
+            id: L1Id(7),
+            objective: Some("Payment reliability and auditability".to_string()),
+            scope_in: vec!["api".to_string()],
+            scope_out: vec!["batch".to_string()],
+            constraints: vec![],
+            ambiguity_score: 0.2,
+        };
+        let migrated = migrate_l1_v2_to_framework(&[l1]);
+        assert_eq!(migrated.len(), 1);
+        assert!(!migrated[0].title.is_empty());
+        assert!(!migrated[0].objective.is_empty());
+    }
+
+    #[test]
+    fn migration_l2_v2_to_detail_keeps_parent_mapping() {
+        let l2 = ConceptUnitV2 {
+            id: ConceptId(9),
+            derived_requirements: vec![DerivedRequirement {
+                kind: RequirementKind::Performance,
+                strength: 0.9,
+            }],
+            causal_links: vec![],
+            stability_score: 0.8,
+        };
+        let mut parent = BTreeMap::new();
+        parent.insert(ConceptId(9), L1Id(99));
+        let migrated = migrate_l2_v2_to_detail(&[l2], &parent);
+        assert_eq!(migrated.len(), 1);
+        assert_eq!(migrated[0].parent_id, L1Id(99));
+        assert!(!migrated[0].metrics.is_empty());
     }
 }
