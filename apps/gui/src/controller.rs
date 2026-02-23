@@ -183,6 +183,7 @@ impl Controller {
         }
     }
 
+    #[allow(dead_code)]
     pub fn remove_selected_node(state: &mut AppState) {
         let Some(selected) = state.selected_node.clone() else {
             return;
@@ -197,10 +198,12 @@ impl Controller {
         state.selected_detail = None;
     }
 
+    #[allow(dead_code)]
     pub fn begin_edge(state: &mut AppState) {
         state.edge_builder_from = state.selected_node.clone();
     }
 
+    #[allow(dead_code)]
     pub fn connect_to_selected(state: &mut AppState) {
         let Some(from) = state.edge_builder_from.clone() else {
             return;

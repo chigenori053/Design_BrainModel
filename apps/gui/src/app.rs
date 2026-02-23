@@ -22,6 +22,7 @@ impl DesignApp {
         }
     }
 
+    #[allow(dead_code)]
     fn render_graph(&mut self, ui: &mut egui::Ui) {
         let (rect, response) = ui.allocate_at_least(egui::vec2(ui.available_width(), 300.0), egui::Sense::click());
         let painter = ui.painter_at(rect);
@@ -147,10 +148,147 @@ impl DesignApp {
         }
     }
 
+    fn render_concept_layer(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Concept Layer");
+        ui.label("システムのコンセプトやアイディアを自由に入力してください。この内容は設計の根幹となります。");
+        ui.add_space(8.0);
+        let resp = ui.add(
+            egui::TextEdit::multiline(&mut self.state.concept_text)
+                .hint_text("例: 新しい分散型SNSのアーキテクチャ案...")
+                .desired_width(f32::INFINITY)
+                .desired_rows(15),
+        );
+        if resp.changed() {
+            // 必要に応じて状態更新
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui.button("🚀 このコンセプトから仕様を抽出する").clicked() {
+                self.state.input_text = self.state.concept_text.clone();
+                Controller::analyze_append(&mut self.session, &mut self.state);
+            }
+        });
+    }
+
+    fn render_spec_layer(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Specification Layer (L1)");
+        ui.label("コンセプトから抽出された大枠の仕様リストです。");
+        ui.add_space(8.0);
+
+        if self.state.l1_units.is_empty() {
+            ui.weak("仕様がまだ抽出されていません。コンセプト層で分析を実行してください。");
+        } else {
+            for unit in &self.state.l1_units {
+                ui.group(|ui| {
+                    ui.horizontal(|ui| {
+                        ui.label(egui::RichText::new(format!("L1-{}", unit.id.0)).strong());
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            let score_color = if unit.ambiguity_score < 0.3 {
+                                egui::Color32::LIGHT_GREEN
+                            } else if unit.ambiguity_score < 0.6 {
+                                egui::Color32::YELLOW
+                            } else {
+                                egui::Color32::LIGHT_RED
+                            };
+                            ui.label(egui::RichText::new(format!("Ambiguity: {:.2}", unit.ambiguity_score)).color(score_color));
+                        });
+                    });
+                    if let Some(obj) = &unit.objective {
+                        ui.label(obj);
+                    }
+                    if !unit.scope_in.is_empty() {
+                        ui.weak(format!("Scope In: {}", unit.scope_in.join(", ")));
+                    }
+                });
+            }
+        }
+    }
+
+    fn render_item_layer(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Item Layer (L2)");
+        ui.label("各仕様を具体化した設計項目カードです。");
+        ui.add_space(8.0);
+
+        let cards = self.state.cards.clone();
+        if cards.is_empty() {
+            ui.weak("項目カードがまだ生成されていません。仕様層を確定させてください。");
+        } else {
+            // グリッド風、または縦に並ぶカード形式
+            for card in cards {
+                let card_key = format!("L2-{}", card.id.0);
+                let has_grounding = !card.grounding_data.is_empty();
+                
+                ui.add_space(4.0);
+                ui.scope(|ui| {
+                    // カードの背景と枠線を少し強調
+                    let frame = egui::Frame::group(ui.style())
+                        .fill(egui::Color32::from_gray(35))
+                        .stroke(egui::Stroke::new(1.0, egui::Color32::from_gray(60)));
+                    
+                    frame.show(ui, |ui| {
+                        ui.set_min_width(ui.available_width());
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new(&card_key).strong().size(16.0));
+                            ui.weak(format!("(Parent: L1-{})", card.parent_id.0));
+                            
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                if has_grounding {
+                                    ui.label(egui::RichText::new("● Grounded").color(egui::Color32::LIGHT_GREEN));
+                                } else {
+                                    ui.label(egui::RichText::new("○ Need Info").color(egui::Color32::GOLD));
+                                }
+                            });
+                        });
+                        
+                        ui.separator();
+                        
+                        if !card.metrics.is_empty() {
+                            ui.label(egui::RichText::new("Metrics:").strong());
+                            for m in &card.metrics {
+                                ui.label(format!(" • {}", m));
+                            }
+                        }
+                        
+                        ui.add_space(4.0);
+                        ui.label(egui::RichText::new("Refined Details:").strong());
+                        
+                        let current_text = self
+                            .state
+                            .card_edit_buffers
+                            .get(&card_key)
+                            .cloned()
+                            .unwrap_or_default();
+                        let mut edited_text = current_text.clone();
+                        
+                        let text_edit = egui::TextEdit::multiline(&mut edited_text)
+                            .hint_text("具体的な仕様を入力...")
+                            .desired_rows(2)
+                            .desired_width(f32::INFINITY);
+                            
+                        ui.add(text_edit);
+                        
+                        if edited_text != current_text {
+                            self.state.card_edit_buffers.insert(card_key.clone(), edited_text.clone());
+                        }
+                        
+                        ui.horizontal(|ui| {
+                            if ui.button("💾 Save").clicked() && !edited_text.trim().is_empty() {
+                                Controller::refine_card(&mut self.session, &mut self.state, &card_key, &edited_text);
+                            }
+                            if ui.button("🌐 Search Grounding").clicked() {
+                                Controller::ground_card(&mut self.session, &mut self.state, &card_key);
+                            }
+                        });
+                    });
+                });
+            }
+        }
+    }
+
     fn render_advisor(&mut self, ui: &mut egui::Ui) {
         ui.heading("Knowledge Advisor");
         if self.state.missing_info.is_empty() {
-            ui.label("設計は現在、十分な具体性を持っています。");
+            ui.label("設計の具体性は現在十分です。");
         } else {
             for info in &self.state.missing_info {
                 ui.group(|ui| {
@@ -162,8 +300,7 @@ impl DesignApp {
                             hybrid_vm::InfoCategory::Objective => "🎯 目標",
                         });
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                            if ui.button("回答する").clicked() {
-                                // プロンプトを一部入力欄にコピー
+                            if ui.button("回答").clicked() {
                                 self.state.input_text = format!("{} について: ", info.prompt);
                             }
                         });
@@ -174,38 +311,13 @@ impl DesignApp {
         }
 
         ui.separator();
-        ui.heading("Graph Edit");
-        ui.horizontal(|ui| {
-            let selected = self.state.selected_node.clone().unwrap_or_else(|| "-".to_string());
-            ui.label(format!("Selected: {selected}"));
-        });
-        ui.horizontal(|ui| {
-            if ui.button("Start Edge").clicked() {
-                Controller::begin_edge(&mut self.state);
-            }
-            if ui.button("Connect To Selected").clicked() {
-                Controller::connect_to_selected(&mut self.state);
-            }
-            if ui.button("Delete Selected").clicked() {
-                Controller::remove_selected_node(&mut self.state);
-            }
-        });
-        if let Some(from) = &self.state.edge_builder_from {
-            ui.label(format!("Edge builder source: {from}"));
-        }
-
-        ui.separator();
-        ui.heading("Generated Drafts");
+        ui.heading("Design Improvements");
         if self.state.drafts.is_empty() {
-            ui.label("提案ドラフトはありません。");
+            ui.label("改善案はありません。");
         } else {
             for draft in self.state.drafts.clone() {
                 ui.group(|ui| {
-                    ui.label(format!(
-                        "{} (impact: {:+.2}%)",
-                        draft.draft_id,
-                        draft.stability_impact * 100.0
-                    ));
+                    ui.label(format!("{} (impact: {:+.2}%)", draft.draft_id, draft.stability_impact * 100.0));
                     ui.label(&draft.prompt);
                     if ui.button("Adopt").clicked() {
                         Controller::adopt_draft(&mut self.session, &mut self.state, &draft.draft_id);
@@ -258,6 +370,24 @@ impl eframe::App for DesignApp {
             }
         });
 
+        egui::SidePanel::left("nav_panel").resizable(false).default_width(120.0).show(ctx, |ui| {
+            ui.vertical_centered_justified(|ui| {
+                ui.add_space(10.0);
+                ui.heading("Design Mode");
+                ui.separator();
+                
+                if ui.selectable_label(self.state.current_tab == crate::state::DesignTab::Concept, "💡 Concept").clicked() {
+                    self.state.current_tab = crate::state::DesignTab::Concept;
+                }
+                if ui.selectable_label(self.state.current_tab == crate::state::DesignTab::Specification, "📜 Spec (L1)").clicked() {
+                    self.state.current_tab = crate::state::DesignTab::Specification;
+                }
+                if ui.selectable_label(self.state.current_tab == crate::state::DesignTab::Item, "🗂️ Item (L2)").clicked() {
+                    self.state.current_tab = crate::state::DesignTab::Item;
+                }
+            });
+        });
+
         egui::SidePanel::right("advisor_panel").min_width(300.0).show(ctx, |ui| {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 self.render_advisor(ui);
@@ -274,71 +404,15 @@ impl eframe::App for DesignApp {
                         });
                     }
                     _ => {
-                        ui.heading("Causal Design Graph");
-                        self.render_graph(ui);
-                        
-                        if let Some(detail) = &self.state.selected_detail {
-                            ui.group(|ui| {
-                                ui.label(egui::RichText::new("Selected Node Detail").strong());
-                                ui.label(detail);
-                            });
-                        }
-                        
-                        ui.separator();
-
-                        ui.heading("Specification Cards");
-                        let cards = self.state.cards.clone();
-                        for card in cards {
-                            let card_key = format!("L2-{}", card.id.0);
-                            let has_grounding = !card.grounding_data.is_empty();
-                            ui.group(|ui| {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new(&card_key).strong());
-                                    ui.label(format!("Parent: L1-{}", card.parent_id.0));
-                                    if has_grounding {
-                                        ui.colored_label(egui::Color32::LIGHT_GREEN, "Grounded");
-                                    } else {
-                                        ui.colored_label(egui::Color32::YELLOW, "Needs Grounding");
-                                    }
-                                });
-                                if !card.metrics.is_empty() {
-                                    ui.label(format!("Metrics: {}", card.metrics.join(", ")));
-                                }
-                                if !card.methods.is_empty() {
-                                    ui.label(format!("Methods: {}", card.methods.join(", ")));
-                                }
-
-                                let current_text = self
-                                    .state
-                                    .card_edit_buffers
-                                    .get(&card_key)
-                                    .cloned()
-                                    .unwrap_or_default();
-                                let mut edited_text = current_text.clone();
-                                ui.add(
-                                    egui::TextEdit::singleline(&mut edited_text)
-                                        .hint_text("Refine detail (e.g. p99 latency < 120ms)"),
-                                );
-                                if edited_text != current_text {
-                                    self.state
-                                        .card_edit_buffers
-                                        .insert(card_key.clone(), edited_text.clone());
-                                }
-                                ui.horizontal(|ui| {
-                                    if ui.button("Save Detail").clicked() && !edited_text.trim().is_empty() {
-                                        let text = edited_text.clone();
-                                        Controller::refine_card(&mut self.session, &mut self.state, &card_key, &text);
-                                    }
-                                    if ui.button("Grounding").clicked() {
-                                        Controller::ground_card(&mut self.session, &mut self.state, &card_key);
-                                    }
-                                });
-                            });
+                        match self.state.current_tab {
+                            crate::state::DesignTab::Concept => self.render_concept_layer(ui),
+                            crate::state::DesignTab::Specification => self.render_spec_layer(ui),
+                            crate::state::DesignTab::Item => self.render_item_layer(ui),
                         }
 
                         if let Some(exp) = &self.state.explanation {
                             ui.separator();
-                            ui.heading("Overview");
+                            ui.heading("Overview Summary");
                             ui.group(|ui| {
                                 ui.label(&exp.summary);
                                 ui.weak(&exp.detail);

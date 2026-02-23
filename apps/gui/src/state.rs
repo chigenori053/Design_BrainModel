@@ -14,6 +14,13 @@ pub enum UiState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DesignTab {
+    Concept,
+    Specification,
+    Item,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEvent {
     StartEdit,
     Submit,
@@ -80,6 +87,8 @@ impl UiStateMachine {
 
 pub struct AppState {
     pub input_text: String,
+    pub concept_text: String,
+    pub current_tab: DesignTab,
 
     pub l1_units: Vec<SemanticUnitL1V2>,
     pub l2_units: Vec<ConceptUnitV2>,
@@ -88,10 +97,15 @@ pub struct AppState {
 
     pub last_error: Option<String>,
     pub ui_state_machine: UiStateMachine,
+    #[allow(dead_code)]
     pub graph: CausalGraph,
+    #[allow(dead_code)]
     pub graph_positions: HashMap<String, (f32, f32)>,
+    #[allow(dead_code)]
     pub selected_node: Option<String>,
+    #[allow(dead_code)]
     pub selected_detail: Option<String>,
+    #[allow(dead_code)]
     pub edge_builder_from: Option<String>,
     pub cards: Vec<SemanticUnitL2Detail>,
     pub card_edit_buffers: HashMap<String, String>,
@@ -103,6 +117,8 @@ impl Default for AppState {
     fn default() -> Self {
         Self {
             input_text: String::new(),
+            concept_text: String::new(),
+            current_tab: DesignTab::Concept,
             l1_units: Vec::new(),
             l2_units: Vec::new(),
             explanation: None,
