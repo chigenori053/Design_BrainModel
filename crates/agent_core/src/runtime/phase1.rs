@@ -1,3 +1,8 @@
+use design_reasoning::{
+    DesignFactor, FactorType, ScsInputs, compute_dependency_consistency_metrics, compute_scs_v1_1,
+    sanitize_factors,
+};
+
 pub fn run_phase1_matrix(
     config: crate::Phase1Config,
 ) -> (Vec<crate::Phase1RawRow>, Vec<crate::Phase1SummaryRow>) {
@@ -152,6 +157,22 @@ fn run_phase1_variant(
                 .get(&state.id.as_u128())
                 .copied()
                 .unwrap_or([0.0; 4]);
+            let factors = build_design_factors(state);
+            let (factors, sanity) = sanitize_factors(&factors);
+            let dep_metrics = compute_dependency_consistency_metrics(&factors);
+            let completeness = obj.f_struct.clamp(0.0, 1.0);
+            let ambiguity_mean = (1.0 - obj.f_field).clamp(0.0, 1.0);
+            let inconsistency = obj.f_risk.clamp(0.0, 1.0);
+            let cls = ambiguity_mean;
+            let scs_v1 = crate::scalar_score(obj).clamp(0.0, 1.0);
+            let scs_v1_1 = compute_scs_v1_1(ScsInputs {
+                completeness,
+                ambiguity_mean,
+                dependency_consistency: dep_metrics.dependency_consistency,
+                inconsistency,
+            });
+            let phase2_triggered = scs_v1_1 >= 0.72 && cls <= 0.50 && inconsistency <= 0.40;
+            let phase2_false_trigger_proxy = phase2_triggered && dep_metrics.dependency_consistency < 0.50;
             raw_rows.push(crate::Phase1RawRow {
                 variant: variant.name().to_string(),
                 depth,
@@ -159,6 +180,21 @@ fn run_phase1_variant(
                 rule_id: format!("{:032x}", rid.as_u128()),
                 objective_vector_raw: fmt_vec4(&crate::runtime::trace_helpers::obj_to_arr(obj)),
                 objective_vector_norm: fmt_vec4(&norm),
+                completeness,
+                ambiguity_mean,
+                inconsistency,
+                cls,
+                scs_v1,
+                scs_v1_1,
+                dependency_consistency: dep_metrics.dependency_consistency,
+                connectivity: dep_metrics.connectivity,
+                cyclicity: dep_metrics.cyclicity,
+                orphan_rate: dep_metrics.orphan_rate,
+                phase2_triggered,
+                phase2_false_trigger_proxy,
+                sanity_empty_id_fixes: sanity.empty_id_fixes,
+                sanity_duplicate_id_fixes: sanity.duplicate_id_fixes,
+                sanity_unknown_dependency_drops: sanity.unknown_dependency_drops,
             });
         }
 
@@ -257,6 +293,74 @@ fn normalize_phase1_vectors(objs: &[core_types::ObjectiveVector]) -> Vec<[f64; 4
             out
         })
         .collect()
+}
+
+fn build_design_factors(state: &memory_space::DesignState) -> Vec<DesignFactor> {
+    let mut deps_by_id: std::collections::BTreeMap<u128, Vec<String>> = std::collections::BTreeMap::new();
+    for node in state.graph.nodes().values() {
+        deps_by_id.entry(node.id.as_u128()).or_default();
+    }
+    for (from, to) in state.graph.edges() {
+        deps_by_id
+            .entry(from.as_u128())
+            .or_default()
+            .push(format!("{:032x}", to.as_u128()));
+    }
+    for deps in deps_by_id.values_mut() {
+        deps.sort();
+        deps.dedup();
+    }
+
+    state
+        .graph
+        .nodes()
+        .values()
+        .map(|node| {
+            let id = format!("{:032x}", node.id.as_u128());
+            let factor_type = infer_factor_type(node);
+            let depends_on = deps_by_id
+                .get(&node.id.as_u128())
+                .cloned()
+                .unwrap_or_default();
+            DesignFactor {
+                id,
+                factor_type,
+                depends_on,
+            }
+        })
+        .collect()
+}
+
+fn infer_factor_type(node: &memory_space::DesignNode) -> FactorType {
+    let kind = node.kind.to_ascii_lowercase();
+    if kind.contains("why") || kind.contains("goal") || kind.contains("objective") {
+        return FactorType::Why;
+    }
+    if kind.contains("what") {
+        return FactorType::What;
+    }
+    if kind.contains("how") || kind.contains("impl") || kind.contains("method") {
+        return FactorType::How;
+    }
+    if kind.contains("constraint") || kind.contains("rule") {
+        return FactorType::Constraint;
+    }
+    if kind.contains("risk") {
+        return FactorType::Risk;
+    }
+    if let Some(memory_space::Value::Text(category)) = node.attributes.get("category") {
+        let c = category.to_ascii_lowercase();
+        if c.contains("structural") || c.contains("goal") {
+            return FactorType::Why;
+        }
+        if c.contains("constraint") {
+            return FactorType::Constraint;
+        }
+        if c.contains("reliability") || c.contains("risk") {
+            return FactorType::Risk;
+        }
+    }
+    FactorType::Unknown
 }
 
 #[allow(clippy::needless_range_loop)]

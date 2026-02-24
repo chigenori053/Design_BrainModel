@@ -1,0 +1,43 @@
+{
+  "abnormal_rate": 0.0,
+  "avg_cls": 0.005314,
+  "avg_cyclicity": 0.0,
+  "avg_dependency_consistency": 0.5,
+  "avg_questions": 0.010629,
+  "avg_scs_v1_1": 0.728738,
+  "category_counts": {
+    "A": 80,
+    "B": 100,
+    "C": 80,
+    "D": 60,
+    "E": 40,
+    "F": 40
+  },
+  "category_scs_mean": {
+    "A": 0.7471844913243328,
+    "B": 0.7241264394001565,
+    "C": 0.724126439400157,
+    "D": 0.7241264394001564,
+    "E": 0.7241264394001555,
+    "F": 0.7241264394001555
+  },
+  "notes": [
+    "cls is proxied by ambiguity_mean",
+    "revision_rate counts inconsistency > 0.40",
+    "avg_questions is a proxy derived from cls and orphan_rate",
+    "phase2_false_trigger_rate is a proxy: triggered AND dependency_consistency < 0.50",
+    "category_scs_mean uses Step0 assigned fixed categories"
+  ],
+  "objective": 0.728738,
+  "objective_by_seed": {
+    "42": 0.728738,
+    "43": 0.728738,
+    "44": 0.728738,
+    "45": 0.728738
+  },
+  "objective_var": 0.0,
+  "phase2_false_trigger_rate": 0.0,
+  "phase2_trigger_rate": 0.03,
+  "revision_rate": 0.97,
+  "scs_1.0_rate": 0.0
+}

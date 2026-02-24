@@ -11,7 +11,12 @@ path = "src/main.rs"
 name = "design"
 path = "src/design_main.rs"
 
+[[bin]]
+name = "phase1_batch"
+path = "src/phase1_batch_main.rs"
+
 [dependencies]
+agent_core = { workspace = true }
 design_reasoning = { workspace = true }
 hybrid_vm = { workspace = true }
 semantic_dhm = { workspace = true }

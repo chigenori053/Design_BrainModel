@@ -1,0 +1,15 @@
+{
+  "seed": 42,
+  "total_cases": 100,
+  "category_counts": {
+    "A": 20,
+    "B": 25,
+    "C": 20,
+    "D": 15,
+    "E": 10,
+    "F": 10
+  },
+  "unique_case_id": true,
+  "empty_input_text_count": 0,
+  "hash": "sha256:3f567dbcbf73408ea891ba174bc9dd93a628199069bea5f158f7dac6fbc16315"
+}

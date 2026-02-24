@@ -1,6 +1,8 @@
 use design_reasoning::{
     DesignHypothesis, HypothesisEngine, LanguageEngine, LanguageState, LanguageStateV2,
     MeaningEngine, ProjectionEngine, SnapshotEngine, TemplateId, TEMPLATE_SELECTION_EPSILON,
+    DesignFactor, FactorType, ScsInputs, compute_dependency_consistency, compute_scs_v1_1,
+    sanitize_factors,
     is_ambiguous_margin,
 };
 use semantic_dhm::{
@@ -446,4 +448,134 @@ fn stability_label_boundary_is_consistent() {
     let e2 = engine.explain_state(&s2);
     assert!(e1.summary.contains("構造安定性: 概ね安定"));
     assert!(e2.summary.contains("構造安定性: 概ね安定"));
+}
+
+#[test]
+fn dependency_consistency_empty_defaults_to_half() {
+    let score = compute_dependency_consistency(&[]);
+    assert!((score - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn dependency_consistency_why_missing_connectivity_zero() {
+    let factors = vec![
+        DesignFactor {
+            id: "A".to_string(),
+            factor_type: FactorType::What,
+            depends_on: vec![],
+        },
+        DesignFactor {
+            id: "B".to_string(),
+            factor_type: FactorType::How,
+            depends_on: vec!["A".to_string()],
+        },
+    ];
+    let score = compute_dependency_consistency(&factors);
+    let expected = 0.5 * 0.0 + 0.3 * (1.0 - 0.0) + 0.2 * (1.0 - 0.0);
+    assert!((score - expected).abs() < 1e-9);
+}
+
+#[test]
+fn dependency_consistency_cycle_penalty_applies() {
+    let factors = vec![
+        DesignFactor {
+            id: "WHY".to_string(),
+            factor_type: FactorType::Why,
+            depends_on: vec!["A".to_string()],
+        },
+        DesignFactor {
+            id: "A".to_string(),
+            factor_type: FactorType::What,
+            depends_on: vec!["B".to_string()],
+        },
+        DesignFactor {
+            id: "B".to_string(),
+            factor_type: FactorType::How,
+            depends_on: vec!["A".to_string()],
+        },
+    ];
+    let score = compute_dependency_consistency(&factors);
+    assert!(score < 1.0);
+}
+
+#[test]
+fn dependency_consistency_detects_orphan_non_why() {
+    let factors = vec![
+        DesignFactor {
+            id: "WHY".to_string(),
+            factor_type: FactorType::Why,
+            depends_on: vec!["A".to_string()],
+        },
+        DesignFactor {
+            id: "A".to_string(),
+            factor_type: FactorType::What,
+            depends_on: vec![],
+        },
+        DesignFactor {
+            id: "ORPHAN".to_string(),
+            factor_type: FactorType::Constraint,
+            depends_on: vec![],
+        },
+    ];
+    let score = compute_dependency_consistency(&factors);
+    let expected_orphan_rate = 1.0 / 3.0;
+    let expected = 0.5 * (2.0 / 3.0) + 0.3 * (1.0 - 0.0) + 0.2 * (1.0 - expected_orphan_rate);
+    assert!((score - expected).abs() < 1e-9);
+}
+
+#[test]
+fn dependency_consistency_unmeasurable_graph_falls_back() {
+    let factors = vec![
+        DesignFactor {
+            id: "X".to_string(),
+            factor_type: FactorType::Why,
+            depends_on: vec![],
+        },
+        DesignFactor {
+            id: "X".to_string(),
+            factor_type: FactorType::What,
+            depends_on: vec![],
+        },
+    ];
+    let score = compute_dependency_consistency(&factors);
+    assert!((score - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn scs_v1_1_formula_is_applied() {
+    let inputs = ScsInputs {
+        completeness: 1.0,
+        ambiguity_mean: 0.2,
+        dependency_consistency: 0.6,
+        inconsistency: 0.3,
+    };
+    let scs = compute_scs_v1_1(inputs);
+    let expected = 0.40 * 1.0 + 0.25 * (1.0 - 0.2) + 0.20 * 0.6 + 0.15 * (1.0 - 0.3);
+    assert!((scs - expected).abs() < 1e-9);
+}
+
+#[test]
+fn sanitize_factors_repairs_ids_and_dangling_dependencies() {
+    let factors = vec![
+        DesignFactor {
+            id: "".to_string(),
+            factor_type: FactorType::Why,
+            depends_on: vec!["MISSING".to_string()],
+        },
+        DesignFactor {
+            id: "A".to_string(),
+            factor_type: FactorType::What,
+            depends_on: vec![],
+        },
+        DesignFactor {
+            id: "A".to_string(),
+            factor_type: FactorType::How,
+            depends_on: vec!["A".to_string(), "MISSING2".to_string()],
+        },
+    ];
+    let (sanitized, stats) = sanitize_factors(&factors);
+    assert_eq!(sanitized.len(), 3);
+    assert!(stats.empty_id_fixes >= 1);
+    assert!(stats.duplicate_id_fixes >= 1);
+    assert!(stats.unknown_dependency_drops >= 1);
 }

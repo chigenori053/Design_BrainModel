@@ -361,6 +361,21 @@ pub struct Phase1RawRow {
     pub rule_id: String,
     pub objective_vector_raw: String,
     pub objective_vector_norm: String,
+    pub completeness: f64,
+    pub ambiguity_mean: f64,
+    pub inconsistency: f64,
+    pub cls: f64,
+    pub scs_v1: f64,
+    pub scs_v1_1: f64,
+    pub dependency_consistency: f64,
+    pub connectivity: f64,
+    pub cyclicity: f64,
+    pub orphan_rate: f64,
+    pub phase2_triggered: bool,
+    pub phase2_false_trigger_proxy: bool,
+    pub sanity_empty_id_fixes: usize,
+    pub sanity_duplicate_id_fixes: usize,
+    pub sanity_unknown_dependency_drops: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
