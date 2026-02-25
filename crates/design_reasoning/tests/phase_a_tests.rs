@@ -1,17 +1,23 @@
 use design_reasoning::{
-    DesignHypothesis, HypothesisEngine, LanguageEngine, LanguageState, LanguageStateV2,
-    MeaningEngine, ProjectionEngine, SnapshotEngine, TemplateId, TEMPLATE_SELECTION_EPSILON,
-    DesignFactor, FactorType, ScsInputs, compute_dependency_consistency, compute_scs_v1_1,
-    sanitize_factors,
-    is_ambiguous_margin,
+    DesignFactor, DesignHypothesis, FactorType, HypothesisEngine, IssueType, LanguageEngine,
+    LanguageState, LanguageStateV2, MeaningEngine, OverallState, ProjectionEngine, RealizationMode,
+    ReasoningAxis, ScsInputs, SnapshotEngine, StructuredReasoningEngine, StructuredReasoningInput,
+    TEMPLATE_SELECTION_EPSILON, TemplateId, compute_dependency_consistency, compute_scs_v1_1,
+    is_ambiguous_margin, sanitize_factors,
 };
 use semantic_dhm::{
-    compare_snapshots, ConceptId, ConceptUnit, DerivedRequirement, L1Id, L2Config, MeaningLayerState,
-    RequirementKind, RequirementRole, SemanticUnitL1, SemanticUnitL1V2, Snapshotable,
-    ConceptUnitV2, DEFAULT_L2_CONFIG,
+    ConceptId, ConceptUnit, ConceptUnitV2, DEFAULT_L2_CONFIG, DerivedRequirement, L1Id, L2Config,
+    MeaningLayerState, RequirementKind, RequirementRole, SemanticUnitL1, SemanticUnitL1V2,
+    Snapshotable, compare_snapshots,
 };
 
-fn mk_l1(id: u128, text: &str, role: RequirementRole, abstraction: f32, polarity: i8) -> SemanticUnitL1 {
+fn mk_l1(
+    id: u128,
+    text: &str,
+    role: RequirementRole,
+    abstraction: f32,
+    polarity: i8,
+) -> SemanticUnitL1 {
     SemanticUnitL1 {
         id: L1Id(id),
         role,
@@ -58,25 +64,37 @@ fn split_english_conjunctions() {
 #[test]
 fn role_prohibition_keywords() {
     let engine = MeaningEngine;
-    assert_eq!(engine.infer_requirement_role("クラウド依存を禁止"), RequirementRole::Prohibition);
+    assert_eq!(
+        engine.infer_requirement_role("クラウド依存を禁止"),
+        RequirementRole::Prohibition
+    );
 }
 
 #[test]
 fn role_constraint_keywords() {
     let engine = MeaningEngine;
-    assert_eq!(engine.infer_requirement_role("メモリ512MB以下"), RequirementRole::Constraint);
+    assert_eq!(
+        engine.infer_requirement_role("メモリ512MB以下"),
+        RequirementRole::Constraint
+    );
 }
 
 #[test]
 fn role_optimization_keywords() {
     let engine = MeaningEngine;
-    assert_eq!(engine.infer_requirement_role("できるだけ速く"), RequirementRole::Optimization);
+    assert_eq!(
+        engine.infer_requirement_role("できるだけ速く"),
+        RequirementRole::Optimization
+    );
 }
 
 #[test]
 fn role_goal_default() {
     let engine = MeaningEngine;
-    assert_eq!(engine.infer_requirement_role("高性能にする"), RequirementRole::Goal);
+    assert_eq!(
+        engine.infer_requirement_role("高性能にする"),
+        RequirementRole::Goal
+    );
 }
 
 #[test]
@@ -262,7 +280,9 @@ fn snapshot_engine_compare_is_stable() {
     let s2 = engine
         .snapshot(DEFAULT_L2_CONFIG.algorithm_version, l1, l2)
         .expect("snapshot should succeed");
-    let d = engine.compare(&s1, &s2).expect("snapshot compare should succeed");
+    let d = engine
+        .compare(&s1, &s2)
+        .expect("snapshot compare should succeed");
     assert!(d.identical);
 }
 
@@ -539,6 +559,117 @@ fn dependency_consistency_unmeasurable_graph_falls_back() {
     ];
     let score = compute_dependency_consistency(&factors);
     assert!((score - 0.5).abs() < 1e-9);
+}
+
+#[test]
+fn srt_build_is_deterministic_and_bounded() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "教育向けに最適化された設計".to_string(),
+        selected_objective: Some("教育向け最適化".to_string()),
+        requirement_count: 0,
+        stability_score: 0.31,
+        ambiguity_score: 0.79,
+        evidence_spans: vec![
+            "教育向けに最適化された設計".to_string(),
+            "大規模対応".to_string(),
+            "  大規模対応 ".to_string(),
+        ],
+    };
+    let s1 = engine.build_srt(&input);
+    let s2 = engine.build_srt(&input);
+    assert_eq!(s1, s2);
+    assert_eq!(s1.evaluation_version, "v1.0");
+    assert!(s1.strengths.len() <= 3);
+    assert!(s1.issues.len() <= 5);
+    assert!(s1.issues.iter().all(|i| (0.0..=1.0).contains(&i.severity)));
+}
+
+#[test]
+fn srt_realization_cache_key_is_stable() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "大規模対応".to_string(),
+        selected_objective: None,
+        requirement_count: 0,
+        stability_score: 0.4,
+        ambiguity_score: 0.8,
+        evidence_spans: vec!["大規模対応".to_string()],
+    };
+    let a = engine.realize(&input, RealizationMode::LlmControlled);
+    let b = engine.realize(&input, RealizationMode::LlmControlled);
+    assert_eq!(a.cache_key, b.cache_key);
+    assert_eq!(a.output, b.output);
+}
+
+#[test]
+fn srt_rule_based_realization_is_deterministic() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "処理速度を上げる".to_string(),
+        selected_objective: Some("処理速度向上".to_string()),
+        requirement_count: 2,
+        stability_score: 0.8,
+        ambiguity_score: 0.2,
+        evidence_spans: vec!["処理速度を上げる".to_string()],
+    };
+    let a = engine.realize(&input, RealizationMode::RuleBased);
+    let b = engine.realize(&input, RealizationMode::RuleBased);
+    assert_eq!(a.output, b.output);
+}
+
+#[test]
+fn srt_severity_formula_applies_to_missing_success_metric() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "短い".to_string(),
+        selected_objective: Some("obj".to_string()),
+        requirement_count: 0,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["短い".to_string()],
+    };
+    let srt = engine.build_srt(&input);
+    let issue = srt
+        .issues
+        .iter()
+        .find(|i| i.axis == ReasoningAxis::SuccessMetric && i.issue_type == IssueType::Missing)
+        .expect("missing success metric issue");
+    assert!((issue.severity - 1.0).abs() < 1e-9);
+}
+
+#[test]
+fn srt_overall_state_thresholds_follow_spec() {
+    let engine = StructuredReasoningEngine::default();
+    let ready = engine.build_srt(&StructuredReasoningInput {
+        source_text: "教育向け学習支援の設計で学校現場の運用に適用する".to_string(),
+        selected_objective: Some("教育向け最適化".to_string()),
+        requirement_count: 3,
+        stability_score: 0.95,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["教育向け".to_string()],
+    });
+    assert_eq!(ready.overall_state, OverallState::Ready);
+
+    let partial = engine.build_srt(&StructuredReasoningInput {
+        source_text: "教育向け学習支援の設計で学校現場の運用に適用する".to_string(),
+        selected_objective: Some("教育向け最適化".to_string()),
+        requirement_count: 3,
+        stability_score: 0.95,
+        ambiguity_score: 0.7,
+        evidence_spans: vec!["教育向け".to_string()],
+    });
+    assert_eq!(partial.overall_state, OverallState::PartialReady);
+
+    let insufficient = engine.build_srt(&StructuredReasoningInput {
+        source_text: "短い".to_string(),
+        selected_objective: None,
+        requirement_count: 0,
+        stability_score: 0.2,
+        ambiguity_score: 0.9,
+        evidence_spans: vec!["短い".to_string()],
+    });
+    assert_eq!(insufficient.overall_state, OverallState::Insufficient);
 }
 
 #[test]
