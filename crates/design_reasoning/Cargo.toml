@@ -9,3 +9,5 @@ memory_store = { workspace = true }
 semantic_dhm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"
+regex = "1.11"

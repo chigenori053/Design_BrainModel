@@ -2,6 +2,7 @@
 name = "design_cli"
 version = "0.1.0"
 edition = "2024"
+default-run = "design"
 
 [[bin]]
 name = "cli"
@@ -17,8 +18,10 @@ path = "src/phase1_batch_main.rs"
 
 [dependencies]
 agent_core = { workspace = true }
+clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }
 hybrid_vm = { workspace = true }
 semantic_dhm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+sha2 = "0.10"

@@ -1,9 +1,11 @@
 use design_reasoning::{
     DesignFactor, DesignHypothesis, FactorType, HypothesisEngine, IssueType, LanguageEngine,
-    LanguageState, LanguageStateV2, MeaningEngine, OverallState, ProjectionEngine, RealizationMode,
-    ReasoningAxis, ScsInputs, SnapshotEngine, StructuredReasoningEngine, StructuredReasoningInput,
-    TEMPLATE_SELECTION_EPSILON, TemplateId, compute_dependency_consistency, compute_scs_v1_1,
-    is_ambiguous_margin, sanitize_factors,
+    LanguageState, LanguageStateV2, MeaningEngine, ModelConfig, OverallState, ProjectionEngine,
+    RealizationMode, ReasoningAxis, ScsInputs, SnapshotEngine, StructuredReasoningEngine,
+    StructuredReasoningInput, StructuredReasoningTrace, TEMPLATE_SELECTION_EPSILON, TemplateId,
+    ValidationError, canonical_srt_hash, compute_dependency_consistency, compute_scs_v1_1,
+    is_ambiguous_margin, normalize_realized_explanation_for_output, sanitize_factors,
+    validate_llm_output,
 };
 use semantic_dhm::{
     ConceptId, ConceptUnit, ConceptUnitV2, DEFAULT_L2_CONFIG, DerivedRequirement, L1Id, L2Config,
@@ -652,11 +654,11 @@ fn srt_overall_state_thresholds_follow_spec() {
     assert_eq!(ready.overall_state, OverallState::Ready);
 
     let partial = engine.build_srt(&StructuredReasoningInput {
-        source_text: "教育向け学習支援の設計で学校現場の運用に適用する".to_string(),
+        source_text: "教育向け学習支援の設計で学校現場の運用に適用する計画".to_string(),
         selected_objective: Some("教育向け最適化".to_string()),
-        requirement_count: 3,
+        requirement_count: 1,
         stability_score: 0.95,
-        ambiguity_score: 0.7,
+        ambiguity_score: 0.1,
         evidence_spans: vec!["教育向け".to_string()],
     });
     assert_eq!(partial.overall_state, OverallState::PartialReady);
@@ -670,6 +672,49 @@ fn srt_overall_state_thresholds_follow_spec() {
         evidence_spans: vec!["短い".to_string()],
     });
     assert_eq!(insufficient.overall_state, OverallState::Insufficient);
+}
+
+#[test]
+fn srt_ambiguity_score_formula_is_reflected_in_issues() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "大規模対応する予定".to_string(),
+        selected_objective: Some("性能改善と運用最適化".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.0,
+        evidence_spans: vec!["大規模対応する予定".to_string()],
+    });
+    // 大規模(0.1) + 対応(0.2) + する予定(0.15) = 0.45
+    // スコア閾値により AMBIGUOUS issue が生成されることを確認する。
+    let ambiguous_count = srt
+        .issues
+        .iter()
+        .filter(|i| i.issue_type == IssueType::Ambiguous)
+        .count();
+    assert!(ambiguous_count > 0);
+}
+
+#[test]
+fn srt_ambiguity_span_contains_quant_condition_reason() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "スケール可能で大規模対応する予定".to_string(),
+        selected_objective: Some("性能改善".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.0,
+        evidence_spans: vec!["スケール可能で大規模対応する予定".to_string()],
+    });
+    let has_quant = srt.issues.iter().any(|i| {
+        i.issue_type == IssueType::Ambiguous && i.reason.as_deref() == Some("定量条件未指定")
+    });
+    let has_condition = srt
+        .issues
+        .iter()
+        .any(|i| i.issue_type == IssueType::Ambiguous && i.reason.as_deref() == Some("条件未定義"));
+    assert!(has_quant);
+    assert!(has_condition);
 }
 
 #[test]
@@ -709,4 +754,251 @@ fn sanitize_factors_repairs_ids_and_dangling_dependencies() {
     assert!(stats.empty_id_fixes >= 1);
     assert!(stats.duplicate_id_fixes >= 1);
     assert!(stats.unknown_dependency_drops >= 1);
+}
+
+#[test]
+fn llm_cache_key_changes_when_temperature_changes() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "明確な要件と制約を定義する".to_string(),
+        selected_objective: Some("要件定義".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["要件定義".to_string()],
+    };
+    let mut cfg_a = ModelConfig::default();
+    cfg_a.temperature = 0.1;
+    let mut cfg_b = cfg_a.clone();
+    cfg_b.temperature = 0.2;
+
+    let a = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_a);
+    let b = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_b);
+    assert_ne!(a.llm_cache_key, b.llm_cache_key);
+}
+
+#[test]
+fn llm_cache_key_changes_when_model_name_changes() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "明確な要件と制約を定義する".to_string(),
+        selected_objective: Some("要件定義".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["要件定義".to_string()],
+    };
+    let mut cfg_a = ModelConfig::default();
+    cfg_a.model_name = "model-a".to_string();
+    let mut cfg_b = cfg_a.clone();
+    cfg_b.model_name = "model-b".to_string();
+
+    let a = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_a);
+    let b = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_b);
+    assert_ne!(a.llm_cache_key, b.llm_cache_key);
+}
+
+#[test]
+fn llm_cache_key_changes_when_prompt_version_changes() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "明確な要件と制約を定義する".to_string(),
+        selected_objective: Some("要件定義".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["要件定義".to_string()],
+    };
+    let mut cfg_a = ModelConfig::default();
+    cfg_a.system_prompt_version = "v1".to_string();
+    let mut cfg_b = cfg_a.clone();
+    cfg_b.system_prompt_version = "v2".to_string();
+
+    let a = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_a);
+    let b = engine.realize_with_model_config(&input, RealizationMode::LlmControlled, &cfg_b);
+    assert_ne!(a.llm_cache_key, b.llm_cache_key);
+}
+
+#[test]
+fn rounded_hash_treats_small_severity_delta_as_equal() {
+    let mut srt_a = StructuredReasoningTrace {
+        evaluation_version: "v1.0".to_string(),
+        input_digest: "abc".to_string(),
+        overall_state: OverallState::PartialReady,
+        strengths: vec![],
+        issues: vec![design_reasoning::SrtIssue {
+            issue_type: IssueType::Weak,
+            axis: ReasoningAxis::Constraint,
+            span: None,
+            reason: Some("x".to_string()),
+            severity: 0.6000001,
+        }],
+        consistency_warnings: vec![],
+        next_priority_axis: ReasoningAxis::Constraint,
+    };
+    let mut srt_b = srt_a.clone();
+    srt_b.issues[0].severity = 0.6000000;
+    srt_a.strengths = vec![design_reasoning::SrtStrength {
+        axis: ReasoningAxis::TargetUser,
+        evidence_span: "e".to_string(),
+        confidence: 0.5000001,
+    }];
+    srt_b.strengths = vec![design_reasoning::SrtStrength {
+        axis: ReasoningAxis::TargetUser,
+        evidence_span: "e".to_string(),
+        confidence: 0.5000000,
+    }];
+
+    assert_eq!(canonical_srt_hash(&srt_a), canonical_srt_hash(&srt_b));
+}
+
+#[test]
+fn validator_rejects_too_many_sentences() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "要件を明確にする".to_string(),
+        selected_objective: Some("要件定義".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["要件定義".to_string()],
+    });
+    let text = "a。b。c。d。e。f。";
+    let err = validate_llm_output(text, &srt).expect_err("must reject sentence overflow");
+    assert_eq!(err, ValidationError::TooManySentences);
+}
+
+#[test]
+fn validator_rejects_forbidden_numbers() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "要件を明確にする".to_string(),
+        selected_objective: Some("要件定義".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["要件定義".to_string()],
+    });
+    let err = validate_llm_output("three issues exist.", &srt).expect_err("must reject numbers");
+    assert_eq!(err, ValidationError::ContainsForbiddenNumber);
+}
+
+#[test]
+fn validator_rejects_axis_out_of_scope() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "十分に長い説明文で対象ユーザーを明示する。".to_string(),
+        selected_objective: Some("定義".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["説明".to_string()],
+    });
+    let text = "summary:\nSUCCESS_METRIC を定義。\nnext_action:\n対応。";
+    let err = validate_llm_output(text, &srt).expect_err("must reject external axis");
+    assert!(matches!(err, ValidationError::AxisOutOfScope(_)));
+}
+
+#[test]
+fn validator_rejects_unwanted_proposal_outside_next_action() {
+    let engine = StructuredReasoningEngine::default();
+    let srt = engine.build_srt(&StructuredReasoningInput {
+        source_text: "説明文で課題を明確化する".to_string(),
+        selected_objective: Some("定義".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["説明".to_string()],
+    });
+    let text = "summary:\nwe must adopt this.\nnext_action:\n対応。";
+    let err = validate_llm_output(text, &srt).expect_err("must reject proposal outside next_action");
+    assert_eq!(err, ValidationError::UnwantedProposalOutsideNextAction);
+}
+
+#[test]
+fn fallback_reason_is_set_when_llm_output_validation_fails() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "must 大規模".to_string(),
+        selected_objective: Some("設計最適化".to_string()),
+        requirement_count: 2,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["must 大規模".to_string()],
+    };
+    let result = engine.realize(&input, RealizationMode::LlmControlled);
+    assert_eq!(result.mode, RealizationMode::RuleBased);
+    assert_eq!(
+        result.fallback_reason,
+        Some("UnwantedProposalOutsideNextAction".to_string())
+    );
+}
+
+#[test]
+fn load_100_runs_is_stable_and_cache_hit_ratio_is_high() {
+    let engine = StructuredReasoningEngine::default();
+    engine.reset_llm_call_count();
+    let input = StructuredReasoningInput {
+        source_text: "十分に長い説明文で対象ユーザーと価値と制約を明示する。".to_string(),
+        selected_objective: Some("価値定義".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["価値定義".to_string()],
+    };
+
+    let mut hit_count = 0usize;
+    for _ in 0..100 {
+        let result = engine.realize(&input, RealizationMode::LlmControlled);
+        if result.cache_hit {
+            hit_count += 1;
+        }
+    }
+    let hit_ratio = hit_count as f64 / 100.0;
+    assert!(hit_ratio > 0.95);
+    assert_eq!(engine.llm_call_count(), 1);
+    assert_eq!(engine.cache_len(), 1);
+}
+
+#[test]
+fn summary_normalizer_clamps_to_100_chars() {
+    let long_summary = "設計は概ね整理されています。以下の点を明確にすると安定します。さらに補足として詳細背景を長く説明します。これは冗長な部分です。";
+    let normalized = normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
+        summary: long_summary.to_string(),
+        key_issues: vec!["課題があります。".to_string()],
+        next_action: "次の対応を整理します。".to_string(),
+    });
+    assert!(normalized.summary.chars().count() <= 100);
+}
+
+#[test]
+fn summary_normalizer_clamps_to_two_sentences() {
+    let normalized = normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
+        summary: "一文目です。二文目です。三文目です。".to_string(),
+        key_issues: vec!["課題があります。".to_string()],
+        next_action: "次の対応を整理します。".to_string(),
+    });
+    let sentence_count = normalized
+        .summary
+        .split(['。', '.', '!', '?'])
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .count();
+    assert!(sentence_count <= 2);
+}
+
+#[test]
+fn llm_and_rule_based_summary_style_is_aligned() {
+    let engine = StructuredReasoningEngine::default();
+    let input = StructuredReasoningInput {
+        source_text: "十分に長い説明文で対象ユーザーと価値と制約を明示する。".to_string(),
+        selected_objective: Some("価値定義".to_string()),
+        requirement_count: 3,
+        stability_score: 0.9,
+        ambiguity_score: 0.1,
+        evidence_spans: vec!["価値定義".to_string()],
+    };
+    let a = engine.realize(&input, RealizationMode::LlmControlled);
+    let b = engine.realize(&input, RealizationMode::RuleBased);
+    assert_eq!(a.output.summary, b.output.summary);
 }

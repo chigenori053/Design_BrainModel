@@ -20,7 +20,10 @@ pub use phase1_engine::{
 pub use projection_engine::ProjectionEngine;
 pub use snapshot_engine::{MeaningLayerSnapshotV2, SnapshotDiffV2, SnapshotEngine};
 pub use structured_reasoning::{
-    AxisCategory, IssueType, OverallState, RealizationMode, RealizedExplanation, ReasoningAxis,
-    StructuredExplanationResult, StructuredReasoningEngine, StructuredReasoningInput,
-    StructuredReasoningTrace, format_explanation, parse_realization_mode_from_env,
+    AxisCategory, IssueType, ModelConfig, OverallState, RealizationMode, RealizedExplanation,
+    ReasoningAxis, SrtIssue, SrtStrength, StructuredExplanationResult, StructuredReasoningEngine,
+    StructuredReasoningInput, StructuredReasoningTrace, ValidationError, canonical_srt_hash,
+    format_explanation, normalize_realized_explanation_for_output, normalize_summary_text,
+    llm_cache_key, model_version, parse_realization_mode_from_env, validate_llm_output,
+    validate_sentence_count,
 };
