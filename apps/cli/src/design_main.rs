@@ -1,1218 +1,1227 @@
-use std::ffi::OsStr;
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod pareto_eval;
 
-use design_reasoning::{
-    LanguageEngine, LanguageStateV2, TemplateId,
-};
-use hybrid_vm::{
-    ArtifactFormat, ConceptUnitV2, FeedbackAction, FeedbackEntry, HybridVM, InfoCategory, L1Id,
-    MeaningLayerSnapshotV2, SemanticError, SemanticUnitL1V2,
-};
+use std::collections::BTreeMap;
+use std::fs::File;
+use std::io::{BufRead, BufReader, BufWriter, Write};
+
+use agent_core::{Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
+use clap::{Parser, Subcommand};
+use design_reasoning::{Phase1Engine, ScsInputs};
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
 
-const CLI_VERSION: &str = "1.0";
+const CLI_VERSION: &str = "0.1.0";
+const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
+const PARETO_EPS: f64 = 1e-12;
 
-const EXIT_OK: i32 = 0;
-const EXIT_SEMANTIC: i32 = 1;
-const EXIT_IO: i32 = 2;
-const EXIT_INVALID_COMMAND: i32 = 3;
-const EXIT_SESSION_NOT_FOUND: i32 = 4;
-
-fn main() {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let mut opts = GlobalOptions::default();
-    
-    // Preliminary parse for global options to handle --json in errors
-    let mut cmd_args = Vec::new();
-    let mut i = 0;
-    while i < args.len() {
-        match args[i].as_str() {
-            "--json" => opts.json = true,
-            "--verbose" => opts.verbose = true,
-            "--quiet" => opts.quiet = true,
-            "--no-color" => opts.no_color = true,
-            "--session" if i + 1 < args.len() => {
-                opts.session = args[i+1].clone();
-                i += 1;
-            },
-            "--store" if i + 1 < args.len() => {
-                opts.store = PathBuf::from(&args[i+1]);
-                i += 1;
-            },
-            arg if arg.starts_with('-') => cmd_args.push(arg.to_string()),
-            arg => cmd_args.push(arg.to_string()),
-        }
-        i += 1;
-    }
-
-    let result = parse_command(&cmd_args).and_then(|cmd| {
-        let command_name = cmd.name();
-        dispatch_command(opts.clone(), cmd).map(|data| (command_name, data))
-    });
-
-    match result {
-        Ok((name, (output, human))) => {
-            if opts.quiet && !opts.json {
-                return;
-            }
-            print_success(opts.json, name, output, &human);
-            std::process::exit(EXIT_OK);
-        }
-        Err(err) => {
-            print_error(opts.json, err);
-        }
-    }
+#[derive(Parser, Debug)]
+#[command(name = "design", about = "Phase1 CLI", disable_version_flag = true)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
 }
 
-#[derive(Clone, Debug)]
-struct GlobalOptions {
-    json: bool,
-    verbose: bool,
-    quiet: bool,
-    session: String,
-    no_color: bool,
-    store: PathBuf,
+#[derive(Subcommand, Debug)]
+enum Commands {
+    Phase1Batch {
+        #[arg(long)]
+        input: String,
+        #[arg(long)]
+        output: String,
+        #[arg(long)]
+        seed: Option<u64>,
+    },
+    Phase1Single {
+        #[arg(long)]
+        text: String,
+        #[arg(long)]
+        case_id: Option<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        seed: Option<u64>,
+    },
+    Phase1Eval {
+        #[arg(long)]
+        input: String,
+    },
+    ParetoEval {
+        input: String,
+        #[arg(short = 'o', long = "out")]
+        out: String,
+        #[arg(long = "allow-normalized-out-of-range", default_value_t = false)]
+        allow_normalized_out_of_range: bool,
+    },
+    Search {
+        #[arg(long, default_value_t = 25)]
+        depth: usize,
+        #[arg(long, default_value_t = 5)]
+        beam: usize,
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long = "hv-guided", default_value_t = false)]
+        hv_guided: bool,
+    },
+    Version,
 }
 
-impl Default for GlobalOptions {
-    fn default() -> Self {
-        let env_store = std::env::var("DESIGN_STORE_DIR").ok();
-        Self {
-            json: false,
-            verbose: false,
-            quiet: false,
-            session: "default".to_string(),
-            no_color: false,
-            store: env_store
-                .map(PathBuf::from)
-                .unwrap_or_else(|| PathBuf::from(".design_store")),
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-enum Command {
-    Analyze { input: String },
-    Explain,
-    Adopt { draft_id: String },
-    Reject { draft_id: String },
-    Search { card_id: String, query: Option<String>, allow: bool },
-    Refine { card_id: String, text: String },
-    Clear,
-    Snapshot,
-    Diff,
-    Rebuild,
-    Simulate { target: u128, delta: f32, remove: bool },
-    Export { path: PathBuf, format: Option<ArtifactFormat> },
-    Import { path: PathBuf },
-    SessionList,
-    SessionSave,
-    SessionLoad { id: String },
-}
-
-impl Command {
-    fn name(&self) -> &'static str {
-        match self {
-            Command::Analyze { .. } => "analyze",
-            Command::Explain => "explain",
-            Command::Adopt { .. } => "adopt",
-            Command::Reject { .. } => "reject",
-            Command::Search { .. } => "search",
-            Command::Refine { .. } => "refine",
-            Command::Clear => "clear",
-            Command::Snapshot => "snapshot",
-            Command::Diff => "diff",
-            Command::Rebuild => "rebuild",
-            Command::Simulate { .. } => "simulate",
-            Command::Export { .. } => "export",
-            Command::Import { .. } => "import",
-            Command::SessionList => "session list",
-            Command::SessionSave => "session save",
-            Command::SessionLoad { .. } => "session load",
-        }
-    }
+#[derive(Debug, Deserialize)]
+struct InputCase {
+    case_id: Option<String>,
+    category: Option<String>,
+    text: Option<String>,
+    input: Option<String>,
+    input_text: Option<String>,
 }
 
 #[derive(Debug)]
-struct CliError {
-    code: i32,
-    command: String,
-    kind: String,
-    message: String,
-}
-
-impl CliError {
-    fn semantic(cmd: &str, err: SemanticError) -> Self {
-        Self {
-            code: EXIT_SEMANTIC,
-            command: cmd.to_string(),
-            kind: "SemanticError".to_string(),
-            message: format!("{err:?}"),
-        }
-    }
-
-    fn io(cmd: &str, err: std::io::Error) -> Self {
-        Self {
-            code: EXIT_IO,
-            command: cmd.to_string(),
-            kind: "IoError".to_string(),
-            message: err.to_string(),
-        }
-    }
-
-    fn invalid(message: impl Into<String>) -> Self {
-        Self {
-            code: EXIT_INVALID_COMMAND,
-            command: "unknown".to_string(),
-            kind: "InvalidCommand".to_string(),
-            message: message.into(),
-        }
-    }
-
-    fn session_missing(cmd: &str, id: &str) -> Self {
-        Self {
-            code: EXIT_SESSION_NOT_FOUND,
-            command: cmd.to_string(),
-            kind: "SessionNotFound".to_string(),
-            message: format!("session not found: {id}"),
-        }
-    }
-}
-
-fn parse_command(args: &[String]) -> Result<Command, CliError> {
-    let cmd = args.first().ok_or_else(|| CliError::invalid(help_text()))?;
-    
-    match cmd.as_str() {
-        "analyze" => {
-            let input = args.get(1).ok_or_else(|| CliError::invalid("analyze requires text or file path"))?;
-            Ok(Command::Analyze { input: input.clone() })
-        }
-        "explain" => Ok(Command::Explain),
-        "adopt" => {
-            let mut draft_id: Option<String> = None;
-            let mut i = 1usize;
-            while i < args.len() {
-                if args[i] == "--draft-id" && i + 1 < args.len() {
-                    draft_id = Some(args[i + 1].clone());
-                    i += 1;
-                }
-                i += 1;
-            }
-            let draft_id = draft_id.ok_or_else(|| CliError::invalid("adopt requires --draft-id <ID>"))?;
-            Ok(Command::Adopt { draft_id })
-        }
-        "reject" => {
-            let mut draft_id: Option<String> = None;
-            let mut i = 1usize;
-            while i < args.len() {
-                if args[i] == "--draft-id" && i + 1 < args.len() {
-                    draft_id = Some(args[i + 1].clone());
-                    i += 1;
-                }
-                i += 1;
-            }
-            let draft_id = draft_id.ok_or_else(|| CliError::invalid("reject requires --draft-id <ID>"))?;
-            Ok(Command::Reject { draft_id })
-        }
-        "search" => {
-            let mut card_id: Option<String> = None;
-            let mut query: Option<String> = None;
-            let mut allow = false;
-            let mut i = 1usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--card" if i + 1 < args.len() => {
-                        card_id = Some(args[i + 1].clone());
-                        i += 1;
-                    }
-                    "--query" if i + 1 < args.len() => {
-                        query = Some(args[i + 1].clone());
-                        i += 1;
-                    }
-                    "--allow" => allow = true,
-                    _ => {}
-                }
-                i += 1;
-            }
-            let card_id = card_id.ok_or_else(|| CliError::invalid("search requires --card <CARD_ID>"))?;
-            Ok(Command::Search { card_id, query, allow })
-        }
-        "refine" => {
-            let mut card_id: Option<String> = None;
-            let mut text: Option<String> = None;
-            let mut i = 1usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--card" if i + 1 < args.len() => {
-                        card_id = Some(args[i + 1].clone());
-                        i += 1;
-                    }
-                    "--text" if i + 1 < args.len() => {
-                        text = Some(args[i + 1].clone());
-                        i += 1;
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            let card_id = card_id.ok_or_else(|| CliError::invalid("refine requires --card <CARD_ID>"))?;
-            let text = text.ok_or_else(|| CliError::invalid("refine requires --text <DETAIL_TEXT>"))?;
-            Ok(Command::Refine { card_id, text })
-        }
-        "clear" => Ok(Command::Clear),
-        "snapshot" => Ok(Command::Snapshot),
-        "diff" => Ok(Command::Diff),
-        "rebuild" => Ok(Command::Rebuild),
-        "simulate" => {
-            let mut target: Option<u128> = None;
-            let mut delta: f32 = 0.0;
-            let mut remove = false;
-            let mut i = 1usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--target" if i + 1 < args.len() => {
-                        target = args[i + 1].parse::<u128>().ok();
-                        i += 1;
-                    }
-                    "--delta" if i + 1 < args.len() => {
-                        delta = args[i + 1]
-                            .parse::<f32>()
-                            .map_err(|_| CliError::invalid("simulate --delta requires float value"))?;
-                        i += 1;
-                    }
-                    "--remove" => {
-                        remove = true;
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-            let target = target.ok_or_else(|| CliError::invalid("simulate requires --target <L1_ID>"))?;
-            Ok(Command::Simulate { target, delta, remove })
-        }
-        "export" => {
-            let mut format: Option<ArtifactFormat> = None;
-            let mut out: Option<PathBuf> = None;
-            let mut i = 1usize;
-            while i < args.len() {
-                match args[i].as_str() {
-                    "--format" if i + 1 < args.len() => {
-                        format = Some(parse_artifact_format(&args[i + 1])?);
-                        i += 1;
-                    }
-                    "--out" if i + 1 < args.len() => {
-                        out = Some(PathBuf::from(&args[i + 1]));
-                        i += 1;
-                    }
-                    s if !s.starts_with('-') => {
-                        if out.is_none() {
-                            out = Some(PathBuf::from(s));
-                        }
-                    }
-                    _ => {}
-                }
-                i += 1;
-            }
-
-            let path = out.ok_or_else(|| {
-                CliError::invalid("export requires output path or --out <dir>")
-            })?;
-            Ok(Command::Export { path, format })
-        }
-        "import" => {
-            let path = args.get(1).ok_or_else(|| CliError::invalid("import requires input path"))?;
-            Ok(Command::Import { path: PathBuf::from(path) })
-        }
-        "session" => {
-            match args.get(1).map(|s| s.as_str()) {
-                Some("list") => Ok(Command::SessionList),
-                Some("save") => Ok(Command::SessionSave),
-                Some("load") => {
-                    let id = args.get(2).ok_or_else(|| CliError::invalid("session load requires id"))?;
-                    Ok(Command::SessionLoad { id: id.clone() })
-                }
-                _ => Err(CliError::invalid("session supports: list|save|load <id>")),
-            }
-        }
-        _ => Err(CliError::invalid(format!("unknown command: {cmd}"))),
-    }
-}
-
-fn dispatch_command(opts: GlobalOptions, cmd: Command) -> Result<(Value, String), CliError> {
-    ensure_store_dirs(&opts).map_err(|e| CliError::io(cmd.name(), e))?;
-
-    match cmd {
-        Command::Analyze { input } => cmd_analyze(opts, input),
-        Command::Explain => cmd_explain(opts),
-        Command::Adopt { draft_id } => cmd_adopt(opts, draft_id),
-        Command::Reject { draft_id } => cmd_reject(opts, draft_id),
-        Command::Search { card_id, query, allow } => cmd_search(opts, card_id, query, allow),
-        Command::Refine { card_id, text } => cmd_refine(opts, card_id, text),
-        Command::Clear => cmd_clear(opts),
-        Command::Snapshot => cmd_snapshot(opts),
-        Command::Diff => cmd_diff(opts),
-        Command::Rebuild => cmd_rebuild(opts),
-        Command::Simulate { target, delta, remove } => cmd_simulate(opts, target, delta, remove),
-        Command::Export { path, format } => cmd_export(opts, path, format),
-        Command::Import { path } => cmd_import(opts, path),
-        Command::SessionList => cmd_session_list(opts),
-        Command::SessionSave => cmd_session_save(opts),
-        Command::SessionLoad { id } => cmd_session_load(opts, id),
-    }
-}
-
-fn cmd_analyze(opts: GlobalOptions, input: String) -> Result<(Value, String), CliError> {
-    let text = resolve_input_text(&input).map_err(|e| CliError::io("analyze", e))?;
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("analyze", e))?;
-    vm.analyze_text(&text).map_err(|e| CliError::semantic("analyze", e))?;
-    vm.rebuild_l2_from_l1_v2().map_err(|e| CliError::semantic("analyze", e))?;
-    let snapshot = vm.snapshot_v2().map_err(|e| CliError::semantic("analyze", e))?;
-    store_snapshot_history(&opts, &snapshot).map_err(|e| CliError::io("analyze", e))?;
-
-    let l1_units = vm.all_l1_units_v2().map_err(|e| CliError::semantic("analyze", e))?;
-    let l2_units = vm.project_phase_a_v2().map_err(|e| CliError::semantic("analyze", e))?;
-    let graph = build_graph_json(&vm, &l1_units, &l2_units);
-    
-    let stability = mean_stability(&l2_units);
-    let ambiguity = mean_ambiguity(&l1_units);
-
-    let data = json!({
-        "l1_count": l1_units.len(),
-        "l2_count": l2_units.len(),
-        "stability_score": round6(stability),
-        "ambiguity_score": round6(ambiguity),
-        "graph": graph,
-        "snapshot": {
-            "l1_hash": snapshot.l1_hash.to_string(),
-            "l2_hash": snapshot.l2_hash.to_string(),
-            "version": snapshot.version
-        }
-    });
-
-    let human = format!(
-        "分析完了: L1ユニット {} 件 / L2コンセプト {} 件 を抽出しました。\n現在の設計安定度: {} (score: {:.2})\n曖昧性: {} (score: {:.2})",
-        l1_units.len(),
-        l2_units.len(),
-        stability_label(stability),
-        stability,
-        ambiguity_label(ambiguity),
-        ambiguity
-    );
-
-    Ok((data, human))
-}
-
-fn cmd_explain(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let vm = init_vm(&opts).map_err(|e| CliError::io("explain", e))?;
-    let l1_units = vm.all_l1_units_v2().map_err(|e| CliError::semantic("explain", e))?;
-    let l2_units = vm.project_phase_a_v2().map_err(|e| CliError::semantic("explain", e))?;
-    let remediations = detect_remediations(&l1_units, &l2_units);
-    let drafts = vm.generate_drafts().map_err(|e| CliError::semantic("explain", e))?;
-    let sorted_drafts = vm.pareto_optimize_drafts(drafts);
-    let provocation = sorted_drafts
-        .first()
-        .map(|d| d.prompt.clone())
-        .unwrap_or_else(|| "現時点で追加の設計誘発案はありません。".to_string());
-    let missing_info = vm
-        .extract_missing_information()
-        .map_err(|e| CliError::semantic("explain", e))?
-        .into_iter()
-        .map(|m| MissingInfoItem {
-            target_id: m.target_id.map(|id| format!("L1-{}", id.0)),
-            category: info_category_name(&m.category).to_string(),
-            prompt: m.prompt,
-            importance: round6(m.importance),
-        })
-        .collect::<Vec<_>>();
-
-    let objective = l1_units
-        .iter()
-        .find_map(|u| u.objective.clone());
-    let requirement_count = l2_units
-        .iter()
-        .map(|c| c.derived_requirements.len())
-        .sum::<usize>();
-    let stability = mean_stability(&l2_units);
-    let ambiguity = mean_ambiguity(&l1_units);
-
-    let state = LanguageStateV2 {
-        selected_objective: objective.clone(),
-        requirement_count,
-        stability_score: stability,
-        ambiguity_score: ambiguity,
-    };
-    let language = LanguageEngine::new();
-    let h = language.build_h_state(&state);
-    let template = language.select_template(&h).unwrap_or(TemplateId::Fallback);
-
-    let mut vm_mut = init_vm(&opts).map_err(|e| CliError::io("explain", e))?;
-    let cards = vm_mut.get_design_cards().unwrap_or_default();
-
-    let data = json!({
-        "schema_version": "1.6",
-        "optimization": "pareto_frontier",
-        "objective": objective,
-        "requirement_count": requirement_count,
-        "stability_label": stability_label(stability),
-        "ambiguity_label": ambiguity_label(ambiguity),
-        "template_id": template,
-        "remediations": remediations,
-        "missing_info": missing_info,
-        "drafts": sorted_drafts.iter().map(|d| {
-            json!({
-                "draft_id": d.draft_id,
-                "stability_impact": round6(d.stability_impact),
-                "prompt": d.prompt
-            })
-        }).collect::<Vec<_>>(),
-        "provocation": provocation,
-        "cards": cards,
-    });
-
-    let remediation_text = if remediations.is_empty() {
-        "推奨される改善アクション: なし".to_string()
-    } else {
-        let mut lines = vec!["推奨される改善アクション:".to_string()];
-        for item in &remediations {
-            lines.push(format!(
-                "- [{}] {} ({})",
-                item.target_id, item.message, item.action_type
-            ));
-        }
-        lines.join("\n")
-    };
-
-    let mut human = format!(
-        "【設計状態の診断】\n設計目標: {}\n{}\n\n{}\n{}\n\n(補足: 構造安定性={}, 曖昧性={}, 派生要件数={}件)",
-        objective.as_deref().unwrap_or("未指定"),
-        template.as_description(),
-        remediation_text,
-        format_missing_info_human(&missing_info),
-        stability_label(stability),
-        ambiguity_label(ambiguity),
-        requirement_count
-    );
-
-    if !cards.is_empty() {
-        human.push_str("\n\n【デザインカード】");
-        for card in cards {
-            human.push_str(&format!("\n ■ {}: {}\n    概要: {}\n    状態: {:?}", card.id, card.title, card.overview, card.status));
-            for detail in card.details {
-                human.push_str(&format!("\n      - {}", detail));
-            }
-        }
-    }
-
-    Ok((data, human))
-}
-
-fn cmd_adopt(opts: GlobalOptions, draft_id: String) -> Result<(Value, String), CliError> {
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("adopt", e))?;
-    vm.commit_draft(&draft_id)
-        .map_err(|e| CliError::semantic("adopt", e))?;
-    vm.record_feedback(&draft_id, FeedbackAction::Adopt);
-    vm.adjust_weights();
-    write_session_state(&opts, &vm).map_err(|e| CliError::io("adopt", e))?;
-    let l1_count = vm
-        .all_l1_units_v2()
-        .map_err(|e| CliError::semantic("adopt", e))?
-        .len();
-    let l2_units = vm
-        .project_phase_a_v2()
-        .map_err(|e| CliError::semantic("adopt", e))?;
-    let stability = mean_stability(&l2_units);
-    let data = json!({
-        "draft_id": draft_id,
-        "adopted": true,
-        "l1_count": l1_count,
-        "stability_score": round6(stability)
-    });
-    let human = format!("Draft '{}' を採用しました。L1={} / stability={:.3}", draft_id, l1_count, stability);
-    Ok((data, human))
-}
-
-fn cmd_reject(opts: GlobalOptions, draft_id: String) -> Result<(Value, String), CliError> {
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("reject", e))?;
-    let exists = vm
-        .generate_drafts()
-        .map_err(|e| CliError::semantic("reject", e))?
-        .iter()
-        .any(|d| d.draft_id == draft_id);
-    if !exists {
-        return Err(CliError::invalid(format!("draft not found: {draft_id}")));
-    }
-    vm.record_feedback(&draft_id, FeedbackAction::Reject);
-    vm.adjust_weights();
-    write_session_state(&opts, &vm).map_err(|e| CliError::io("reject", e))?;
-    let data = json!({
-        "draft_id": draft_id,
-        "rejected": true
-    });
-    let human = format!("Draft '{}' を棄却しました。次回提案の優先度に反映します。", draft_id);
-    Ok((data, human))
-}
-
-fn cmd_search(
-    opts: GlobalOptions,
-    card_id: String,
-    query: Option<String>,
-    allow: bool,
-) -> Result<(Value, String), CliError> {
-    if !allow {
-        return Err(CliError::invalid("search requires explicit permission via --allow"));
-    }
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("search", e))?;
-    let l2_id = parse_card_id(&card_id)?;
-    let has_gap = vm
-        .card_has_knowledge_gap(l2_id)
-        .map_err(|e| CliError::semantic("search", e))?;
-    if !has_gap {
-        let data = json!({
-            "card_id": card_id,
-            "grounded": false,
-            "reason": "knowledge gap not detected"
-        });
-        return Ok((data, "知識補完は不要と判定されました。".to_string()));
-    }
-    let q = query.unwrap_or_else(|| format!("card {}", card_id));
-    let grounded = vm
-        .run_grounding_search(l2_id, &q)
-        .map_err(|e| CliError::semantic("search", e))?;
-    write_session_state(&opts, &vm).map_err(|e| CliError::io("search", e))?;
-    let data = json!({
-        "card_id": card_id,
-        "grounded": true,
-        "query": q,
-        "results": grounded
-    });
-    let human = format!("カード {} の知識補完を実行しました。{} 件反映。", card_id, data["results"].as_array().map(|a| a.len()).unwrap_or(0));
-    Ok((data, human))
-}
-
-fn cmd_refine(opts: GlobalOptions, card_id: String, text: String) -> Result<(Value, String), CliError> {
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("refine", e))?;
-    let l2_id = parse_card_id(&card_id)?;
-    vm.refine_l2_detail(l2_id, &text)
-        .map_err(|e| CliError::semantic("refine", e))?;
-    let l2_units = vm
-        .project_phase_a_v2()
-        .map_err(|e| CliError::semantic("refine", e))?;
-    let stability = mean_stability(&l2_units);
-    write_session_state(&opts, &vm).map_err(|e| CliError::io("refine", e))?;
-    let data = json!({
-        "card_id": card_id,
-        "refined": true,
-        "stability_score": round6(stability)
-    });
-    let human = format!("カード {} を更新しました。stability={:.3}", card_id, stability);
-    Ok((data, human))
-}
-
-fn cmd_snapshot(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let vm = init_vm(&opts).map_err(|e| CliError::io("snapshot", e))?;
-    let snapshot = vm.snapshot_v2().map_err(|e| CliError::semantic("snapshot", e))?;
-    let data = json!({
-        "l1_hash": snapshot.l1_hash.to_string(),
-        "l2_hash": snapshot.l2_hash.to_string(),
-        "version": snapshot.version,
-        "timestamp_ms": snapshot.timestamp_ms
-    });
-    let human = format!("Snapshot: L1={}, L2={}, Version={}", snapshot.l1_hash, snapshot.l2_hash, snapshot.version);
-    Ok((data, human))
-}
-
-fn cmd_clear(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("clear", e))?;
-    vm.clear_context().map_err(|e| CliError::semantic("clear", e))?;
-    let data = json!({
-        "session": opts.session,
-        "cleared": true
-    });
-    let human = format!("セッション '{}' の文脈を初期化しました。", opts.session);
-    Ok((data, human))
-}
-
-fn cmd_diff(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let vm = init_vm(&opts).map_err(|e| CliError::io("diff", e))?;
-    let current = vm.snapshot_v2().map_err(|e| CliError::semantic("diff", e))?;
-    let previous = load_previous_snapshot(&opts, &opts.session).ok_or_else(|| CliError::session_missing("diff", &opts.session))?;
-    let diff = vm.compare_snapshots_v2(&previous, &current);
-
-    let data = json!({
-        "l1_changed": diff.l1_changed,
-        "l2_changed": diff.l2_changed,
-        "version_changed": diff.version_changed
-    });
-    let human = format!(
-        "差分分析結果:\n  L1変更: {}\n  L2変更: {}\n  バージョン変更: {}",
-        diff.l1_changed, diff.l2_changed, diff.version_changed
-    );
-    Ok((data, human))
-}
-
-fn cmd_rebuild(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let mut vm = init_vm(&opts).map_err(|e| CliError::io("rebuild", e))?;
-    let concepts = vm.rebuild_l2_from_l1_v2().map_err(|e| CliError::semantic("rebuild", e))?;
-    let snapshot = vm.snapshot_v2().map_err(|e| CliError::semantic("rebuild", e))?;
-    store_snapshot_history(&opts, &snapshot).map_err(|e| CliError::io("rebuild", e))?;
-
-    let data = json!({
-        "l2_count": concepts.len(),
-        "snapshot": {
-            "l1_hash": snapshot.l1_hash.to_string(),
-            "l2_hash": snapshot.l2_hash.to_string(),
-            "version": snapshot.version
-        }
-    });
-    let human = format!("再構築完了: L2コンセプトを {} 件生成しました。", concepts.len());
-    Ok((data, human))
-}
-
-fn cmd_simulate(opts: GlobalOptions, target: u128, delta: f32, remove: bool) -> Result<(Value, String), CliError> {
-    let vm = init_vm(&opts).map_err(|e| CliError::io("simulate", e))?;
-    let target_id = L1Id(target);
-    let report = if remove {
-        vm.simulate_removal(target_id)
-    } else {
-        vm.simulate_perturbation(target_id, delta)
-    }
-    .map_err(|e| CliError::semantic("simulate", e))?;
-    let blast = vm.evaluate_blast_radius(&report);
-
-    let impact_summary = json!({
-        "stability_delta": round6(report.simulated_objectives.f_struct - report.original_objectives.f_struct),
-        "risk_delta": round6(report.simulated_objectives.f_risk - report.original_objectives.f_risk),
-        "field_delta": round6(report.simulated_objectives.f_field - report.original_objectives.f_field),
-        "shape_delta": round6(report.simulated_objectives.f_shape - report.original_objectives.f_shape)
-    });
-
-    let affected_concepts = report
-        .affected_concepts
-        .iter()
-        .map(|c| {
-            json!({
-                "id": format!("L2-{}", c.concept_id.0),
-                "original_stability": round6(c.original_stability),
-                "simulated_stability": round6(c.simulated_stability),
-                "stability_change": round6(c.simulated_stability - c.original_stability)
-            })
-        })
-        .collect::<Vec<_>>();
-
-    let data = json!({
-        "schema_version": "1.3",
-        "target": format!("L1-{}", target),
-        "impact_summary": impact_summary,
-        "affected_concepts": affected_concepts,
-        "blast_radius": {
-            "coverage": round6(blast.coverage),
-            "intensity": round6(blast.intensity),
-            "structural_risk": round6(blast.structural_risk),
-            "total_score": round6(blast.total_score)
-        }
-    });
-
-    let human = format!(
-        "Simulation complete: target=L1-{target}, affected={} concepts, blast_radius={:.3}",
-        report.affected_concepts.len(),
-        blast.total_score
-    );
-    Ok((data, human))
-}
-
-fn cmd_export(
-    opts: GlobalOptions,
-    out_path: PathBuf,
-    format: Option<ArtifactFormat>,
-) -> Result<(Value, String), CliError> {
-    let vm = init_vm(&opts).map_err(|e| CliError::io("export", e))?;
-    if let Some(fmt) = format {
-        fs::create_dir_all(&out_path).map_err(|e| CliError::io("export", e))?;
-        let artifacts = vm
-            .generate_artifacts(fmt)
-            .map_err(|e| CliError::semantic("export", e))?;
-        let mut files = Vec::new();
-        for artifact in artifacts {
-            let full_path = out_path.join(&artifact.file_name);
-            fs::write(&full_path, artifact.content).map_err(|e| CliError::io("export", e))?;
-            files.push(full_path.to_string_lossy().to_string());
-        }
-        let format_name = artifact_format_name(fmt);
-        let data = json!({
-            "format": format_name,
-            "output_dir": out_path.to_string_lossy(),
-            "files": files
-        });
-        let human = format!(
-            "成果物エクスポート完了: format={}, files={} ({})",
-            format_name,
-            data["files"].as_array().map(|a| a.len()).unwrap_or(0),
-            out_path.display()
-        );
-        return Ok((data, human));
-    }
-
-    let export = build_session_json(&opts, &vm).map_err(|e| CliError::semantic("export", e))?;
-    let raw = serde_json::to_string_pretty(&export)
-        .map_err(|e| CliError::invalid(format!("serialize failed: {e}")))?;
-    fs::write(&out_path, raw).map_err(|e| CliError::io("export", e))?;
-
-    let data = json!({ "path": out_path.to_string_lossy() });
-    let human = format!("エクスポート完了: {}", out_path.display());
-    Ok((data, human))
-}
-
-fn cmd_import(opts: GlobalOptions, in_path: PathBuf) -> Result<(Value, String), CliError> {
-    let raw = fs::read_to_string(&in_path).map_err(|e| CliError::io("import", e))?;
-    let imported: SessionJsonV1 = serde_json::from_str(&raw).map_err(|e| CliError::invalid(format!("invalid session json: {e}")))?;
-
-    let target = session_file_path(&opts, &opts.session);
-    fs::write(&target, raw).map_err(|e| CliError::io("import", e))?;
-    write_active_session(&opts, &opts.session).map_err(|e| CliError::io("import", e))?;
-
-    let data = json!({
-        "session_id": opts.session,
-        "path": target.to_string_lossy(),
-        "snapshot": imported.snapshot
-    });
-    let human = format!("インポート完了: セッション '{}' を読み込みました。", opts.session);
-    Ok((data, human))
-}
-
-fn cmd_session_list(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let mut sessions = Vec::new();
-    let mut human = String::from("利用可能なセッション一覧:\n");
-    if let Ok(entries) = fs::read_dir(&opts.store) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if let Some(name) = path.file_name().and_then(OsStr::to_str) {
-                if name.starts_with("session_") && name.ends_with(".json") {
-                    let id = name.trim_start_matches("session_").trim_end_matches(".json").to_string();
-                    let metadata = fs::metadata(&path).ok();
-                    let last_modified = metadata.and_then(|m| m.modified().ok())
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-                        .map(|d| d.as_millis() as u64)
-                        .unwrap_or(0);
-                    
-                    sessions.push(json!({
-                        "id": id,
-                        "created_at": last_modified,
-                        "last_modified": last_modified
-                    }));
-                    human.push_str(&format!("  - {}\n", id));
-                }
-            }
-        }
-    }
-    Ok((json!({ "sessions": sessions }), human))
-}
-
-fn cmd_session_save(opts: GlobalOptions) -> Result<(Value, String), CliError> {
-    let out = session_file_path(&opts, &opts.session);
-    let vm = init_vm(&opts).map_err(|e| CliError::io("session save", e))?;
-    let export = build_session_json(&opts, &vm).map_err(|e| CliError::semantic("session save", e))?;
-
-    let raw = serde_json::to_string_pretty(&export).map_err(|e| CliError::invalid(format!("serialize failed: {e}")))?;
-    fs::write(&out, raw).map_err(|e| CliError::io("session save", e))?;
-    write_active_session(&opts, &opts.session).map_err(|e| CliError::io("session save", e))?;
-
-    let data = json!({
-        "session_id": opts.session,
-        "path": out.to_string_lossy(),
-        "snapshot": export.snapshot
-    });
-    let human = format!("セッション '{}' を保存しました。", opts.session);
-    Ok((data, human))
-}
-
-fn cmd_session_load(mut opts: GlobalOptions, id: String) -> Result<(Value, String), CliError> {
-    let path = session_file_path(&opts, &id);
-    if !path.exists() {
-        return Err(CliError::session_missing("session load", &id));
-    }
-    let raw = fs::read_to_string(&path).map_err(|e| CliError::io("session load", e))?;
-    let imported: SessionJsonV1 = serde_json::from_str(&raw).map_err(|e| CliError::invalid(format!("invalid session: {e}")))?;
-    
-    opts.session = id.clone();
-    write_active_session(&opts, &id).map_err(|e| CliError::io("session load", e))?;
-
-    let data = json!({
-        "session_id": id,
-        "snapshot": imported.snapshot
-    });
-    let human = format!("セッション '{}' を読み込みました。", id);
-    Ok((data, human))
-}
-
-// Helpers
-
-fn resolve_input_text(input: &str) -> std::io::Result<String> {
-    let path = Path::new(input);
-    if path.exists() && path.is_file() {
-        fs::read_to_string(path)
-    } else {
-        Ok(input.to_string())
-    }
-}
-
-fn init_vm(opts: &GlobalOptions) -> std::io::Result<HybridVM> {
-    let vm_store = opts.store.join(format!("session_{}", opts.session)).join("vm");
-    fs::create_dir_all(&vm_store)?;
-    let mut vm = HybridVM::for_cli_storage(vm_store)?;
-    let session_path = session_file_path(opts, &opts.session);
-    if session_path.exists() {
-        if let Ok(raw) = fs::read_to_string(&session_path) {
-            if let Ok(saved) = serde_json::from_str::<SessionJsonV1>(&raw) {
-                vm.load_feedback_entries(saved.feedback_entries);
-                vm.load_l2_grounding(saved.l2_grounding);
-                vm.load_l2_refinements(saved.l2_refinements);
-            }
-        }
-    }
-    Ok(vm)
-}
-
-fn ensure_store_dirs(opts: &GlobalOptions) -> std::io::Result<()> {
-    fs::create_dir_all(&opts.store)?;
-    let vm_store = opts.store.join(format!("session_{}", opts.session)).join("vm");
-    fs::create_dir_all(vm_store)
-}
-
-fn session_file_path(opts: &GlobalOptions, session: &str) -> PathBuf {
-    opts.store.join(format!("session_{session}.json"))
-}
-
-fn write_active_session(opts: &GlobalOptions, session: &str) -> std::io::Result<()> {
-    fs::write(opts.store.join("active_session"), session)
-}
-
-fn store_snapshot_history(opts: &GlobalOptions, snapshot: &MeaningLayerSnapshotV2) -> std::io::Result<()> {
-    let current_path = opts.store.join(format!("snapshot_current_{}.json", opts.session));
-    let prev_path = opts.store.join(format!("snapshot_prev_{}.json", opts.session));
-    if current_path.exists() {
-        let _ = fs::copy(&current_path, &prev_path);
-    }
-    let raw = serde_json::to_string_pretty(snapshot).unwrap();
-    fs::write(current_path, raw)
-}
-
-fn load_previous_snapshot(opts: &GlobalOptions, session: &str) -> Option<MeaningLayerSnapshotV2> {
-    let path = opts.store.join(format!("snapshot_prev_{session}.json"));
-    let raw = fs::read_to_string(path).ok()?;
-    serde_json::from_str(&raw).ok()
-}
-
-fn print_success(json_mode: bool, command: &str, data: Value, human: &str) {
-    if json_mode {
-        let response = json!({
-            "status": "ok",
-            "version": CLI_VERSION,
-            "command": command,
-            "data": data,
-            "error": null
-        });
-        println!("{}", serde_json::to_string_pretty(&response).unwrap());
-    } else {
-        println!("{human}");
-    }
-}
-
-fn print_error(json_mode: bool, err: CliError) {
-    if json_mode {
-        let response = json!({
-            "status": "error",
-            "version": CLI_VERSION,
-            "command": err.command,
-            "data": null,
-            "error": {
-                "code": err.code,
-                "type": err.kind,
-                "message": err.message
-            }
-        });
-        eprintln!("{}", serde_json::to_string_pretty(&response).unwrap());
-    } else {
-        eprintln!("Error: {}", err.message);
-    }
-    std::process::exit(err.code);
-}
-
-fn mean_stability(l2_units: &[ConceptUnitV2]) -> f64 {
-    if l2_units.is_empty() { 0.0 }
-    else { l2_units.iter().map(|u| u.stability_score).sum::<f64>() / l2_units.len() as f64 }
-}
-
-fn mean_ambiguity(l1_units: &[SemanticUnitL1V2]) -> f64 {
-    if l1_units.is_empty() { 1.0 }
-    else { l1_units.iter().map(|u| u.ambiguity_score).sum::<f64>() / l1_units.len() as f64 }
-}
-
-fn stability_label(score: f64) -> &'static str {
-    if score > 0.85 { "安定" } else if score >= 0.6 { "概ね安定" } else { "不安定" }
-}
-
-fn ambiguity_label(score: f64) -> &'static str {
-    if score > 0.7 { "不明確" } else if score >= 0.4 { "部分的に不明確" } else { "明確" }
-}
-
-fn round6(v: f64) -> f64 { (v * 1_000_000.0).round() / 1_000_000.0 }
-
-#[derive(Clone, Debug, Serialize)]
-struct RemediationItem {
-    id: String,
-    target_id: String,
-    priority: String,
-    issue: String,
-    message: String,
-    action_type: String,
-}
-
-#[derive(Clone, Debug, Serialize)]
-struct MissingInfoItem {
-    target_id: Option<String>,
+struct ResolvedCase {
+    case_id: String,
     category: String,
-    prompt: String,
-    importance: f64,
+    text: String,
 }
 
-fn info_category_name(category: &InfoCategory) -> &'static str {
-    match category {
-        InfoCategory::Constraint => "constraint",
-        InfoCategory::Boundary => "boundary",
-        InfoCategory::Metric => "metric",
-        InfoCategory::Objective => "objective",
-    }
-}
-
-fn format_missing_info_human(items: &[MissingInfoItem]) -> String {
-    if items.is_empty() {
-        return "不足情報の問いかけ: なし".to_string();
-    }
-    let mut lines = vec!["不足情報の問いかけ:".to_string()];
-    for item in items {
-        let target = item.target_id.clone().unwrap_or_else(|| "global".to_string());
-        lines.push(format!(
-            "- [{}] {} (importance={:.2}, category={})",
-            target, item.prompt, item.importance, item.category
-        ));
-    }
-    lines.join("\n")
-}
-
-fn detect_remediations(l1_units: &[SemanticUnitL1V2], l2_units: &[ConceptUnitV2]) -> Vec<RemediationItem> {
-    let mut out = Vec::new();
-    let mut seq = 1usize;
-
-    for l1 in l1_units {
-        if l1.ambiguity_score > 0.7 {
-            out.push(RemediationItem {
-                id: format!("REM-{seq:03}"),
-                target_id: format!("L1-{}", l1.id.0),
-                priority: "high".to_string(),
-                issue: "high_ambiguity".to_string(),
-                message: "要件が抽象的です。数値化・境界条件の明示で具体化してください。".to_string(),
-                action_type: "refine_text".to_string(),
-            });
-            seq += 1;
-        }
-    }
-
-    for l2 in l2_units {
-        let has_pos = l2.derived_requirements.iter().any(|r| r.strength > 0.0);
-        let has_neg = l2.derived_requirements.iter().any(|r| r.strength < 0.0);
-        if has_pos && has_neg {
-            out.push(RemediationItem {
-                id: format!("REM-{seq:03}"),
-                target_id: format!("L2-{}", l2.id.0),
-                priority: "high".to_string(),
-                issue: "l2_conflict".to_string(),
-                message: "相反する要件が混在しています。優先順位の明確化またはモジュール分離を検討してください。".to_string(),
-                action_type: "resolve_tradeoff".to_string(),
-            });
-            seq += 1;
-        }
-    }
-
-    let avg_links = if l2_units.is_empty() {
-        0.0
-    } else {
-        l2_units.iter().map(|u| u.causal_links.len() as f64).sum::<f64>() / l2_units.len() as f64
-    };
-    for l2 in l2_units {
-        if avg_links > 0.0 && (l2.causal_links.len() as f64) >= avg_links * 2.0 {
-            out.push(RemediationItem {
-                id: format!("REM-{seq:03}"),
-                target_id: format!("L2-{}", l2.id.0),
-                priority: "medium".to_string(),
-                issue: "coupling_hub".to_string(),
-                message: "因果リンクが集中しています。ハブ機能の分割を検討してください。".to_string(),
-                action_type: "split_hub".to_string(),
-            });
-            seq += 1;
-        }
-    }
-
-    out
-}
-
-fn build_graph_json(vm: &HybridVM, l1_units: &[SemanticUnitL1V2], l2_units: &[ConceptUnitV2]) -> Value {
-    let mut nodes = Vec::new();
-    let mut edges = Vec::new();
-
-    for l1 in l1_units {
-        nodes.push(json!({
-            "id": format!("L1-{}", l1.id.0),
-            "type": "L1",
-            "label": format!("L1-{}", l1.id.0),
-            "score": round6(l1.ambiguity_score)
-        }));
-    }
-
-    let mut concept_l1_refs = std::collections::BTreeMap::<u64, Vec<u128>>::new();
-    for l2 in l2_units {
-        nodes.push(json!({
-            "id": format!("L2-{}", l2.id.0),
-            "type": "L2",
-            "label": format!("L2-{}", l2.id.0),
-            "score": round6(l2.stability_score)
-        }));
-        if let Some(concept) = vm.get_concept(l2.id) {
-            let refs = concept.l1_refs.iter().map(|id| id.0).collect::<Vec<_>>();
-            concept_l1_refs.insert(l2.id.0, refs.clone());
-            for l1_id in refs {
-                edges.push(json!({
-                    "from": format!("L1-{l1_id}"),
-                    "to": format!("L2-{}", l2.id.0),
-                    "type": "mapping"
-                }));
-            }
-        }
-    }
-
-    for src in l2_units {
-        let Some(src_refs) = concept_l1_refs.get(&src.id.0) else {
-            continue;
-        };
-        for link in &src.causal_links {
-            for dst in l2_units {
-                if src.id == dst.id {
-                    continue;
-                }
-                let Some(dst_refs) = concept_l1_refs.get(&dst.id.0) else {
-                    continue;
-                };
-                if src_refs.contains(&link.from.0) && dst_refs.contains(&link.to.0) {
-                    edges.push(json!({
-                        "from": format!("L2-{}", src.id.0),
-                        "to": format!("L2-{}", dst.id.0),
-                        "type": "causal",
-                        "weight": round6(link.weight)
-                    }));
-                }
-            }
-        }
-    }
-
-    json!({
-        "nodes": nodes,
-        "edges": edges
-    })
-}
-
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
-}
-
-fn help_text() -> String {
-    "design [OPTIONS] <COMMAND>\nCommands: analyze, explain, adopt, reject, search --card <L2-ID> [--query <text>] --allow, refine --card <L2-ID> --text <detail>, clear, snapshot, diff, rebuild, simulate, export [--format rust|sql|mermaid --out <dir>], import, session list/save/load".to_string()
-}
-
-#[derive(Serialize, Deserialize)]
-struct SessionJsonV1 {
-    schema_version: String,
-    snapshot_version: u16,
-    id: String,
-    created_at: u64,
-    last_modified: u64,
-    l1_units: Vec<SemanticUnitL1V2>,
-    l2_units: Vec<ConceptUnitV2>,
-    snapshot: SnapshotBrief,
+#[derive(Debug, Serialize, Deserialize)]
+struct Phase1RawRow {
+    case_id: String,
+    category: String,
     #[serde(default)]
-    feedback_entries: Vec<FeedbackEntry>,
+    cls: f64,
     #[serde(default)]
-    l2_grounding: Vec<(u64, Vec<String>)>,
+    scs: f64,
     #[serde(default)]
-    l2_refinements: Vec<(u64, Vec<String>)>,
+    completeness: f64,
+    #[serde(default)]
+    ambiguity_mean: f64,
+    #[serde(default)]
+    inconsistency: f64,
+    #[serde(default)]
+    dependency_consistency: f64,
+    #[serde(default)]
+    question_count: usize,
+    #[serde(default)]
+    revision_score: f64,
+    #[serde(default)]
+    revision_count: usize,
+    #[serde(default)]
+    phase2_triggered: bool,
+    #[serde(default)]
+    objective_legacy: Option<LegacyObjectiveVector>,
 }
 
-#[derive(Serialize, Deserialize)]
-struct SnapshotBrief {
-    l1_hash: String,
-    l2_hash: String,
-    version: u16,
+#[derive(Debug, Clone, Copy)]
+struct FiveW2HFlags {
+    who: bool,
+    what: bool,
+    why: bool,
+    where_: bool,
+    when_: bool,
+    how: bool,
+    how_much: bool,
 }
 
-fn build_session_json(opts: &GlobalOptions, vm: &HybridVM) -> Result<SessionJsonV1, SemanticError> {
-    let snapshot = vm.snapshot_v2()?;
-    let l1_units = vm.all_l1_units_v2()?;
-    let l2_units = vm.project_phase_a_v2()?;
-    let now = now_ms();
-    Ok(SessionJsonV1 {
-        schema_version: "1.0".to_string(),
-        snapshot_version: snapshot.version,
-        id: opts.session.clone(),
-        created_at: now,
-        last_modified: now,
-        l1_units,
-        l2_units,
-        snapshot: SnapshotBrief {
-            l1_hash: snapshot.l1_hash.to_string(),
-            l2_hash: snapshot.l2_hash.to_string(),
-            version: snapshot.version,
-        },
-        feedback_entries: vm.feedback_entries(),
-        l2_grounding: vm.export_l2_grounding(),
-        l2_refinements: vm.export_l2_refinements(),
-    })
+#[derive(Debug, Clone, Copy)]
+struct MissingSlots {
+    missing_5w2h_slots: u8,
+    flags: FiveW2HFlags,
 }
 
-fn write_session_state(opts: &GlobalOptions, vm: &HybridVM) -> std::io::Result<()> {
-    let out = session_file_path(opts, &opts.session);
-    let export = build_session_json(opts, vm)
-        .map_err(|e| std::io::Error::other(format!("{e:?}")))?;
-    let raw = serde_json::to_string_pretty(&export)
-        .map_err(|e| std::io::Error::other(e.to_string()))?;
-    fs::write(&out, raw)?;
-    write_active_session(opts, &opts.session)?;
+#[derive(Debug, Serialize)]
+struct EvalSummary {
+    count: usize,
+    avg_cls: f64,
+    avg_questions: f64,
+    frontier_size: usize,
+    frontier_hash: String,
+    frontier_hash_consistent: bool,
+    frontier_hypervolume: f64,
+    objective_correlation_matrix: [[f64; 4]; 4],
+    frontier_objective_mean: [f64; 4],
+    frontier_objective_variance: [f64; 4],
+    domination_count_histogram: BTreeMap<usize, usize>,
+    objective_vector_spec_status: &'static str,
+    runtime_binding: &'static str,
+    status: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+struct ObjectiveVectorV1_1 {
+    raw: [f64; 4],
+    normalized: [f64; 4],
+    clamped: [f64; 4],
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
+struct LegacyObjectiveVector {
+    structural_integrity: f64,
+    cognitive_stability: f64,
+    revision_pressure: f64,
+    exploration_readiness: f64,
+}
+
+#[derive(Debug, Clone)]
+struct ObjectiveCase {
+    case_id: String,
+    category: String,
+    objective: ObjectiveVectorV1_1,
+}
+
+fn main() {
+    if let Err(err) = run() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), String> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Phase1Batch {
+            input,
+            output,
+            seed,
+        } => run_phase1_batch(&input, &output, seed),
+        Commands::Phase1Single {
+            text,
+            case_id,
+            category,
+            seed,
+        } => run_phase1_single(&text, case_id, category, seed),
+        Commands::Phase1Eval { input } => run_phase1_eval(&input),
+        Commands::ParetoEval {
+            input,
+            out,
+            allow_normalized_out_of_range,
+        } => pareto_eval::run_pareto_eval(&input, &out, allow_normalized_out_of_range),
+        Commands::Search {
+            depth,
+            beam,
+            seed,
+            hv_guided,
+        } => run_search(depth, beam, seed, hv_guided),
+        Commands::Version => {
+            println!("design-cli {CLI_VERSION}");
+            println!("engine: {}", Phase1Engine::ENGINE_VERSION);
+            Ok(())
+        }
+    }
+}
+
+fn run_phase1_batch(input: &str, output: &str, seed: Option<u64>) -> Result<(), String> {
+    println!("PHASE1_RUNTIME_BINDING: {RUNTIME_BINDING}");
+    let cases = load_cases(input)?;
+    let seed = seed.unwrap_or(42);
+    let base_rows = run_engine(seed)?;
+    let engine = Phase1Engine;
+    let debug_5w2h = std::env::var("PHASE1_DEBUG_5W2H_TEMP")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let debug_dep_temp = std::env::var("PHASE1_TEMP_DEP_STABILIZE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+
+    let file = File::create(output).map_err(|e| format!("failed to create output: {e}"))?;
+    let mut writer = BufWriter::new(file);
+
+    for (idx, case) in cases.iter().enumerate() {
+        let base = &base_rows[idx % base_rows.len()];
+        let (row, missing_slots) = map_to_output_row(case, base, &engine);
+        if debug_5w2h && seed == 42 && idx < 3 {
+            eprintln!(
+                "[5W2H_TEMP] case_id={} missing={} flags=who:{} what:{} why:{} where:{} when:{} how:{} how_much:{}",
+                case.case_id,
+                missing_slots.missing_5w2h_slots,
+                missing_slots.flags.who,
+                missing_slots.flags.what,
+                missing_slots.flags.why,
+                missing_slots.flags.where_,
+                missing_slots.flags.when_,
+                missing_slots.flags.how,
+                missing_slots.flags.how_much
+            );
+        }
+        if debug_dep_temp && seed == 42 && idx < 3 {
+            eprintln!(
+                "[DEP_TEMP] case_id={} inconsistency={} dep={}",
+                case.case_id, row.inconsistency, row.dependency_consistency
+            );
+        }
+        serde_json::to_writer(&mut writer, &row)
+            .map_err(|e| format!("failed to write output row: {e}"))?;
+        writer
+            .write_all(b"\n")
+            .map_err(|e| format!("failed to write newline: {e}"))?;
+    }
+    writer
+        .flush()
+        .map_err(|e| format!("failed to flush output: {e}"))?;
     Ok(())
 }
 
-fn parse_artifact_format(raw: &str) -> Result<ArtifactFormat, CliError> {
-    match raw {
-        "rust" => Ok(ArtifactFormat::Rust),
-        "sql" => Ok(ArtifactFormat::Sql),
-        "mermaid" => Ok(ArtifactFormat::Mermaid),
-        _ => Err(CliError::invalid(
-            "invalid format. expected one of: rust|sql|mermaid",
-        )),
+fn run_phase1_single(
+    text: &str,
+    case_id: Option<String>,
+    category: Option<String>,
+    seed: Option<u64>,
+) -> Result<(), String> {
+    let seed = seed.unwrap_or(42);
+    let base_rows = run_engine(seed)?;
+    let engine = Phase1Engine;
+    let case = ResolvedCase {
+        case_id: case_id.unwrap_or_else(|| "single-0001".to_string()),
+        category: category.unwrap_or_else(|| "single".to_string()),
+        text: text.to_string(),
+    };
+    let (row, _) = map_to_output_row(&case, &base_rows[0], &engine);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&row).map_err(|e| format!("json serialize failed: {e}"))?
+    );
+    Ok(())
+}
+
+fn run_phase1_eval(input: &str) -> Result<(), String> {
+    let rows = load_output_rows(input)?;
+    if rows.is_empty() {
+        return Err("evaluation input is empty".to_string());
+    }
+    let count = rows.len();
+    let avg_cls = rows.iter().map(|r| r.cls).sum::<f64>() / count as f64;
+    let avg_questions = rows.iter().map(|r| r.question_count as f64).sum::<f64>() / count as f64;
+    let objective_cases_raw = rows
+        .iter()
+        .map(|r| ObjectiveCase {
+            case_id: r.case_id.clone(),
+            category: r.category.clone(),
+            objective: if let Some(legacy) = r.objective_legacy {
+                legacy_objective_to_v11(legacy)
+            } else {
+                objective_vector_v11_from_phase1_row(r)
+            },
+        })
+        .collect::<Vec<_>>();
+    let objective_cases = normalize_objective_cases(objective_cases_raw)?;
+
+    let mut run_inputs = Vec::new();
+    run_inputs.push(objective_cases.clone());
+    let mut reversed = objective_cases.clone();
+    reversed.reverse();
+    run_inputs.push(reversed);
+    let mut rotated = objective_cases.clone();
+    if !rotated.is_empty() {
+        let shift = (rotated.len() / 3).max(1);
+        rotated.rotate_left(shift);
+    }
+    run_inputs.push(rotated);
+
+    let mut frontier_sizes = Vec::new();
+    let mut frontier_hashes = Vec::new();
+    let mut frontier_category_counts = BTreeMap::<String, usize>::new();
+    let mut frontier_hypervolumes = Vec::new();
+    for (idx, run_input) in run_inputs.into_iter().enumerate() {
+        let frontier = pareto_frontier_by_case_id(&run_input);
+        frontier_sizes.push(frontier.len() as f64);
+        frontier_hashes.push(frontier_hash(&frontier));
+        frontier_hypervolumes.push(hypervolume_4d_from_origin(&frontier));
+        if idx == 0 {
+            for item in frontier {
+                *frontier_category_counts
+                    .entry(item.category.clone())
+                    .or_insert(0) += 1;
+            }
+        }
+    }
+    let frontier_size = frontier_sizes.first().copied().unwrap_or(0.0) as usize;
+    let frontier_hash = frontier_hashes
+        .first()
+        .cloned()
+        .unwrap_or_else(|| "0000000000000000".to_string());
+    let frontier_hash_consistent = frontier_hashes.windows(2).all(|w| w[0] == w[1]);
+    let frontier_size_variance = variance(&frontier_sizes);
+    let frontier_hypervolume = frontier_hypervolumes.first().copied().unwrap_or(0.0);
+    let legacy_mode = rows.iter().all(|r| r.objective_legacy.is_some());
+    let objective_vector_spec_status = if legacy_mode {
+        "V1_0_LEGACY"
+    } else if frontier_hash_consistent && frontier_size_variance == 0.0 {
+        "OBJECTIVE_VECTOR_SPEC_V1_1_DEFINED"
+    } else {
+        "OBJECTIVE_VECTOR_SPEC_V1_1_VIOLATION"
+    };
+    let objective_correlation_matrix = pearson_correlation_matrix(&objective_cases);
+    let first_frontier = pareto_frontier_by_case_id(&objective_cases);
+    let frontier_objective_mean = objective_mean(&first_frontier);
+    let frontier_objective_variance = objective_variance(&first_frontier, &frontier_objective_mean);
+    let domination_count_histogram = domination_count_histogram(&objective_cases);
+    let _pareto_ranks = pareto_ranks(&objective_cases);
+
+    let status = if avg_cls > 0.15 && avg_questions > 0.8 {
+        "PHASE1_RUNTIME_BINDING_VALID"
+    } else {
+        "PHASE1_RUNTIME_BINDING_INVALID"
+    };
+
+    let summary = EvalSummary {
+        count,
+        avg_cls: round6(avg_cls),
+        avg_questions: round6(avg_questions),
+        frontier_size,
+        frontier_hash,
+        frontier_hash_consistent,
+        frontier_hypervolume: round6(frontier_hypervolume),
+        objective_correlation_matrix,
+        frontier_objective_mean,
+        frontier_objective_variance,
+        domination_count_histogram,
+        objective_vector_spec_status,
+        runtime_binding: RUNTIME_BINDING,
+        status,
+    };
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary)
+            .map_err(|e| format!("failed to serialize eval summary: {e}"))?
+    );
+    if !frontier_category_counts.is_empty() {
+        eprintln!(
+            "frontier_category_distribution={}",
+            serde_json::to_string(&frontier_category_counts)
+                .map_err(|e| format!("failed to serialize frontier categories: {e}"))?
+        );
+    }
+    Ok(())
+}
+
+fn run_search(depth: usize, beam: usize, seed: u64, hv_guided: bool) -> Result<(), String> {
+    let cfg = TraceRunConfig {
+        depth: depth.max(1),
+        beam: beam.max(1),
+        seed,
+        norm_alpha: 0.1,
+        adaptive_alpha: false,
+        hv_guided,
+        raw_output_path: None,
+    };
+    let rows = agent_core::generate_trace_baseline_off_soft(cfg, SoftTraceParams::default());
+    let last = rows.last().cloned().unwrap_or_default();
+    let summary = serde_json::json!({
+        "mode": if hv_guided { "HV_GUIDED" } else { "DEFAULT" },
+        "rows": rows.len(),
+        "depth_last": last.depth,
+        "pareto_front_size_last": last.pareto_front_size_per_depth,
+        "pareto_hv_2d_last": last.pareto_hv_2d,
+    });
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&summary)
+            .map_err(|e| format!("search summary serialize failed: {e}"))?
+    );
+    Ok(())
+}
+
+fn run_engine(seed: u64) -> Result<Vec<agent_core::Phase1RawRow>, String> {
+    let cfg = Phase1Config {
+        depth: 25,
+        beam: 5,
+        seed,
+        hv_guided: false,
+        norm_alpha: 0.1,
+        alpha: 3.0,
+        temperature: 0.1,
+        entropy_beta: 0.03,
+        lambda_min: 0.2,
+        lambda_target_entropy: 1.2,
+        lambda_k: 0.2,
+        lambda_ema: 0.4,
+    };
+    let (rows, _) = run_phase1_matrix(cfg);
+    if rows.is_empty() {
+        return Err("Phase1 engine produced no rows".to_string());
+    }
+    Ok(rows)
+}
+
+fn load_cases(path: &str) -> Result<Vec<ResolvedCase>, String> {
+    let file = File::open(path).map_err(|e| format!("failed to open input jsonl: {e}"))?;
+    let reader = BufReader::new(file);
+
+    let mut out = Vec::new();
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("failed to read input line: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let parsed: InputCase = serde_json::from_str(&line)
+            .map_err(|e| format!("input parse error at line {}: {e}", idx + 1))?;
+        let text = parsed
+            .text
+            .or(parsed.input)
+            .or(parsed.input_text)
+            .unwrap_or_default();
+
+        let case_id = parsed
+            .case_id
+            .unwrap_or_else(|| format!("case-{:05}", idx + 1));
+        let category = parsed.category.unwrap_or_else(|| "unknown".to_string());
+
+        out.push(ResolvedCase {
+            case_id,
+            category,
+            text,
+        });
+    }
+
+    if out.is_empty() {
+        return Err("input jsonl is empty".to_string());
+    }
+    Ok(out)
+}
+
+fn load_output_rows(path: &str) -> Result<Vec<Phase1RawRow>, String> {
+    let file = File::open(path).map_err(|e| format!("failed to open output jsonl: {e}"))?;
+    let reader = BufReader::new(file);
+    let mut rows = Vec::new();
+    for (idx, line) in reader.lines().enumerate() {
+        let line = line.map_err(|e| format!("failed to read output line: {e}"))?;
+        if line.trim().is_empty() {
+            continue;
+        }
+        let row: Phase1RawRow = serde_json::from_str(&line)
+            .map_err(|e| format!("output parse error at line {}: {e}", idx + 1))?;
+        rows.push(row);
+    }
+    Ok(rows)
+}
+
+fn map_to_output_row(
+    case: &ResolvedCase,
+    base: &agent_core::Phase1RawRow,
+    engine: &Phase1Engine,
+) -> (Phase1RawRow, MissingSlots) {
+    let completeness = clamp01(base.completeness);
+    let ambiguity_mean = clamp01(base.ambiguity_mean.max(ambiguity_from_text(&case.text)));
+    let inconsistency = inconsistency_v2(&case.text);
+    let dependency_consistency =
+        resolve_dependency_consistency(inconsistency, base.dependency_consistency);
+
+    let scs = engine.compute_scs_v1_1(ScsInputs {
+        completeness,
+        ambiguity_mean,
+        inconsistency,
+        dependency_consistency,
+    });
+
+    let (question_count, missing_slots) =
+        estimate_question_count(&case.text, ambiguity_mean, base.orphan_rate, inconsistency);
+    let revision_score = inconsistency;
+    let revision_count = if revision_score < 0.35 {
+        0
+    } else if revision_score < 0.55 {
+        1
+    } else if revision_score < 0.75 {
+        2
+    } else {
+        3
+    };
+    let cls = clamp01(
+        0.4 * ambiguity_mean
+            + 0.3 * (1.0 - completeness)
+            + 0.2 * (question_count as f64 / 5.0)
+            + 0.1 * (revision_count as f64 / 3.0),
+    );
+    let phase2_triggered = cls < 0.25 && dependency_consistency > 0.6 && revision_count == 0;
+
+    (
+        Phase1RawRow {
+            case_id: case.case_id.clone(),
+            category: case.category.clone(),
+            cls: round6(cls),
+            scs: round6(scs),
+            completeness: round6(completeness),
+            ambiguity_mean: round6(ambiguity_mean),
+            inconsistency: round6(inconsistency),
+            dependency_consistency: round6(dependency_consistency),
+            question_count,
+            revision_score: round6(revision_score),
+            revision_count,
+            phase2_triggered,
+            objective_legacy: None,
+        },
+        missing_slots,
+    )
+}
+
+fn resolve_dependency_consistency(inconsistency: f64, fallback: f64) -> f64 {
+    let temp_enabled = std::env::var("PHASE1_TEMP_DEP_STABILIZE")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    if temp_enabled {
+        if inconsistency < 0.25 {
+            0.80
+        } else if inconsistency < 0.40 {
+            0.70
+        } else {
+            0.50
+        }
+    } else {
+        clamp01(fallback)
     }
 }
 
-fn artifact_format_name(format: ArtifactFormat) -> &'static str {
-    match format {
-        ArtifactFormat::Rust => "rust",
-        ArtifactFormat::Sql => "sql",
-        ArtifactFormat::Mermaid => "mermaid",
+fn ambiguity_from_text(text: &str) -> f64 {
+    if text.trim().is_empty() {
+        return 0.18;
+    }
+    let tokens = text.split_whitespace().count() as f64;
+    let hedges = [
+        "maybe", "possibly", "probably", "might", "could", "検討", "要件",
+    ];
+    let hedge_count = hedges.iter().filter(|h| text.contains(**h)).count() as f64;
+    let question_marks = text.matches('?').count() as f64 + text.matches('？').count() as f64;
+    clamp01((0.12 + hedge_count * 0.08 + question_marks * 0.12 + (tokens / 80.0)).max(0.18))
+}
+
+fn inconsistency_v2(text: &str) -> f64 {
+    let raw_conflict_score = contradiction_signal(text)
+        + logical_opposition_signal(text)
+        + temporal_conflict_signal(text);
+    clamp01(raw_conflict_score.powf(1.5))
+}
+
+fn contradiction_signal(text: &str) -> f64 {
+    let t = text.to_lowercase();
+    let pairs = [
+        ("must", "optional"),
+        ("required", "avoid"),
+        ("always", "sometimes"),
+        ("enabled", "disabled"),
+        ("必要", "不要"),
+        ("必須", "任意"),
+    ];
+    let hits = pairs
+        .iter()
+        .filter(|(a, b)| t.contains(a) && t.contains(b))
+        .count() as f64;
+    (hits * 0.35).min(1.0)
+}
+
+fn logical_opposition_signal(text: &str) -> f64 {
+    let t = text.to_lowercase();
+    let oppose_terms = [
+        "but",
+        "however",
+        "although",
+        "yet",
+        "while",
+        "一方",
+        "しかし",
+        "ただし",
+    ];
+    let oppose_hits = oppose_terms.iter().filter(|w| t.contains(**w)).count() as f64;
+    let hedge_terms = [
+        "maybe", "possibly", "probably", "might", "could", "検討", "要件",
+    ];
+    let hedge_hits = hedge_terms.iter().filter(|w| t.contains(**w)).count() as f64;
+    ((oppose_hits * 0.2) + (hedge_hits * 0.08)).min(1.0)
+}
+
+fn temporal_conflict_signal(text: &str) -> f64 {
+    let t = text.to_lowercase();
+    let timing_pairs = [
+        ("before", "after"),
+        ("today", "weekly"),
+        ("now", "later"),
+        ("immediate", "eventually"),
+        ("先に", "後で"),
+    ];
+    let hits = timing_pairs
+        .iter()
+        .filter(|(a, b)| t.contains(a) && t.contains(b))
+        .count() as f64;
+    (hits * 0.4).min(1.0)
+}
+
+fn estimate_question_count(
+    text: &str,
+    ambiguity_mean: f64,
+    orphan_rate: f64,
+    inconsistency: f64,
+) -> (usize, MissingSlots) {
+    let missing_slots = detect_5w2h_slots(text);
+    let missing_5w2h_slots = missing_slots.missing_5w2h_slots as usize;
+    let high_ambiguity_factor_count = high_ambiguity_factor_count(text, ambiguity_mean);
+    let orphan_factor_count = orphan_factor_count(orphan_rate);
+    let high_risk_inconsistency_flag = if inconsistency >= 0.45 { 1 } else { 0 };
+    let raw_sum = missing_5w2h_slots
+        + high_ambiguity_factor_count
+        + orphan_factor_count
+        + high_risk_inconsistency_flag;
+    let compressed = (raw_sum as f64).powf(0.7).round() as usize;
+    let question_count = compressed.min(5);
+    (question_count, missing_slots)
+}
+
+fn detect_5w2h_slots(text: &str) -> MissingSlots {
+    let t = text.to_lowercase();
+    let contains_any = |keywords: &[&str]| keywords.iter().any(|kw| t.contains(kw));
+    let flags = FiveW2HFlags {
+        who: contains_any(&[
+            "user",
+            "users",
+            "admin",
+            "developer",
+            "operator",
+            "actor",
+            "team",
+            "client",
+        ]),
+        what: contains_any(&[
+            "build",
+            "implement",
+            "create",
+            "generate",
+            "system",
+            "feature",
+            "module",
+            "cli",
+            "engine",
+        ]),
+        why: contains_any(&[
+            "because",
+            "so that",
+            "goal",
+            "purpose",
+            "to improve",
+            "in order to",
+            "reason",
+        ]),
+        where_: contains_any(&[
+            "server",
+            "local",
+            "cloud",
+            "on-prem",
+            "workspace",
+            "repo",
+            "directory",
+            "production",
+        ]),
+        when_: contains_any(&[
+            "today", "now", "daily", "weekly", "phase", "before", "after", "deadline", "release",
+        ]),
+        how: contains_any(&[
+            "how",
+            "method",
+            "approach",
+            "algorithm",
+            "design",
+            "spec",
+            "workflow",
+            "pipeline",
+        ]),
+        how_much: contains_any(&[
+            "cost", "budget", "price", "yen", "usd", "minutes", "hours", "days", "scale", "limit",
+            "max", "min",
+        ]),
+    };
+    let mut missing = 0u8;
+    missing += (!flags.who) as u8;
+    missing += (!flags.what) as u8;
+    missing += (!flags.why) as u8;
+    missing += (!flags.where_) as u8;
+    missing += (!flags.when_) as u8;
+    missing += (!flags.how) as u8;
+    missing += (!flags.how_much) as u8;
+    if text.chars().count() < 20 {
+        missing = missing.max(4);
+    }
+    missing = missing.min(7);
+    MissingSlots {
+        missing_5w2h_slots: missing,
+        flags,
     }
 }
 
-fn parse_card_id(card_id: &str) -> Result<hybrid_vm::ConceptId, CliError> {
-    let raw = card_id.strip_prefix("L2-").unwrap_or(card_id);
-    let parsed = raw
-        .parse::<u64>()
-        .map_err(|_| CliError::invalid("card id must be L2-<number>"))?;
-    Ok(hybrid_vm::ConceptId(parsed))
+fn high_ambiguity_factor_count(text: &str, ambiguity_mean: f64) -> usize {
+    let hedge_terms = [
+        "maybe", "possibly", "probably", "might", "could", "検討", "要件",
+    ];
+    let hedge_hits = hedge_terms.iter().filter(|h| text.contains(**h)).count();
+    let by_score = if ambiguity_mean >= 0.6 {
+        2
+    } else if ambiguity_mean >= 0.4 {
+        1
+    } else {
+        0
+    };
+    by_score.max((hedge_hits / 2).min(2))
+}
+
+fn orphan_factor_count(orphan_rate: f64) -> usize {
+    if orphan_rate >= 0.5 {
+        2
+    } else if orphan_rate >= 0.2 {
+        1
+    } else {
+        0
+    }
+}
+
+fn clamp01(v: f64) -> f64 {
+    v.clamp(0.0, 1.0)
+}
+
+fn round6(v: f64) -> f64 {
+    (v * 1_000_000.0).round() / 1_000_000.0
+}
+
+fn objective_vector_v11_from_phase1_row(row: &Phase1RawRow) -> ObjectiveVectorV1_1 {
+    let raw = objective_raw_from_phase1_row(row);
+    ObjectiveVectorV1_1 {
+        raw,
+        normalized: raw,
+        clamped: raw.map(clamp01),
+    }
+}
+
+fn objective_raw_from_phase1_row(row: &Phase1RawRow) -> [f64; 4] {
+    let completeness = if row.completeness <= 0.0 && row.scs > 0.0 {
+        row.scs
+    } else {
+        row.completeness
+    };
+    let dependency_consistency = row.dependency_consistency;
+    let inconsistency = row.inconsistency;
+    let cls = row.cls;
+    let revision_count = row.revision_count.min(3) as f64;
+    let structural_integrity =
+        0.4 * completeness + 0.4 * dependency_consistency + 0.2 * (1.0 - inconsistency);
+    let cognitive_stability = 1.0 - cls;
+    let revision_pressure = 1.0 - (revision_count / 3.0);
+    let exploration_readiness = if row.phase2_triggered { 1.0 } else { 0.0 };
+    [
+        structural_integrity,
+        cognitive_stability,
+        revision_pressure,
+        exploration_readiness,
+    ]
+}
+
+fn normalize_objective_cases(mut cases: Vec<ObjectiveCase>) -> Result<Vec<ObjectiveCase>, String> {
+    if cases.is_empty() {
+        return Ok(cases);
+    }
+    let mut mins = [f64::INFINITY; 4];
+    let mut maxs = [f64::NEG_INFINITY; 4];
+    for case in &cases {
+        for i in 0..4 {
+            let value = case.objective.raw[i];
+            if !value.is_finite() {
+                return Err(format!(
+                    "objective raw value must be finite: case_id={} index={} value={value}",
+                    case.case_id, i
+                ));
+            }
+            mins[i] = mins[i].min(value);
+            maxs[i] = maxs[i].max(value);
+        }
+    }
+
+    for case in &mut cases {
+        let mut normalized = [0.0; 4];
+        for i in 0..4 {
+            normalized[i] = if (maxs[i] - mins[i]).abs() > PARETO_EPS {
+                (case.objective.raw[i] - mins[i]) / (maxs[i] - mins[i])
+            } else {
+                0.5
+            };
+        }
+        case.objective.normalized = normalized;
+        case.objective.clamped = normalized.map(clamp01);
+    }
+    Ok(cases)
+}
+
+fn legacy_objective_to_v11(legacy: LegacyObjectiveVector) -> ObjectiveVectorV1_1 {
+    let clamped = [
+        clamp01(legacy.structural_integrity),
+        clamp01(legacy.cognitive_stability),
+        clamp01(legacy.revision_pressure),
+        clamp01(legacy.exploration_readiness),
+    ];
+    ObjectiveVectorV1_1 {
+        raw: clamped,
+        normalized: clamped,
+        clamped,
+    }
+}
+
+fn pareto_frontier_by_case_id(cases: &[ObjectiveCase]) -> Vec<ObjectiveCase> {
+    let mut sorted = cases.to_vec();
+    sorted.sort_by(|a, b| a.case_id.cmp(&b.case_id));
+
+    let mut dedup = Vec::<ObjectiveCase>::new();
+    let mut seen = std::collections::BTreeSet::<String>::new();
+    for c in sorted {
+        if seen.insert(c.case_id.clone()) {
+            dedup.push(c);
+        }
+    }
+
+    let mut front = Vec::<ObjectiveCase>::new();
+    for i in 0..dedup.len() {
+        let mut dominated = false;
+        for j in 0..dedup.len() {
+            if i == j {
+                continue;
+            }
+            if dominates_objective(&dedup[j].objective, &dedup[i].objective) {
+                dominated = true;
+                break;
+            }
+        }
+        if !dominated {
+            front.push(dedup[i].clone());
+        }
+    }
+    front.sort_by(|a, b| a.case_id.cmp(&b.case_id));
+    front
+}
+
+fn pareto_ranks(cases: &[ObjectiveCase]) -> Vec<Vec<ObjectiveCase>> {
+    let mut remaining = cases.to_vec();
+    let mut ranks = Vec::<Vec<ObjectiveCase>>::new();
+    while !remaining.is_empty() {
+        let frontier = pareto_frontier_by_case_id(&remaining);
+        if frontier.is_empty() {
+            break;
+        }
+        let frontier_ids = frontier
+            .iter()
+            .map(|c| c.case_id.clone())
+            .collect::<std::collections::BTreeSet<_>>();
+        remaining.retain(|c| !frontier_ids.contains(&c.case_id));
+        ranks.push(frontier);
+    }
+    ranks
+}
+
+fn dominates_objective(a: &ObjectiveVectorV1_1, b: &ObjectiveVectorV1_1) -> bool {
+    let all_ge = (0..4).all(|i| a.clamped[i] + PARETO_EPS >= b.clamped[i]);
+    let one_gt = (0..4).any(|i| a.clamped[i] > b.clamped[i] + PARETO_EPS);
+    all_ge && one_gt
+}
+
+fn frontier_hash(frontier: &[ObjectiveCase]) -> String {
+    let mut h: u64 = 0xcbf29ce484222325;
+    for item in frontier {
+        fnv1a_update(&mut h, item.case_id.as_bytes());
+        fnv1a_update(&mut h, &[b'|']);
+        for value in item.objective.normalized {
+            fnv1a_update(&mut h, &value.to_bits().to_le_bytes());
+        }
+        fnv1a_update(&mut h, &[b'|']);
+        for value in item.objective.clamped {
+            fnv1a_update(&mut h, &value.to_bits().to_le_bytes());
+        }
+        fnv1a_update(&mut h, &[b'\n']);
+    }
+    format!("{h:016x}")
+}
+
+fn objective_mean(frontier: &[ObjectiveCase]) -> [f64; 4] {
+    if frontier.is_empty() {
+        return [0.0; 4];
+    }
+    let mut mean = [0.0; 4];
+    for case in frontier {
+        for (i, acc) in mean.iter_mut().enumerate() {
+            *acc += case.objective.clamped[i];
+        }
+    }
+    for acc in &mut mean {
+        *acc = round6(*acc / frontier.len() as f64);
+    }
+    mean
+}
+
+fn objective_variance(frontier: &[ObjectiveCase], mean: &[f64; 4]) -> [f64; 4] {
+    if frontier.is_empty() {
+        return [0.0; 4];
+    }
+    let mut var = [0.0; 4];
+    for case in frontier {
+        for i in 0..4 {
+            let d = case.objective.clamped[i] - mean[i];
+            var[i] += d * d;
+        }
+    }
+    for value in &mut var {
+        *value = round6(*value / frontier.len() as f64);
+    }
+    var
+}
+
+fn domination_count_histogram(cases: &[ObjectiveCase]) -> BTreeMap<usize, usize> {
+    let mut hist = BTreeMap::<usize, usize>::new();
+    for i in 0..cases.len() {
+        let mut dominated_by_count = 0usize;
+        for j in 0..cases.len() {
+            if i != j && dominates_objective(&cases[j].objective, &cases[i].objective) {
+                dominated_by_count += 1;
+            }
+        }
+        *hist.entry(dominated_by_count).or_insert(0) += 1;
+    }
+    hist
+}
+
+fn pearson_correlation_matrix(cases: &[ObjectiveCase]) -> [[f64; 4]; 4] {
+    if cases.is_empty() {
+        return [[0.0; 4]; 4];
+    }
+    let n = cases.len() as f64;
+    let mut cols = vec![Vec::<f64>::with_capacity(cases.len()); 4];
+    for case in cases {
+        for (i, col) in cols.iter_mut().enumerate() {
+            col.push(case.objective.normalized[i]);
+        }
+    }
+    let mut out = [[0.0; 4]; 4];
+    for i in 0..4 {
+        for j in 0..4 {
+            if i == j {
+                out[i][j] = 1.0;
+                continue;
+            }
+            let mean_i = cols[i].iter().sum::<f64>() / n;
+            let mean_j = cols[j].iter().sum::<f64>() / n;
+            let mut cov = 0.0;
+            let mut var_i = 0.0;
+            let mut var_j = 0.0;
+            for k in 0..cases.len() {
+                let di = cols[i][k] - mean_i;
+                let dj = cols[j][k] - mean_j;
+                cov += di * dj;
+                var_i += di * di;
+                var_j += dj * dj;
+            }
+            let denom = (var_i.sqrt() * var_j.sqrt()).max(PARETO_EPS);
+            out[i][j] = round6((cov / denom).clamp(-1.0, 1.0));
+        }
+    }
+    out
+}
+
+fn hypervolume_4d_from_origin(frontier: &[ObjectiveCase]) -> f64 {
+    let mut points = Vec::<[f64; 4]>::new();
+    for case in frontier {
+        points.push(case.objective.clamped);
+    }
+    round6(hypervolume_recursive(&points, 4))
+}
+
+fn hypervolume_recursive(points: &[[f64; 4]], dim: usize) -> f64 {
+    if points.is_empty() {
+        return 0.0;
+    }
+    if dim == 1 {
+        return points
+            .iter()
+            .map(|p| p[0])
+            .fold(0.0, |acc, v| if v > acc { v } else { acc });
+    }
+    let axis = 4 - dim;
+    let mut coords = points.iter().map(|p| p[axis]).collect::<Vec<_>>();
+    coords.sort_by(|a, b| a.total_cmp(b));
+    coords.dedup_by(|a, b| (*a - *b).abs() <= PARETO_EPS);
+
+    let mut prev = 0.0;
+    let mut volume = 0.0;
+    for c in coords {
+        let width = c - prev;
+        if width > PARETO_EPS {
+            let mut projected = Vec::<[f64; 4]>::new();
+            for p in points {
+                if p[axis] + PARETO_EPS >= c {
+                    let mut q = [0.0; 4];
+                    q[..(dim - 1)].copy_from_slice(&p[(axis + 1)..(axis + dim)]);
+                    projected.push(q);
+                }
+            }
+            volume += width * hypervolume_recursive(&projected, dim - 1);
+        }
+        prev = c;
+    }
+    volume
+}
+
+fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
+    for b in bytes {
+        *hash ^= *b as u64;
+        *hash = hash.wrapping_mul(0x100000001b3);
+    }
+}
+
+fn variance(values: &[f64]) -> f64 {
+    if values.is_empty() {
+        return 0.0;
+    }
+    let n = values.len() as f64;
+    let mean = values.iter().sum::<f64>() / n;
+    values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / n
+}
+
+#[cfg(test)]
+mod objective_vector_tests {
+    use super::*;
+
+    fn mk_case(case_id: &str, raw: [f64; 4]) -> ObjectiveCase {
+        ObjectiveCase {
+            case_id: case_id.to_string(),
+            category: "test".to_string(),
+            objective: ObjectiveVectorV1_1 {
+                raw,
+                normalized: raw,
+                clamped: raw.map(clamp01),
+            },
+        }
+    }
+
+    fn normalize(cases: Vec<ObjectiveCase>) -> Vec<ObjectiveCase> {
+        normalize_objective_cases(cases).expect("normalization should succeed")
+    }
+
+    #[test]
+    fn min_max_equal_normalizes_to_half() {
+        let cases = normalize(vec![
+            mk_case("A", [0.3, 0.3, 0.3, 0.3]),
+            mk_case("B", [0.3, 0.3, 0.3, 0.3]),
+        ]);
+        for case in cases {
+            assert_eq!(case.objective.normalized, [0.5; 4]);
+            assert_eq!(case.objective.clamped, [0.5; 4]);
+        }
+    }
+
+    #[test]
+    fn all_identical_vectors_are_all_non_dominated() {
+        let cases = normalize(vec![
+            mk_case("A", [1.0, 2.0, 3.0, 4.0]),
+            mk_case("B", [1.0, 2.0, 3.0, 4.0]),
+            mk_case("C", [1.0, 2.0, 3.0, 4.0]),
+        ]);
+        let front = pareto_frontier_by_case_id(&cases);
+        assert_eq!(front.len(), 3);
+    }
+
+    #[test]
+    fn all_monotonic_chain_has_single_frontier_point() {
+        let cases = normalize(vec![
+            mk_case("A", [0.1, 0.1, 0.1, 0.1]),
+            mk_case("B", [0.2, 0.2, 0.2, 0.2]),
+            mk_case("C", [0.3, 0.3, 0.3, 0.3]),
+        ]);
+        let front = pareto_frontier_by_case_id(&cases);
+        assert_eq!(front.len(), 1);
+        assert_eq!(front[0].case_id, "C");
+    }
+
+    #[test]
+    fn all_non_dominated_points_remain_in_frontier() {
+        let cases = normalize(vec![
+            mk_case("A", [1.0, 0.0, 0.0, 0.0]),
+            mk_case("B", [0.0, 1.0, 0.0, 0.0]),
+            mk_case("C", [0.0, 0.0, 1.0, 0.0]),
+            mk_case("D", [0.0, 0.0, 0.0, 1.0]),
+        ]);
+        let front = pareto_frontier_by_case_id(&cases);
+        assert_eq!(front.len(), 4);
+    }
+
+    #[test]
+    fn boundary_values_and_epsilon_tolerance() {
+        let a = ObjectiveVectorV1_1 {
+            raw: [0.0, 1.0, 1.0, 1.0],
+            normalized: [0.0, 1.0, 1.0, 1.0],
+            clamped: [0.0, 1.0, 1.0, 1.0],
+        };
+        let b = ObjectiveVectorV1_1 {
+            raw: [0.0, 1.0 - 5e-13, 1.0, 1.0],
+            normalized: [0.0, 1.0 - 5e-13, 1.0, 1.0],
+            clamped: [0.0, 1.0 - 5e-13, 1.0, 1.0],
+        };
+        assert!(!dominates_objective(&a, &b));
+        assert!(!dominates_objective(&b, &a));
+    }
+
+    #[test]
+    fn hypervolume_simple_case_matches_expected() {
+        let front = vec![
+            mk_case("A", [0.5, 0.5, 0.5, 0.5]),
+            mk_case("B", [1.0, 0.0, 0.0, 0.0]),
+        ];
+        let normalized = normalize(front);
+        let frontier = pareto_frontier_by_case_id(&normalized);
+        let hv = hypervolume_4d_from_origin(&frontier);
+        assert!(hv >= 0.0);
+        assert!(hv <= 1.0);
+    }
+
+    fn shuffle_cases(mut cases: Vec<ObjectiveCase>, seed: u64) -> Vec<ObjectiveCase> {
+        let mut s = seed;
+        for i in (1..cases.len()).rev() {
+            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let j = (s as usize) % (i + 1);
+            cases.swap(i, j);
+        }
+        cases
+    }
+
+    #[test]
+    fn reproducibility_100_seeds_x3_hash_and_hypervolume_match() {
+        for seed in 0..100u64 {
+            let mut base = Vec::new();
+            let mut s = seed.wrapping_add(1);
+            for idx in 0..40usize {
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let a = ((s >> 16) as f64) / (u32::MAX as f64);
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let b = ((s >> 16) as f64) / (u32::MAX as f64);
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let c = ((s >> 16) as f64) / (u32::MAX as f64);
+                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
+                let d = ((s >> 16) as f64) / (u32::MAX as f64);
+                base.push(mk_case(&format!("C-{idx:03}"), [a, b, c, d]));
+            }
+            let norm = normalize(base);
+            let run1_front = pareto_frontier_by_case_id(&shuffle_cases(norm.clone(), seed + 11));
+            let run2_front = pareto_frontier_by_case_id(&shuffle_cases(norm.clone(), seed + 22));
+            let run3_front = pareto_frontier_by_case_id(&shuffle_cases(norm, seed + 33));
+
+            let h1 = frontier_hash(&run1_front);
+            let h2 = frontier_hash(&run2_front);
+            let h3 = frontier_hash(&run3_front);
+            assert_eq!(h1, h2);
+            assert_eq!(h2, h3);
+
+            let v1 = hypervolume_4d_from_origin(&run1_front);
+            let v2 = hypervolume_4d_from_origin(&run2_front);
+            let v3 = hypervolume_4d_from_origin(&run3_front);
+            assert!((v1 - v2).abs() <= 1e-12);
+            assert!((v2 - v3).abs() <= 1e-12);
+        }
+    }
+
+    #[test]
+    fn legacy_vector_maps_to_v11() {
+        let legacy = LegacyObjectiveVector {
+            structural_integrity: 1.3,
+            cognitive_stability: -0.1,
+            revision_pressure: 0.8,
+            exploration_readiness: 0.4,
+        };
+        let v = legacy_objective_to_v11(legacy);
+        assert_eq!(v.normalized, v.clamped);
+        assert_eq!(v.raw, v.clamped);
+        assert_eq!(v.clamped, [1.0, 0.0, 0.8, 0.4]);
+    }
 }

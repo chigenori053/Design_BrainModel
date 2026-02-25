@@ -5,9 +5,9 @@ use field_engine::{FieldEngine, FieldVector};
 use hybrid_vm::{HybridVM, StructuralEvaluator};
 use memory_space::DesignState;
 
+use crate::capability::ScoringCapability;
 use crate::domain::DomainError;
 use crate::domain::{AgentEvent, Hypothesis, Score};
-use crate::capability::ScoringCapability;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SearchHit {
@@ -47,6 +47,8 @@ pub fn execute_soft_search_core(
     config: crate::TraceRunConfig,
     params: crate::SoftTraceParams,
 ) -> SearchCoreResult {
+    const HV_STOP_WINDOW: usize = 10;
+    const HV_STOP_EPS: f64 = 1e-6;
     let shm = HybridVM::default_shm();
     let _chm = crate::runtime::trace_helpers::make_dense_trace_chm(&shm, config.seed);
     let field = FieldEngine::new(256);
@@ -67,7 +69,9 @@ pub fn execute_soft_search_core(
         }
     };
 
-    let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
+    let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
+        config.seed,
+    )];
     let mut rows = Vec::with_capacity(config.depth);
     let mut lambda = 0.5f64;
     let mut field_cache: BTreeMap<(u128, u128, usize, usize), FieldVector> = BTreeMap::new();
@@ -86,10 +90,12 @@ pub fn execute_soft_search_core(
         config.norm_alpha
     };
     let mut adaptive_state = crate::AdaptiveAlphaState::new(initial_alpha);
+    let mut delta_hv_window = VecDeque::<f64>::new();
 
     for depth in 1..=config.depth {
         let calls_start = crate::DISTANCE_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        let nn_calls_start = crate::NN_DISTANCE_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
+        let nn_calls_start =
+            crate::NN_DISTANCE_CALL_COUNT.load(std::sync::atomic::Ordering::Relaxed);
         let norm_alpha_val = if config.adaptive_alpha {
             adaptive_state.alpha
         } else {
@@ -116,8 +122,11 @@ pub fn execute_soft_search_core(
         );
         let candidates = batch.candidates;
         let expanded_categories_count = batch.depth_category_counts.len();
-        let per_category_selected = crate::runtime::trace_helpers::format_category_counts(&batch.depth_category_counts);
-        let entropy_per_depth = crate::runtime::trace_helpers::shannon_entropy_from_counts(&batch.depth_category_counts) as f32;
+        let per_category_selected =
+            crate::runtime::trace_helpers::format_category_counts(&batch.depth_category_counts);
+        let entropy_per_depth = crate::runtime::trace_helpers::shannon_entropy_from_counts(
+            &batch.depth_category_counts,
+        ) as f32;
         let depth_selected_rules_count = batch.depth_selected_rules_count;
         let field_extract_us = batch.field_extract_us;
         let field_score_us = batch.field_score_us;
@@ -125,7 +134,10 @@ pub fn execute_soft_search_core(
         let field_total_us = batch.field_total_us;
 
         if let Some(path) = &config.raw_output_path {
-            let objectives = candidates.iter().map(|(_, obj)| obj.clone()).collect::<Vec<_>>();
+            let objectives = candidates
+                .iter()
+                .map(|(_, obj)| obj.clone())
+                .collect::<Vec<_>>();
             events.push(AgentEvent::WriteRawObjectives {
                 path: path.clone(),
                 depth,
@@ -134,17 +146,27 @@ pub fn execute_soft_search_core(
         }
 
         if depth <= warmup_depths {
-            estimator
-                .samples
-                .extend(candidates.iter().map(|(_, o)| crate::ObjectiveRaw(crate::runtime::trace_helpers::obj_to_arr(o))));
+            estimator.samples.extend(
+                candidates.iter().map(|(_, o)| {
+                    crate::ObjectiveRaw(crate::runtime::trace_helpers::obj_to_arr(o))
+                }),
+            );
             if depth == warmup_depths {
-                estimator.frozen = crate::runtime::trace_helpers::robust_stats_from_samples(&estimator.samples, norm_alpha_val);
+                estimator.frozen = crate::runtime::trace_helpers::robust_stats_from_samples(
+                    &estimator.samples,
+                    norm_alpha_val,
+                );
             }
         }
         let stats = estimator
             .frozen
             .clone()
-            .or_else(|| crate::runtime::trace_helpers::robust_stats_from_samples(&estimator.samples, norm_alpha_val))
+            .or_else(|| {
+                crate::runtime::trace_helpers::robust_stats_from_samples(
+                    &estimator.samples,
+                    norm_alpha_val,
+                )
+            })
             .unwrap_or(crate::GlobalRobustStats {
                 alpha_used: norm_alpha_val,
                 median: [0.0; 4],
@@ -246,12 +268,20 @@ pub fn execute_soft_search_core(
         }
 
         let (normalized, _) = crate::normalize_by_depth(candidates, norm_alpha_val);
-        let norm_data: Vec<[f64; 4]> = normalized.iter().map(|(_, obj)| crate::runtime::trace_helpers::obj_to_arr(obj)).collect();
-        let front = crate::capability::selection::soft_front_rank(normalized, crate::SOFT_PARETO_TEMPERATURE);
+        let norm_data: Vec<[f64; 4]> = normalized
+            .iter()
+            .map(|(_, obj)| crate::runtime::trace_helpers::obj_to_arr(obj))
+            .collect();
+        let front = crate::capability::selection::soft_front_rank(
+            normalized,
+            crate::SOFT_PARETO_TEMPERATURE,
+        );
 
         if front.is_empty() {
             let _ = hybrid_vm.take_memory_telemetry();
-            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
+            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
+                config.seed,
+            )];
             continue;
         }
 
@@ -399,17 +429,47 @@ pub fn execute_soft_search_core(
             collapse_reasons: stability_metrics.collapse_reasons.join("|"),
         });
 
-        frontier = crate::engine::pareto::select_beam_maxmin_norm(
-            front,
-            front_norm,
-            config.beam.max(1),
-            &stats.weights,
-        )
-        .into_iter()
-        .map(|(s, _)| s)
-        .collect::<Vec<DesignState>>();
+        let (selected, current_hv, delta_hv_selected) = if config.hv_guided {
+            crate::engine::pareto::select_beam_hv_guided_norm(front, front_norm, config.beam.max(1))
+        } else {
+            (
+                crate::engine::pareto::select_beam_maxmin_norm(
+                    front,
+                    front_norm,
+                    config.beam.max(1),
+                    &stats.weights,
+                ),
+                0.0,
+                0.0,
+            )
+        };
+        if config.hv_guided {
+            eprintln!(
+                "hv_guided iteration={} current_HV={:.8} delta_HV_selected={:.8} frontier_size={}",
+                depth,
+                current_hv,
+                delta_hv_selected,
+                selected.len()
+            );
+            delta_hv_window.push_back(delta_hv_selected);
+            if delta_hv_window.len() > HV_STOP_WINDOW {
+                delta_hv_window.pop_front();
+            }
+        }
+        frontier = selected
+            .into_iter()
+            .map(|(s, _)| s)
+            .collect::<Vec<DesignState>>();
         if frontier.is_empty() {
-            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
+            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
+                config.seed,
+            )];
+        }
+        if config.hv_guided && delta_hv_window.len() == HV_STOP_WINDOW {
+            let mean_delta = delta_hv_window.iter().sum::<f64>() / HV_STOP_WINDOW as f64;
+            if mean_delta < HV_STOP_EPS {
+                break;
+            }
         }
     }
 

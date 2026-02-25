@@ -91,6 +91,7 @@ fn golden_soft_trace_runtime_matches_core_and_writes_raw_objectives() {
         seed: 42,
         norm_alpha: 0.1,
         adaptive_alpha: false,
+        hv_guided: false,
         raw_output_path: Some(out.clone()),
     };
     let params = agent_core::SoftTraceParams::default();
@@ -99,15 +100,23 @@ fn golden_soft_trace_runtime_matches_core_and_writes_raw_objectives() {
     let runtime_trace = execute_soft_trace(config, params);
 
     assert_eq!(runtime_trace.len(), core.trace.len());
-    let lhs = runtime_trace.iter().map(trace_signature).collect::<Vec<_>>();
+    let lhs = runtime_trace
+        .iter()
+        .map(trace_signature)
+        .collect::<Vec<_>>();
     let rhs = core.trace.iter().map(trace_signature).collect::<Vec<_>>();
     assert_eq!(lhs, rhs);
-    assert!(out.exists(), "runtime should materialize raw objective file");
+    assert!(
+        out.exists(),
+        "runtime should materialize raw objective file"
+    );
     let csv = fs::read_to_string(&out).expect("failed to read raw objective file");
     assert!(csv.contains("depth,candidate_id,objective_0"));
 }
 
-fn trace_signature(row: &agent_core::TraceRow) -> (usize, f32, f32, usize, usize, bool, usize, usize) {
+fn trace_signature(
+    row: &agent_core::TraceRow,
+) -> (usize, f32, f32, usize, usize, bool, usize, usize) {
     (
         row.depth,
         row.lambda,

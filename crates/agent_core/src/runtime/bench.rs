@@ -24,6 +24,7 @@ pub fn run_baseline_off_soft(
             seed: config.seed.wrapping_add(i as u64),
             norm_alpha: config.norm_alpha,
             adaptive_alpha: false,
+            hv_guided: false,
             raw_output_path: None,
         };
         let _ = crate::runtime::execute_soft_trace(cfg, params);
@@ -38,6 +39,7 @@ pub fn run_baseline_off_soft(
             seed: config.seed.wrapping_add(i as u64),
             norm_alpha: config.norm_alpha,
             adaptive_alpha: false,
+            hv_guided: false,
             raw_output_path: None,
         };
         let start = std::time::Instant::now();

@@ -343,6 +343,7 @@ pub struct Phase1Config {
     pub depth: usize,
     pub beam: usize,
     pub seed: u64,
+    pub hv_guided: bool,
     pub norm_alpha: f64,
     pub alpha: f64,
     pub temperature: f64,
@@ -512,6 +513,7 @@ pub struct TraceRunConfig {
     pub seed: u64,
     pub norm_alpha: f64,
     pub adaptive_alpha: bool,
+    pub hv_guided: bool,
     pub raw_output_path: Option<PathBuf>,
 }
 
@@ -749,6 +751,10 @@ pub(crate) fn normalize_by_depth(
 
 pub fn scalar_score(obj: &ObjectiveVector) -> f64 {
     capability::LinearObjectiveScorer.score_objective(obj)
+}
+
+pub fn hv_4d_from_origin_normalized(points: &[[f64; 4]]) -> f64 {
+    engine::pareto::hv_4d_from_origin_normalized(points)
 }
 
 pub fn apply_atomic(rule: &DesignRule, state: &DesignState) -> DesignState {

@@ -18,6 +18,7 @@ pub fn compute_std(values: &[f64], mean: f64) -> f64 {
     var.sqrt()
 }
 
+#[allow(dead_code)]
 pub fn moving_average_tail(values: &[f64], k: usize) -> f64 {
     if values.is_empty() {
         return 0.0;

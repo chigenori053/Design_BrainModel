@@ -3,9 +3,12 @@ use design_reasoning::{
     sanitize_factors,
 };
 
+pub const ENGINE_VERSION: &str = design_reasoning::Phase1Engine::ENGINE_VERSION;
+
 pub fn run_phase1_matrix(
     config: crate::Phase1Config,
 ) -> (Vec<crate::Phase1RawRow>, Vec<crate::Phase1SummaryRow>) {
+    println!("PHASE1_ENGINE_VERSION: {ENGINE_VERSION}");
     run_phase1_matrix_impl(config)
 }
 
@@ -31,28 +34,39 @@ fn run_phase1_variant(
     config: crate::Phase1Config,
     variant: crate::Phase1Variant,
 ) -> (Vec<crate::Phase1RawRow>, Vec<crate::Phase1SummaryRow>) {
+    const HV_STOP_WINDOW: usize = 10;
+    const HV_STOP_EPS: f64 = 1e-6;
     let shm = hybrid_vm::HybridVM::default_shm();
     let chm = crate::runtime::trace_helpers::make_dense_trace_chm(&shm, config.seed);
     let field = field_engine::FieldEngine::new(256);
-    let mut hybrid_vm = match hybrid_vm::HybridVM::with_default_memory(hybrid_vm::StructuralEvaluator::default()) {
-        Ok(vm) => vm,
-        Err(_) => return (Vec::new(), Vec::new()),
-    };
-    let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
+    let mut hybrid_vm =
+        match hybrid_vm::HybridVM::with_default_memory(hybrid_vm::StructuralEvaluator::default()) {
+            Ok(vm) => vm,
+            Err(_) => return (Vec::new(), Vec::new()),
+        };
+    let mut frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
+        config.seed,
+    )];
     let mut lambda = 0.5f64;
-    let mut field_cache: std::collections::BTreeMap<(u128, u128, usize, usize), field_engine::FieldVector> =
-        std::collections::BTreeMap::new();
+    let mut field_cache: std::collections::BTreeMap<
+        (u128, u128, usize, usize),
+        field_engine::FieldVector,
+    > = std::collections::BTreeMap::new();
     let mut field_cache_order: std::collections::VecDeque<(u128, u128, usize, usize)> =
         std::collections::VecDeque::new();
     let mut raw_rows = Vec::new();
     let mut summary_rows = Vec::new();
+    let mut delta_hv_window = std::collections::VecDeque::<f64>::new();
 
     for depth in 1..=config.depth.max(1) {
         let target_field = crate::build_target_field(&field, &shm, &frontier[0], lambda);
         let mut depth_category_counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
-        let mut candidates: Vec<(memory_space::DesignState, core_types::ObjectiveVector, memory_space::Uuid)> =
-            Vec::new();
+        let mut candidates: Vec<(
+            memory_space::DesignState,
+            core_types::ObjectiveVector,
+            memory_space::Uuid,
+        )> = Vec::new();
 
         for (state_idx, state) in frontier.iter().enumerate() {
             let (selected_rules, _, _) = crate::runtime::trace_helpers::select_rules_category_soft(
@@ -66,7 +80,10 @@ fn run_phase1_variant(
                 evaluate_state_for_phase1(state, &mut hybrid_vm, &chm, &field, &target_field);
             for rule in selected_rules {
                 *depth_category_counts
-                    .entry(crate::runtime::trace_helpers::rule_category_name(&rule.category).to_string())
+                    .entry(
+                        crate::runtime::trace_helpers::rule_category_name(&rule.category)
+                            .to_string(),
+                    )
                     .or_insert(0) += 1;
                 let new_state = crate::apply_atomic(rule, state);
                 let key = (new_state.id.as_u128(), rule.id.as_u128(), depth, state_idx);
@@ -101,18 +118,28 @@ fn run_phase1_variant(
         );
         let mut front_map: std::collections::BTreeMap<
             memory_space::StateId,
-            (memory_space::DesignState, core_types::ObjectiveVector, memory_space::Uuid),
+            (
+                memory_space::DesignState,
+                core_types::ObjectiveVector,
+                memory_space::Uuid,
+            ),
         > = std::collections::BTreeMap::new();
         for (state, obj, rid) in candidates {
             front_map.entry(state.id).or_insert((state, obj, rid));
         }
-        let front_entries: Vec<(memory_space::DesignState, core_types::ObjectiveVector, memory_space::Uuid)> =
-            front_map.into_values().collect();
+        let front_entries: Vec<(
+            memory_space::DesignState,
+            core_types::ObjectiveVector,
+            memory_space::Uuid,
+        )> = front_map.into_values().collect();
         let front_objs = front_entries
             .iter()
             .map(|(_, o, _)| o.clone())
             .collect::<Vec<_>>();
-        let scores = crate::engine::normalization::soft_dominance_scores(&front_objs, crate::SOFT_PARETO_TEMPERATURE);
+        let scores = crate::engine::normalization::soft_dominance_scores(
+            &front_objs,
+            crate::SOFT_PARETO_TEMPERATURE,
+        );
         let mut order: Vec<usize> = (0..front_entries.len()).collect();
         order.sort_by(|&li, &ri| {
             scores[ri]
@@ -125,7 +152,11 @@ fn run_phase1_variant(
                 })
                 .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
         });
-        let front: Vec<(memory_space::DesignState, core_types::ObjectiveVector, memory_space::Uuid)> = order
+        let front: Vec<(
+            memory_space::DesignState,
+            core_types::ObjectiveVector,
+            memory_space::Uuid,
+        )> = order
             .into_iter()
             .map(|idx| front_entries[idx].clone())
             .collect();
@@ -172,7 +203,8 @@ fn run_phase1_variant(
                 inconsistency,
             });
             let phase2_triggered = scs_v1_1 >= 0.72 && cls <= 0.50 && inconsistency <= 0.40;
-            let phase2_false_trigger_proxy = phase2_triggered && dep_metrics.dependency_consistency < 0.50;
+            let phase2_false_trigger_proxy =
+                phase2_triggered && dep_metrics.dependency_consistency < 0.50;
             raw_rows.push(crate::Phase1RawRow {
                 variant: variant.name().to_string(),
                 depth,
@@ -198,7 +230,8 @@ fn run_phase1_variant(
             });
         }
 
-        let entropy = crate::runtime::trace_helpers::shannon_entropy_from_counts(&depth_category_counts);
+        let entropy =
+            crate::runtime::trace_helpers::shannon_entropy_from_counts(&depth_category_counts);
         lambda = crate::runtime::trace_helpers::update_lambda_entropy(
             lambda,
             entropy,
@@ -208,13 +241,50 @@ fn run_phase1_variant(
             config.lambda_min,
             1.0,
         );
-        frontier = front
-            .into_iter()
-            .take(beam_take)
-            .map(|(s, _, _)| s)
-            .collect();
+        if config.hv_guided {
+            let select_front = front
+                .iter()
+                .map(|(s, o, _)| (s.clone(), o.clone()))
+                .collect::<Vec<_>>();
+            let select_norms = normalized_front
+                .iter()
+                .map(|v| crate::ObjectiveNorm(*v))
+                .collect::<Vec<_>>();
+            let (selected, current_hv, delta_hv_selected) =
+                crate::engine::pareto::select_beam_hv_guided_norm(
+                    select_front,
+                    select_norms,
+                    beam_take,
+                );
+            eprintln!(
+                "hv_guided iteration={} current_HV={:.8} delta_HV_selected={:.8} frontier_size={}",
+                depth,
+                current_hv,
+                delta_hv_selected,
+                selected.len()
+            );
+            delta_hv_window.push_back(delta_hv_selected);
+            if delta_hv_window.len() > HV_STOP_WINDOW {
+                delta_hv_window.pop_front();
+            }
+            frontier = selected.into_iter().map(|(s, _)| s).collect();
+        } else {
+            frontier = front
+                .into_iter()
+                .take(beam_take)
+                .map(|(s, _, _)| s)
+                .collect();
+        }
         if frontier.is_empty() {
-            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(config.seed)];
+            frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
+                config.seed,
+            )];
+        }
+        if config.hv_guided && delta_hv_window.len() == HV_STOP_WINDOW {
+            let mean_delta = delta_hv_window.iter().sum::<f64>() / HV_STOP_WINDOW as f64;
+            if mean_delta < HV_STOP_EPS {
+                break;
+            }
         }
         let _ = normalized_depth;
     }
@@ -275,7 +345,10 @@ fn normalize_phase1_vectors(objs: &[core_types::ObjectiveVector]) -> Vec<[f64; 4
         return Vec::new();
     }
     let eps = 1e-6;
-    let arrs = objs.iter().map(crate::runtime::trace_helpers::obj_to_arr).collect::<Vec<_>>();
+    let arrs = objs
+        .iter()
+        .map(crate::runtime::trace_helpers::obj_to_arr)
+        .collect::<Vec<_>>();
     let mut meds = [0.0; 4];
     let mut mads = [0.0; 4];
     for i in 0..4 {
@@ -296,7 +369,8 @@ fn normalize_phase1_vectors(objs: &[core_types::ObjectiveVector]) -> Vec<[f64; 4
 }
 
 fn build_design_factors(state: &memory_space::DesignState) -> Vec<DesignFactor> {
-    let mut deps_by_id: std::collections::BTreeMap<u128, Vec<String>> = std::collections::BTreeMap::new();
+    let mut deps_by_id: std::collections::BTreeMap<u128, Vec<String>> =
+        std::collections::BTreeMap::new();
     for node in state.graph.nodes().values() {
         deps_by_id.entry(node.id.as_u128()).or_default();
     }
