@@ -7,6 +7,11 @@ use std::io::{BufRead, BufReader, BufWriter, Write};
 use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
+use hybrid_vm::{
+    ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
+    rank_frontier_by_semantic,
+};
+use semantic_dhm::CausalEdge;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 
@@ -32,6 +37,8 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
+        #[arg(long = "semantic-rank", default_value_t = false)]
+        semantic_rank: bool,
     },
     Explain {
         #[arg(long, default_value_t = 42)]
@@ -42,6 +49,8 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
+        #[arg(long = "semantic-rank", default_value_t = false)]
+        semantic_rank: bool,
     },
     Simulate {
         #[arg(long, default_value_t = 42)]
@@ -52,6 +61,8 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
+        #[arg(long = "semantic-rank", default_value_t = false)]
+        semantic_rank: bool,
     },
     Clear,
     Adopt,
@@ -192,19 +203,22 @@ fn run() -> Result<(), String> {
             beam_width,
             max_steps,
             hv_guided,
-        } => run_analyze(seed, beam_width, max_steps, hv_guided),
+            semantic_rank,
+        } => run_analyze(seed, beam_width, max_steps, hv_guided, semantic_rank),
         Commands::Explain {
             seed,
             beam_width,
             max_steps,
             hv_guided,
-        } => run_explain(seed, beam_width, max_steps, hv_guided),
+            semantic_rank,
+        } => run_explain(seed, beam_width, max_steps, hv_guided, semantic_rank),
         Commands::Simulate {
             seed,
             beam_width,
             max_steps,
             hv_guided,
-        } => run_simulate(seed, beam_width, max_steps, hv_guided),
+            semantic_rank,
+        } => run_simulate(seed, beam_width, max_steps, hv_guided, semantic_rank),
         Commands::Clear => render_success(
             "clear",
             json!({"cleared": true}),
@@ -244,8 +258,14 @@ fn run() -> Result<(), String> {
     }
 }
 
-fn run_analyze(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+fn run_analyze(
+    seed: u64,
+    beam_width: usize,
+    max_steps: usize,
+    hv_guided: bool,
+    semantic_rank: bool,
+) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
     render_success(
         "analyze",
         payload,
@@ -257,8 +277,14 @@ fn run_analyze(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) 
     )
 }
 
-fn run_explain(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+fn run_explain(
+    seed: u64,
+    beam_width: usize,
+    max_steps: usize,
+    hv_guided: bool,
+    semantic_rank: bool,
+) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
     render_success(
         "explain",
         json!({
@@ -273,8 +299,14 @@ fn run_explain(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) 
     )
 }
 
-fn run_simulate(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+fn run_simulate(
+    seed: u64,
+    beam_width: usize,
+    max_steps: usize,
+    hv_guided: bool,
+    semantic_rank: bool,
+) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
     render_success(
         "simulate",
         json!({
@@ -289,7 +321,13 @@ fn run_simulate(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool)
     )
 }
 
-fn analyze_payload(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<Value, String> {
+fn analyze_payload(
+    seed: u64,
+    beam_width: usize,
+    max_steps: usize,
+    hv_guided: bool,
+    semantic_rank: bool,
+) -> Result<Value, String> {
     if beam_width == 0 {
         return Err("beam_width must be > 0".to_string());
     }
@@ -316,6 +354,7 @@ fn analyze_payload(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bo
     let frontier = pareto_frontier_by_case_id(&objective_cases);
     let frontier_hv = hypervolume_4d_from_origin(&frontier);
     let hash = frontier_hash(&frontier);
+    let rank_map = pareto_rank_map(&objective_cases);
 
     let drafts = objective_cases
         .iter()
@@ -327,26 +366,133 @@ fn analyze_payload(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bo
             })
         })
         .collect::<Vec<_>>();
-    let frontier_cases = frontier
-        .iter()
-        .map(|c| {
-            json!({
-                "case_id": c.case_id,
-                "category": c.category,
-                "objective": c.objective
+    let frontier_cases = if semantic_rank {
+        let semantic_input = frontier
+            .iter()
+            .map(|case| {
+                let pareto_rank = rank_map.get(&case.case_id).copied().unwrap_or(1);
+                SemanticObjectiveCase {
+                    case_id: case.case_id.clone(),
+                    pareto_rank,
+                    total_score: phase1_total_score(case),
+                    l2: build_case_l2(case),
+                }
             })
-        })
-        .collect::<Vec<_>>();
+            .collect::<Vec<_>>();
+        let ranked = rank_frontier_by_semantic(semantic_input);
+        ranked
+            .iter()
+            .map(|r| {
+                json!({
+                    "case_id": r.objective.case_id,
+                    "category": frontier
+                        .iter()
+                        .find(|c| c.case_id == r.objective.case_id)
+                        .map(|c| c.category.clone())
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    "pareto_rank": r.objective.pareto_rank,
+                    "total_score": round6(r.objective.total_score),
+                    "objective": frontier
+                        .iter()
+                        .find(|c| c.case_id == r.objective.case_id)
+                        .map(|c| json!(c.objective))
+                        .unwrap_or(Value::Null),
+                    "semantic_coherence": {
+                        "dependency": round6(r.coherence.dependency),
+                        "abstraction": round6(r.coherence.abstraction),
+                        "polarity": round6(r.coherence.polarity),
+                        "contradiction": round6(r.coherence.contradiction),
+                        "coverage": round6(r.coherence.coverage),
+                        "total_score": round6(r.coherence.total_score)
+                    }
+                })
+            })
+            .collect::<Vec<_>>()
+    } else {
+        frontier
+            .iter()
+            .map(|c| {
+                json!({
+                    "case_id": c.case_id,
+                    "category": c.category,
+                    "objective": c.objective
+                })
+            })
+            .collect::<Vec<_>>()
+    };
 
     Ok(json!({
         "objective_vector_version": "v1.1",
         "policy": if hv_guided { "Guided" } else { "Legacy" },
+        "semantic_rank": semantic_rank,
         "drafts": drafts,
+        "cases": frontier_cases,
         "frontier": frontier_cases,
         "frontier_size": frontier.len(),
         "frontier_hash": hash,
         "hypervolume": round6(frontier_hv)
     }))
+}
+
+fn phase1_total_score(case: &ObjectiveCase) -> f64 {
+    case.objective.clamped.iter().sum::<f64>() / 4.0
+}
+
+fn build_case_l2(case: &ObjectiveCase) -> ConceptUnitV2 {
+    let v = case.objective.clamped;
+    let score_to_strength = |x: f64| ((x * 2.0 - 1.0).clamp(-1.0, 1.0)) as f32;
+    let score_to_weight = |x: f64| (x * 2.0 - 1.0).clamp(-1.0, 1.0);
+    let mut h: u64 = 0xcbf29ce484222325;
+    fnv1a_update(&mut h, case.case_id.as_bytes());
+    let base = (h % 100_000) as u128 + 1;
+    ConceptUnitV2 {
+        id: ConceptId(h),
+        derived_requirements: vec![
+            DerivedRequirement {
+                kind: RequirementKind::Performance,
+                strength: score_to_strength(v[0]),
+            },
+            DerivedRequirement {
+                kind: RequirementKind::Memory,
+                strength: score_to_strength(v[1]),
+            },
+            DerivedRequirement {
+                kind: RequirementKind::Security,
+                strength: score_to_strength(v[2]),
+            },
+            DerivedRequirement {
+                kind: RequirementKind::Reliability,
+                strength: score_to_strength((v[0] + v[1]) * 0.5),
+            },
+            DerivedRequirement {
+                kind: RequirementKind::NoCloud,
+                strength: score_to_strength(v[3]),
+            },
+        ],
+        causal_links: vec![
+            CausalEdge {
+                from: L1Id(base),
+                to: L1Id(base + 1),
+                weight: score_to_weight(v[0]),
+            },
+            CausalEdge {
+                from: L1Id(base + 1),
+                to: L1Id(base + 2),
+                weight: score_to_weight(v[1]),
+            },
+            CausalEdge {
+                from: L1Id(base + 2),
+                to: L1Id(base + 3),
+                weight: score_to_weight(v[2]),
+            },
+            CausalEdge {
+                from: L1Id(base + 3),
+                to: L1Id(base + 4),
+                weight: score_to_weight(v[3]),
+            },
+        ],
+        stability_score: phase1_total_score(case),
+    }
 }
 
 fn run_engine_with_policy(
@@ -1113,6 +1259,17 @@ fn pareto_ranks(cases: &[ObjectiveCase]) -> Vec<Vec<ObjectiveCase>> {
         ranks.push(frontier);
     }
     ranks
+}
+
+fn pareto_rank_map(cases: &[ObjectiveCase]) -> BTreeMap<String, usize> {
+    let mut map = BTreeMap::new();
+    for (rank_idx, layer) in pareto_ranks(cases).into_iter().enumerate() {
+        let rank = rank_idx + 1;
+        for c in layer {
+            map.insert(c.case_id, rank);
+        }
+    }
+    map
 }
 
 fn dominates_objective(a: &ObjectiveVectorV1_1, b: &ObjectiveVectorV1_1) -> bool {

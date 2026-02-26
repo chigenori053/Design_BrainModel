@@ -19,6 +19,7 @@ use recomposer::{
 use semantic_dhm::{ConceptUnit, SemanticDhm, SemanticL1Dhm, SemanticUnitL1};
 
 mod ops;
+pub mod semantic;
 
 use serde::{Deserialize, Serialize};
 
@@ -27,9 +28,13 @@ pub use design_reasoning::{DesignHypothesis, Explanation, MeaningLayerSnapshotV2
 pub use knowledge_store::{FeedbackAction, FeedbackEntry};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
 pub use semantic_dhm::{
-    ConceptId, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode, MeaningLayerSnapshot,
-    RequirementKind, RequirementRole as L1RequirementRole, SemanticError, SemanticUnitL1Input,
-    Snapshotable, ConceptUnitV2, SemanticUnitL1V2, SemanticUnitL1Framework, SemanticUnitL2Detail,
+    ConceptId, ConceptUnitV2, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode,
+    MeaningLayerSnapshot, RequirementKind, RequirementRole as L1RequirementRole, SemanticError,
+    SemanticUnitL1Framework, SemanticUnitL1Input, SemanticUnitL1V2, SemanticUnitL2Detail,
+    Snapshotable,
+};
+pub use semantic::ranking::{
+    ObjectiveCase as SemanticObjectiveCase, RankedCase, rank_frontier_by_semantic,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
