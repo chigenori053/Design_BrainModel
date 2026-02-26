@@ -3,7 +3,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::PathBuf;
 
-use agent_core::{Phase1Config, run_phase1_matrix};
+use agent_core::{HvPolicy, Phase1Config, run_phase1_matrix};
 use serde_json::json;
 
 use crate::step0;
@@ -140,10 +140,10 @@ fn run(cfg: BatchConfig) -> Result<(), String> {
         })?;
 
         let phase1_cfg = Phase1Config {
-            depth: cfg.depth,
-            beam: cfg.beam,
+            beam_width: cfg.beam,
+            max_steps: cfg.depth,
+            hv_policy: HvPolicy::Legacy,
             seed,
-            hv_guided: false,
             norm_alpha: cfg.norm_alpha,
             alpha: cfg.alpha,
             temperature: cfg.temperature,

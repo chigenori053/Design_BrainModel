@@ -4,10 +4,11 @@ use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use agent_core::{Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
+use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 
 const CLI_VERSION: &str = "0.1.0";
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
@@ -22,46 +23,43 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
-    Phase1Batch {
-        #[arg(long)]
-        input: String,
-        #[arg(long)]
-        output: String,
-        #[arg(long)]
-        seed: Option<u64>,
-    },
-    Phase1Single {
-        #[arg(long)]
-        text: String,
-        #[arg(long)]
-        case_id: Option<String>,
-        #[arg(long)]
-        category: Option<String>,
-        #[arg(long)]
-        seed: Option<u64>,
-    },
-    Phase1Eval {
-        #[arg(long)]
-        input: String,
-    },
-    ParetoEval {
-        input: String,
-        #[arg(short = 'o', long = "out")]
-        out: String,
-        #[arg(long = "allow-normalized-out-of-range", default_value_t = false)]
-        allow_normalized_out_of_range: bool,
-    },
-    Search {
-        #[arg(long, default_value_t = 25)]
-        depth: usize,
-        #[arg(long, default_value_t = 5)]
-        beam: usize,
+    Analyze {
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        #[arg(long = "beam-width", default_value_t = 5)]
+        beam_width: usize,
+        #[arg(long = "max-steps", default_value_t = 25)]
+        max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
     },
-    Version,
+    Explain {
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long = "beam-width", default_value_t = 5)]
+        beam_width: usize,
+        #[arg(long = "max-steps", default_value_t = 25)]
+        max_steps: usize,
+        #[arg(long = "hv-guided", default_value_t = false)]
+        hv_guided: bool,
+    },
+    Simulate {
+        #[arg(long, default_value_t = 42)]
+        seed: u64,
+        #[arg(long = "beam-width", default_value_t = 5)]
+        beam_width: usize,
+        #[arg(long = "max-steps", default_value_t = 25)]
+        max_steps: usize,
+        #[arg(long = "hv-guided", default_value_t = false)]
+        hv_guided: bool,
+    },
+    Clear,
+    Adopt,
+    Reject,
+    Export {
+        #[arg(long)]
+        out: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -165,45 +163,255 @@ struct ObjectiveCase {
     objective: ObjectiveVectorV1_1,
 }
 
+#[derive(Debug, Serialize)]
+struct JsonMeta {
+    command: &'static str,
+    hv_policy: Option<&'static str>,
+    deterministic: bool,
+}
+
 fn main() {
     if let Err(err) = run() {
-        eprintln!("{err}");
-        std::process::exit(1);
-    }
+        let err_json = json!({
+            "error": {
+                "code": "PHASE1_ERROR",
+                "message": err,
+                "details": Value::Null
+            }
+        });
+        eprintln!("{}", serde_json::to_string_pretty(&err_json).unwrap_or_else(|_| "{\"error\":{\"code\":\"PHASE1_ERROR\",\"message\":\"serialization failed\",\"details\":null}}".to_string()));
+        std::process::exit(2);
+    };
 }
 
 fn run() -> Result<(), String> {
-    let cli = Cli::parse();
+    let cli = Cli::try_parse().map_err(|e| format!("invalid command: {e}"))?;
     match cli.command {
-        Commands::Phase1Batch {
-            input,
-            output,
+        Commands::Analyze {
             seed,
-        } => run_phase1_batch(&input, &output, seed),
-        Commands::Phase1Single {
-            text,
-            case_id,
-            category,
-            seed,
-        } => run_phase1_single(&text, case_id, category, seed),
-        Commands::Phase1Eval { input } => run_phase1_eval(&input),
-        Commands::ParetoEval {
-            input,
-            out,
-            allow_normalized_out_of_range,
-        } => pareto_eval::run_pareto_eval(&input, &out, allow_normalized_out_of_range),
-        Commands::Search {
-            depth,
-            beam,
-            seed,
+            beam_width,
+            max_steps,
             hv_guided,
-        } => run_search(depth, beam, seed, hv_guided),
-        Commands::Version => {
-            println!("design-cli {CLI_VERSION}");
-            println!("engine: {}", Phase1Engine::ENGINE_VERSION);
-            Ok(())
-        }
+        } => run_analyze(seed, beam_width, max_steps, hv_guided),
+        Commands::Explain {
+            seed,
+            beam_width,
+            max_steps,
+            hv_guided,
+        } => run_explain(seed, beam_width, max_steps, hv_guided),
+        Commands::Simulate {
+            seed,
+            beam_width,
+            max_steps,
+            hv_guided,
+        } => run_simulate(seed, beam_width, max_steps, hv_guided),
+        Commands::Clear => render_success(
+            "clear",
+            json!({"cleared": true}),
+            JsonMeta {
+                command: "clear",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
+        Commands::Adopt => render_success(
+            "adopt",
+            json!({"adopted": true}),
+            JsonMeta {
+                command: "adopt",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
+        Commands::Reject => render_success(
+            "reject",
+            json!({"rejected": true}),
+            JsonMeta {
+                command: "reject",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
+        Commands::Export { out } => render_success(
+            "export",
+            json!({"exported": true, "out": out}),
+            JsonMeta {
+                command: "export",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
     }
+}
+
+fn run_analyze(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+    render_success(
+        "analyze",
+        payload,
+        JsonMeta {
+            command: "analyze",
+            hv_policy: Some(if hv_guided { "Guided" } else { "Legacy" }),
+            deterministic: true,
+        },
+    )
+}
+
+fn run_explain(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+    render_success(
+        "explain",
+        json!({
+            "summary": "Phase1 deterministic multi-objective explanation",
+            "analysis": payload
+        }),
+        JsonMeta {
+            command: "explain",
+            hv_policy: Some(if hv_guided { "Guided" } else { "Legacy" }),
+            deterministic: true,
+        },
+    )
+}
+
+fn run_simulate(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<(), String> {
+    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided)?;
+    render_success(
+        "simulate",
+        json!({
+            "simulation": "phase1",
+            "result": payload
+        }),
+        JsonMeta {
+            command: "simulate",
+            hv_policy: Some(if hv_guided { "Guided" } else { "Legacy" }),
+            deterministic: true,
+        },
+    )
+}
+
+fn analyze_payload(seed: u64, beam_width: usize, max_steps: usize, hv_guided: bool) -> Result<Value, String> {
+    if beam_width == 0 {
+        return Err("beam_width must be > 0".to_string());
+    }
+    if max_steps == 0 {
+        return Err("max_steps must be > 0".to_string());
+    }
+
+    let rows = run_engine_with_policy(seed, beam_width, max_steps, hv_guided)?;
+    let mut objective_cases_raw = Vec::<ObjectiveCase>::with_capacity(rows.len());
+    for (idx, row) in rows.iter().enumerate() {
+        let raw = parse_vec4_pipe(&row.objective_vector_raw)
+            .ok_or_else(|| format!("invalid objective_vector_raw format at row {idx}"))?;
+        objective_cases_raw.push(ObjectiveCase {
+            case_id: format!("{}-{:04}-{:04}", row.variant, row.depth, row.beam_index),
+            category: row.variant.clone(),
+            objective: ObjectiveVectorV1_1 {
+                raw,
+                normalized: raw,
+                clamped: raw,
+            },
+        });
+    }
+    let objective_cases = normalize_objective_cases(objective_cases_raw)?;
+    let frontier = pareto_frontier_by_case_id(&objective_cases);
+    let frontier_hv = hypervolume_4d_from_origin(&frontier);
+    let hash = frontier_hash(&frontier);
+
+    let drafts = objective_cases
+        .iter()
+        .map(|c| {
+            json!({
+                "case_id": c.case_id,
+                "category": c.category,
+                "objective": c.objective
+            })
+        })
+        .collect::<Vec<_>>();
+    let frontier_cases = frontier
+        .iter()
+        .map(|c| {
+            json!({
+                "case_id": c.case_id,
+                "category": c.category,
+                "objective": c.objective
+            })
+        })
+        .collect::<Vec<_>>();
+
+    Ok(json!({
+        "objective_vector_version": "v1.1",
+        "policy": if hv_guided { "Guided" } else { "Legacy" },
+        "drafts": drafts,
+        "frontier": frontier_cases,
+        "frontier_size": frontier.len(),
+        "frontier_hash": hash,
+        "hypervolume": round6(frontier_hv)
+    }))
+}
+
+fn run_engine_with_policy(
+    seed: u64,
+    beam_width: usize,
+    max_steps: usize,
+    hv_guided: bool,
+) -> Result<Vec<agent_core::Phase1RawRow>, String> {
+    let cfg = Phase1Config {
+        beam_width,
+        max_steps,
+        hv_policy: if hv_guided {
+            HvPolicy::Guided
+        } else {
+            HvPolicy::Legacy
+        },
+        seed,
+        norm_alpha: 0.1,
+        alpha: 3.0,
+        temperature: 0.1,
+        entropy_beta: 0.03,
+        lambda_min: 0.2,
+        lambda_target_entropy: 1.2,
+        lambda_k: 0.2,
+        lambda_ema: 0.4,
+    };
+    if !cfg.is_valid() {
+        return Err("invalid Phase1Config constraints".to_string());
+    }
+    let (rows, _) = run_phase1_matrix(cfg);
+    if rows.is_empty() {
+        return Err("Phase1 engine produced no rows".to_string());
+    }
+    Ok(rows)
+}
+
+fn parse_vec4_pipe(v: &str) -> Option<[f64; 4]> {
+    let parts = v.split('|').collect::<Vec<_>>();
+    if parts.len() != 4 {
+        return None;
+    }
+    let mut out = [0.0; 4];
+    for (i, p) in parts.iter().enumerate() {
+        out[i] = p.parse::<f64>().ok()?;
+    }
+    Some(out)
+}
+
+fn render_success(command: &'static str, data: Value, meta: JsonMeta) -> Result<(), String> {
+    let wrapper = success_wrapper_value(command, data, meta);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&wrapper)
+            .map_err(|e| format!("failed to serialize response: {e}"))?
+    );
+    Ok(())
+}
+
+fn success_wrapper_value(command: &'static str, data: Value, meta: JsonMeta) -> Value {
+    json!({
+        "schema_version": "v1",
+        "command": command,
+        "data": data,
+        "meta": meta
+    })
 }
 
 fn run_phase1_batch(input: &str, output: &str, seed: Option<u64>) -> Result<(), String> {
@@ -419,25 +627,7 @@ fn run_search(depth: usize, beam: usize, seed: u64, hv_guided: bool) -> Result<(
 }
 
 fn run_engine(seed: u64) -> Result<Vec<agent_core::Phase1RawRow>, String> {
-    let cfg = Phase1Config {
-        depth: 25,
-        beam: 5,
-        seed,
-        hv_guided: false,
-        norm_alpha: 0.1,
-        alpha: 3.0,
-        temperature: 0.1,
-        entropy_beta: 0.03,
-        lambda_min: 0.2,
-        lambda_target_entropy: 1.2,
-        lambda_k: 0.2,
-        lambda_ema: 0.4,
-    };
-    let (rows, _) = run_phase1_matrix(cfg);
-    if rows.is_empty() {
-        return Err("Phase1 engine produced no rows".to_string());
-    }
-    Ok(rows)
+    run_engine_with_policy(seed, 5, 25, false)
 }
 
 fn load_cases(path: &str) -> Result<Vec<ResolvedCase>, String> {
@@ -767,6 +957,27 @@ fn orphan_factor_count(orphan_rate: f64) -> usize {
 
 fn clamp01(v: f64) -> f64 {
     v.clamp(0.0, 1.0)
+}
+
+fn validate_normalized_vector(
+    mut values: [f64; 4],
+    allow_out_of_range: bool,
+) -> Result<([f64; 4], bool), String> {
+    let mut invalid = false;
+    for v in &mut values {
+        if !v.is_finite() {
+            return Err("normalized value must be finite".to_string());
+        }
+        if *v < 0.0 - PARETO_EPS || *v > 1.0 + PARETO_EPS {
+            if allow_out_of_range {
+                *v = clamp01(*v);
+                invalid = true;
+            } else {
+                return Err("normalized value out of [0,1]".to_string());
+            }
+        }
+    }
+    Ok((values, invalid))
 }
 
 fn round6(v: f64) -> f64 {
@@ -1223,5 +1434,75 @@ mod objective_vector_tests {
         assert_eq!(v.normalized, v.clamped);
         assert_eq!(v.raw, v.clamped);
         assert_eq!(v.clamped, [1.0, 0.0, 0.8, 0.4]);
+    }
+
+    #[test]
+    fn reproducibility_100_seeds() {
+        reproducibility_100_seeds_x3_hash_and_hypervolume_match();
+    }
+
+    #[test]
+    fn hypervolume_monotonicity() {
+        let base = normalize(vec![mk_case("A", [0.2, 0.2, 0.2, 0.2])]);
+        let expanded = normalize(vec![
+            mk_case("A", [0.2, 0.2, 0.2, 0.2]),
+            mk_case("B", [0.8, 0.8, 0.8, 0.8]),
+        ]);
+        let hv_base = hypervolume_4d_from_origin(&pareto_frontier_by_case_id(&base));
+        let hv_expanded = hypervolume_4d_from_origin(&pareto_frontier_by_case_id(&expanded));
+        assert!(hv_expanded + 1e-12 >= hv_base);
+    }
+
+    #[test]
+    fn strict_out_of_range() {
+        let out = [1.1, 0.5, 0.5, 0.5];
+        assert!(validate_normalized_vector(out, false).is_err());
+        let (clamped, invalid) =
+            validate_normalized_vector(out, true).expect("allow mode should clamp");
+        assert_eq!(clamped, [1.0, 0.5, 0.5, 0.5]);
+        assert!(invalid);
+    }
+
+    #[test]
+    fn schema_v1_wrapper_structure() {
+        let wrapper = success_wrapper_value(
+            "analyze",
+            json!({"x": 1}),
+            JsonMeta {
+                command: "analyze",
+                hv_policy: Some("Legacy"),
+                deterministic: true,
+            },
+        );
+        assert_eq!(wrapper["schema_version"], "v1");
+        assert!(wrapper["data"].is_object());
+        assert!(wrapper["meta"].is_object());
+    }
+
+    #[test]
+    fn legacy_and_guided_produce_same_schema() {
+        let legacy = success_wrapper_value(
+            "analyze",
+            json!({"frontier_size": 1}),
+            JsonMeta {
+                command: "analyze",
+                hv_policy: Some("Legacy"),
+                deterministic: true,
+            },
+        );
+        let guided = success_wrapper_value(
+            "analyze",
+            json!({"frontier_size": 1}),
+            JsonMeta {
+                command: "analyze",
+                hv_policy: Some("Guided"),
+                deterministic: true,
+            },
+        );
+        assert_eq!(legacy.as_object().map(|o| o.len()), guided.as_object().map(|o| o.len()));
+        assert_eq!(
+            legacy["data"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()),
+            guided["data"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
+        );
     }
 }

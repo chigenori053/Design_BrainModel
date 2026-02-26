@@ -8,7 +8,6 @@ pub const ENGINE_VERSION: &str = design_reasoning::Phase1Engine::ENGINE_VERSION;
 pub fn run_phase1_matrix(
     config: crate::Phase1Config,
 ) -> (Vec<crate::Phase1RawRow>, Vec<crate::Phase1SummaryRow>) {
-    println!("PHASE1_ENGINE_VERSION: {ENGINE_VERSION}");
     run_phase1_matrix_impl(config)
 }
 
@@ -58,7 +57,7 @@ fn run_phase1_variant(
     let mut summary_rows = Vec::new();
     let mut delta_hv_window = std::collections::VecDeque::<f64>::new();
 
-    for depth in 1..=config.depth.max(1) {
+    for depth in 1..=config.max_steps.max(1) {
         let target_field = crate::build_target_field(&field, &shm, &frontier[0], lambda);
         let mut depth_category_counts: std::collections::BTreeMap<String, usize> =
             std::collections::BTreeMap::new();
@@ -71,7 +70,7 @@ fn run_phase1_variant(
         for (state_idx, state) in frontier.iter().enumerate() {
             let (selected_rules, _, _) = crate::runtime::trace_helpers::select_rules_category_soft(
                 hybrid_vm::HybridVM::applicable_rules(&shm, state),
-                (config.beam.max(1) * 5).max(1),
+                (config.beam_width.max(1) * 5).max(1),
                 config.alpha,
                 config.temperature,
                 config.entropy_beta,
@@ -136,22 +135,31 @@ fn run_phase1_variant(
             .iter()
             .map(|(_, o, _)| o.clone())
             .collect::<Vec<_>>();
-        let scores = crate::engine::normalization::soft_dominance_scores(
-            &front_objs,
-            crate::SOFT_PARETO_TEMPERATURE,
-        );
         let mut order: Vec<usize> = (0..front_entries.len()).collect();
-        order.sort_by(|&li, &ri| {
-            scores[ri]
-                .partial_cmp(&scores[li])
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    crate::scalar_score(&front_objs[ri])
-                        .partial_cmp(&crate::scalar_score(&front_objs[li]))
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
-        });
+        if matches!(config.hv_policy, crate::HvPolicy::Legacy) {
+            order.sort_by(|&li, &ri| {
+                crate::scalar_score(&front_objs[ri])
+                    .partial_cmp(&crate::scalar_score(&front_objs[li]))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
+            });
+        } else {
+            let scores = crate::engine::normalization::soft_dominance_scores(
+                &front_objs,
+                crate::SOFT_PARETO_TEMPERATURE,
+            );
+            order.sort_by(|&li, &ri| {
+                scores[ri]
+                    .partial_cmp(&scores[li])
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| {
+                        crate::scalar_score(&front_objs[ri])
+                            .partial_cmp(&crate::scalar_score(&front_objs[li]))
+                            .unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
+            });
+        }
         let front: Vec<(
             memory_space::DesignState,
             core_types::ObjectiveVector,
@@ -177,7 +185,7 @@ fn run_phase1_variant(
             collapse_flag,
         });
 
-        let beam_take = config.beam.max(1).min(front.len());
+        let beam_take = config.beam_width.max(1).min(front.len());
         let mut id_to_norm: std::collections::BTreeMap<u128, [f64; 4]> =
             std::collections::BTreeMap::new();
         for ((state, _, _), norm) in front.iter().zip(normalized_front.iter()) {
@@ -241,7 +249,7 @@ fn run_phase1_variant(
             config.lambda_min,
             1.0,
         );
-        if config.hv_guided {
+        if matches!(config.hv_policy, crate::HvPolicy::Guided) {
             let select_front = front
                 .iter()
                 .map(|(s, o, _)| (s.clone(), o.clone()))
@@ -280,7 +288,9 @@ fn run_phase1_variant(
                 config.seed,
             )];
         }
-        if config.hv_guided && delta_hv_window.len() == HV_STOP_WINDOW {
+        if matches!(config.hv_policy, crate::HvPolicy::Guided)
+            && delta_hv_window.len() == HV_STOP_WINDOW
+        {
             let mean_delta = delta_hv_window.iter().sum::<f64>() / HV_STOP_WINDOW as f64;
             if mean_delta < HV_STOP_EPS {
                 break;

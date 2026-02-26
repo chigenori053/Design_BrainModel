@@ -338,12 +338,18 @@ impl Phase1Variant {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HvPolicy {
+    Legacy,
+    Guided,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Phase1Config {
-    pub depth: usize,
-    pub beam: usize,
+    pub beam_width: usize,
+    pub max_steps: usize,
+    pub hv_policy: HvPolicy,
     pub seed: u64,
-    pub hv_guided: bool,
     pub norm_alpha: f64,
     pub alpha: f64,
     pub temperature: f64,
@@ -352,6 +358,12 @@ pub struct Phase1Config {
     pub lambda_target_entropy: f64,
     pub lambda_k: f64,
     pub lambda_ema: f64,
+}
+
+impl Phase1Config {
+    pub fn is_valid(&self) -> bool {
+        self.beam_width > 0 && self.max_steps > 0
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
