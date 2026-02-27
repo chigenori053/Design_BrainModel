@@ -149,6 +149,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "analysis_tools"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
 name = "android-activity"
 version = "0.6.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -913,6 +920,7 @@ name = "design_cli"
 version = "0.1.0"
 dependencies = [
  "agent_core",
+ "analysis_tools",
  "clap",
  "design_reasoning",
  "hybrid_vm",

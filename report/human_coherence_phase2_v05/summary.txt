@@ -1,0 +1,17 @@
+runs=300
+corr_hc_total_mean=0.416901
+corr_hc_total_stddev=0.022980
+corr_hc_total_min=0.390670
+corr_hc_total_max=0.453645
+mean_hc_frontier=0.595458
+mean_hc_non_frontier=0.460275
+delta_hc_frontier_non_frontier=0.135183
+hc_mean_all=0.464236
+hc_stddev_all=0.148065
+hc_min_all=0.303507
+hc_max_all=0.842566
+AC1_corr_range_phase25=PASS
+AC2_delta=PASS
+AC3_guardrail=PASS
+AC4_deterministic_100_runs=PASS
+AC_degeneration_guard=PASS

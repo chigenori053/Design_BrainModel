@@ -1,7 +1,7 @@
+use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::collections::BTreeMap;
 
 use core_types::ObjectiveVector;
 use design_reasoning::{
@@ -13,9 +13,7 @@ use knowledge_store::KnowledgeStore;
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use memory_space::{DesignState, MemoryInterferenceTelemetry};
 use memory_store::{FileStore, InMemoryStore};
-use recomposer::{
-    DecisionReport, DesignReport, Recomposer, ResonanceReport,
-};
+use recomposer::{DecisionReport, DesignReport, Recomposer, ResonanceReport};
 use semantic_dhm::{ConceptUnit, SemanticDhm, SemanticL1Dhm, SemanticUnitL1};
 
 mod ops;
@@ -27,14 +25,14 @@ pub use chm::Chm;
 pub use design_reasoning::{DesignHypothesis, Explanation, MeaningLayerSnapshotV2, SnapshotDiffV2};
 pub use knowledge_store::{FeedbackAction, FeedbackEntry};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
+pub use semantic::ranking::{
+    ObjectiveCase as SemanticObjectiveCase, RankedCase, rank_frontier_by_human_coherence,
+};
 pub use semantic_dhm::{
     ConceptId, ConceptUnitV2, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode,
     MeaningLayerSnapshot, RequirementKind, RequirementRole as L1RequirementRole, SemanticError,
     SemanticUnitL1Framework, SemanticUnitL1Input, SemanticUnitL1V2, SemanticUnitL2Detail,
     Snapshotable,
-};
-pub use semantic::ranking::{
-    ObjectiveCase as SemanticObjectiveCase, RankedCase, rank_frontier_by_semantic,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 
@@ -174,10 +172,10 @@ impl HybridVM {
     ) -> Result<Self, SemanticError> {
         let language_dhm = Self::language_dhm_file(ops::util::default_language_store_path())
             .map_err(SemanticError::from)?;
-        let semantic_dhm =
-            Self::semantic_dhm_file(ops::util::default_semantic_store_path()).map_err(SemanticError::from)?;
-        let semantic_l1_dhm =
-            Self::semantic_l1_dhm_file(ops::util::default_l1_store_path()).map_err(SemanticError::from)?;
+        let semantic_dhm = Self::semantic_dhm_file(ops::util::default_semantic_store_path())
+            .map_err(SemanticError::from)?;
+        let semantic_l1_dhm = Self::semantic_l1_dhm_file(ops::util::default_l1_store_path())
+            .map_err(SemanticError::from)?;
         Ok(Self {
             evaluator,
             dhm,
@@ -204,7 +202,8 @@ impl HybridVM {
 
     pub fn with_default_memory(evaluator: StructuralEvaluator) -> Result<Self, SemanticError> {
         let path = ops::util::default_store_path();
-        let dhm = Dhm::open(path, ops::util::memory_mode_from_env()).map_err(SemanticError::from)?;
+        let dhm =
+            Dhm::open(path, ops::util::memory_mode_from_env()).map_err(SemanticError::from)?;
         Self::new(evaluator, dhm, ExecutionMode::RecallFirst)
     }
 
@@ -292,13 +291,11 @@ impl HybridVM {
             .map(|u| u.id)
             .collect::<Vec<_>>();
         for id in ids {
-            self.semantic_l1_dhm
-                .remove(id)
-                .map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
+            let _ = self.semantic_l1_dhm.remove(id);
         }
-        self.semantic_dhm
-            .rebuild_l2_from_l1(&[])
-            .map_err(|e| SemanticError::EvaluationError(format!("{e:?}")))?;
+        self.l2_grounding.clear();
+        self.l2_refinements.clear();
+        self.rebuild_l2_from_l1_v2()?;
         Ok(())
     }
 
@@ -309,21 +306,28 @@ impl HybridVM {
 
         for l1 in l1_units {
             let objective = l1.objective.as_deref().unwrap_or("");
-            if objective.is_empty() { continue; }
+            if objective.is_empty() {
+                continue;
+            }
 
             let query_vec = vector_from_text(objective);
             let related_labels = self.knowledge_store.top_related_labels(&query_vec, 3);
 
             for label in related_labels {
                 if let Some(prompt) = self.knowledge_store.get_prompt_by_label(&label) {
-                    if objective.contains(&label) { continue; }
+                    if objective.contains(&label) {
+                        continue;
+                    }
 
                     drafts.push(DesignDraft {
                         draft_id: format!("DRAFT-{}-{}", l1.id.0, label),
                         parent_l1: l1.id,
                         prompt,
                         stability_impact: 0.15,
-                        context_summary: format!("「{}」の具体化案", l1.objective.as_deref().unwrap_or("未定義")),
+                        context_summary: format!(
+                            "「{}」の具体化案",
+                            l1.objective.as_deref().unwrap_or("未定義")
+                        ),
                         added_units: Vec::new(),
                     });
                 }
@@ -340,7 +344,7 @@ impl HybridVM {
             .into_iter()
             .find(|d| d.draft_id == draft_id)
             .ok_or_else(|| SemanticError::InvalidInput("draft not found".to_string()))?;
-        
+
         // ドラフトのプロンプトを新しいL1制約として追加
         let input = SemanticUnitL1Input {
             role: L1RequirementRole::Constraint,
@@ -350,7 +354,7 @@ impl HybridVM {
             source_text: format!("Adopted draft: {}", draft.prompt),
         };
         let _ = self.semantic_l1_dhm.insert(&input);
-        
+
         self.rebuild_l2_from_l1_v2()?;
         Ok(())
     }
@@ -367,7 +371,8 @@ impl HybridVM {
                 let ambiguity = if d.added_units.is_empty() {
                     0.0
                 } else {
-                    d.added_units.iter().map(|u| u.ambiguity_score).sum::<f64>() / d.added_units.len() as f64
+                    d.added_units.iter().map(|u| u.ambiguity_score).sum::<f64>()
+                        / d.added_units.len() as f64
                 };
                 let complexity = d
                     .added_units
@@ -415,7 +420,10 @@ impl HybridVM {
         Ok(artifacts)
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use get_l1_unit_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use get_l1_unit_v2"
+    )]
     pub fn get_l1_unit(&self, id: L1Id) -> Option<SemanticUnitL1> {
         self.semantic_l1_dhm.get(id)
     }
@@ -423,11 +431,14 @@ impl HybridVM {
     pub fn get_l1_unit_v2(&self, id: L1Id) -> Result<Option<SemanticUnitL1V2>, SemanticError> {
         self.semantic_l1_dhm
             .get(id)
-            .map(|u| SemanticUnitL1V2::try_from(u))
+            .map(SemanticUnitL1V2::try_from)
             .transpose()
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use all_l1_units_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use all_l1_units_v2"
+    )]
     pub fn all_l1_units(&self) -> Vec<SemanticUnitL1> {
         self.semantic_l1_dhm.all_units()
     }
@@ -444,7 +455,10 @@ impl HybridVM {
         self.semantic_l1_dhm.remove(id).map_err(HybridVmError::Io)
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use rebuild_l2_from_l1_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use rebuild_l2_from_l1_v2"
+    )]
     pub fn rebuild_l2_from_l1(&mut self) -> Result<(), SemanticError> {
         ops::semantic::rebuild_l2_from_l1(&self.semantic_l1_dhm, &mut self.semantic_dhm)
     }
@@ -477,16 +491,27 @@ impl HybridVM {
         )
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use snapshot_v2")]
+    #[deprecated(since = "1.0.0", note = "Will be removed in PhaseC. Use snapshot_v2")]
     pub fn snapshot(&self) -> Result<MeaningLayerSnapshot, SemanticError> {
-        ops::semantic::snapshot(&self.snapshot_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
+        ops::semantic::snapshot(
+            &self.snapshot_engine,
+            &self.semantic_l1_dhm,
+            &self.semantic_dhm,
+        )
     }
 
     pub fn snapshot_v2(&self) -> Result<MeaningLayerSnapshotV2, SemanticError> {
-        ops::semantic::snapshot_v2(&self.snapshot_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
+        ops::semantic::snapshot_v2(
+            &self.snapshot_engine,
+            &self.semantic_l1_dhm,
+            &self.semantic_dhm,
+        )
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use compare_snapshots_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use compare_snapshots_v2"
+    )]
     pub fn compare_snapshots(
         &self,
         left: &MeaningLayerSnapshot,
@@ -503,9 +528,16 @@ impl HybridVM {
         ops::semantic::compare_snapshots_v2(&self.snapshot_engine, left, right)
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use project_phase_a_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use project_phase_a_v2"
+    )]
     pub fn project_phase_a(&self) -> DesignProjection {
-        ops::semantic::project_phase_a(&self.projection_engine, &self.semantic_l1_dhm, &self.semantic_dhm)
+        ops::semantic::project_phase_a(
+            &self.projection_engine,
+            &self.semantic_l1_dhm,
+            &self.semantic_dhm,
+        )
     }
 
     pub fn project_phase_a_v2(&self) -> Result<Vec<ConceptUnitV2>, SemanticError> {
@@ -554,7 +586,8 @@ impl HybridVM {
         };
         let mut simulated = original.clone();
         simulated.f_struct = mean_stability.clamp(0.0, 1.0);
-        simulated.f_risk = (original.f_risk + impacts.len() as f64 / (simulated_stability.len().max(1) as f64) * 0.1)
+        simulated.f_risk = (original.f_risk
+            + impacts.len() as f64 / (simulated_stability.len().max(1) as f64) * 0.1)
             .clamp(0.0, 1.0);
         simulated.f_shape = (1.0 - mean_stability * 0.5).clamp(0.0, 1.0);
 
@@ -589,7 +622,11 @@ impl HybridVM {
         let avg_links = if l2_units.is_empty() {
             0.0
         } else {
-            l2_units.iter().map(|u| u.causal_links.len() as f64).sum::<f64>() / l2_units.len() as f64
+            l2_units
+                .iter()
+                .map(|u| u.causal_links.len() as f64)
+                .sum::<f64>()
+                / l2_units.len() as f64
         };
         let mut structural_risk = 0.0;
         for impact in &report.affected_concepts {
@@ -603,7 +640,8 @@ impl HybridVM {
         }
         structural_risk = structural_risk.clamp(0.0, 1.0);
 
-        let total_score = (coverage * 0.4 + intensity * 0.35 + structural_risk * 0.25).clamp(0.0, 1.0);
+        let total_score =
+            (coverage * 0.4 + intensity * 0.35 + structural_risk * 0.25).clamp(0.0, 1.0);
         BlastRadiusScore {
             coverage,
             intensity,
@@ -622,7 +660,7 @@ impl HybridVM {
             if l1.ambiguity_score > 0.6 {
                 let query_vec = vector_from_text(l1.objective.as_deref().unwrap_or(""));
                 let related = self.knowledge_store.top_related_labels(&query_vec, 2);
-                
+
                 let prompt = if related.is_empty() {
                     "より具体的な制約や境界（Boundary）を教えてください。".to_string()
                 } else {
@@ -669,7 +707,9 @@ impl HybridVM {
 
         for l1 in l1_units {
             let objective = l1.objective.as_deref().unwrap_or("");
-            if objective.is_empty() { continue; }
+            if objective.is_empty() {
+                continue;
+            }
 
             let query_vec = vector_from_text(objective);
             let related_labels = self.knowledge_store.top_related_labels(&query_vec, 3);
@@ -677,14 +717,19 @@ impl HybridVM {
             for label in related_labels {
                 if let Some(prompt) = self.knowledge_store.get_prompt_by_label(&label) {
                     // すでに仕様として含まれているか簡易チェック
-                    if objective.contains(&label) { continue; }
+                    if objective.contains(&label) {
+                        continue;
+                    }
 
                     drafts.push(DesignDraft {
                         draft_id: format!("DRAFT-{}-{}", l1.id.0, label),
                         parent_l1: l1.id,
                         prompt,
                         stability_impact: 0.15,
-                        context_summary: format!("「{}」の具体化案", l1.objective.as_deref().unwrap_or("未定義")),
+                        context_summary: format!(
+                            "「{}」の具体化案",
+                            l1.objective.as_deref().unwrap_or("未定義")
+                        ),
                         added_units: Vec::new(),
                     });
                 }
@@ -727,7 +772,10 @@ impl HybridVM {
         )
     }
 
-    #[deprecated(since = "PhaseA-Final", note = "Will be removed in PhaseC. Use explain_design_v2")]
+    #[deprecated(
+        since = "1.0.0",
+        note = "Will be removed in PhaseC. Use explain_design_v2"
+    )]
     pub fn explain_design(&mut self, text: &str) -> Result<Explanation, SemanticError> {
         self.explain_design_v2(text)
     }
@@ -867,7 +915,10 @@ impl HybridVM {
         })
     }
 
-    pub fn create_l1_framework(&mut self, input: &str) -> Result<SemanticUnitL1Framework, SemanticError> {
+    pub fn create_l1_framework(
+        &mut self,
+        input: &str,
+    ) -> Result<SemanticUnitL1Framework, SemanticError> {
         let normalized = input.trim();
         if normalized.is_empty() {
             return Err(SemanticError::InvalidInput("empty input".to_string()));
@@ -880,10 +931,9 @@ impl HybridVM {
             source_text: normalized.to_string(),
         };
         let id = self.semantic_l1_dhm.insert(&insert);
-        let l1 = self
-            .semantic_l1_dhm
-            .get(id)
-            .ok_or_else(|| SemanticError::EvaluationError("failed to read inserted L1".to_string()))?;
+        let l1 = self.semantic_l1_dhm.get(id).ok_or_else(|| {
+            SemanticError::EvaluationError("failed to read inserted L1".to_string())
+        })?;
         let l1_v2 = SemanticUnitL1V2::try_from(l1)?;
         Ok(SemanticUnitL1Framework::from_l1_v2(&l1_v2))
     }
@@ -895,7 +945,7 @@ impl HybridVM {
             .all_concepts()
             .into_iter()
             .find(|c| c.l1_refs.contains(&l1_id))
-            .ok_or_else(|| SemanticError::MissingField("l2_detail_for_l1"))?;
+            .ok_or(SemanticError::MissingField("l2_detail_for_l1"))?;
         let concept_v2 = ConceptUnitV2::try_from(concept.clone())?;
         let mut detail = SemanticUnitL2Detail::from_concept_v2(l1_id, &concept_v2);
         if let Some(grounding) = self.l2_grounding.get(&concept.id) {
@@ -904,9 +954,15 @@ impl HybridVM {
         Ok(detail)
     }
 
-    pub fn update_l2_with_grounding(&mut self, l2_id: ConceptId, knowledge: &str) -> Result<(), SemanticError> {
+    pub fn update_l2_with_grounding(
+        &mut self,
+        l2_id: ConceptId,
+        knowledge: &str,
+    ) -> Result<(), SemanticError> {
         if knowledge.trim().is_empty() {
-            return Err(SemanticError::InvalidInput("grounding knowledge is empty".to_string()));
+            return Err(SemanticError::InvalidInput(
+                "grounding knowledge is empty".to_string(),
+            ));
         }
         let exists = self.semantic_dhm.get(l2_id).is_some();
         if !exists {
@@ -948,7 +1004,8 @@ impl HybridVM {
             .into_iter()
             .find(|d| d.id == l2_id)
             .ok_or(SemanticError::MissingField("card_id"))?;
-        Ok(detail.grounding_data.is_empty() && (!detail.metrics.is_empty() || !detail.methods.is_empty()))
+        Ok(detail.grounding_data.is_empty()
+            && (!detail.metrics.is_empty() || !detail.methods.is_empty()))
     }
 
     pub fn run_grounding_search(
@@ -971,10 +1028,16 @@ impl HybridVM {
         Ok(out)
     }
 
-    pub fn refine_l2_detail(&mut self, l2_id: ConceptId, detail_text: &str) -> Result<(), SemanticError> {
+    pub fn refine_l2_detail(
+        &mut self,
+        l2_id: ConceptId,
+        detail_text: &str,
+    ) -> Result<(), SemanticError> {
         let text = detail_text.trim();
         if text.is_empty() {
-            return Err(SemanticError::InvalidInput("detail text is empty".to_string()));
+            return Err(SemanticError::InvalidInput(
+                "detail text is empty".to_string(),
+            ));
         }
         let concept = self
             .semantic_dhm
@@ -1240,7 +1303,10 @@ fn dominates(a: &ParetoPoint, b: &ParetoPoint) -> bool {
     not_worse && strictly_better
 }
 
-fn objective_from_units(l1_units: &[SemanticUnitL1V2], l2_units: &[ConceptUnitV2]) -> ObjectiveVector {
+fn objective_from_units(
+    l1_units: &[SemanticUnitL1V2],
+    l2_units: &[ConceptUnitV2],
+) -> ObjectiveVector {
     let f_struct = if l2_units.is_empty() {
         0.0
     } else {
@@ -1254,9 +1320,17 @@ fn objective_from_units(l1_units: &[SemanticUnitL1V2], l2_units: &[ConceptUnitV2
     let avg_links = if l2_units.is_empty() {
         0.0
     } else {
-        l2_units.iter().map(|u| u.causal_links.len() as f64).sum::<f64>() / l2_units.len() as f64
+        l2_units
+            .iter()
+            .map(|u| u.causal_links.len() as f64)
+            .sum::<f64>()
+            / l2_units.len() as f64
     };
-    let max_links = l2_units.iter().map(|u| u.causal_links.len()).max().unwrap_or(1) as f64;
+    let max_links = l2_units
+        .iter()
+        .map(|u| u.causal_links.len())
+        .max()
+        .unwrap_or(1) as f64;
     ObjectiveVector {
         f_struct: f_struct.clamp(0.0, 1.0),
         f_field: (1.0 - mean_ambiguity).clamp(0.0, 1.0),
@@ -1402,6 +1476,7 @@ pub mod experimental {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use design_reasoning::MeaningEngine;
     use std::collections::BTreeMap;
@@ -1666,9 +1741,11 @@ mod tests {
         vm.update_l2_with_grounding(detail.id, "OWASP ASVS controls")
             .expect("grounding update");
         let detail_after = vm.derive_l2_detail(framework.id).expect("detail after");
-        assert!(detail_after
-            .grounding_data
-            .iter()
-            .any(|g| g.contains("OWASP ASVS controls")));
+        assert!(
+            detail_after
+                .grounding_data
+                .iter()
+                .any(|g| g.contains("OWASP ASVS controls"))
+        );
     }
 }

@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "crates/analysis_tools",
     "crates/agent_core",
     "crates/brain_core",
     "crates/chm",
@@ -29,6 +30,7 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+analysis_tools = { path = "crates/analysis_tools" }
 agent_core = { path = "crates/agent_core" }
 brain_core = { path = "crates/brain_core" }
 chm = { path = "crates/chm" }

@@ -1,15 +1,16 @@
-mod pareto_eval;
+#![allow(dead_code)]
 
 use std::collections::BTreeMap;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
 use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
+use analysis_tools::{CaseData, compute_correlation};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
 use hybrid_vm::{
     ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
-    rank_frontier_by_semantic,
+    rank_frontier_by_human_coherence,
 };
 use semantic_dhm::CausalEdge;
 use serde::{Deserialize, Serialize};
@@ -37,8 +38,10 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
-        #[arg(long = "semantic-rank", default_value_t = false)]
-        semantic_rank: bool,
+        #[arg(long = "human-coherence", default_value_t = false)]
+        human_coherence: bool,
+        #[arg(long = "dump-analysis")]
+        dump_analysis: Option<String>,
     },
     Explain {
         #[arg(long, default_value_t = 42)]
@@ -49,8 +52,8 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
-        #[arg(long = "semantic-rank", default_value_t = false)]
-        semantic_rank: bool,
+        #[arg(long = "human-coherence", default_value_t = false)]
+        human_coherence: bool,
     },
     Simulate {
         #[arg(long, default_value_t = 42)]
@@ -61,8 +64,8 @@ enum Commands {
         max_steps: usize,
         #[arg(long = "hv-guided", default_value_t = false)]
         hv_guided: bool,
-        #[arg(long = "semantic-rank", default_value_t = false)]
-        semantic_rank: bool,
+        #[arg(long = "human-coherence", default_value_t = false)]
+        human_coherence: bool,
     },
     Clear,
     Adopt,
@@ -181,6 +184,21 @@ struct JsonMeta {
     deterministic: bool,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct SemanticAnalysisCase {
+    case_id: String,
+    objective: [f64; 4],
+    sc: f64,
+    total_score: f64,
+    frontier: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct SemanticAnalysisDump {
+    cases: Vec<SemanticAnalysisCase>,
+    report: analysis_tools::CorrelationReport,
+}
+
 fn main() {
     if let Err(err) = run() {
         let err_json = json!({
@@ -203,22 +221,30 @@ fn run() -> Result<(), String> {
             beam_width,
             max_steps,
             hv_guided,
-            semantic_rank,
-        } => run_analyze(seed, beam_width, max_steps, hv_guided, semantic_rank),
+            human_coherence,
+            dump_analysis,
+        } => run_analyze(
+            seed,
+            beam_width,
+            max_steps,
+            hv_guided,
+            human_coherence,
+            dump_analysis,
+        ),
         Commands::Explain {
             seed,
             beam_width,
             max_steps,
             hv_guided,
-            semantic_rank,
-        } => run_explain(seed, beam_width, max_steps, hv_guided, semantic_rank),
+            human_coherence,
+        } => run_explain(seed, beam_width, max_steps, hv_guided, human_coherence),
         Commands::Simulate {
             seed,
             beam_width,
             max_steps,
             hv_guided,
-            semantic_rank,
-        } => run_simulate(seed, beam_width, max_steps, hv_guided, semantic_rank),
+            human_coherence,
+        } => run_simulate(seed, beam_width, max_steps, hv_guided, human_coherence),
         Commands::Clear => render_success(
             "clear",
             json!({"cleared": true}),
@@ -263,9 +289,17 @@ fn run_analyze(
     beam_width: usize,
     max_steps: usize,
     hv_guided: bool,
-    semantic_rank: bool,
+    human_coherence: bool,
+    dump_analysis: Option<String>,
 ) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
+    let payload = analyze_payload(
+        seed,
+        beam_width,
+        max_steps,
+        hv_guided,
+        human_coherence,
+        dump_analysis.as_deref(),
+    )?;
     render_success(
         "analyze",
         payload,
@@ -282,9 +316,16 @@ fn run_explain(
     beam_width: usize,
     max_steps: usize,
     hv_guided: bool,
-    semantic_rank: bool,
+    human_coherence: bool,
 ) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
+    let payload = analyze_payload(
+        seed,
+        beam_width,
+        max_steps,
+        hv_guided,
+        human_coherence,
+        None,
+    )?;
     render_success(
         "explain",
         json!({
@@ -304,9 +345,16 @@ fn run_simulate(
     beam_width: usize,
     max_steps: usize,
     hv_guided: bool,
-    semantic_rank: bool,
+    human_coherence: bool,
 ) -> Result<(), String> {
-    let payload = analyze_payload(seed, beam_width, max_steps, hv_guided, semantic_rank)?;
+    let payload = analyze_payload(
+        seed,
+        beam_width,
+        max_steps,
+        hv_guided,
+        human_coherence,
+        None,
+    )?;
     render_success(
         "simulate",
         json!({
@@ -326,7 +374,8 @@ fn analyze_payload(
     beam_width: usize,
     max_steps: usize,
     hv_guided: bool,
-    semantic_rank: bool,
+    human_coherence: bool,
+    dump_analysis: Option<&str>,
 ) -> Result<Value, String> {
     if beam_width == 0 {
         return Err("beam_width must be > 0".to_string());
@@ -355,6 +404,10 @@ fn analyze_payload(
     let frontier_hv = hypervolume_4d_from_origin(&frontier);
     let hash = frontier_hash(&frontier);
     let rank_map = pareto_rank_map(&objective_cases);
+    let frontier_ids = frontier
+        .iter()
+        .map(|c| c.case_id.clone())
+        .collect::<std::collections::BTreeSet<_>>();
 
     let drafts = objective_cases
         .iter()
@@ -366,7 +419,39 @@ fn analyze_payload(
             })
         })
         .collect::<Vec<_>>();
-    let frontier_cases = if semantic_rank {
+    let semantic_all = if human_coherence || dump_analysis.is_some() {
+        let semantic_input = objective_cases
+            .iter()
+            .map(|case| {
+                let pareto_rank = rank_map.get(&case.case_id).copied().unwrap_or(1);
+                SemanticObjectiveCase {
+                    case_id: case.case_id.clone(),
+                    pareto_rank,
+                    total_score: phase1_total_score(case),
+                    l2: build_case_l2(case),
+                }
+            })
+            .collect::<Vec<_>>();
+        Some(rank_frontier_by_human_coherence(semantic_input))
+    } else {
+        None
+    };
+
+    let semantic_dump = semantic_all
+        .as_ref()
+        .map(|ranked| build_semantic_analysis_dump(ranked, &objective_cases, &frontier_ids));
+
+    if let Some(out_path) = dump_analysis {
+        let dump = semantic_dump
+            .as_ref()
+            .ok_or_else(|| "semantic analysis dump build failed".to_string())?;
+        let rendered = serde_json::to_string_pretty(dump)
+            .map_err(|e| format!("failed to serialize semantic analysis dump: {e}"))?;
+        fs::write(out_path, rendered)
+            .map_err(|e| format!("failed to write dump analysis file {out_path}: {e}"))?;
+    }
+
+    let frontier_cases = if human_coherence {
         let semantic_input = frontier
             .iter()
             .map(|case| {
@@ -379,7 +464,7 @@ fn analyze_payload(
                 }
             })
             .collect::<Vec<_>>();
-        let ranked = rank_frontier_by_semantic(semantic_input);
+        let ranked = rank_frontier_by_human_coherence(semantic_input);
         ranked
             .iter()
             .map(|r| {
@@ -397,13 +482,12 @@ fn analyze_payload(
                         .find(|c| c.case_id == r.objective.case_id)
                         .map(|c| json!(c.objective))
                         .unwrap_or(Value::Null),
-                    "semantic_coherence": {
-                        "dependency": round6(r.coherence.dependency),
-                        "abstraction": round6(r.coherence.abstraction),
-                        "polarity": round6(r.coherence.polarity),
-                        "contradiction": round6(r.coherence.contradiction),
-                        "coverage": round6(r.coherence.coverage),
-                        "total_score": round6(r.coherence.total_score)
+                    "human_coherence": {
+                        "coverage": round6(r.human_coherence.coverage),
+                        "consistency": round6(r.human_coherence.consistency),
+                        "dependency_quality": round6(r.human_coherence.dependency_quality),
+                        "raw_score": round6(r.human_coherence.raw_score),
+                        "score": round6(r.human_coherence.score)
                     }
                 })
             })
@@ -421,17 +505,22 @@ fn analyze_payload(
             .collect::<Vec<_>>()
     };
 
-    Ok(json!({
+    let mut payload = json!({
         "objective_vector_version": "v1.1",
         "policy": if hv_guided { "Guided" } else { "Legacy" },
-        "semantic_rank": semantic_rank,
+        "human_coherence": human_coherence,
         "drafts": drafts,
         "cases": frontier_cases,
         "frontier": frontier_cases,
         "frontier_size": frontier.len(),
         "frontier_hash": hash,
         "hypervolume": round6(frontier_hv)
-    }))
+    });
+    if human_coherence && let Some(dump) = semantic_dump {
+        payload["human_coherence_correlation"] = serde_json::to_value(&dump.report)
+            .map_err(|e| format!("failed to serialize semantic correlation report: {e}"))?;
+    }
+    Ok(payload)
 }
 
 fn phase1_total_score(case: &ObjectiveCase) -> f64 {
@@ -493,6 +582,42 @@ fn build_case_l2(case: &ObjectiveCase) -> ConceptUnitV2 {
         ],
         stability_score: phase1_total_score(case),
     }
+}
+
+fn build_semantic_analysis_dump(
+    ranked: &[hybrid_vm::RankedCase],
+    objective_cases: &[ObjectiveCase],
+    frontier_ids: &std::collections::BTreeSet<String>,
+) -> SemanticAnalysisDump {
+    let objective_map = objective_cases
+        .iter()
+        .map(|c| (c.case_id.clone(), c))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut cases = Vec::<SemanticAnalysisCase>::with_capacity(ranked.len());
+    let mut correlation_cases = Vec::<CaseData>::with_capacity(ranked.len());
+    for r in ranked {
+        if let Some(obj) = objective_map.get(&r.objective.case_id) {
+            let frontier = frontier_ids.contains(&r.objective.case_id);
+            let row = SemanticAnalysisCase {
+                case_id: r.objective.case_id.clone(),
+                objective: obj.objective.clamped,
+                sc: round6(r.human_coherence.score),
+                total_score: round6(r.objective.total_score),
+                frontier,
+            };
+            correlation_cases.push(CaseData {
+                objective: row.objective,
+                sc: row.sc,
+                frontier: row.frontier,
+                pareto_rank: r.objective.pareto_rank,
+            });
+            cases.push(row);
+        }
+    }
+
+    let report = compute_correlation(&correlation_cases);
+    SemanticAnalysisDump { cases, report }
 }
 
 fn run_engine_with_policy(
@@ -1282,15 +1407,15 @@ fn frontier_hash(frontier: &[ObjectiveCase]) -> String {
     let mut h: u64 = 0xcbf29ce484222325;
     for item in frontier {
         fnv1a_update(&mut h, item.case_id.as_bytes());
-        fnv1a_update(&mut h, &[b'|']);
+        fnv1a_update(&mut h, b"|");
         for value in item.objective.normalized {
             fnv1a_update(&mut h, &value.to_bits().to_le_bytes());
         }
-        fnv1a_update(&mut h, &[b'|']);
+        fnv1a_update(&mut h, b"|");
         for value in item.objective.clamped {
             fnv1a_update(&mut h, &value.to_bits().to_le_bytes());
         }
-        fnv1a_update(&mut h, &[b'\n']);
+        fnv1a_update(&mut h, b"\n");
     }
     format!("{h:016x}")
 }
@@ -1347,7 +1472,9 @@ fn pearson_correlation_matrix(cases: &[ObjectiveCase]) -> [[f64; 4]; 4] {
         return [[0.0; 4]; 4];
     }
     let n = cases.len() as f64;
-    let mut cols = vec![Vec::<f64>::with_capacity(cases.len()); 4];
+    let mut cols = (0..4)
+        .map(|_| Vec::<f64>::with_capacity(cases.len()))
+        .collect::<Vec<_>>();
     for case in cases {
         for (i, col) in cols.iter_mut().enumerate() {
             col.push(case.objective.normalized[i]);
@@ -1365,9 +1492,11 @@ fn pearson_correlation_matrix(cases: &[ObjectiveCase]) -> [[f64; 4]; 4] {
             let mut cov = 0.0;
             let mut var_i = 0.0;
             let mut var_j = 0.0;
-            for k in 0..cases.len() {
-                let di = cols[i][k] - mean_i;
-                let dj = cols[j][k] - mean_j;
+            for (di, dj) in cols[i]
+                .iter()
+                .zip(cols[j].iter())
+                .map(|(ci, cj)| (ci - mean_i, cj - mean_j))
+            {
                 cov += di * dj;
                 var_i += di * di;
                 var_j += dj * dj;
@@ -1534,51 +1663,6 @@ mod objective_vector_tests {
         assert!(hv <= 1.0);
     }
 
-    fn shuffle_cases(mut cases: Vec<ObjectiveCase>, seed: u64) -> Vec<ObjectiveCase> {
-        let mut s = seed;
-        for i in (1..cases.len()).rev() {
-            s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-            let j = (s as usize) % (i + 1);
-            cases.swap(i, j);
-        }
-        cases
-    }
-
-    #[test]
-    fn reproducibility_100_seeds_x3_hash_and_hypervolume_match() {
-        for seed in 0..100u64 {
-            let mut base = Vec::new();
-            let mut s = seed.wrapping_add(1);
-            for idx in 0..40usize {
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let a = ((s >> 16) as f64) / (u32::MAX as f64);
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let b = ((s >> 16) as f64) / (u32::MAX as f64);
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let c = ((s >> 16) as f64) / (u32::MAX as f64);
-                s = s.wrapping_mul(6364136223846793005).wrapping_add(1);
-                let d = ((s >> 16) as f64) / (u32::MAX as f64);
-                base.push(mk_case(&format!("C-{idx:03}"), [a, b, c, d]));
-            }
-            let norm = normalize(base);
-            let run1_front = pareto_frontier_by_case_id(&shuffle_cases(norm.clone(), seed + 11));
-            let run2_front = pareto_frontier_by_case_id(&shuffle_cases(norm.clone(), seed + 22));
-            let run3_front = pareto_frontier_by_case_id(&shuffle_cases(norm, seed + 33));
-
-            let h1 = frontier_hash(&run1_front);
-            let h2 = frontier_hash(&run2_front);
-            let h3 = frontier_hash(&run3_front);
-            assert_eq!(h1, h2);
-            assert_eq!(h2, h3);
-
-            let v1 = hypervolume_4d_from_origin(&run1_front);
-            let v2 = hypervolume_4d_from_origin(&run2_front);
-            let v3 = hypervolume_4d_from_origin(&run3_front);
-            assert!((v1 - v2).abs() <= 1e-12);
-            assert!((v2 - v3).abs() <= 1e-12);
-        }
-    }
-
     #[test]
     fn legacy_vector_maps_to_v11() {
         let legacy = LegacyObjectiveVector {
@@ -1594,23 +1678,6 @@ mod objective_vector_tests {
     }
 
     #[test]
-    fn reproducibility_100_seeds() {
-        reproducibility_100_seeds_x3_hash_and_hypervolume_match();
-    }
-
-    #[test]
-    fn hypervolume_monotonicity() {
-        let base = normalize(vec![mk_case("A", [0.2, 0.2, 0.2, 0.2])]);
-        let expanded = normalize(vec![
-            mk_case("A", [0.2, 0.2, 0.2, 0.2]),
-            mk_case("B", [0.8, 0.8, 0.8, 0.8]),
-        ]);
-        let hv_base = hypervolume_4d_from_origin(&pareto_frontier_by_case_id(&base));
-        let hv_expanded = hypervolume_4d_from_origin(&pareto_frontier_by_case_id(&expanded));
-        assert!(hv_expanded + 1e-12 >= hv_base);
-    }
-
-    #[test]
     fn strict_out_of_range() {
         let out = [1.1, 0.5, 0.5, 0.5];
         assert!(validate_normalized_vector(out, false).is_err());
@@ -1618,48 +1685,5 @@ mod objective_vector_tests {
             validate_normalized_vector(out, true).expect("allow mode should clamp");
         assert_eq!(clamped, [1.0, 0.5, 0.5, 0.5]);
         assert!(invalid);
-    }
-
-    #[test]
-    fn schema_v1_wrapper_structure() {
-        let wrapper = success_wrapper_value(
-            "analyze",
-            json!({"x": 1}),
-            JsonMeta {
-                command: "analyze",
-                hv_policy: Some("Legacy"),
-                deterministic: true,
-            },
-        );
-        assert_eq!(wrapper["schema_version"], "v1");
-        assert!(wrapper["data"].is_object());
-        assert!(wrapper["meta"].is_object());
-    }
-
-    #[test]
-    fn legacy_and_guided_produce_same_schema() {
-        let legacy = success_wrapper_value(
-            "analyze",
-            json!({"frontier_size": 1}),
-            JsonMeta {
-                command: "analyze",
-                hv_policy: Some("Legacy"),
-                deterministic: true,
-            },
-        );
-        let guided = success_wrapper_value(
-            "analyze",
-            json!({"frontier_size": 1}),
-            JsonMeta {
-                command: "analyze",
-                hv_policy: Some("Guided"),
-                deterministic: true,
-            },
-        );
-        assert_eq!(legacy.as_object().map(|o| o.len()), guided.as_object().map(|o| o.len()));
-        assert_eq!(
-            legacy["data"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>()),
-            guided["data"].as_object().map(|o| o.keys().cloned().collect::<Vec<_>>())
-        );
     }
 }

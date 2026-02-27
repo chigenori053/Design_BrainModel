@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 default-run = "design"
 
+[features]
+ci-heavy = []
+
 [[bin]]
 name = "cli"
 path = "src/main.rs"
@@ -17,6 +20,7 @@ name = "phase1_batch"
 path = "src/phase1_batch_main.rs"
 
 [dependencies]
+analysis_tools = { workspace = true }
 agent_core = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }
