@@ -17,7 +17,7 @@ pub fn run_from_args(args: &[String]) -> Result<(), String> {
         println!("PHASE1_RUNTIME_BINDING: {RUNTIME_BINDING}");
         return Ok(());
     }
-    let cfg = BatchConfig::from_args(&args);
+    let cfg = BatchConfig::from_args(args);
     run(cfg)
 }
 
