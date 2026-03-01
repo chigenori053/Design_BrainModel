@@ -521,8 +521,10 @@ pub fn execute_baseline_off_core(config: crate::TraceRunConfig) -> SearchCoreRes
 }
 
 pub fn execute_balanced_core(config: crate::TraceRunConfig, m: usize) -> SearchCoreResult {
-    let mut params = crate::SoftTraceParams::default();
-    params.alpha = (m as f64 / 10.0).clamp(0.1, 1.0);
+    let params = crate::SoftTraceParams {
+        alpha: (m as f64 / 10.0).clamp(0.1, 1.0),
+        ..crate::SoftTraceParams::default()
+    };
     let trace = execute_soft_search_core(config, params).trace;
     SearchCoreResult {
         best: Hypothesis {

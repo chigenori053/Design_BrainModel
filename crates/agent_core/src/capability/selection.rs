@@ -73,7 +73,9 @@ fn selection_scores_for_objs(objs: &[ObjectiveVector]) -> Vec<f64> {
                 if i == j {
                     continue;
                 }
-                min_d = min_d.min(crate::engine::normalization::objective_distance(&objs[i], &objs[j]));
+                min_d = min_d.min(crate::engine::normalization::objective_distance(
+                    &objs[i], &objs[j],
+                ));
             }
             if min_d.is_finite() { min_d } else { 0.0 }
         };

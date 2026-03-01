@@ -5,8 +5,8 @@ use field_engine::FieldEngine;
 use hybrid_vm::{Chm, Evaluator, HybridVM, StructuralEvaluator};
 use memory_space::{DesignState, MemoryInterferenceTelemetry};
 
-use crate::domain::{Hypothesis, Score};
 use crate::SystemEvaluator;
+use crate::domain::{Hypothesis, Score};
 
 pub trait EvaluationCapability: Send + Sync {
     fn evaluate(&self, hypothesis: &Hypothesis) -> Score;

@@ -41,11 +41,14 @@ impl Orchestrator {
         ctx: &AgentContext<'_>,
     ) -> Result<AgentOutput, DomainError> {
         self.lifecycle.on_dispatch_start(&req);
-        let mut out = self.dispatcher.dispatch(&mut self.registry, req.clone(), ctx)?;
+        let mut out = self
+            .dispatcher
+            .dispatch(&mut self.registry, req.clone(), ctx)?;
         self.process_events(&out.events, ctx)?;
         self.state.dispatch_count += 1;
         self.lifecycle.on_dispatch_end(&req);
-        out.events.retain(|e| !matches!(e, AgentEvent::EmitTelemetry(_)));
+        out.events
+            .retain(|e| !matches!(e, AgentEvent::EmitTelemetry(_)));
         Ok(out)
     }
 
@@ -96,8 +99,11 @@ pub fn execute_soft_trace(
             objectives,
         } = event
         {
-            let _ =
-                crate::adapters::file_storage::append_raw_objectives(path.as_path(), depth, &objectives);
+            let _ = crate::adapters::file_storage::append_raw_objectives(
+                path.as_path(),
+                depth,
+                &objectives,
+            );
         }
     }
     result.trace

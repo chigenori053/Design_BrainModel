@@ -86,7 +86,11 @@ fn apply_add_constraint(graph: &StructuralGraph, rule: &DesignRule) -> Structura
     if ids.len() >= 2 {
         let from = ids[0];
         let to = ids[1];
-        if graph.edges().iter().any(|edge| edge.0 == from && edge.1 == to) {
+        if graph
+            .edges()
+            .iter()
+            .any(|edge| edge.0 == from && edge.1 == to)
+        {
             graph.clone()
         } else {
             let _ = rule;

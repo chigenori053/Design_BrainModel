@@ -15,7 +15,9 @@ impl Agent for LearningAgent {
         _ctx: &AgentContext<'_>,
     ) -> Result<AgentOutput, DomainError> {
         if input.text.trim().is_empty() {
-            return Err(DomainError::InvalidInput("learning payload is empty".to_string()));
+            return Err(DomainError::InvalidInput(
+                "learning payload is empty".to_string(),
+            ));
         }
 
         let key = format!("learning/{}", uuid_like_key(&input.text));

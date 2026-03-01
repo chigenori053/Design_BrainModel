@@ -7,8 +7,10 @@ pub fn run_baseline_off(config: crate::BenchConfig) -> crate::BenchResult {
 }
 
 pub fn run_baseline_off_balanced(config: crate::BenchConfig, m: usize) -> crate::BenchResult {
-    let mut params = crate::SoftTraceParams::default();
-    params.alpha = (m as f64 / 10.0).clamp(0.1, 1.0);
+    let params = crate::SoftTraceParams {
+        alpha: (m as f64 / 10.0).clamp(0.1, 1.0),
+        ..crate::SoftTraceParams::default()
+    };
     run_baseline_off_soft(config, params)
 }
 

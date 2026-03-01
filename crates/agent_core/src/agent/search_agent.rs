@@ -32,7 +32,8 @@ impl<C: SearchCapability, S: ScoringCapability> Agent for SearchAgent<C, S> {
 
         let artifacts = scored
             .into_iter()
-            .take(5).map(|(hit, score)| format!("{score:.3}: {}", hit.title))
+            .take(5)
+            .map(|(hit, score)| format!("{score:.3}: {}", hit.title))
             .collect::<Vec<_>>();
 
         let persist_payload = artifacts.join("\n").into_bytes();

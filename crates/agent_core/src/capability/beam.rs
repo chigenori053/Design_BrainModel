@@ -2,7 +2,7 @@ use core_types::ObjectiveVector;
 use hybrid_vm::HybridVM;
 use memory_space::DesignState;
 
-use crate::{BeamSearch, DepthFront, SearchMode, SearchResult, SOFT_PARETO_TEMPERATURE};
+use crate::{BeamSearch, DepthFront, SOFT_PARETO_TEMPERATURE, SearchMode, SearchResult};
 
 impl<'a> BeamSearch<'a> {
     pub fn search(&self, initial_state: &DesignState) -> Vec<DesignState> {
@@ -37,7 +37,8 @@ impl<'a> BeamSearch<'a> {
             }
 
             let (normalized, _) = crate::normalize_by_depth(candidates, self.config.norm_alpha);
-            let front_states = crate::capability::selection::soft_front_rank(normalized, SOFT_PARETO_TEMPERATURE);
+            let front_states =
+                crate::capability::selection::soft_front_rank(normalized, SOFT_PARETO_TEMPERATURE);
             frontier = front_states
                 .into_iter()
                 .take(self.config.beam_width)

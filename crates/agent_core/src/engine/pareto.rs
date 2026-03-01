@@ -123,7 +123,7 @@ fn hv_2d_rect_approx(points: &[(f64, f64)]) -> f64 {
 pub fn normalize_objective(raw: &ObjectiveRaw, stats: &crate::GlobalRobustStats) -> ObjectiveNorm {
     let eps_small = 1e-9;
     let mut out = [0.0; 4];
-    for i in 0..4 {
+    for (i, out_i) in out.iter_mut().enumerate() {
         if stats.active_dims[i] {
             if !stats.weak_dims[i] {
                 let safe_mad = if stats.mad[i] < eps_small {
@@ -131,17 +131,17 @@ pub fn normalize_objective(raw: &ObjectiveRaw, stats: &crate::GlobalRobustStats)
                 } else {
                     stats.mad[i]
                 };
-                out[i] = (raw.0[i] - stats.median[i]) / safe_mad;
+                *out_i = (raw.0[i] - stats.median[i]) / safe_mad;
             } else {
                 let den = if stats.std[i] < eps_small {
                     eps_small
                 } else {
                     stats.std[i]
                 };
-                out[i] = (raw.0[i] - stats.mean[i]) / den;
+                *out_i = (raw.0[i] - stats.mean[i]) / den;
             }
         } else {
-            out[i] = 0.0;
+            *out_i = 0.0;
         }
     }
     ObjectiveNorm(out)
@@ -151,10 +151,10 @@ pub fn norm_distance(a: &ObjectiveNorm, b: &ObjectiveNorm, weights: &[f64; 4]) -
     DISTANCE_CALL_COUNT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut s = 0.0;
     let mut w_sum = 0.0;
-    for i in 0..4 {
-        if weights[i] > 0.0 {
-            s += weights[i] * (a.0[i] - b.0[i]).powi(2);
-            w_sum += weights[i];
+    for (i, w) in weights.iter().copied().enumerate().take(4) {
+        if w > 0.0 {
+            s += w * (a.0[i] - b.0[i]).powi(2);
+            w_sum += w;
         }
     }
     if w_sum <= 1e-12 {
@@ -322,10 +322,7 @@ pub fn hv_4d_from_origin_normalized(points: &[[f64; 4]]) -> f64 {
             unique.push(q);
         }
     }
-    let as_vec = unique
-        .iter()
-        .map(|p| p.iter().copied().collect::<Vec<_>>())
-        .collect::<Vec<_>>();
+    let as_vec = unique.iter().map(|p| p.to_vec()).collect::<Vec<_>>();
     hv_recursive_nd(&as_vec, 4)
 }
 
