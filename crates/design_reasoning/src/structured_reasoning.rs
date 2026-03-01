@@ -500,7 +500,8 @@ impl StructuredReasoningEngine {
         let (output, realized_mode, fallback_reason) = match mode {
             RealizationMode::LlmControlled => {
                 *self.llm_render_calls.borrow_mut() += 1;
-                let llm_output = normalize_realized_explanation_for_output(llm_controlled_render(&srt));
+                let llm_output =
+                    normalize_realized_explanation_for_output(llm_controlled_render(&srt));
                 let text_for_validation = render_validation_text(&llm_output);
                 match validate_llm_output(&text_for_validation, &srt) {
                     Ok(()) => (llm_output, RealizationMode::LlmControlled, None),
@@ -517,9 +518,7 @@ impl StructuredReasoningEngine {
                 None,
             ),
         };
-        self.cache
-            .borrow_mut()
-            .insert(lookup_key, output.clone());
+        self.cache.borrow_mut().insert(lookup_key, output.clone());
 
         StructuredExplanationResult {
             mode: realized_mode,
@@ -958,7 +957,9 @@ pub fn canonical_srt_hash(srt: &StructuredReasoningTrace) -> String {
     digest_hex(&cloned)
 }
 
-pub fn normalize_realized_explanation_for_output(output: RealizedExplanation) -> RealizedExplanation {
+pub fn normalize_realized_explanation_for_output(
+    output: RealizedExplanation,
+) -> RealizedExplanation {
     RealizedExplanation {
         summary: normalize_summary_text(&output.summary),
         key_issues: output
@@ -983,8 +984,15 @@ fn normalize_issue_text(text: &str) -> String {
 }
 
 fn normalize_tone_text(text: &str) -> String {
-    let mut out = text.replace('!', "。").replace('！', "。");
-    for token in ["現時点では", "いくつかの", "非常に", "絶対に", "重要です", "必須です"] {
+    let mut out = text.replace(['!', '！'], "。");
+    for token in [
+        "現時点では",
+        "いくつかの",
+        "非常に",
+        "絶対に",
+        "重要です",
+        "必須です",
+    ] {
         out = out.replace(token, "");
     }
     out.split_whitespace().collect::<Vec<_>>().join(" ")

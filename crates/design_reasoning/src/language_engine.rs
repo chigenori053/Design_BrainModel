@@ -1,6 +1,6 @@
-use serde::{Deserialize, Serialize};
 use language_dhm::{EMBEDDING_DIM, LangId, LanguageDhm, LanguageUnit};
 use semantic_dhm::{DesignProjection, SemanticError, SemanticUnitL1};
+use serde::{Deserialize, Serialize};
 
 use crate::DesignHypothesis;
 
@@ -72,11 +72,21 @@ impl TemplateId {
 
     pub fn as_description(self) -> &'static str {
         match self {
-            TemplateId::StableClear => "設計構造は極めて安定しており、意図が明確に反映されています。このまま実装または詳細設計へ進むことが可能です。",
-            TemplateId::StableAmbiguous => "構造的な安定性は確保されていますが、一部の要件に曖昧さが残っています。特に用語の定義や制約条件の具体化を検討してください。",
-            TemplateId::UnstableClear => "意図は明確ですが、設計構造に不安定な箇所が見られます。要件間の競合や複雑性が増大している可能性があるため、構造の再構成を検討してください。",
-            TemplateId::UnstableAmbiguous => "設計は極めて不安定で、かつ意図も不明確な状態です。核となる設計目標を再定義し、スモールステップでの分析を推奨します。",
-            TemplateId::Fallback => "分析結果から十分な傾向を読み取れませんでした。追加の要件を入力して分析を継続してください。",
+            TemplateId::StableClear => {
+                "設計構造は極めて安定しており、意図が明確に反映されています。このまま実装または詳細設計へ進むことが可能です。"
+            }
+            TemplateId::StableAmbiguous => {
+                "構造的な安定性は確保されていますが、一部の要件に曖昧さが残っています。特に用語の定義や制約条件の具体化を検討してください。"
+            }
+            TemplateId::UnstableClear => {
+                "意図は明確ですが、設計構造に不安定な箇所が見られます。要件間の競合や複雑性が増大している可能性があるため、構造の再構成を検討してください。"
+            }
+            TemplateId::UnstableAmbiguous => {
+                "設計は極めて不安定で、かつ意図も不明確な状態です。核となる設計目標を再定義し、スモールステップでの分析を推奨します。"
+            }
+            TemplateId::Fallback => {
+                "分析結果から十分な傾向を読み取れませんでした。追加の要件を入力して分析を継続してください。"
+            }
         }
     }
 }
@@ -88,7 +98,8 @@ pub struct LanguagePatternStore {
 
 impl LanguagePatternStore {
     pub fn new() -> Result<Self, SemanticError> {
-        let mut dhm = LanguageDhm::in_memory().map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
+        let mut dhm =
+            LanguageDhm::in_memory().map_err(|e| SemanticError::EvaluationError(e.to_string()))?;
         let mut mapping = std::collections::BTreeMap::new();
         for (template, vec) in [
             (TemplateId::StableClear, vec![1.0, 0.0, 0.2, 1.0]),
@@ -162,14 +173,22 @@ impl LanguageEngine {
         let ambiguity_score = if l1_units.is_empty() {
             1.0
         } else {
-            let mean_abs = l1_units.iter().map(|u| f64::from(u.abstraction)).sum::<f64>()
+            let mean_abs = l1_units
+                .iter()
+                .map(|u| f64::from(u.abstraction))
+                .sum::<f64>()
                 / l1_units.len() as f64;
             mean_abs.clamp(0.0, 1.0)
         };
 
         // 制約違反があると安定度を低下させる決定論的スコア
-        let penalty = if hypothesis.constraint_violation { 0.25 } else { 0.0 };
-        let stability_score = (1.0 - hypothesis.normalized_score.abs() * 0.2 - penalty).clamp(0.0, 1.0);
+        let penalty = if hypothesis.constraint_violation {
+            0.25
+        } else {
+            0.0
+        };
+        let stability_score =
+            (1.0 - hypothesis.normalized_score.abs() * 0.2 - penalty).clamp(0.0, 1.0);
 
         LanguageState {
             selected_objective,
@@ -182,13 +201,8 @@ impl LanguageEngine {
     pub fn explain_state(&self, state: &LanguageState) -> Explanation {
         let state_v2 = LanguageStateV2::from(state);
         let h = self.build_h_state(&state_v2);
-        let template = self
-            .select_template(&h)
-            .unwrap_or(TemplateId::Fallback);
-        let objective = state
-            .selected_objective
-            .as_deref()
-            .unwrap_or("未指定");
+        let template = self.select_template(&h).unwrap_or(TemplateId::Fallback);
+        let objective = state.selected_objective.as_deref().unwrap_or("未指定");
         let stability_label = if state.stability_score > 0.85 {
             "安定"
         } else if state.stability_score >= 0.6 {
@@ -233,7 +247,11 @@ impl LanguageEngine {
         h[0] = state.stability_score.clamp(0.0, 1.0) as f32;
         h[1] = state.ambiguity_score.clamp(0.0, 1.0) as f32;
         h[2] = requirement_count_norm as f32;
-        h[3] = if state.selected_objective.is_some() { 1.0 } else { 0.0 };
+        h[3] = if state.selected_objective.is_some() {
+            1.0
+        } else {
+            0.0
+        };
         h
     }
 

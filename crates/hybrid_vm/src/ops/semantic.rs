@@ -1,12 +1,12 @@
 use design_reasoning::{
-    DesignHypothesis, Explanation, HypothesisEngine, LanguageEngine, MeaningEngine, ProjectionEngine,
-    SnapshotEngine, SnapshotDiffV2, MeaningLayerSnapshotV2,
+    DesignHypothesis, Explanation, HypothesisEngine, LanguageEngine, MeaningEngine,
+    MeaningLayerSnapshotV2, ProjectionEngine, SnapshotDiffV2, SnapshotEngine,
 };
 use language_dhm::{LangId, LanguageDhm, LanguageUnit};
 use memory_store::FileStore;
 use semantic_dhm::{
-    ConceptId, ConceptUnit, L1Id, L2Config, L2Mode, MeaningLayerSnapshot, SemanticDhm, SemanticError,
-    SemanticL1Dhm, SemanticUnitL1,
+    ConceptId, ConceptUnit, L1Id, L2Config, L2Mode, MeaningLayerSnapshot, SemanticDhm,
+    SemanticError, SemanticL1Dhm, SemanticUnitL1,
 };
 
 pub(crate) fn analyze_text(
@@ -101,6 +101,7 @@ pub(crate) fn evaluate_design(
     hypothesis_engine.evaluate_hypothesis(&projection)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn explain_design(
     text: &str,
     meaning_engine: &MeaningEngine,

@@ -1,13 +1,13 @@
 use recomposer::{
-    DecisionReport, DecisionWeights, DesignReport, MultiConceptInput, RecommendationInput, Recomposer,
-    ResonanceReport,
+    DecisionReport, DecisionWeights, DesignReport, MultiConceptInput, RecommendationInput,
+    Recomposer, ResonanceReport,
 };
 use semantic_dhm::{ConceptId, ConceptQuery, ConceptUnit, ResonanceWeights, SemanticDhm};
 
 use memory_store::FileStore;
 
-use crate::ops::util::{dedup_ids, dot_norm};
 use crate::HybridVmError;
+use crate::ops::util::{dedup_ids, dot_norm};
 
 pub(crate) fn compare(
     semantic_dhm: &SemanticDhm<FileStore<ConceptId, ConceptUnit>>,

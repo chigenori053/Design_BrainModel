@@ -345,7 +345,10 @@ impl SemanticUnitL2Detail {
 }
 
 pub fn migrate_l1_v2_to_framework(units: &[SemanticUnitL1V2]) -> Vec<SemanticUnitL1Framework> {
-    units.iter().map(SemanticUnitL1Framework::from_l1_v2).collect()
+    units
+        .iter()
+        .map(SemanticUnitL1Framework::from_l1_v2)
+        .collect()
 }
 
 pub fn migrate_l2_v2_to_detail(
@@ -354,7 +357,11 @@ pub fn migrate_l2_v2_to_detail(
 ) -> Vec<SemanticUnitL2Detail> {
     units
         .iter()
-        .filter_map(|u| parent_map.get(&u.id).map(|parent| SemanticUnitL2Detail::from_concept_v2(*parent, u)))
+        .filter_map(|u| {
+            parent_map
+                .get(&u.id)
+                .map(|parent| SemanticUnitL2Detail::from_concept_v2(*parent, u))
+        })
         .collect()
 }
 
@@ -450,7 +457,9 @@ impl TryFrom<&SemanticUnitL1> for SemanticUnitL1V2 {
             _ => Vec::new(),
         };
         let constraints = match value.role {
-            RequirementRole::Constraint | RequirementRole::Prohibition if !normalized.is_empty() => {
+            RequirementRole::Constraint | RequirementRole::Prohibition
+                if !normalized.is_empty() =>
+            {
                 vec![normalized]
             }
             _ => Vec::new(),
@@ -492,9 +501,8 @@ impl TryFrom<&ConceptUnit> for ConceptUnitV2 {
         }
         let mut derived_requirements = Vec::new();
         let dims = normalize_with_dim(&value.integrated_vector, D_SEM);
-        let strength_at = |idx: usize| -> f32 {
-            dims.get(idx).copied().unwrap_or(0.0).clamp(-1.0, 1.0)
-        };
+        let strength_at =
+            |idx: usize| -> f32 { dims.get(idx).copied().unwrap_or(0.0).clamp(-1.0, 1.0) };
         derived_requirements.push(DerivedRequirement {
             kind: RequirementKind::Performance,
             strength: strength_at(0),

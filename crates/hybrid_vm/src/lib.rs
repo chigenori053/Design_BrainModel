@@ -283,6 +283,10 @@ impl HybridVM {
         self.knowledge_store.load_feedback_entries(entries);
     }
 
+    pub fn clear_advisor_history(&mut self) {
+        self.knowledge_store.clear_feedback_history();
+    }
+
     pub fn clear_context(&mut self) -> Result<(), SemanticError> {
         let ids = self
             .semantic_l1_dhm

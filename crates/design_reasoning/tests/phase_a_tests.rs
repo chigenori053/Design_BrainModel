@@ -1,3 +1,5 @@
+#![allow(clippy::field_reassign_with_default)]
+
 use design_reasoning::{
     DesignFactor, DesignHypothesis, FactorType, HypothesisEngine, IssueType, LanguageEngine,
     LanguageState, LanguageStateV2, MeaningEngine, ModelConfig, OverallState, ProjectionEngine,
@@ -911,7 +913,8 @@ fn validator_rejects_unwanted_proposal_outside_next_action() {
         evidence_spans: vec!["説明".to_string()],
     });
     let text = "summary:\nwe must adopt this.\nnext_action:\n対応。";
-    let err = validate_llm_output(text, &srt).expect_err("must reject proposal outside next_action");
+    let err =
+        validate_llm_output(text, &srt).expect_err("must reject proposal outside next_action");
     assert_eq!(err, ValidationError::UnwantedProposalOutsideNextAction);
 }
 
@@ -963,21 +966,23 @@ fn load_100_runs_is_stable_and_cache_hit_ratio_is_high() {
 #[test]
 fn summary_normalizer_clamps_to_100_chars() {
     let long_summary = "設計は概ね整理されています。以下の点を明確にすると安定します。さらに補足として詳細背景を長く説明します。これは冗長な部分です。";
-    let normalized = normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
-        summary: long_summary.to_string(),
-        key_issues: vec!["課題があります。".to_string()],
-        next_action: "次の対応を整理します。".to_string(),
-    });
+    let normalized =
+        normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
+            summary: long_summary.to_string(),
+            key_issues: vec!["課題があります。".to_string()],
+            next_action: "次の対応を整理します。".to_string(),
+        });
     assert!(normalized.summary.chars().count() <= 100);
 }
 
 #[test]
 fn summary_normalizer_clamps_to_two_sentences() {
-    let normalized = normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
-        summary: "一文目です。二文目です。三文目です。".to_string(),
-        key_issues: vec!["課題があります。".to_string()],
-        next_action: "次の対応を整理します。".to_string(),
-    });
+    let normalized =
+        normalize_realized_explanation_for_output(design_reasoning::RealizedExplanation {
+            summary: "一文目です。二文目です。三文目です。".to_string(),
+            key_issues: vec!["課題があります。".to_string()],
+            next_action: "次の対応を整理します。".to_string(),
+        });
     let sentence_count = normalized
         .summary
         .split(['。', '.', '!', '?'])

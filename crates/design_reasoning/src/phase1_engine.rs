@@ -44,6 +44,8 @@ pub struct SanityStats {
 pub struct Phase1Engine;
 
 impl Phase1Engine {
+    pub const ENGINE_VERSION: &str = "ACTION_LAYER_V1";
+
     pub fn compute_dependency_consistency(&self, factors: &[DesignFactor]) -> f64 {
         compute_dependency_consistency(factors)
     }
@@ -68,7 +70,9 @@ pub fn compute_dependency_consistency(factors: &[DesignFactor]) -> f64 {
     compute_dependency_consistency_metrics(factors).dependency_consistency
 }
 
-pub fn compute_dependency_consistency_metrics(factors: &[DesignFactor]) -> DependencyConsistencyMetrics {
+pub fn compute_dependency_consistency_metrics(
+    factors: &[DesignFactor],
+) -> DependencyConsistencyMetrics {
     if factors.is_empty() {
         return DependencyConsistencyMetrics {
             dependency_consistency: 0.5,

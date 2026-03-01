@@ -37,7 +37,9 @@ impl MeaningEngine {
                 source_text: fragment,
             });
             let Some(unit) = semantic_l1_dhm.get(l1_id) else {
-                return Err(SemanticError::InconsistentState("failed to persist l1 unit"));
+                return Err(SemanticError::InconsistentState(
+                    "failed to persist l1 unit",
+                ));
             };
             inserted.push(unit);
         }

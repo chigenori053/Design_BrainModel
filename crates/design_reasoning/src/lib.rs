@@ -23,7 +23,7 @@ pub use structured_reasoning::{
     AxisCategory, IssueType, ModelConfig, OverallState, RealizationMode, RealizedExplanation,
     ReasoningAxis, SrtIssue, SrtStrength, StructuredExplanationResult, StructuredReasoningEngine,
     StructuredReasoningInput, StructuredReasoningTrace, ValidationError, canonical_srt_hash,
-    format_explanation, normalize_realized_explanation_for_output, normalize_summary_text,
-    llm_cache_key, model_version, parse_realization_mode_from_env, validate_llm_output,
+    format_explanation, llm_cache_key, model_version, normalize_realized_explanation_for_output,
+    normalize_summary_text, parse_realization_mode_from_env, validate_llm_output,
     validate_sentence_count,
 };

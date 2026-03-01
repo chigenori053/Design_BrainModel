@@ -87,19 +87,13 @@ fn now_timestamp_ms() -> Result<u64, SemanticError> {
 }
 
 fn hash_l1_units(l1_units: &[SemanticUnitL1]) -> u64 {
-    let mut canonical = l1_units
-        .iter()
-        .map(canonicalize_l1)
-        .collect::<Vec<_>>();
+    let mut canonical = l1_units.iter().map(canonicalize_l1).collect::<Vec<_>>();
     canonical.sort();
     hash_sorted(&canonical)
 }
 
 fn hash_l2_units(l2_units: &[ConceptUnit]) -> u64 {
-    let mut canonical = l2_units
-        .iter()
-        .map(canonicalize_l2)
-        .collect::<Vec<_>>();
+    let mut canonical = l2_units.iter().map(canonicalize_l2).collect::<Vec<_>>();
     canonical.sort();
     hash_sorted(&canonical)
 }

@@ -36,7 +36,9 @@ impl KnowledgeStore {
         self.labels.push(topic.to_string());
         self.prompts.push(prompt.to_string());
         self.memory.push(vector);
-        self.relevance_weights.entry(topic.to_string()).or_insert(1.0);
+        self.relevance_weights
+            .entry(topic.to_string())
+            .or_insert(1.0);
     }
 
     pub fn preload_defaults(&mut self) {
@@ -73,6 +75,26 @@ impl KnowledgeStore {
             "オフライン同期",
             "モバイル/エッジ端末での利用を想定し、ローカルDB（SQLite/IndexedDB）との差分同期機能を実装しますか？",
             vec![0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0]
+        );
+        self.add_knowledge(
+            "時系列データ基盤",
+            "InfluxDBやTimescaleDBなどの時系列データベースを採用し、大量の指標データを効率的に保存・クエリしますか？",
+            vec![0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 1.0, 0.0]
+        );
+        self.add_knowledge(
+            "ストリーム処理",
+            "Apache FlinkやSpark Streamingを用いて、リアルタイムに窓関数（Window Functions）を適用した短期予測を実現しますか？",
+            vec![0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.8, 0.0]
+        );
+        self.add_knowledge(
+            "予測モデル・アンサンブル",
+            "長期予測用のProphet/ARIMAと、短期予測用のLSTM/Transformerを組み合わせたアンサンブル学習を導入しますか？",
+            vec![0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0]
+        );
+        self.add_knowledge(
+            "特徴量ストア",
+            "予測モデルの学習と推論で共通の特徴量を使用するため、Feature Store（Tecton/Feast等）を導入して整合性を確保しますか？",
+            vec![0.0, 0.0, 0.5, 0.0, 0.0, 0.0, 0.5, 1.0]
         );
     }
 
@@ -144,6 +166,13 @@ impl KnowledgeStore {
     pub fn load_feedback_entries(&mut self, entries: Vec<FeedbackEntry>) {
         self.feedback_history = entries;
         self.adjust_weights();
+    }
+
+    pub fn clear_feedback_history(&mut self) {
+        self.feedback_history.clear();
+        for label in &self.labels {
+            self.relevance_weights.insert(label.clone(), 1.0);
+        }
     }
 }
 
