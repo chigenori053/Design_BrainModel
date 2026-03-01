@@ -3,7 +3,9 @@ use std::{fs, path::Path, path::PathBuf};
 
 use agent_core::agent::{AgentContext, DesignAgent, LearningAgent, SearchAgent};
 use agent_core::capability::{ScoringCapability, SearchCapability, SearchHit};
-use agent_core::domain::{AgentInput, AgentRequest, DomainError, Hypothesis, Score, TelemetryEvent};
+use agent_core::domain::{
+    AgentInput, AgentRequest, DomainError, Hypothesis, Score, TelemetryEvent,
+};
 use agent_core::ports::{MemoryPort, TelemetryPort};
 use agent_core::runtime::{AgentRegistry, Orchestrator};
 
@@ -15,10 +17,7 @@ struct InMemoryPort {
 impl MemoryPort for InMemoryPort {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, DomainError> {
         let items = self.items.lock().expect("memory mutex poisoned");
-        Ok(items
-            .iter()
-            .find(|(k, _)| k == key)
-            .map(|(_, v)| v.clone()))
+        Ok(items.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone()))
     }
 
     fn put(&self, key: &str, value: &[u8]) -> Result<(), DomainError> {
@@ -246,7 +245,9 @@ fn lib_rs_has_no_direct_trace_io() {
     assert!(body.contains(
         "pub(crate) fn normalize_by_depth(\n    candidates: Vec<(DesignState, ObjectiveVector)>,\n    alpha: f64,\n) -> (Vec<(DesignState, ObjectiveVector)>, GlobalRobustStats) {"
     ));
-    assert!(body.contains("engine::normalization::normalize_by_depth_candidates(candidates, alpha)"));
+    assert!(
+        body.contains("engine::normalization::normalize_by_depth_candidates(candidates, alpha)")
+    );
     assert!(body.contains(
         "pub fn run_phase1_matrix(config: Phase1Config) -> (Vec<Phase1RawRow>, Vec<Phase1SummaryRow>) {"
     ));
