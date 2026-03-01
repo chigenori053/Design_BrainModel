@@ -12,6 +12,8 @@ hybrid_vm = { workspace = true }
 design_reasoning = { workspace = true }
 semantic_dhm = { workspace = true }
 core_types = { workspace = true }
+agent_core = { workspace = true }
+sha2 = "0.10"
 
 [build-dependencies]
 # GUI固有のビルド設定が必要な場合

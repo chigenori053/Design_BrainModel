@@ -1,11 +1,4 @@
-mod app;
-mod controller;
-mod detail_view;
-mod session;
-mod state;
-mod view;
-
-use app::DesignApp;
+use design_gui::app::DesignApp;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions {
