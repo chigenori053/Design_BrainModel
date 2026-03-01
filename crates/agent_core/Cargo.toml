@@ -3,6 +3,9 @@ name = "agent_core"
 version = "1.0.0"
 edition = "2024"
 
+[features]
+ci-heavy = []
+
 [dependencies]
 core_types = { workspace = true }
 memory_space = { workspace = true }
@@ -10,3 +13,4 @@ hybrid_vm = { workspace = true }
 field_engine = { workspace = true }
 profile = { workspace = true }
 design_reasoning = { workspace = true }
+serde = { workspace = true }

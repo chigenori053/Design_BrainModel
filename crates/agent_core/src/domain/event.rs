@@ -4,8 +4,13 @@ use core_types::ObjectiveVector;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentEvent {
-    RequestSearch { query: String },
-    PersistMemory { key: String, value: Vec<u8> },
+    RequestSearch {
+        query: String,
+    },
+    PersistMemory {
+        key: String,
+        value: Vec<u8>,
+    },
     WriteRawObjectives {
         path: PathBuf,
         depth: usize,
