@@ -1,0 +1,19 @@
+{
+  "accepted_rate": 0.5744262295081968,
+  "accepted_rate_old_and": 0.39737704918032785,
+  "alpha": 3.0,
+  "avg_delta_consistency": 0.060799086757991,
+  "avg_delta_cyclic_penalty_raw": -0.016908011628077393,
+  "avg_delta_propagation_cost_raw": -0.011121845460804624,
+  "beta": 3.0,
+  "cases": 120,
+  "corr_prop_density": 0.7233115662313617,
+  "kappa": 0.8,
+  "lambda": 0.6,
+  "partial_corr_gap_prop_given_density": 0.3677795628377515,
+  "phase": "C'",
+  "score_mean": 0.03250080149524355,
+  "score_variance": 0.00801086378511733,
+  "seed": 42,
+  "stability_index": 0.018669312858907116
+}

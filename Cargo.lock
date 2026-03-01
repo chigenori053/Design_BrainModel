@@ -124,6 +124,7 @@ dependencies = [
  "hybrid_vm",
  "memory_space",
  "profile",
+ "serde",
 ]
 
 [[package]]
@@ -941,6 +942,7 @@ dependencies = [
 name = "design_gui"
 version = "0.1.0"
 dependencies = [
+ "agent_core",
  "core_types",
  "design_reasoning",
  "eframe",
@@ -949,6 +951,7 @@ dependencies = [
  "semantic_dhm",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]
