@@ -1,4 +1,4 @@
-use agent_core::domain::{AppState, ProposedDiff, UnifiedDesignState};
+use agent_core::domain::{AppState, DeltaVector, ProposedDiff, UnifiedDesignState};
 
 pub fn benchmark_suggest_quality() {
     let cases = generate_diverse_cases(42, 120);
@@ -7,6 +7,8 @@ pub fn benchmark_suggest_quality() {
     const ALPHA: f64 = 3.0;
     const BETA: f64 = 3.0;
     const GAMMA: f64 = 1.0;
+    const DELTA_MOD: f64 = 0.8;
+    const ETA: f64 = 0.02;
 
     let mut total_suggestions: usize = 0;
     let mut total_accepted_new: usize = 0;
@@ -20,6 +22,11 @@ pub fn benchmark_suggest_quality() {
     let mut post_consistency = Vec::new();
     let mut accepted_delta_consistency = Vec::new();
     let mut accepted_delta_prop_raw = Vec::new();
+    let mut delta_v_consistency = Vec::new();
+    let mut delta_v_prop_quality = Vec::new();
+    let mut delta_v_cycle_quality = Vec::new();
+    let mut delta_v_modularity = Vec::new();
+    let mut delta_v_norms = Vec::new();
     let mut case_initial_structural = Vec::new();
     let mut case_initial_dependency = Vec::new();
     let mut improved_cycle_count = 0_usize;
@@ -39,9 +46,12 @@ pub fn benchmark_suggest_quality() {
     let mut two_step_delta_cons = Vec::<f64>::new();
     let mut two_step_delta_prop = Vec::<f64>::new();
     let mut two_step_scores = Vec::<f64>::new();
+    let mut two_step_delta_v_norms = Vec::<f64>::new();
     let mut single_step_delta_cons = Vec::<f64>::new();
     let mut single_step_delta_prop = Vec::<f64>::new();
     let mut single_step_scores = Vec::<f64>::new();
+    let mut single_step_delta_v_norms = Vec::<f64>::new();
+    let mut mismatch_count = 0_usize;
 
     for case in &cases {
         let case = &case.state;
@@ -78,7 +88,7 @@ pub fn benchmark_suggest_quality() {
         let before_prop_raw = compute_propagation_cost(&case.uds);
         let before_cyc_raw = compute_cyclic_penalty(&case.uds);
         let before_mod_raw = modularity_score(&case.uds);
-        let mut accepted_by_model = 0_usize;
+        let mut accepted_by_domain = 0_usize;
 
         for diff in &candidates {
             let mut simulated = case.clone();
@@ -90,6 +100,10 @@ pub fn benchmark_suggest_quality() {
 
             let before = case.evaluation.clone();
             let after = simulated.evaluation.clone();
+            let before_v = case.compute_state_vector();
+            let after_v = simulated.compute_state_vector();
+            let delta_v = before_v.delta(&after_v);
+            let delta_v_norm = delta_vector_norm(&delta_v);
             let before_consistency = before.consistency as f64 / 100.0;
             let after_consistency = after.consistency as f64 / 100.0;
             let delta_c = after_consistency - before_consistency;
@@ -98,24 +112,44 @@ pub fn benchmark_suggest_quality() {
             let after_cyc_raw = compute_cyclic_penalty(&simulated.uds);
             let delta_cyc_raw = after_cyc_raw - before_cyc_raw;
             let after_mod_raw = modularity_score(&simulated.uds);
-            let delta_mod_raw = after_mod_raw - before_mod_raw;
-
-            let score = delta_c
-                + GAMMA * (-delta_prop_raw).max(0.0)
-                + 0.8 * delta_mod_raw.max(0.0)
-                - ALPHA * delta_prop_raw.max(0.0)
-                - BETA * delta_cyc_raw.max(0.0)
-                + recon_bonus_raw(&case.uds, diff, after_prop_raw);
+            let _delta_mod_raw = after_mod_raw - before_mod_raw;
+            let delta_complexity = simulated.uds.nodes.len() as f64 - case.uds.nodes.len() as f64;
+            let Some(result) = case.evaluate_diff(diff) else {
+                continue;
+            };
+            let benchmark_score = result.delta.d_consistency
+                + GAMMA * result.delta.d_prop_quality.max(0.0)
+                - ALPHA * (-result.delta.d_prop_quality).max(0.0)
+                - BETA * (-result.delta.d_cycle_quality).max(0.0)
+                - ETA * delta_complexity.max(0.0)
+                + DELTA_MOD * result.delta.d_modularity.max(0.0);
+            assert!(
+                (benchmark_score - result.score).abs() < 1e-12,
+                "benchmark_score mismatch: {} vs {}",
+                benchmark_score,
+                result.score
+            );
+            let score = result.score;
 
             let old_and_accept = delta_c > 0.0 && delta_prop_raw <= 0.0 && delta_cyc_raw <= 0.0;
             if old_and_accept {
                 total_accepted_old_and += 1;
             }
 
-            if score > 0.0 {
-                accepted_by_model += 1;
+            let accepted = result.accepted;
+            let in_domain = suggestions_domain.contains(diff);
+            if accepted != in_domain {
+                mismatch_count = mismatch_count.saturating_add(1);
+            }
+            if accepted {
+                accepted_by_domain += 1;
                 total_accepted_new += 1;
                 accepted_scores.push(score);
+                delta_v_consistency.push(delta_v.d_consistency);
+                delta_v_prop_quality.push(delta_v.d_prop_quality);
+                delta_v_cycle_quality.push(delta_v.d_cycle_quality);
+                delta_v_modularity.push(delta_v.d_modularity);
+                delta_v_norms.push(delta_v_norm);
                 match diff {
                     ProposedDiff::SplitHighOutDegreeNode { .. } => split_accepted_total += 1,
                     ProposedDiff::RemoveNode { .. } => remove_node_accepted_total += 1,
@@ -144,6 +178,7 @@ pub fn benchmark_suggest_quality() {
                         two_step_delta_cons.push(delta_c);
                         two_step_delta_prop.push(delta_prop_raw);
                         two_step_scores.push(score);
+                        two_step_delta_v_norms.push(delta_v_norm);
                     }
                     _ => {
                         other_accepted_total += 1;
@@ -153,6 +188,7 @@ pub fn benchmark_suggest_quality() {
                     single_step_delta_cons.push(delta_c);
                     single_step_delta_prop.push(delta_prop_raw);
                     single_step_scores.push(score);
+                    single_step_delta_v_norms.push(delta_v_norm);
                 }
                 post_consistency.push(after_consistency);
                 accepted_delta_consistency.push(delta_c);
@@ -170,11 +206,13 @@ pub fn benchmark_suggest_quality() {
             }
         }
 
-        assert_eq!(
-            suggestions_domain.len(),
-            accepted_by_model,
-            "domain suggest count mismatch with benchmark guard model"
-        );
+        if suggestions_domain.len() != accepted_by_domain {
+            println!(
+                "warn: domain/model accept mismatch domain={} model={} ",
+                suggestions_domain.len(),
+                accepted_by_domain
+            );
+        }
     }
 
     let accepted_rate = if total_suggestions == 0 {
@@ -260,6 +298,10 @@ pub fn benchmark_suggest_quality() {
     let delta_prop_min = min(&accepted_delta_prop_raw);
     let delta_prop_max = max(&accepted_delta_prop_raw);
     let delta_prop_stddev = stddev(&accepted_delta_prop_raw);
+    let delta_v_norm_mean = mean(&delta_v_norms);
+    let delta_v_norm_min = min(&delta_v_norms);
+    let delta_v_norm_max = max(&delta_v_norms);
+    let delta_v_norm_stddev = stddev(&delta_v_norms);
 
     let split_pct = ratio_percent(split_accepted_total, total_accepted_new);
     let remove_node_pct = ratio_percent(remove_node_accepted_total, total_accepted_new);
@@ -272,6 +314,7 @@ pub fn benchmark_suggest_quality() {
     println!("Accepted suggestions (old_and): {}", total_accepted_old_and);
     println!("Accepted Rate: {:.4}", accepted_rate);
     println!("Accepted Rate (old_and): {:.4}", accepted_rate_old_and);
+    println!("Evaluation mismatch count: {}", mismatch_count);
     println!("Avg Δconsistency: {:+.4}", avg_consistency);
     println!("Avg Δstructural: {:+.4}", avg_structural);
     println!("Avg Δdependency: {:+.4}", avg_dependency);
@@ -389,6 +432,45 @@ pub fn benchmark_suggest_quality() {
     println!("  min: {:+.6}", delta_prop_min);
     println!("  max: {:+.6}", delta_prop_max);
     println!("  stddev: {:.6}", delta_prop_stddev);
+    println!("Δv (accepted only):");
+    println!("  d_consistency stddev: {:.6}", stddev(&delta_v_consistency));
+    println!(
+        "  d_prop_quality stddev: {:.6}",
+        stddev(&delta_v_prop_quality)
+    );
+    println!(
+        "  d_cycle_quality stddev: {:.6}",
+        stddev(&delta_v_cycle_quality)
+    );
+    println!("  d_modularity stddev: {:.6}", stddev(&delta_v_modularity));
+    println!(
+        "  ||Δv|| mean/min/max/stddev: {:.6} / {:.6} / {:.6} / {:.6}",
+        delta_v_norm_mean, delta_v_norm_min, delta_v_norm_max, delta_v_norm_stddev
+    );
+    println!("Δv correlation matrix (accepted only):");
+    let corr_cc = 1.0;
+    let corr_cp = correlation(&delta_v_consistency, &delta_v_prop_quality);
+    let corr_cy = correlation(&delta_v_consistency, &delta_v_cycle_quality);
+    let corr_cm = correlation(&delta_v_consistency, &delta_v_modularity);
+    let corr_py = correlation(&delta_v_prop_quality, &delta_v_cycle_quality);
+    let corr_pm = correlation(&delta_v_prop_quality, &delta_v_modularity);
+    let corr_ym = correlation(&delta_v_cycle_quality, &delta_v_modularity);
+    println!(
+        "  [C, Pq, Cyq, M]\n  C : [{:.3}, {:.3}, {:.3}, {:.3}]",
+        corr_cc, corr_cp, corr_cy, corr_cm
+    );
+    println!(
+        "  Pq: [{:.3}, {:.3}, {:.3}, {:.3}]",
+        corr_cp, 1.0, corr_py, corr_pm
+    );
+    println!(
+        "  Cyq:[{:.3}, {:.3}, {:.3}, {:.3}]",
+        corr_cy, corr_py, 1.0, corr_ym
+    );
+    println!(
+        "  M : [{:.3}, {:.3}, {:.3}, {:.3}]",
+        corr_cm, corr_pm, corr_ym, 1.0
+    );
     println!("Score summary:");
     println!("  mean: {:+.6}", score_mean);
     println!("  median: {:+.6}", score_median);
@@ -405,6 +487,25 @@ pub fn benchmark_suggest_quality() {
     assert!(init_stddev > 0.05, "initial stddev should exceed 0.05");
 
     assert!(total_suggestions > 0, "expected candidate suggestions > 0");
+    assert_eq!(mismatch_count, 0, "expected zero evaluate_diff mismatch");
+    assert!(
+        stddev(&delta_v_consistency) > 0.0
+            && stddev(&delta_v_prop_quality) > 0.0
+            && stddev(&delta_v_cycle_quality) > 0.0
+            && stddev(&delta_v_modularity) > 0.0,
+        "all Δv axes must be non-degenerate"
+    );
+    let max_abs_corr = [corr_cp, corr_cy, corr_cm, corr_py, corr_pm, corr_ym]
+        .iter()
+        .map(|v| v.abs())
+        .fold(0.0_f64, f64::max);
+    assert!(max_abs_corr < 0.95, "Δv axes are too collinear");
+    if !two_step_delta_v_norms.is_empty() && !single_step_delta_v_norms.is_empty() {
+        assert!(
+            mean(&two_step_delta_v_norms) > mean(&single_step_delta_v_norms),
+            "TwoStep ||Δv|| mean must be greater than single-step"
+        );
+    }
     assert!(accepted_rate >= 0.35, "accepted_rate must be >= 0.35");
     assert!(avg_consistency > 0.0, "Avg Δconsistency must stay positive");
     assert!(
@@ -1040,12 +1141,15 @@ fn evaluate_lambda_metrics(
             let delta_cyc = after_cyc - before_cyc;
             let after_mod = modularity_score(&simulated.uds);
             let delta_mod = after_mod - before_mod;
+            let delta_complexity =
+                simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
 
             let score = delta_cons
                 + gamma * (-delta_prop).max(0.0)
                 + 0.8 * delta_mod.max(0.0)
                 - alpha * delta_prop.max(0.0)
-                - beta * delta_cyc.max(0.0);
+                - beta * delta_cyc.max(0.0)
+                - 0.02 * delta_complexity.max(0.0);
             score_values.push(score);
 
             if delta_cons > 0.0 && delta_prop <= 0.0 && delta_cyc <= 0.0 {
@@ -1161,12 +1265,15 @@ fn evaluate_dynamic_lambda_metrics(
             let delta_cyc = after_cyc - before_cyc;
             let after_mod = modularity_score(&simulated.uds);
             let delta_mod = after_mod - before_mod;
+            let delta_complexity =
+                simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
 
             let score = delta_cons
                 + gamma * (-delta_prop).max(0.0)
                 + 0.8 * delta_mod.max(0.0)
                 - alpha * delta_prop.max(0.0)
-                - beta * delta_cyc.max(0.0);
+                - beta * delta_cyc.max(0.0)
+                - 0.02 * delta_complexity.max(0.0);
             score_values.push(score);
 
             if score > 0.0 {
@@ -1341,13 +1448,13 @@ fn build_single_step_candidates(
 
     for key in split_candidate_keys(state) {
         let diff = ProposedDiff::SplitHighOutDegreeNode { key };
-        if split_preview_passes_guard(state, &eval, &diff) {
+        if split_preview_passes_guard(state, eval, &diff) {
             candidates.push(diff);
         }
     }
 
     for diff in rewire_candidate_diffs(state) {
-        if split_preview_passes_guard(state, &eval, &diff) {
+        if split_preview_passes_guard(state, eval, &diff) {
             candidates.push(diff);
         }
     }
@@ -1357,34 +1464,14 @@ fn build_single_step_candidates(
 
 fn build_best_two_step_candidate(
     state: &AppState,
-    baseline_eval: &agent_core::domain::DesignScoreVector,
+    _baseline_eval: &agent_core::domain::DesignScoreVector,
     first_step_candidates: &[ProposedDiff],
 ) -> Option<ProposedDiff> {
     const TOP_K: usize = 3;
-    let baseline_prop = compute_propagation_cost(&state.uds);
-    let baseline_cyc = compute_cyclic_penalty(&state.uds);
 
     let mut first_scored = first_step_candidates
         .iter()
-        .filter_map(|diff| {
-            let mut simulated = state.clone();
-            simulated.begin_tx().ok()?;
-            if simulated.apply_diff(diff.clone()).is_err() {
-                return None;
-            }
-            simulated.commit_tx().ok()?;
-            let score = guard_score(
-                baseline_eval,
-                &simulated.evaluation,
-                baseline_prop,
-                compute_propagation_cost(&simulated.uds),
-                baseline_cyc,
-                compute_cyclic_penalty(&simulated.uds),
-                modularity_score(&state.uds),
-                modularity_score(&simulated.uds),
-            ) + recon_bonus_raw(&state.uds, diff, compute_propagation_cost(&simulated.uds));
-            Some((diff.clone(), score))
-        })
+        .filter_map(|diff| state.evaluate_diff(diff).map(|r| (diff.clone(), r.score)))
         .collect::<Vec<_>>();
     if first_scored.is_empty() {
         return None;
@@ -1414,20 +1501,7 @@ fn build_best_two_step_candidate(
                 first: Box::new(first_diff.clone()),
                 second: Box::new(second_diff),
             };
-            let score = guard_score(
-                baseline_eval,
-                &two_step_state.evaluation,
-                baseline_prop,
-                compute_propagation_cost(&two_step_state.uds),
-                baseline_cyc,
-                compute_cyclic_penalty(&two_step_state.uds),
-                modularity_score(&state.uds),
-                modularity_score(&two_step_state.uds),
-            ) + recon_bonus_raw(
-                &state.uds,
-                &candidate,
-                compute_propagation_cost(&two_step_state.uds),
-            );
+            let score = state.evaluate_diff(&candidate).map(|r| r.score).unwrap_or(0.0);
             if score <= 0.0 {
                 continue;
             }
@@ -1447,58 +1521,10 @@ fn build_best_two_step_candidate(
 
 fn split_preview_passes_guard(
     state: &AppState,
-    baseline_eval: &agent_core::domain::DesignScoreVector,
+    _baseline_eval: &agent_core::domain::DesignScoreVector,
     diff: &ProposedDiff,
 ) -> bool {
-    let mut simulated = state.clone();
-    simulated.begin_tx().expect("begin tx for split preview");
-    if simulated.apply_diff(diff.clone()).is_err() {
-        return false;
-    }
-    simulated.commit_tx().expect("commit tx for split preview");
-
-    let before_prop = compute_propagation_cost_dynamic(&state.uds);
-    let after_prop = compute_propagation_cost_dynamic(&simulated.uds);
-
-    let before_cyc = compute_cyclic_penalty(&state.uds);
-    let after_cyc = compute_cyclic_penalty(&simulated.uds);
-
-    let score = guard_score(
-        baseline_eval,
-        &simulated.evaluation,
-        before_prop,
-        after_prop,
-        before_cyc,
-        after_cyc,
-        modularity_score(&state.uds),
-        modularity_score(&simulated.uds),
-    ) + recon_bonus_dynamic(&state.uds, diff, after_prop);
-    score > 0.0
-}
-
-fn guard_score(
-    before: &agent_core::domain::DesignScoreVector,
-    after: &agent_core::domain::DesignScoreVector,
-    before_prop: f64,
-    after_prop: f64,
-    before_cyc: f64,
-    after_cyc: f64,
-    before_mod: f64,
-    after_mod: f64,
-) -> f64 {
-    const ALPHA: f64 = 3.0;
-    const BETA: f64 = 3.0;
-    const GAMMA1: f64 = 1.0;
-    const DELTA: f64 = 0.8;
-    let delta_c = (after.consistency as f64 - before.consistency as f64) / 100.0;
-    let delta_prop = after_prop - before_prop;
-    let delta_cyc = after_cyc - before_cyc;
-    let delta_mod = after_mod - before_mod;
-    delta_c
-        + GAMMA1 * (-delta_prop).max(0.0)
-        + DELTA * delta_mod.max(0.0)
-        - ALPHA * delta_prop.max(0.0)
-        - BETA * delta_cyc.max(0.0)
+    state.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false)
 }
 
 fn diff_contains_rewire(diff: &ProposedDiff) -> bool {
@@ -1509,48 +1535,6 @@ fn diff_contains_rewire(diff: &ProposedDiff) -> bool {
         }
         _ => false,
     }
-}
-
-fn recon_bonus_raw(base_uds: &UnifiedDesignState, diff: &ProposedDiff, after_prop: f64) -> f64 {
-    if let ProposedDiff::TwoStep { first, second } = diff {
-        if diff_kind(first) == "Split" && diff_kind(second) == "Rewire" {
-            const GAMMA2: f64 = 0.8;
-            const KAPPA_RECON: f64 = 1.0;
-            let mut after_first = AppState::new(base_uds.clone());
-            after_first.begin_tx().ok();
-            if after_first.apply_diff((**first).clone()).is_err() {
-                return 0.0;
-            }
-            if after_first.commit_tx().is_err() {
-                return 0.0;
-            }
-            let prop_after_first = compute_propagation_cost(&after_first.uds);
-            let delta_prop_second = after_prop - prop_after_first;
-            return GAMMA2 * KAPPA_RECON * (-delta_prop_second).max(0.0);
-        }
-    }
-    0.0
-}
-
-fn recon_bonus_dynamic(base_uds: &UnifiedDesignState, diff: &ProposedDiff, after_prop: f64) -> f64 {
-    if let ProposedDiff::TwoStep { first, second } = diff {
-        if diff_kind(first) == "Split" && diff_kind(second) == "Rewire" {
-            const GAMMA2: f64 = 0.8;
-            const KAPPA_RECON: f64 = 1.0;
-            let mut after_first = AppState::new(base_uds.clone());
-            after_first.begin_tx().ok();
-            if after_first.apply_diff((**first).clone()).is_err() {
-                return 0.0;
-            }
-            if after_first.commit_tx().is_err() {
-                return 0.0;
-            }
-            let prop_after_first = compute_propagation_cost_dynamic(&after_first.uds);
-            let delta_prop_second = after_prop - prop_after_first;
-            return GAMMA2 * KAPPA_RECON * (-delta_prop_second).max(0.0);
-        }
-    }
-    0.0
 }
 
 fn diff_kind(diff: &ProposedDiff) -> &'static str {
@@ -1669,17 +1653,17 @@ fn rewire_candidate_diffs(state: &AppState) -> Vec<ProposedDiff> {
             adjacency[from].push(to);
         }
     }
-    for from in 0..adjacency.len() {
-        adjacency[from].sort_unstable();
-        adjacency[from].dedup();
-        for &to in &adjacency[from] {
+    for edges in &mut adjacency {
+        edges.sort_unstable();
+        edges.dedup();
+        for &to in edges.iter() {
             indegree[to] = indegree[to].saturating_add(1);
         }
     }
 
     let mut node_impact = vec![0.0_f64; keys.len()];
-    for i in 0..keys.len() {
-        node_impact[i] = propagation_sum_from(i, &adjacency, LAMBDA);
+    for (i, impact) in node_impact.iter_mut().enumerate() {
+        *impact = propagation_sum_from(i, &adjacency, LAMBDA);
     }
 
     let mut edge_scores = Vec::<(usize, usize, f64)>::new();
@@ -1712,7 +1696,7 @@ fn rewire_candidate_diffs(state: &AppState) -> Vec<ProposedDiff> {
                 continue;
             }
             let w = &keys[w_idx];
-            if adjacency[from].iter().any(|existing| *existing == w_idx) {
+            if adjacency[from].contains(&w_idx) {
                 continue;
             }
             let dist = shortest_distance(from, w_idx, &adjacency).unwrap_or(keys.len() + 1);
@@ -1784,19 +1768,6 @@ enum Pattern {
 
 fn compute_propagation_cost(uds: &UnifiedDesignState) -> f64 {
     compute_propagation_cost_new(uds, 0.60, 0.8)
-}
-
-fn compute_propagation_cost_dynamic(uds: &UnifiedDesignState) -> f64 {
-    let density = compute_graph_density(uds);
-    let lambda = compute_lambda_dynamic(density);
-    compute_propagation_cost_new(uds, lambda, 0.8)
-}
-
-fn compute_lambda_dynamic(density: f64) -> f64 {
-    let lambda_min = 0.55_f64;
-    let lambda_max = 0.75_f64;
-    let d = density.clamp(0.0, 1.0);
-    lambda_min + (1.0 - d) * (lambda_max - lambda_min)
 }
 
 fn compute_propagation_cost_new(uds: &UnifiedDesignState, lambda: f64, kappa: f64) -> f64 {
@@ -2147,9 +2118,9 @@ fn jacobi_eigenvalues(mut a: Vec<Vec<f64>>) -> Vec<f64> {
         let mut q = 1usize.min(n - 1);
         let mut max_val = 0.0_f64;
 
-        for i in 0..n {
-            for j in (i + 1)..n {
-                let v = a[i][j].abs();
+        for (i, row) in a.iter().enumerate() {
+            for (j, value) in row.iter().enumerate().skip(i + 1) {
+                let v = value.abs();
                 if v > max_val {
                     max_val = v;
                     p = i;
@@ -2178,8 +2149,10 @@ fn jacobi_eigenvalues(mut a: Vec<Vec<f64>>) -> Vec<f64> {
         let c = 1.0 / (1.0 + t * t).sqrt();
         let s = t * c;
 
-        for k in 0..n {
+        let mut k = 0usize;
+        while k < n {
             if k == p || k == q {
+                k += 1;
                 continue;
             }
             let aik = a[p][k];
@@ -2188,6 +2161,7 @@ fn jacobi_eigenvalues(mut a: Vec<Vec<f64>>) -> Vec<f64> {
             a[k][p] = a[p][k];
             a[q][k] = s * aik + c * akq;
             a[k][q] = a[q][k];
+            k += 1;
         }
 
         a[p][p] = c * c * app - 2.0 * s * c * apq + s * s * aqq;
@@ -2576,6 +2550,14 @@ fn mean(v: &[f64]) -> f64 {
         return 0.0;
     }
     v.iter().sum::<f64>() / v.len() as f64
+}
+
+fn delta_vector_norm(v: &DeltaVector) -> f64 {
+    (v.d_consistency.powi(2)
+        + v.d_prop_quality.powi(2)
+        + v.d_cycle_quality.powi(2)
+        + v.d_modularity.powi(2))
+    .sqrt()
 }
 
 fn min(v: &[f64]) -> f64 {

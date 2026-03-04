@@ -16,19 +16,122 @@ pub struct RuntimeState {
 pub struct UnifiedDesignState {
     pub nodes: BTreeMap<String, String>,
     pub dependencies: BTreeMap<String, Vec<String>>,
+    #[serde(default)]
+    pub node_id_states: BTreeMap<String, NodeIdState>,
+    #[serde(default)]
+    pub node_origins: BTreeMap<String, String>,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum NodeIdState {
+    #[default]
+    Temporary,
+    PendingPromotion,
+    Global,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PromotionError {
+    TransactionInProgress,
+    RootNodeNotFound(String),
+    EmptyOriginId,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PromotionReport {
+    pub root_node: String,
+    pub promotion_unit: Vec<String>,
+    pub promoted_count: usize,
+    pub kept_global_count: usize,
+    pub closure_size_warning: bool,
 }
 
 impl UnifiedDesignState {
+    fn node_state_or_default(&self, key: &str) -> NodeIdState {
+        self.node_id_states
+            .get(key)
+            .copied()
+            .unwrap_or(NodeIdState::Temporary)
+    }
+
+    fn dependency_closure(&self, root: &str) -> Result<Vec<String>, PromotionError> {
+        if !self.nodes.contains_key(root) {
+            return Err(PromotionError::RootNodeNotFound(root.to_string()));
+        }
+
+        let mut stack = vec![root.to_string()];
+        let mut visited = std::collections::BTreeSet::new();
+        while let Some(cur) = stack.pop() {
+            if !visited.insert(cur.clone()) {
+                continue;
+            }
+            if let Some(nexts) = self.dependencies.get(&cur) {
+                for next in nexts {
+                    if self.nodes.contains_key(next) {
+                        stack.push(next.clone());
+                    }
+                }
+            }
+        }
+
+        Ok(visited.into_iter().collect())
+    }
+
+    fn promote_dependency_closure(
+        &mut self,
+        root: &str,
+        new_origin_id: &str,
+        closure_warning_threshold: usize,
+    ) -> Result<PromotionReport, PromotionError> {
+        let origin = new_origin_id.trim();
+        if origin.is_empty() {
+            return Err(PromotionError::EmptyOriginId);
+        }
+
+        let promotion_unit = self.dependency_closure(root)?;
+        let closure_size_warning = promotion_unit.len() > closure_warning_threshold;
+
+        let mut promoted_count = 0_usize;
+        let mut kept_global_count = 0_usize;
+
+        for key in &promotion_unit {
+            match self.node_state_or_default(key) {
+                NodeIdState::Global => {
+                    kept_global_count += 1;
+                }
+                NodeIdState::Temporary | NodeIdState::PendingPromotion => {
+                    self.node_id_states
+                        .insert(key.clone(), NodeIdState::Global);
+                    self.node_origins.insert(key.clone(), origin.to_string());
+                    promoted_count += 1;
+                }
+            }
+        }
+
+        Ok(PromotionReport {
+            root_node: root.to_string(),
+            promotion_unit,
+            promoted_count,
+            kept_global_count,
+            closure_size_warning,
+        })
+    }
+
     fn apply_diff(&mut self, diff: &ProposedDiff) -> Result<(), TxError> {
         match diff {
             ProposedDiff::UpsertNode { key, value } => {
                 self.nodes.insert(key.clone(), value.clone());
+                self.node_id_states
+                    .entry(key.clone())
+                    .or_insert(NodeIdState::Temporary);
             }
             ProposedDiff::RemoveNode { key } => {
                 if self.nodes.remove(key).is_none() {
                     return Err(TxError::MissingNode(key.clone()));
                 }
                 self.dependencies.remove(key);
+                self.node_id_states.remove(key);
+                self.node_origins.remove(key);
                 for deps in self.dependencies.values_mut() {
                     deps.retain(|dep| dep != key);
                 }
@@ -204,6 +307,33 @@ pub struct DesignScoreVector {
     pub dependency_soundness: u32,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct StateVector {
+    pub consistency: f64,
+    pub propagation_quality: f64,
+    pub cycle_quality: f64,
+    pub modularity: f64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DeltaVector {
+    pub d_consistency: f64,
+    pub d_prop_quality: f64,
+    pub d_cycle_quality: f64,
+    pub d_modularity: f64,
+}
+
+impl StateVector {
+    pub fn delta(&self, other: &StateVector) -> DeltaVector {
+        DeltaVector {
+            d_consistency: other.consistency - self.consistency,
+            d_prop_quality: other.propagation_quality - self.propagation_quality,
+            d_cycle_quality: other.cycle_quality - self.cycle_quality,
+            d_modularity: other.modularity - self.modularity,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AppState {
     pub uds: UnifiedDesignState,
@@ -225,6 +355,13 @@ pub enum AnalyzeError {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SuggestError {
     TransactionInProgress,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EvaluationResult {
+    pub delta: DeltaVector,
+    pub score: f64,
+    pub accepted: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -285,6 +422,42 @@ impl AppState {
             tx_engine: TransactionEngine::new(),
             session_history: SessionHistory::with_initial(snapshot, 100),
         }
+    }
+
+    pub fn promote_node_with_dependency_closure(
+        &mut self,
+        root_node: &str,
+        new_origin_id: &str,
+        closure_warning_threshold: usize,
+    ) -> Result<PromotionReport, PromotionError> {
+        if self.tx_engine.current_tx.is_some() {
+            return Err(PromotionError::TransactionInProgress);
+        }
+
+        self.begin_tx().map_err(|_| PromotionError::TransactionInProgress)?;
+        let mut candidate = self.uds.clone();
+        let report = match candidate.promote_dependency_closure(
+            root_node,
+            new_origin_id,
+            closure_warning_threshold,
+        ) {
+            Ok(r) => r,
+            Err(err) => {
+                let _ = self.abort_tx();
+                return Err(err);
+            }
+        };
+
+        if self.replace_uds(candidate).is_err() {
+            let _ = self.abort_tx();
+            return Err(PromotionError::TransactionInProgress);
+        }
+        if self.commit_tx().is_err() {
+            let _ = self.abort_tx();
+            return Err(PromotionError::TransactionInProgress);
+        }
+
+        Ok(report)
     }
 
     pub fn apply_diff(&mut self, diff: ProposedDiff) -> Result<(), TxError> {
@@ -412,6 +585,41 @@ impl AppState {
         Ok(())
     }
 
+    pub fn compute_state_vector(&self) -> StateVector {
+        compute_state_vector_from(&self.uds, &self.evaluation)
+    }
+
+    pub fn evaluate_diff(&self, diff: &ProposedDiff) -> Option<EvaluationResult> {
+        const ALPHA: f64 = 3.0;
+        const BETA: f64 = 3.0;
+        const GAMMA: f64 = 1.0;
+        const ETA: f64 = 0.02;
+        const DELTA_MOD: f64 = 0.8;
+
+        let mut candidate_uds = self.uds.clone();
+        if candidate_uds.apply_diff(diff).is_err() {
+            return None;
+        }
+
+        let candidate_eval = evaluate_lightweight(&candidate_uds);
+        let before = compute_state_vector_from(&self.uds, &self.evaluation);
+        let after = compute_state_vector_from(&candidate_uds, &candidate_eval);
+        let delta = before.delta(&after);
+        let complexity_delta = delta_complexity(&self.uds, &candidate_uds);
+        let score = delta.d_consistency
+            + GAMMA * delta.d_prop_quality.max(0.0)
+            - ALPHA * (-delta.d_prop_quality).max(0.0)
+            - BETA * (-delta.d_cycle_quality).max(0.0)
+            - ETA * complexity_delta.max(0.0)
+            + DELTA_MOD * delta.d_modularity.max(0.0);
+
+        Some(EvaluationResult {
+            delta,
+            score,
+            accepted: score > 0.0,
+        })
+    }
+
     pub fn analyze_pareto(&self) -> Result<ParetoResult, AnalyzeError> {
         if self.tx_engine.current_tx.is_some() {
             return Err(AnalyzeError::TransactionInProgress);
@@ -445,28 +653,11 @@ impl AppState {
         }
 
         let baseline = evaluate_lightweight(&self.uds);
-        let baseline_propagation = propagation_cost_ratio(&self.uds);
-        let baseline_cyclic = cyclic_penalty_ratio(&self.uds);
         let candidates = self.build_candidate_diffs(&baseline);
 
         let accepted = candidates
             .into_iter()
-            .filter(|diff| {
-                let mut simulated = self.uds.clone();
-                if simulated.apply_diff(diff).is_err() {
-                    return false;
-                }
-                candidate_score(
-                    &self.uds,
-                    &baseline,
-                    baseline_propagation,
-                    baseline_cyclic,
-                    diff,
-                    &simulated,
-                )
-                .map(|score| score > 0.0)
-                .unwrap_or(false)
-            })
+            .filter(|diff| self.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false))
             .collect::<Vec<_>>();
 
         Ok(accepted)
@@ -538,30 +729,14 @@ impl AppState {
 
     fn build_best_two_step_candidate(
         &self,
-        baseline: &DesignScoreVector,
+        _baseline: &DesignScoreVector,
         first_step_candidates: &[ProposedDiff],
     ) -> Option<ProposedDiff> {
         const TOP_K: usize = 3;
-        let baseline_propagation = propagation_cost_ratio(&self.uds);
-        let baseline_cyclic = cyclic_penalty_ratio(&self.uds);
 
         let mut first_scored = first_step_candidates
             .iter()
-            .filter_map(|diff| {
-                let mut simulated = self.uds.clone();
-                if simulated.apply_diff(diff).is_err() {
-                    return None;
-                }
-                let score = candidate_score(
-                    &self.uds,
-                    baseline,
-                    baseline_propagation,
-                    baseline_cyclic,
-                    diff,
-                    &simulated,
-                )?;
-                Some((diff.clone(), score))
-            })
+            .filter_map(|diff| self.evaluate_diff(diff).map(|r| (diff.clone(), r.score)))
             .collect::<Vec<_>>();
         if first_scored.is_empty() {
             return None;
@@ -592,15 +767,10 @@ impl AppState {
                     first: Box::new(first_diff.clone()),
                     second: Box::new(second_diff),
                 };
-                let two_step_score = candidate_score(
-                    &self.uds,
-                    baseline,
-                    baseline_propagation,
-                    baseline_cyclic,
-                    &candidate,
-                    &after_second,
-                )
-                .unwrap_or(0.0);
+                let two_step_score = self
+                    .evaluate_diff(&candidate)
+                    .map(|r| r.score)
+                    .unwrap_or(0.0);
                 if two_step_score <= 0.0 {
                     continue;
                 }
@@ -724,17 +894,17 @@ impl AppState {
                 adjacency[from].push(to);
             }
         }
-        for from in 0..adjacency.len() {
-            adjacency[from].sort_unstable();
-            adjacency[from].dedup();
-            for &to in &adjacency[from] {
+        for edges in &mut adjacency {
+            edges.sort_unstable();
+            edges.dedup();
+            for &to in edges.iter() {
                 indegree[to] = indegree[to].saturating_add(1);
             }
         }
 
         let mut node_impact = vec![0.0_f64; keys.len()];
-        for i in 0..keys.len() {
-            node_impact[i] = propagation_sum_from(i, &adjacency, LAMBDA);
+        for (i, impact) in node_impact.iter_mut().enumerate() {
+            *impact = propagation_sum_from(i, &adjacency, LAMBDA);
         }
 
         let mut edge_scores = Vec::<(usize, usize, f64)>::new();
@@ -767,7 +937,7 @@ impl AppState {
                     continue;
                 }
                 let w = &keys[w_idx];
-                if adjacency[from].iter().any(|existing| *existing == w_idx) {
+                if adjacency[from].contains(&w_idx) {
                     continue;
                 }
                 let dist = shortest_distance(from, w_idx, &adjacency).unwrap_or(keys.len() + 1);
@@ -793,32 +963,10 @@ impl AppState {
 
     fn preview_passes_guard(
         &self,
-        baseline_eval: &DesignScoreVector,
+        _baseline_eval: &DesignScoreVector,
         diff: &ProposedDiff,
     ) -> bool {
-        let mut simulated = self.uds.clone();
-        if simulated.apply_diff(diff).is_err() {
-            return false;
-        }
-
-        let simulated_eval = evaluate_lightweight(&simulated);
-        let before_propagation = propagation_cost_ratio_dynamic(&self.uds);
-        let after_propagation = propagation_cost_ratio_dynamic(&simulated);
-        let before_cyclic = cyclic_penalty_ratio(&self.uds);
-        let after_cyclic = cyclic_penalty_ratio(&simulated);
-        let before_modularity = modularity_score(&self.uds);
-        let after_modularity = modularity_score(&simulated);
-
-        guard_score(
-            baseline_eval,
-            &simulated_eval,
-            before_propagation,
-            after_propagation,
-            before_cyclic,
-            after_cyclic,
-            before_modularity,
-            after_modularity,
-        ) > 0.0
+        self.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false)
     }
 
     fn rollback_internal(&mut self, snapshot_before: &SessionSnapshot) {
@@ -921,80 +1069,17 @@ fn dominates(a: &DesignScoreVector, b: &DesignScoreVector) -> bool {
     strictly_better
 }
 
-fn guard_score(
-    before: &DesignScoreVector,
-    after: &DesignScoreVector,
-    before_propagation: f64,
-    after_propagation: f64,
-    before_cyclic: f64,
-    after_cyclic: f64,
-    before_modularity: f64,
-    after_modularity: f64,
-) -> f64 {
-    const ALPHA: f64 = 3.0;
-    const BETA: f64 = 3.0;
-    const GAMMA1: f64 = 1.0;
-    const DELTA: f64 = 0.8;
-
-    let consistency_delta = (after.consistency as f64 - before.consistency as f64) / 100.0;
-    let propagation_delta = after_propagation - before_propagation;
-    let cyclic_delta = after_cyclic - before_cyclic;
-    let modularity_delta = after_modularity - before_modularity;
-    consistency_delta
-        + GAMMA1 * (-propagation_delta).max(0.0)
-        + DELTA * modularity_delta.max(0.0)
-        - ALPHA * propagation_delta.max(0.0)
-        - BETA * cyclic_delta.max(0.0)
-}
-
-fn candidate_score(
-    base_uds: &UnifiedDesignState,
-    before: &DesignScoreVector,
-    before_propagation: f64,
-    before_cyclic: f64,
-    diff: &ProposedDiff,
-    simulated_uds: &UnifiedDesignState,
-) -> Option<f64> {
-    let after_eval = evaluate_lightweight(simulated_uds);
-    let after_propagation = propagation_cost_ratio(simulated_uds);
-    let after_cyclic = cyclic_penalty_ratio(simulated_uds);
-    let before_modularity = modularity_score(base_uds);
-    let after_modularity = modularity_score(simulated_uds);
-    let mut score = guard_score(
-        before,
-        &after_eval,
-        before_propagation,
-        after_propagation,
-        before_cyclic,
-        after_cyclic,
-        before_modularity,
-        after_modularity,
-    );
-
-    if let ProposedDiff::TwoStep { first, second } = diff {
-        if is_split_diff(first) && is_rewire_diff(second) {
-            const GAMMA2: f64 = 0.8;
-            const KAPPA_RECON: f64 = 1.0;
-            let mut after_first = base_uds.clone();
-            after_first.apply_diff(first).ok()?;
-            let prop_after_first = propagation_cost_ratio(&after_first);
-            let delta_prop_second = after_propagation - prop_after_first;
-            score += GAMMA2 * KAPPA_RECON * (-delta_prop_second).max(0.0);
-        }
+fn compute_state_vector_from(uds: &UnifiedDesignState, eval: &DesignScoreVector) -> StateVector {
+    StateVector {
+        consistency: eval.consistency as f64 / 100.0,
+        propagation_quality: -propagation_cost_ratio(uds),
+        cycle_quality: -cyclic_penalty_ratio(uds),
+        modularity: modularity_score(uds),
     }
-
-    Some(score)
 }
 
-fn is_split_diff(diff: &ProposedDiff) -> bool {
-    matches!(diff, ProposedDiff::SplitHighOutDegreeNode { .. })
-}
-
-fn is_rewire_diff(diff: &ProposedDiff) -> bool {
-    matches!(
-        diff,
-        ProposedDiff::SetDependencies { .. } | ProposedDiff::RewireHighImpactEdge { .. }
-    )
+fn delta_complexity(before: &UnifiedDesignState, after: &UnifiedDesignState) -> f64 {
+    after.nodes.len() as f64 - before.nodes.len() as f64
 }
 
 fn inverse_ratio_score(ratio: f64) -> u32 {
@@ -1004,55 +1089,6 @@ fn inverse_ratio_score(ratio: f64) -> u32 {
 fn propagation_cost_ratio(uds: &UnifiedDesignState) -> f64 {
     const LAMBDA: f64 = 0.60;
     propagation_cost_ratio_with_lambda(uds, LAMBDA)
-}
-
-fn propagation_cost_ratio_dynamic(uds: &UnifiedDesignState) -> f64 {
-    let density = graph_density_ratio(uds);
-    let lambda = dynamic_lambda_from_density(density);
-    propagation_cost_ratio_with_lambda(uds, lambda)
-}
-
-fn dynamic_lambda_from_density(density: f64) -> f64 {
-    const LAMBDA_MIN: f64 = 0.55;
-    const LAMBDA_MAX: f64 = 0.75;
-    let d = density.clamp(0.0, 1.0);
-    LAMBDA_MIN + (1.0 - d) * (LAMBDA_MAX - LAMBDA_MIN)
-}
-
-fn graph_density_ratio(uds: &UnifiedDesignState) -> f64 {
-    let n = uds.nodes.len();
-    if n <= 1 {
-        return 0.0;
-    }
-
-    let keys = uds.nodes.keys().cloned().collect::<Vec<_>>();
-    let index = keys
-        .iter()
-        .enumerate()
-        .map(|(idx, key)| (key.clone(), idx))
-        .collect::<BTreeMap<_, _>>();
-
-    let mut edge_count = 0_usize;
-    for (owner, deps) in &uds.dependencies {
-        let Some(&from) = index.get(owner) else {
-            continue;
-        };
-        for dep in deps {
-            let Some(&to) = index.get(dep) else {
-                continue;
-            };
-            if from != to {
-                edge_count += 1;
-            }
-        }
-    }
-
-    let max_edges = n * (n - 1);
-    if max_edges == 0 {
-        0.0
-    } else {
-        (edge_count as f64 / max_edges as f64).clamp(0.0, 1.0)
-    }
 }
 
 fn propagation_cost_ratio_with_lambda(uds: &UnifiedDesignState, lambda: f64) -> f64 {
@@ -1366,7 +1402,7 @@ fn internal_cycle_intensity(component: &[usize], adjacency: &[Vec<usize>]) -> f6
 
 #[cfg(test)]
 mod tests {
-    use super::{AppState, ParetoResult, UnifiedDesignState};
+    use super::{AppState, NodeIdState, ParetoResult, PromotionError, UnifiedDesignState};
     use crate::domain::hash::compute_hash;
     use crate::domain::transaction::ProposedDiff;
 
@@ -1706,5 +1742,178 @@ mod tests {
             .suggest_diffs_from_analysis(&pareto)
             .expect("suggest should succeed");
         assert!(!suggestions.is_empty());
+    }
+
+    #[test]
+    fn uds_key_stability_test() {
+        let mut app = AppState::new(sample_uds());
+
+        app.begin_tx().expect("begin remove tx");
+        app.apply_diff(ProposedDiff::RemoveNode {
+            key: "A".to_string(),
+        })
+        .expect("remove existing key");
+        app.commit_tx().expect("commit remove tx");
+        assert!(!app.uds.nodes.contains_key("A"));
+
+        app.begin_tx().expect("begin reinsert tx");
+        app.apply_diff(ProposedDiff::UpsertNode {
+            key: "A".to_string(),
+            value: "alpha-reused".to_string(),
+        })
+        .expect("reinsert same key");
+        app.commit_tx().expect("commit reinsert tx");
+
+        assert_eq!(
+            app.uds.nodes.get("A").map(String::as_str),
+            Some("alpha-reused")
+        );
+    }
+
+    #[test]
+    fn uds_key_order_independence() {
+        let mut left = UnifiedDesignState::default();
+        left.nodes.insert("k2".to_string(), "v2".to_string());
+        left.nodes.insert("k1".to_string(), "v1".to_string());
+        left.nodes.insert("k3".to_string(), "v3".to_string());
+
+        let mut right = UnifiedDesignState::default();
+        right.nodes.insert("k3".to_string(), "v3".to_string());
+        right.nodes.insert("k1".to_string(), "v1".to_string());
+        right.nodes.insert("k2".to_string(), "v2".to_string());
+
+        let left_keys = left.nodes.keys().cloned().collect::<Vec<_>>();
+        let right_keys = right.nodes.keys().cloned().collect::<Vec<_>>();
+        assert_eq!(left_keys, right_keys);
+        assert_eq!(compute_hash(&left), compute_hash(&right));
+    }
+
+    #[test]
+    fn uds_dependency_key_integrity() {
+        let mut app = AppState::new(sample_uds());
+
+        app.begin_tx().expect("begin dependency tx");
+        let err = app
+            .apply_diff(ProposedDiff::SetDependencies {
+                key: "A".to_string(),
+                dependencies: vec!["MISSING".to_string()],
+            })
+            .expect_err("missing dependency key must fail");
+        assert!(matches!(
+            err,
+            crate::domain::transaction::TxError::MissingDependency(dep) if dep == "MISSING"
+        ));
+        app.abort_tx().expect("abort dependency tx");
+
+        app.begin_tx().expect("begin remove tx");
+        app.apply_diff(ProposedDiff::RemoveNode {
+            key: "B".to_string(),
+        })
+        .expect("remove B");
+        app.commit_tx().expect("commit remove tx");
+
+        let deps_of_a = app.uds.dependencies.get("A").cloned().unwrap_or_default();
+        assert!(!deps_of_a.iter().any(|dep| dep == "B"));
+    }
+
+    #[test]
+    fn promotion_uses_dependency_closure_unit() {
+        let mut uds = UnifiedDesignState::default();
+        uds.nodes.insert("A".to_string(), "a".to_string());
+        uds.nodes.insert("B".to_string(), "b".to_string());
+        uds.nodes.insert("C".to_string(), "c".to_string());
+        uds.nodes.insert("D".to_string(), "d".to_string());
+        uds.dependencies
+            .insert("A".to_string(), vec!["B".to_string()]);
+        uds.dependencies
+            .insert("B".to_string(), vec!["C".to_string()]);
+        uds.dependencies
+            .insert("D".to_string(), vec!["C".to_string()]);
+
+        let mut app = AppState::new(uds);
+        let report = app
+            .promote_node_with_dependency_closure("A", "origin-1", 1000)
+            .expect("promotion should succeed");
+
+        assert_eq!(report.promotion_unit, vec!["A", "B", "C"]);
+        assert_eq!(
+            app.uds.node_id_states.get("A"),
+            Some(&NodeIdState::Global)
+        );
+        assert_eq!(
+            app.uds.node_id_states.get("B"),
+            Some(&NodeIdState::Global)
+        );
+        assert_eq!(
+            app.uds.node_id_states.get("C"),
+            Some(&NodeIdState::Global)
+        );
+        assert_eq!(
+            app.uds.node_id_states.get("D"),
+            None
+        );
+        assert_eq!(app.uds.node_origins.get("D"), None);
+    }
+
+    #[test]
+    fn promotion_keeps_existing_global_origin_unchanged() {
+        let mut uds = UnifiedDesignState::default();
+        uds.nodes.insert("A".to_string(), "a".to_string());
+        uds.nodes.insert("B".to_string(), "b".to_string());
+        uds.dependencies
+            .insert("A".to_string(), vec!["B".to_string()]);
+        uds.node_id_states
+            .insert("A".to_string(), NodeIdState::PendingPromotion);
+        uds.node_id_states
+            .insert("B".to_string(), NodeIdState::Global);
+        uds.node_origins
+            .insert("B".to_string(), "existing-origin".to_string());
+
+        let mut app = AppState::new(uds);
+        let report = app
+            .promote_node_with_dependency_closure("A", "new-origin", 1000)
+            .expect("promotion should succeed");
+
+        assert_eq!(report.promoted_count, 1);
+        assert_eq!(report.kept_global_count, 1);
+        assert_eq!(
+            app.uds.node_origins.get("A").map(String::as_str),
+            Some("new-origin")
+        );
+        assert_eq!(
+            app.uds.node_origins.get("B").map(String::as_str),
+            Some("existing-origin")
+        );
+    }
+
+    #[test]
+    fn promotion_warns_for_large_closure() {
+        let mut uds = UnifiedDesignState::default();
+        uds.nodes.insert("A".to_string(), "a".to_string());
+        uds.nodes.insert("B".to_string(), "b".to_string());
+        uds.dependencies
+            .insert("A".to_string(), vec!["B".to_string()]);
+
+        let mut app = AppState::new(uds);
+        let report = app
+            .promote_node_with_dependency_closure("A", "origin-1", 1)
+            .expect("promotion should succeed");
+
+        assert!(report.closure_size_warning);
+    }
+
+    #[test]
+    fn promotion_rolls_back_on_missing_root() {
+        let mut app = AppState::new(sample_uds());
+        let before = app.uds.clone();
+        let before_hash = compute_hash(&before);
+
+        let err = app
+            .promote_node_with_dependency_closure("MISSING", "origin-1", 1000)
+            .expect_err("missing root must fail");
+
+        assert!(matches!(err, PromotionError::RootNodeNotFound(node) if node == "MISSING"));
+        assert_eq!(app.uds, before);
+        assert_eq!(compute_hash(&app.uds), before_hash);
     }
 }

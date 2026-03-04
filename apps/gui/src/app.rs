@@ -12,16 +12,11 @@ use crate::persistence::{
 
 pub type SharedAppState = Arc<RwLock<AppState>>;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Tab {
+    #[default]
     Overview,
     Editor,
-}
-
-impl Default for Tab {
-    fn default() -> Self {
-        Self::Overview
-    }
 }
 
 #[derive(Debug, Default)]

@@ -70,6 +70,10 @@ impl SessionHistory {
         self.snapshots.len()
     }
 
+    pub fn is_empty(&self) -> bool {
+        self.snapshots.is_empty()
+    }
+
     pub fn current_index(&self) -> usize {
         self.current_index
     }
