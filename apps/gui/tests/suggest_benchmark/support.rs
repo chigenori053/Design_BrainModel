@@ -1,4 +1,5 @@
-use agent_core::domain::{AppState, DeltaVector, ProposedDiff, UnifiedDesignState};
+use agent_core::domain::state::DeltaVector;
+use agent_core::domain::{AppState, ProposedDiff, UnifiedDesignState};
 
 pub fn benchmark_suggest_quality() {
     let cases = generate_diverse_cases(42, 120);
