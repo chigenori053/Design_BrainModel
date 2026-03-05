@@ -1,30 +1,85 @@
 name: CI
 
 on:
-  push:
   pull_request:
+  push:
+    branches: [main]
 
 jobs:
-  rust-tests:
+  rust:
+    name: Rust CI
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+      # rust-toolchain.toml を自動検出（@master は toml を尊重する）
+      - uses: dtolnay/rust-toolchain@master
 
-      - name: Cache cargo
-        uses: Swatinem/rust-cache@v2
+      # ビルドキャッシュ（5分以内を担保するために必須）
+      - uses: Swatinem/rust-cache@v2
 
-      - name: Clippy (strict)
-        run: cargo clippy --all-targets -- -D warnings
+      - name: fmt
+        run: cargo fmt --all -- --check
 
-      - name: Phase1 fast suite
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: build
+        run: cargo check --workspace
+
+      - name: test
+        run: cargo test --workspace
+
+      - name: boundary rules
         run: |
-          cargo test -p agent_core
-          cargo test -p design_gui
-          cargo test -p design_cli
+          cargo tree --workspace > tree.txt
+          cargo tree -p chm | tee /tmp/chm_tree.txt
+          if rg -q " shm v" /tmp/chm_tree.txt; then
+            echo "Dependency leak: chm must not depend on shm"
+            exit 1
+          fi
+          if rg -n "Shm::new|Chm::new" crates/agent_core; then
+            echo "Boundary violation detected"
+            exit 1
+          fi
+          if rg -n "use (shm|chm|dhm)::" crates/agent_core/src crates/agent_core/tests; then
+            echo "Dependency leak: agent_core must access layers only via hybrid_vm"
+            exit 1
+          fi
+          if rg -n "use language_dhm::|LanguageDhm::" crates/agent_core/src crates/agent_core/tests; then
+            echo "Boundary violation: agent_core must not use language_dhm directly"
+            exit 1
+          fi
+          if rg -n "use semantic_dhm::|SemanticDhm::" crates/agent_core/src crates/agent_core/tests; then
+            echo "Boundary violation: agent_core must not use semantic_dhm directly"
+            exit 1
+          fi
+          if rg -n "use language_dhm::|use shm::|use chm::|use meaning_extractor::" crates/recomposer/src; then
+            echo "Boundary violation: recomposer must depend only on semantic_dhm"
+            exit 1
+          fi
+          if rg -n "use (semantic_dhm|recomposer|language_dhm)::" apps/cli/src apps/cli/tests; then
+            echo "Boundary violation: CLI must depend only on hybrid_vm"
+            exit 1
+          fi
 
-      - name: Heavy suite (CI only)
-        run: cargo test --all-features -p agent_core -p design_cli
+      - name: secret scan
+        uses: gitleaks/gitleaks-action@v2
+
+  python:
+    name: Python Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install ruff
+        run: pip install ruff
+
+      - name: lint
+        run: ruff check .

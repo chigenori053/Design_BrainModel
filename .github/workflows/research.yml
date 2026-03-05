@@ -1,0 +1,33 @@
+name: Research CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "実行対象 (pareto / search / simulation / all)"
+        required: true
+        default: "all"
+
+jobs:
+  research:
+    name: Research Evaluation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: pareto evaluation
+        if: ${{ inputs.target == 'pareto' || inputs.target == 'all' }}
+        run: cargo run -p cli -- pareto-eval
+
+      - name: search evaluation
+        if: ${{ inputs.target == 'search' || inputs.target == 'all' }}
+        run: cargo run -p cli -- search-eval
+
+      - name: simulation
+        if: ${{ inputs.target == 'simulation' || inputs.target == 'all' }}
+        run: cargo run -p cli -- simulation
