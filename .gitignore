@@ -2,6 +2,7 @@ __pycache__/
 *.pyc
 .env
 .DS_Store
+.design_gui_store/
 ui/node_modules
 ui/dist
 **/target/

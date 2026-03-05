@@ -5,7 +5,9 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use agent_core::domain::hash::compute_hash;
-use agent_core::domain::{AppState, DesignScoreVector, ProposedDiff, UnifiedDesignState};
+use agent_core::domain::{
+    AppState, DesignScoreVector, NodeIdState, ProposedDiff, UnifiedDesignState,
+};
 use serde::{Deserialize, Serialize};
 
 pub const PERSISTED_SCHEMA_VERSION: u32 = 1;
@@ -402,6 +404,9 @@ fn apply_diff_to_uds(
     match diff {
         ProposedDiff::UpsertNode { key, value } => {
             uds.nodes.insert(key.clone(), value.clone());
+            uds.node_id_states
+                .entry(key.clone())
+                .or_insert(NodeIdState::Temporary);
         }
         ProposedDiff::RemoveNode { key } => {
             if uds.nodes.remove(key).is_none() {
@@ -410,6 +415,8 @@ fn apply_diff_to_uds(
                 )));
             }
             uds.dependencies.remove(key);
+            uds.node_id_states.remove(key);
+            uds.node_origins.remove(key);
             for deps in uds.dependencies.values_mut() {
                 deps.retain(|dep| dep != key);
             }
