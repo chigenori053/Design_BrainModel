@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 core_types = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

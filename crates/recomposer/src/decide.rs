@@ -264,3 +264,39 @@ mod tests {
         assert!(high.decision_score < low.decision_score);
     }
 }
+
+#[cfg(test)]
+mod proptest_props {
+    use proptest::prelude::*;
+    use semantic_dhm::ResonanceWeights;
+
+    use crate::{DecisionWeights, Recomposer};
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// decision_score は任意の正の重みに対して [0, 1] に収まる
+        #[test]
+        fn score_boundedness(
+            w0 in 0.01f32..10.0f32,
+            w1 in 0.01f32..10.0f32,
+            w2 in 0.01f32..10.0f32,
+            w3 in 0.01f32..10.0f32,
+        ) {
+            let weights = DecisionWeights {
+                coherence: w0,
+                stability: w1,
+                conflict: w2,
+                tradeoff: w3,
+            };
+            let report = Recomposer
+                .decide(&[], weights, &ResonanceWeights::default())
+                .expect("decide must succeed with positive weights");
+            prop_assert!(
+                report.decision_score >= 0.0 && report.decision_score <= 1.0,
+                "decision_score must be in [0,1], got {}",
+                report.decision_score
+            );
+        }
+    }
+}

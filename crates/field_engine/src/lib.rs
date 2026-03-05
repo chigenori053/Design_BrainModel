@@ -517,3 +517,46 @@ mod tests {
         assert_eq!(c.index(), 0);
     }
 }
+
+#[cfg(test)]
+mod proptest_props {
+    use std::collections::BTreeMap;
+
+    use memory_space::{DesignNode, Uuid};
+    use proptest::prelude::*;
+
+    use crate::FieldEngine;
+
+    fn make_node(id: u64) -> DesignNode {
+        DesignNode::new(Uuid::from_u128(id as u128), "node", BTreeMap::new())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// 100 回 update_delta を繰り返してもフィールドエネルギーが有界のまま
+        #[test]
+        fn resonance_stability(
+            updates in proptest::collection::vec(
+                (0u64..4u64, 0u64..4u64),
+                100..=100usize,
+            ),
+        ) {
+            let engine = FieldEngine::new(16);
+            let initial = make_node(0);
+            let mut field = engine.project_node(&initial);
+
+            for (old_id, new_id) in updates {
+                let old_node = make_node(old_id);
+                let new_node = make_node(new_id);
+                field = engine.update_delta(&field, &old_node, &new_node);
+            }
+
+            let norm_sq: f32 = field.data.iter().map(|v| v.norm_sqr()).sum();
+            prop_assert!(
+                norm_sq.is_finite(),
+                "field energy must remain finite after 100 update_delta calls, got {norm_sq}"
+            );
+        }
+    }
+}

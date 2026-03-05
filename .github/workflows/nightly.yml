@@ -20,9 +20,6 @@ jobs:
       - name: ignored tests
         run: cargo test --workspace -- --ignored
 
-      - name: benchmark
-        run: cargo bench --workspace
-
       - name: install cargo-audit
         run: cargo install cargo-audit --locked
 

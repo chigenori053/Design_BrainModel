@@ -552,3 +552,61 @@ mod tests {
         assert!(hv2 + 1e-12 >= hv1);
     }
 }
+
+#[cfg(test)]
+mod proptest_props {
+    use core_types::ObjectiveVector;
+    use proptest::prelude::*;
+
+    use super::{dominates, hv_4d_from_origin_normalized};
+
+    fn obj4() -> impl Strategy<Value = [f64; 4]> {
+        (0.0f64..=1.0, 0.0f64..=1.0, 0.0f64..=1.0, 0.0f64..=1.0)
+            .prop_map(|(a, b, c, d)| [a, b, c, d])
+    }
+
+    fn objective_vector() -> impl Strategy<Value = ObjectiveVector> {
+        (0.0f64..=1.0, 0.0f64..=1.0, 0.0f64..=1.0, 0.0f64..=1.0).prop_map(
+            |(f_struct, f_field, f_risk, f_shape)| ObjectiveVector {
+                f_struct,
+                f_field,
+                f_risk,
+                f_shape,
+            },
+        )
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// HV は点を追加しても単調非減少
+        #[test]
+        fn hypervolume_monotonicity(
+            pts in proptest::collection::vec(obj4(), 0..=8usize),
+            extra in obj4(),
+        ) {
+            let hv_before = hv_4d_from_origin_normalized(&pts);
+            let mut extended = pts.clone();
+            extended.push(extra);
+            let hv_after = hv_4d_from_origin_normalized(&extended);
+            prop_assert!(
+                hv_after >= hv_before - 1e-10,
+                "HV must be non-decreasing when a point is added: before={hv_before}, after={hv_after}"
+            );
+        }
+
+        /// dominates は反対称: A が B を支配 → B は A を支配しない
+        #[test]
+        fn pareto_dominance_antisymmetry(
+            a in objective_vector(),
+            b in objective_vector(),
+        ) {
+            if dominates(&a, &b) {
+                prop_assert!(
+                    !dominates(&b, &a),
+                    "dominance must be antisymmetric"
+                );
+            }
+        }
+    }
+}

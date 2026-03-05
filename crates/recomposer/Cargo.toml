@@ -5,3 +5,6 @@ edition = "2024"
 
 [dependencies]
 semantic_dhm = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }

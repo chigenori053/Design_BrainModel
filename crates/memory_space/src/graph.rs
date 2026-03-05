@@ -560,3 +560,43 @@ mod tests {
         assert!((0.0..=1.0).contains(&v));
     }
 }
+
+#[cfg(test)]
+mod proptest_props {
+    use std::collections::BTreeMap;
+
+    use proptest::prelude::*;
+
+    use crate::graph::StructuralGraph;
+    use crate::node::DesignNode;
+    use crate::types::Uuid;
+
+    fn node(id: u128) -> DesignNode {
+        DesignNode::with_id(Uuid::from_u128(id), "node", BTreeMap::new())
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(256))]
+
+        /// with_edge_added は常に DAG を返す（サイクルを形成するエッジは無視される）
+        #[test]
+        fn dag_acyclicity_after_edge_add(
+            n in 2u32..=6u32,
+            from_idx in 0u32..6u32,
+            to_idx in 0u32..6u32,
+        ) {
+            let n = n as u128;
+            let nodes: BTreeMap<_, _> = (0..n).map(|i| {
+                let nd = node(i);
+                (nd.id, nd)
+            }).collect();
+            let g = StructuralGraph::new(nodes, std::collections::BTreeSet::new());
+
+            let from = Uuid::from_u128(from_idx as u128 % n);
+            let to   = Uuid::from_u128(to_idx as u128 % n);
+            let result = g.with_edge_added(from, to);
+
+            prop_assert!(result.is_dag(), "with_edge_added must always return a DAG");
+        }
+    }
+}

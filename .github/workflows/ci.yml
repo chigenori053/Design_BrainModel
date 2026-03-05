@@ -6,17 +6,15 @@ on:
     branches: [main]
 
 jobs:
-  rust:
-    name: Rust CI
+  lint:
+    name: Lint
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      # rust-toolchain.toml を自動検出（@master は toml を尊重する）
       - uses: dtolnay/rust-toolchain@master
 
-      # ビルドキャッシュ（5分以内を担保するために必須）
       - uses: Swatinem/rust-cache@v2
 
       - name: fmt
@@ -25,11 +23,33 @@ jobs:
       - name: clippy
         run: cargo clippy --workspace --all-targets -- -D warnings
 
+      - name: secret scan
+        uses: gitleaks/gitleaks-action@v2
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: install ruff
+        run: pip install ruff
+
+      - name: python lint
+        run: ruff check .
+
+  build:
+    name: Build
+    needs: [lint]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
       - name: build
         run: cargo check --workspace
-
-      - name: test
-        run: cargo test --workspace
 
       - name: boundary rules
         run: |
@@ -64,22 +84,32 @@ jobs:
             exit 1
           fi
 
-      - name: secret scan
-        uses: gitleaks/gitleaks-action@v2
-
-  python:
-    name: Python Lint
+  test:
+    name: Test
+    needs: [build]
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@master
 
-      - name: install ruff
-        run: pip install ruff
+      - uses: Swatinem/rust-cache@v2
 
-      - name: lint
-        run: ruff check .
+      - name: test
+        run: cargo test --workspace
+
+  release-test:
+    name: Release Test
+    needs: [build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: release test
+        run: cargo test --workspace --release

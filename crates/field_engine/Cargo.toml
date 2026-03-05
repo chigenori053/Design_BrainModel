@@ -6,3 +6,6 @@ edition = "2024"
 [dependencies]
 memory_space = { workspace = true }
 num-complex = { workspace = true }
+
+[dev-dependencies]
+proptest = { workspace = true }
