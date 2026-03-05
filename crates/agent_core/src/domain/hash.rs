@@ -20,7 +20,10 @@ pub fn canonical_serialize(uds: &UnifiedDesignState) -> String {
     }
 
     for (key, deps) in &uds.dependencies {
-        let mut normalized_deps = deps.iter().map(|d| normalize_whitespace(d)).collect::<Vec<_>>();
+        let mut normalized_deps = deps
+            .iter()
+            .map(|d| normalize_whitespace(d))
+            .collect::<Vec<_>>();
         normalized_deps.sort();
         normalized_deps.dedup();
 
@@ -28,6 +31,26 @@ pub fn canonical_serialize(uds: &UnifiedDesignState) -> String {
         out.push_str(&normalize_whitespace(key));
         out.push('|');
         out.push_str(&normalized_deps.join(","));
+        out.push('\n');
+    }
+
+    for (key, state) in &uds.node_id_states {
+        out.push_str("S|");
+        out.push_str(&normalize_whitespace(key));
+        out.push('|');
+        out.push_str(match state {
+            crate::domain::state::NodeIdState::Temporary => "temporary",
+            crate::domain::state::NodeIdState::PendingPromotion => "pending_promotion",
+            crate::domain::state::NodeIdState::Global => "global",
+        });
+        out.push('\n');
+    }
+
+    for (key, origin) in &uds.node_origins {
+        out.push_str("O|");
+        out.push_str(&normalize_whitespace(key));
+        out.push('|');
+        out.push_str(&normalize_whitespace(origin));
         out.push('\n');
     }
 

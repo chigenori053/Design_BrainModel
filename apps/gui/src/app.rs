@@ -1,14 +1,14 @@
-use std::sync::{Arc, RwLock};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+use crate::persistence::{
+    CheckpointEntry, app_state_from_persisted, load_checkpoint, load_checkpoint_at_version,
+    load_checkpoint_entries, save_checkpoint,
+};
 use agent_core::domain::hash::compute_hash;
 use agent_core::domain::{AppState, ParetoResult, ProposedDiff, UnifiedDesignState};
 use eframe::egui;
-use crate::persistence::{
-    app_state_from_persisted, load_checkpoint, load_checkpoint_at_version, load_checkpoint_entries,
-    save_checkpoint, CheckpointEntry,
-};
 
 pub type SharedAppState = Arc<RwLock<AppState>>;
 
@@ -96,7 +96,8 @@ pub fn handle_event(event: GuiEvent, state: &SharedAppState) -> Result<(), Strin
 
     match event {
         GuiEvent::ApplyDiff(diff) => {
-            s.begin_tx().map_err(|e| format!("begin_tx failed: {e:?}"))?;
+            s.begin_tx()
+                .map_err(|e| format!("begin_tx failed: {e:?}"))?;
 
             if let Err(err) = s.apply_diff(diff) {
                 let _ = s.abort_tx();
@@ -165,7 +166,8 @@ impl DesignApp {
         let mut s = match self.domain_state.write() {
             Ok(guard) => guard,
             Err(_) => {
-                self.view_state.error_message = Some("domain state write lock poisoned".to_string());
+                self.view_state.error_message =
+                    Some("domain state write lock poisoned".to_string());
                 return;
             }
         };
@@ -215,27 +217,27 @@ impl DesignApp {
                 let eval_duration_ms = start_eval.elapsed().as_millis();
                 let start_pareto = Instant::now();
                 match self.compute_pareto_for_view() {
-                Ok(result) => {
-                    self.view_state.pareto_result = Some(format_pareto_result(&result));
-                    self.view_state.latest_pareto = Some(result);
-                    self.view_state.suggested_diffs.clear();
-                    let pareto_duration_ms = start_pareto.elapsed().as_millis();
-                    let mut timestamp = now_timestamp_ms();
-                    if let Some(prev) = self.view_state.analyze_metrics.as_ref()
-                        && timestamp <= prev.timestamp
-                    {
-                        timestamp = prev.timestamp.saturating_add(1);
+                    Ok(result) => {
+                        self.view_state.pareto_result = Some(format_pareto_result(&result));
+                        self.view_state.latest_pareto = Some(result);
+                        self.view_state.suggested_diffs.clear();
+                        let pareto_duration_ms = start_pareto.elapsed().as_millis();
+                        let mut timestamp = now_timestamp_ms();
+                        if let Some(prev) = self.view_state.analyze_metrics.as_ref()
+                            && timestamp <= prev.timestamp
+                        {
+                            timestamp = prev.timestamp.saturating_add(1);
+                        }
+                        self.view_state.analyze_metrics = Some(AnalyzeMetrics {
+                            evaluate_duration_ms: eval_duration_ms,
+                            pareto_duration_ms,
+                            suggest_duration_ms: None,
+                            timestamp,
+                        });
+                        self.view_state.error_message = None;
                     }
-                    self.view_state.analyze_metrics = Some(AnalyzeMetrics {
-                        evaluate_duration_ms: eval_duration_ms,
-                        pareto_duration_ms,
-                        suggest_duration_ms: None,
-                        timestamp,
-                    });
-                    self.view_state.error_message = None;
+                    Err(err) => self.view_state.error_message = Some(err),
                 }
-                Err(err) => self.view_state.error_message = Some(err),
-            }
             }
             Err(err) => self.view_state.error_message = Some(err),
         }
@@ -248,9 +250,8 @@ impl DesignApp {
         };
 
         if metrics.evaluate_duration_ms >= 50 || metrics.pareto_duration_ms >= 100 {
-            self.view_state.error_message = Some(
-                "Suggest disabled: analyze timing threshold exceeded".to_string(),
-            );
+            self.view_state.error_message =
+                Some("Suggest disabled: analyze timing threshold exceeded".to_string());
             self.view_state.suggested_diffs.clear();
             return;
         }
@@ -267,10 +268,10 @@ impl DesignApp {
                 let candidate_count = estimate_candidate_count(&s);
                 match s.suggest_diffs_from_analysis(&pareto) {
                     Ok(v) => (candidate_count, v),
-                Err(err) => {
-                    self.view_state.error_message = Some(format!("suggest failed: {err:?}"));
-                    return;
-                }
+                    Err(err) => {
+                        self.view_state.error_message = Some(format!("suggest failed: {err:?}"));
+                        return;
+                    }
                 }
             }
             Err(_) => {
@@ -309,23 +310,19 @@ impl DesignApp {
         let Some(diff) = self.view_state.suggested_diffs.get(index).cloned() else {
             return;
         };
-        let before_eval = self
-            .domain_state
-            .read()
-            .ok()
-            .map(|s| s.evaluation.clone());
+        let before_eval = self.domain_state.read().ok().map(|s| s.evaluation.clone());
         self.apply_diff_card(diff);
-        let after_eval = self
-            .domain_state
-            .read()
-            .ok()
-            .map(|s| s.evaluation.clone());
+        let after_eval = self.domain_state.read().ok().map(|s| s.evaluation.clone());
         if let (Some(before), Some(after)) = (before_eval, after_eval) {
             self.record_suggest_apply_delta(&before, &after);
         }
     }
 
-    fn record_suggest_apply_delta(&mut self, before: &agent_core::domain::DesignScoreVector, after: &agent_core::domain::DesignScoreVector) {
+    fn record_suggest_apply_delta(
+        &mut self,
+        before: &agent_core::domain::DesignScoreVector,
+        after: &agent_core::domain::DesignScoreVector,
+    ) {
         let delta_consistency = (after.consistency as f64 - before.consistency as f64) / 100.0;
         let delta_structural =
             (after.structural_integrity as f64 - before.structural_integrity as f64) / 100.0;
@@ -765,9 +762,7 @@ fn parse_editor_buffer(input: &str) -> Result<UnifiedDesignState, String> {
             continue;
         }
 
-        return Err(format!(
-            "line {line_no}: unknown prefix, use node: or dep:"
-        ));
+        return Err(format!("line {line_no}: unknown prefix, use node: or dep:"));
     }
 
     Ok(uds)

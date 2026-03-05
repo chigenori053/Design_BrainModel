@@ -44,11 +44,23 @@ pub enum TxStatus {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ProposedDiff {
-    UpsertNode { key: String, value: String },
-    RemoveNode { key: String },
-    SetDependencies { key: String, dependencies: Vec<String> },
-    RemoveDependencies { key: String },
-    SplitHighOutDegreeNode { key: String },
+    UpsertNode {
+        key: String,
+        value: String,
+    },
+    RemoveNode {
+        key: String,
+    },
+    SetDependencies {
+        key: String,
+        dependencies: Vec<String>,
+    },
+    RemoveDependencies {
+        key: String,
+    },
+    SplitHighOutDegreeNode {
+        key: String,
+    },
     RewireHighImpactEdge {
         key: String,
         from: String,
@@ -64,7 +76,10 @@ pub enum ProposedDiff {
 pub enum TxError {
     ActiveTransactionExists,
     NoActiveTransaction,
-    InvalidTransactionState { expected: TxStatus, actual: TxStatus },
+    InvalidTransactionState {
+        expected: TxStatus,
+        actual: TxStatus,
+    },
     MissingNode(String),
     MissingDependency(String),
     InvalidSplitCandidate(String),

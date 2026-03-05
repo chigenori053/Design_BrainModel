@@ -100,8 +100,7 @@ impl UnifiedDesignState {
                     kept_global_count += 1;
                 }
                 NodeIdState::Temporary | NodeIdState::PendingPromotion => {
-                    self.node_id_states
-                        .insert(key.clone(), NodeIdState::Global);
+                    self.node_id_states.insert(key.clone(), NodeIdState::Global);
                     self.node_origins.insert(key.clone(), origin.to_string());
                     promoted_count += 1;
                 }
@@ -434,7 +433,8 @@ impl AppState {
             return Err(PromotionError::TransactionInProgress);
         }
 
-        self.begin_tx().map_err(|_| PromotionError::TransactionInProgress)?;
+        self.begin_tx()
+            .map_err(|_| PromotionError::TransactionInProgress)?;
         let mut candidate = self.uds.clone();
         let report = match candidate.promote_dependency_closure(
             root_node,
@@ -562,7 +562,10 @@ impl AppState {
             return Err(TxError::TransactionInProgress);
         }
 
-        let snapshot = self.session_history.undo().ok_or(TxError::UndoUnavailable)?;
+        let snapshot = self
+            .session_history
+            .undo()
+            .ok_or(TxError::UndoUnavailable)?;
         self.restore_snapshot(&snapshot);
         Ok(())
     }
@@ -572,7 +575,10 @@ impl AppState {
             return Err(TxError::TransactionInProgress);
         }
 
-        let snapshot = self.session_history.redo().ok_or(TxError::RedoUnavailable)?;
+        let snapshot = self
+            .session_history
+            .redo()
+            .ok_or(TxError::RedoUnavailable)?;
         self.restore_snapshot(&snapshot);
         Ok(())
     }
@@ -606,8 +612,7 @@ impl AppState {
         let after = compute_state_vector_from(&candidate_uds, &candidate_eval);
         let delta = before.delta(&after);
         let complexity_delta = delta_complexity(&self.uds, &candidate_uds);
-        let score = delta.d_consistency
-            + GAMMA * delta.d_prop_quality.max(0.0)
+        let score = delta.d_consistency + GAMMA * delta.d_prop_quality.max(0.0)
             - ALPHA * (-delta.d_prop_quality).max(0.0)
             - BETA * (-delta.d_cycle_quality).max(0.0)
             - ETA * complexity_delta.max(0.0)
@@ -657,7 +662,11 @@ impl AppState {
 
         let accepted = candidates
             .into_iter()
-            .filter(|diff| self.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false))
+            .filter(|diff| {
+                self.evaluate_diff(diff)
+                    .map(|r| r.accepted)
+                    .unwrap_or(false)
+            })
             .collect::<Vec<_>>();
 
         Ok(accepted)
@@ -966,7 +975,9 @@ impl AppState {
         _baseline_eval: &DesignScoreVector,
         diff: &ProposedDiff,
     ) -> bool {
-        self.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false)
+        self.evaluate_diff(diff)
+            .map(|r| r.accepted)
+            .unwrap_or(false)
     }
 
     fn rollback_internal(&mut self, snapshot_before: &SessionSnapshot) {
@@ -1053,8 +1064,16 @@ fn evaluate_lightweight(uds: &UnifiedDesignState) -> DesignScoreVector {
 }
 
 fn dominates(a: &DesignScoreVector, b: &DesignScoreVector) -> bool {
-    let a_dims = [a.consistency, a.structural_integrity, a.dependency_soundness];
-    let b_dims = [b.consistency, b.structural_integrity, b.dependency_soundness];
+    let a_dims = [
+        a.consistency,
+        a.structural_integrity,
+        a.dependency_soundness,
+    ];
+    let b_dims = [
+        b.consistency,
+        b.structural_integrity,
+        b.dependency_soundness,
+    ];
     let mut strictly_better = false;
 
     for (lhs, rhs) in a_dims.iter().zip(b_dims.iter()) {
@@ -1486,7 +1505,10 @@ mod tests {
         app.abort_tx().expect("abort should succeed");
 
         assert_eq!(app.uds, tx_snapshot_before.uds);
-        assert_eq!(compute_hash(&app.uds), compute_hash(&tx_snapshot_before.uds));
+        assert_eq!(
+            compute_hash(&app.uds),
+            compute_hash(&tx_snapshot_before.uds)
+        );
         assert_eq!(compute_hash(&baseline_snapshot.uds), baseline_hash);
 
         app.begin_tx().expect("begin_tx should succeed");
@@ -1571,9 +1593,10 @@ mod tests {
             .nodes
             .insert("n1".to_string(), "  hello   world ".to_string());
         uds_a.nodes.insert("n3".to_string(), "third".to_string());
-        uds_a
-            .dependencies
-            .insert("n1".to_string(), vec!["n2".to_string(), "n3".to_string(), "n2".to_string()]);
+        uds_a.dependencies.insert(
+            "n1".to_string(),
+            vec!["n2".to_string(), "n3".to_string(), "n2".to_string()],
+        );
         uds_a
             .dependencies
             .insert("n3".to_string(), vec!["n1".to_string()]);
@@ -1605,7 +1628,10 @@ mod tests {
             .insert("standalone".to_string(), "value".to_string());
 
         let err = app.replace_uds(new_uds).expect_err("replace_uds must fail");
-        assert!(matches!(err, crate::domain::transaction::TxError::NoActiveTransaction));
+        assert!(matches!(
+            err,
+            crate::domain::transaction::TxError::NoActiveTransaction
+        ));
     }
 
     #[test]
@@ -1836,22 +1862,10 @@ mod tests {
             .expect("promotion should succeed");
 
         assert_eq!(report.promotion_unit, vec!["A", "B", "C"]);
-        assert_eq!(
-            app.uds.node_id_states.get("A"),
-            Some(&NodeIdState::Global)
-        );
-        assert_eq!(
-            app.uds.node_id_states.get("B"),
-            Some(&NodeIdState::Global)
-        );
-        assert_eq!(
-            app.uds.node_id_states.get("C"),
-            Some(&NodeIdState::Global)
-        );
-        assert_eq!(
-            app.uds.node_id_states.get("D"),
-            None
-        );
+        assert_eq!(app.uds.node_id_states.get("A"), Some(&NodeIdState::Global));
+        assert_eq!(app.uds.node_id_states.get("B"), Some(&NodeIdState::Global));
+        assert_eq!(app.uds.node_id_states.get("C"), Some(&NodeIdState::Global));
+        assert_eq!(app.uds.node_id_states.get("D"), None);
         assert_eq!(app.uds.node_origins.get("D"), None);
     }
 

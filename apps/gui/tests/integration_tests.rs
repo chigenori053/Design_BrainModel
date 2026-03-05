@@ -1,6 +1,6 @@
-use agent_core::domain::hash::compute_hash;
 use agent_core::domain::ProposedDiff;
-use design_gui::app::{handle_event, DesignApp, GuiEvent, GuiViewState, SharedAppState};
+use agent_core::domain::hash::compute_hash;
+use design_gui::app::{DesignApp, GuiEvent, GuiViewState, SharedAppState, handle_event};
 use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
@@ -273,17 +273,19 @@ fn suggest_is_disabled_when_analyze_metrics_exceed_threshold() {
 
     app.trigger_suggest();
     assert!(app.view_state.suggested_diffs.is_empty());
-    assert!(app
-        .view_state
-        .error_message
-        .as_deref()
-        .unwrap_or_default()
-        .contains("disabled"));
+    assert!(
+        app.view_state
+            .error_message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("disabled")
+    );
 }
 
 #[test]
 fn suggest_metrics_counts_accepts_and_rejections() {
-    let mut app = DesignApp::new_with_checkpoint_path(unique_test_path("gui_suggest_metrics_counts"));
+    let mut app =
+        DesignApp::new_with_checkpoint_path(unique_test_path("gui_suggest_metrics_counts"));
     app.view_state.editor_buffer = "node:a=\nnode:b=beta\ndep:a->a".to_string();
     app.sync_editor_to_domain();
     app.trigger_analyze();
@@ -297,7 +299,8 @@ fn suggest_metrics_counts_accepts_and_rejections() {
 
 #[test]
 fn suggest_apply_records_gain_only_on_apply_and_survives_undo() {
-    let mut app = DesignApp::new_with_checkpoint_path(unique_test_path("gui_suggest_apply_metrics"));
+    let mut app =
+        DesignApp::new_with_checkpoint_path(unique_test_path("gui_suggest_apply_metrics"));
     app.view_state.editor_buffer = "node:a=\nnode:b=beta\ndep:a->b".to_string();
     app.sync_editor_to_domain();
     app.trigger_analyze();
@@ -315,7 +318,10 @@ fn suggest_apply_records_gain_only_on_apply_and_survives_undo() {
 
     handle_event(GuiEvent::Undo, &app.domain_state).expect("undo should succeed");
     let after_undo = app.view_state.suggest_metrics.clone();
-    assert_eq!(after_undo.avg_consistency_gain, after_apply.avg_consistency_gain);
+    assert_eq!(
+        after_undo.avg_consistency_gain,
+        after_apply.avg_consistency_gain
+    );
 }
 
 #[test]

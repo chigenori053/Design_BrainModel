@@ -2,13 +2,12 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use agent_core::domain::hash::compute_hash;
 use agent_core::domain::ProposedDiff;
-use design_gui::app::{handle_event, DesignApp, GuiEvent};
+use agent_core::domain::hash::compute_hash;
+use design_gui::app::{DesignApp, GuiEvent, handle_event};
 use design_gui::persistence::{
-    app_state_from_persisted, load_checkpoint, load_checkpoint_at_version,
-    load_checkpoint_history, save_checkpoint, PersistError, PersistedState, MAX_DELTAS,
-    PERSISTED_SCHEMA_VERSION,
+    MAX_DELTAS, PERSISTED_SCHEMA_VERSION, PersistError, PersistedState, app_state_from_persisted,
+    load_checkpoint, load_checkpoint_at_version, load_checkpoint_history, save_checkpoint,
 };
 
 fn unique_test_dir(prefix: &str) -> PathBuf {
@@ -163,7 +162,10 @@ fn save_then_mutate_state_keeps_checkpoint_snapshot_immutable() {
     let loaded = load_checkpoint(&path)
         .expect("load should succeed")
         .expect("checkpoint should exist");
-    assert_eq!(loaded.uds.nodes.get("fixed"), Some(&"before-save".to_string()));
+    assert_eq!(
+        loaded.uds.nodes.get("fixed"),
+        Some(&"before-save".to_string())
+    );
     assert_eq!(compute_hash(&loaded.uds), saved_hash);
 }
 
@@ -180,8 +182,11 @@ fn tampered_hash_is_detected_as_integrity_violation() {
         serde_json::from_slice(&fs::read(&path).expect("read saved file")).expect("json parse");
     let current = v["base"]["uds_hash"].as_u64().expect("uds_hash as u64");
     v["base"]["uds_hash"] = serde_json::Value::from(current.saturating_add(1));
-    fs::write(&path, serde_json::to_vec_pretty(&v).expect("serialize tampered json"))
-        .expect("write tampered file");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&v).expect("serialize tampered json"),
+    )
+    .expect("write tampered file");
 
     let err = load_checkpoint(&path).expect_err("tampered hash must fail");
     assert!(matches!(err, PersistError::IntegrityViolation(_)));
@@ -199,8 +204,11 @@ fn tampered_evaluation_is_detected_as_integrity_violation() {
     let mut v: serde_json::Value =
         serde_json::from_slice(&fs::read(&path).expect("read saved file")).expect("json parse");
     v["base"]["evaluation"]["consistency"] = serde_json::Value::from(0_u64);
-    fs::write(&path, serde_json::to_vec_pretty(&v).expect("serialize tampered json"))
-        .expect("write tampered file");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&v).expect("serialize tampered json"),
+    )
+    .expect("write tampered file");
 
     let err = load_checkpoint(&path).expect_err("tampered evaluation must fail");
     assert!(matches!(err, PersistError::IntegrityViolation(_)));
@@ -247,7 +255,10 @@ fn dbm_file_is_preferred_when_tmp_residue_exists() {
     let loaded = load_checkpoint(&path)
         .expect("load should read dbm")
         .expect("checkpoint exists");
-    assert_eq!(loaded.uds.nodes.get("from_dbm"), Some(&"stable".to_string()));
+    assert_eq!(
+        loaded.uds.nodes.get("from_dbm"),
+        Some(&"stable".to_string())
+    );
     assert!(!loaded.uds.nodes.contains_key("from_tmp"));
 }
 
@@ -427,8 +438,11 @@ fn tampered_delta_is_detected() {
         .as_u64()
         .expect("delta hash");
     v["deltas"][0]["resulting_hash"] = serde_json::Value::from(current.saturating_add(1));
-    fs::write(&path, serde_json::to_vec_pretty(&v).expect("serialize tampered"))
-        .expect("write tampered");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&v).expect("serialize tampered"),
+    )
+    .expect("write tampered");
 
     let err = load_checkpoint(&path).expect_err("tampered delta must fail");
     assert!(matches!(err, PersistError::IntegrityViolation(_)));
@@ -447,8 +461,11 @@ fn tampered_base_is_detected() {
         serde_json::from_slice(&fs::read(&path).expect("read file")).expect("parse json");
     let current = v["base"]["uds_hash"].as_u64().expect("base hash");
     v["base"]["uds_hash"] = serde_json::Value::from(current.saturating_add(1));
-    fs::write(&path, serde_json::to_vec_pretty(&v).expect("serialize tampered"))
-        .expect("write tampered");
+    fs::write(
+        &path,
+        serde_json::to_vec_pretty(&v).expect("serialize tampered"),
+    )
+    .expect("write tampered");
 
     let err = load_checkpoint(&path).expect_err("tampered base must fail");
     assert!(matches!(err, PersistError::IntegrityViolation(_)));

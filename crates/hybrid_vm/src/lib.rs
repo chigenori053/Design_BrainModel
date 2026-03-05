@@ -3,7 +3,11 @@ use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use core_types::ObjectiveVector;
+use core_types::{
+    ChangeFrontier, ClassNode, Constraint, DependencyEdge, DependencyGraph, DesignHierarchy,
+    DesignIR, DesignIntent, DesignUnit, NumericIR, NumericResult, ObjectiveKind, ObjectiveVector,
+    SemanticIR, StructureNode, UnitNode, UnitRole,
+};
 use design_reasoning::{
     HypothesisEngine, LanguageEngine, MeaningEngine, ProjectionEngine, SnapshotEngine,
 };
@@ -22,6 +26,10 @@ pub mod semantic;
 use serde::{Deserialize, Serialize};
 
 pub use chm::Chm;
+pub use core_types::{
+    DesignCompiler, LayerKind, NumericEvaluator, NumericLowering, SemanticLowering,
+    lower_design_to_numeric,
+};
 pub use design_reasoning::{DesignHypothesis, Explanation, MeaningLayerSnapshotV2, SnapshotDiffV2};
 pub use knowledge_store::{FeedbackAction, FeedbackEntry};
 pub use recomposer::{ActionType, DecisionWeights, Recommendation};
@@ -38,6 +46,187 @@ pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformatio
 
 pub trait Evaluator {
     fn evaluate(&self, state: &DesignState) -> ObjectiveVector;
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DefaultDesignCompiler;
+
+impl core_types::DesignCompiler for DefaultDesignCompiler {
+    fn to_ir(&self, design: &DesignUnit) -> DesignIR {
+        let mut classes = Vec::new();
+        let mut structure_primary_unit = BTreeMap::<String, String>::new();
+        let mut mutable_units = Vec::new();
+
+        for structure in &design.structures {
+            let mut units = Vec::new();
+            for class in &structure.classes {
+                let unit_id = format!("unit:{}::{}", structure.id, class.id);
+                units.push(UnitNode {
+                    id: unit_id.clone(),
+                    role: UnitRole::Implementation,
+                });
+                mutable_units.push(unit_id.clone());
+                structure_primary_unit
+                    .entry(structure.name.clone())
+                    .or_insert(unit_id);
+            }
+            if units.is_empty() {
+                let fallback = format!("unit:{}::default", structure.id);
+                units.push(UnitNode {
+                    id: fallback.clone(),
+                    role: UnitRole::Implementation,
+                });
+                mutable_units.push(fallback.clone());
+                structure_primary_unit
+                    .entry(structure.name.clone())
+                    .or_insert(fallback);
+            }
+            classes.push(ClassNode {
+                id: format!("class:{}", structure.id),
+                structures: vec![StructureNode {
+                    id: structure.id.clone(),
+                    units,
+                }],
+            });
+        }
+
+        let mut edges = Vec::new();
+        for structure in &design.structures {
+            let Some(from) = structure_primary_unit.get(&structure.name).cloned() else {
+                continue;
+            };
+            for dep in &structure.dependencies {
+                if let Some(to) = structure_primary_unit.get(dep).cloned() {
+                    edges.push(DependencyEdge {
+                        from: from.clone(),
+                        to,
+                        kind: core_types::DependencyKind::Uses,
+                    });
+                }
+            }
+        }
+
+        DesignIR {
+            id: design.id.clone(),
+            hierarchy: DesignHierarchy { classes },
+            dependencies: DependencyGraph { edges },
+            constraints: vec![Constraint::Invariant("preserve-structure".to_string())],
+            intent: DesignIntent {
+                objective: ObjectiveKind::Readability,
+                description: design.name.clone(),
+                priority: 0.7,
+            },
+            frontier: ChangeFrontier { mutable_units },
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DefaultSemanticLowering;
+
+impl core_types::SemanticLowering for DefaultSemanticLowering {
+    fn to_semantic_ir(&self, design_ir: &DesignIR) -> SemanticIR {
+        let mut concepts = Vec::new();
+        for class in &design_ir.hierarchy.classes {
+            concepts.push(format!("class:{}", class.id));
+            for structure in &class.structures {
+                concepts.push(format!("structure:{}", structure.id));
+                for unit in &structure.units {
+                    concepts.push(format!("unit:{}", unit.id));
+                }
+            }
+        }
+        let mut dependency_graph = Vec::new();
+        let mut id_map = BTreeMap::<String, usize>::new();
+        for (idx, concept) in concepts.iter().enumerate() {
+            id_map.insert(concept.clone(), idx);
+        }
+        for edge in &design_ir.dependencies.edges {
+            let from_key = format!("unit:{}", edge.from);
+            let to_key = format!("unit:{}", edge.to);
+            let from_idx = id_map.get(&from_key).copied();
+            let to_idx = id_map.get(&to_key).copied();
+            if let (Some(a), Some(b)) = (from_idx, to_idx) {
+                dependency_graph.push((a, b));
+            }
+        }
+        let constraints = design_ir
+            .constraints
+            .iter()
+            .map(|c| match c {
+                Constraint::Invariant(v) => format!("invariant:{v}"),
+                Constraint::ResourceLimit(r) => format!("resource:{}<={}", r.resource, r.limit),
+                Constraint::TypeRequirement(t) => {
+                    format!("type:{} is {}", t.target, t.required_type)
+                }
+            })
+            .collect::<Vec<_>>();
+        let mutable_concepts = design_ir
+            .frontier
+            .mutable_units
+            .iter()
+            .map(|u| format!("unit:{u}"))
+            .collect::<Vec<_>>();
+
+        SemanticIR {
+            concepts,
+            dependency_graph,
+            constraints,
+            objective: Some(design_ir.intent.objective),
+            mutable_concepts,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct DefaultNumericLowering;
+
+impl core_types::NumericLowering for DefaultNumericLowering {
+    fn to_numeric_ir(&self, semantic_ir: &SemanticIR) -> NumericIR {
+        let objective_weight = match semantic_ir.objective.unwrap_or(ObjectiveKind::Readability) {
+            ObjectiveKind::Performance => 1.0,
+            ObjectiveKind::Safety => 0.9,
+            ObjectiveKind::Readability => 0.7,
+            ObjectiveKind::MemoryEfficiency => 0.8,
+            ObjectiveKind::Determinism => 0.85,
+        };
+        NumericIR {
+            features: vec![
+                semantic_ir.concepts.len() as f64,
+                semantic_ir.dependency_graph.len() as f64,
+                semantic_ir.constraints.len() as f64,
+                semantic_ir.mutable_concepts.len() as f64,
+                objective_weight,
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct DotProductNumericEvaluator {
+    pub weights: Vec<f64>,
+}
+
+impl Default for DotProductNumericEvaluator {
+    fn default() -> Self {
+        Self {
+            weights: vec![0.25, 0.25, 0.2, 0.15, 0.15],
+        }
+    }
+}
+
+impl core_types::NumericEvaluator for DotProductNumericEvaluator {
+    fn evaluate(&self, input: &NumericIR) -> NumericResult {
+        let score = input
+            .features
+            .iter()
+            .zip(self.weights.iter())
+            .map(|(v, w)| v * w)
+            .sum::<f64>();
+        NumericResult {
+            values: vec![score],
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

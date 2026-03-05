@@ -16,10 +16,9 @@ pub use metrics::{
     chm_density, need_from_objective, p_inferred, profile_modulation, stability_index,
 };
 pub use state::{
-    AnalyzeError, AppState, DesignScoreVector, EvalError, ParetoResult, RuntimeState,
+    AnalyzeError, AppState, DeltaVector, DesignScoreVector, EvalError, EvaluationResult,
+    NodeIdState, ParetoResult, PromotionError, PromotionReport, RuntimeState, StateVector,
     SuggestError, UnifiedDesignState,
 };
 pub use target::{build_target_field, build_target_field_with_diversity};
-pub use transaction::{
-    ActiveTransaction, ProposedDiff, TransactionEngine, TxError, TxStatus,
-};
+pub use transaction::{ActiveTransaction, ProposedDiff, TransactionEngine, TxError, TxStatus};

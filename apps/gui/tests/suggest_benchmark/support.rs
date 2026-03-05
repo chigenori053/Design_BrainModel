@@ -77,7 +77,8 @@ pub fn benchmark_suggest_quality() {
             .filter(|diff| {
                 matches!(
                     diff,
-                    ProposedDiff::SetDependencies { .. } | ProposedDiff::RewireHighImpactEdge { .. }
+                    ProposedDiff::SetDependencies { .. }
+                        | ProposedDiff::RewireHighImpactEdge { .. }
                 )
             })
             .count();
@@ -168,7 +169,9 @@ pub fn benchmark_suggest_quality() {
                         if let ProposedDiff::TwoStep { first, second } = diff {
                             let first_kind = diff_kind(first);
                             let second_kind = diff_kind(second);
-                            *two_step_first_counts.entry(first_kind.to_string()).or_insert(0) += 1;
+                            *two_step_first_counts
+                                .entry(first_kind.to_string())
+                                .or_insert(0) += 1;
                             *two_step_second_counts
                                 .entry(second_kind.to_string())
                                 .or_insert(0) += 1;
@@ -194,10 +197,12 @@ pub fn benchmark_suggest_quality() {
                 post_consistency.push(after_consistency);
                 accepted_delta_consistency.push(delta_c);
                 sum_consistency += delta_c;
-                sum_structural +=
-                    (after.structural_integrity as f64 - before.structural_integrity as f64) / 100.0;
-                sum_dependency +=
-                    (after.dependency_soundness as f64 - before.dependency_soundness as f64) / 100.0;
+                sum_structural += (after.structural_integrity as f64
+                    - before.structural_integrity as f64)
+                    / 100.0;
+                sum_dependency += (after.dependency_soundness as f64
+                    - before.dependency_soundness as f64)
+                    / 100.0;
                 sum_delta_prop_raw += delta_prop_raw;
                 accepted_delta_prop_raw.push(delta_prop_raw);
                 sum_delta_cyc_raw += delta_cyc_raw;
@@ -398,8 +403,14 @@ pub fn benchmark_suggest_quality() {
         );
 
         println!("TwoStep breakdown (accepted only):");
-        println!("  first: Split={:.2}% RemoveNode={:.2}% Rewire={:.2}% Other={:.2}%", first_split, first_remove, first_rewire, first_other);
-        println!("  second: Split={:.2}% RemoveNode={:.2}% Rewire={:.2}% Other={:.2}%", second_split, second_remove, second_rewire, second_other);
+        println!(
+            "  first: Split={:.2}% RemoveNode={:.2}% Rewire={:.2}% Other={:.2}%",
+            first_split, first_remove, first_rewire, first_other
+        );
+        println!(
+            "  second: Split={:.2}% RemoveNode={:.2}% Rewire={:.2}% Other={:.2}%",
+            second_split, second_remove, second_rewire, second_other
+        );
 
         let mut pair_top = two_step_pair_counts.iter().collect::<Vec<_>>();
         pair_top.sort_by(|a, b| b.1.cmp(a.1).then_with(|| a.0.cmp(b.0)));
@@ -413,9 +424,18 @@ pub fn benchmark_suggest_quality() {
         println!("  avg Δprop(two-step): {:+.6}", mean(&two_step_delta_prop));
         println!("  avg score(two-step): {:+.6}", mean(&two_step_scores));
         if !single_step_scores.is_empty() {
-            println!("  avg Δcons(single-step): {:+.4}", mean(&single_step_delta_cons));
-            println!("  avg Δprop(single-step): {:+.6}", mean(&single_step_delta_prop));
-            println!("  avg score(single-step): {:+.6}", mean(&single_step_scores));
+            println!(
+                "  avg Δcons(single-step): {:+.4}",
+                mean(&single_step_delta_cons)
+            );
+            println!(
+                "  avg Δprop(single-step): {:+.6}",
+                mean(&single_step_delta_prop)
+            );
+            println!(
+                "  avg score(single-step): {:+.6}",
+                mean(&single_step_scores)
+            );
             println!(
                 "  delta avg score(two-step - single-step): {:+.6}",
                 mean(&two_step_scores) - mean(&single_step_scores)
@@ -434,7 +454,10 @@ pub fn benchmark_suggest_quality() {
     println!("  max: {:+.6}", delta_prop_max);
     println!("  stddev: {:.6}", delta_prop_stddev);
     println!("Δv (accepted only):");
-    println!("  d_consistency stddev: {:.6}", stddev(&delta_v_consistency));
+    println!(
+        "  d_consistency stddev: {:.6}",
+        stddev(&delta_v_consistency)
+    );
     println!(
         "  d_prop_quality stddev: {:.6}",
         stddev(&delta_v_prop_quality)
@@ -573,10 +596,19 @@ pub fn benchmark_propagation_cost_phase_b() {
     println!("  stddev: {:.4}", stddev_cost);
     println!();
     println!("Correlation:");
-    println!("  corr(propagation_cost, consistency): {:.4}", corr_consistency);
-    println!("  corr(propagation_cost, node_count): {:.4}", corr_node_count);
+    println!(
+        "  corr(propagation_cost, consistency): {:.4}",
+        corr_consistency
+    );
+    println!(
+        "  corr(propagation_cost, node_count): {:.4}",
+        corr_node_count
+    );
     println!("  corr(propagation_cost_new, density): {:.4}", corr_density);
-    println!("  corr(propagation_cost_old, density): {:.4}", old_corr_density);
+    println!(
+        "  corr(propagation_cost_old, density): {:.4}",
+        old_corr_density
+    );
     println!();
     println!("Pattern means:");
     println!("  Dense:  {:.4}", mean(&dense));
@@ -763,8 +795,14 @@ pub fn benchmark_spectral_gap_phase_b() {
         "  corr(diffusion_index, propagation_quality_new): {:.4}",
         corr_propagation_quality_new
     );
-    println!("  corr(diffusion_index, cyclic_penalty_raw): {:.4}", corr_cyclic);
-    println!("  corr(diffusion_index, accepted_rate): {:.4}", corr_accepted);
+    println!(
+        "  corr(diffusion_index, cyclic_penalty_raw): {:.4}",
+        corr_cyclic
+    );
+    println!(
+        "  corr(diffusion_index, accepted_rate): {:.4}",
+        corr_accepted
+    );
     println!(
         "  partial corr(diffusion_index, propagation_cost_raw | density): {:.4}",
         partial_corr_prop_given_density_new
@@ -789,18 +827,18 @@ pub fn benchmark_spectral_gap_phase_b() {
     let corr_res_density = correlation(&diffusion_residual, &densities);
     let corr_res_propagation = correlation(&diffusion_residual, &propagation_costs_new);
     let corr_res_cyclic = correlation(&diffusion_residual, &cyclic_penalties);
-    let partial_corr_res_prop_given_density = partial_correlation_single_control(
-        &diffusion_residual,
-        &propagation_costs_new,
-        &densities,
-    );
+    let partial_corr_res_prop_given_density =
+        partial_correlation_single_control(&diffusion_residual, &propagation_costs_new, &densities);
     let res_mean = mean(&diffusion_residual);
     let res_std = stddev(&diffusion_residual);
 
     println!("Residualized diffusion_index (Phase B'):");
     println!("  mean: {:.4}", res_mean);
     println!("  stddev: {:.4}", res_std);
-    println!("  corr(diffusion_index_res, density): {:.4}", corr_res_density);
+    println!(
+        "  corr(diffusion_index_res, density): {:.4}",
+        corr_res_density
+    );
     println!(
         "  corr(diffusion_index_res, propagation_cost_raw): {:.4}",
         corr_res_propagation
@@ -815,30 +853,57 @@ pub fn benchmark_spectral_gap_phase_b() {
     );
     println!();
     println!("Pattern correlation (gap vs propagation_cost_raw_new):");
-    println!("  SparseDag: {:.4}", correlation(&sparse_gap, &sparse_prop_new));
-    println!("  DenseGraph: {:.4}", correlation(&dense_gap, &dense_prop_new));
+    println!(
+        "  SparseDag: {:.4}",
+        correlation(&sparse_gap, &sparse_prop_new)
+    );
+    println!(
+        "  DenseGraph: {:.4}",
+        correlation(&dense_gap, &dense_prop_new)
+    );
     println!("  Chain: {:.4}", correlation(&chain_gap, &chain_prop_new));
     println!("  Star: {:.4}", correlation(&star_gap, &star_prop_new));
-    println!("  Random: {:.4}", correlation(&random_gap, &random_prop_new));
+    println!(
+        "  Random: {:.4}",
+        correlation(&random_gap, &random_prop_new)
+    );
     println!("Pattern correlation (gap vs propagation_cost_raw_old):");
-    println!("  SparseDag: {:.4}", correlation(&sparse_gap, &sparse_prop_old));
-    println!("  DenseGraph: {:.4}", correlation(&dense_gap, &dense_prop_old));
+    println!(
+        "  SparseDag: {:.4}",
+        correlation(&sparse_gap, &sparse_prop_old)
+    );
+    println!(
+        "  DenseGraph: {:.4}",
+        correlation(&dense_gap, &dense_prop_old)
+    );
     println!("  Chain: {:.4}", correlation(&chain_gap, &chain_prop_old));
     println!("  Star: {:.4}", correlation(&star_gap, &star_prop_old));
-    println!("  Random: {:.4}", correlation(&random_gap, &random_prop_old));
+    println!(
+        "  Random: {:.4}",
+        correlation(&random_gap, &random_prop_old)
+    );
 
     assert!(stddev_gap > 0.01, "stddev must be > 0.01");
     assert!(
         (max_gap - min_gap).abs() > f64::EPSILON,
         "min and max must differ"
     );
-    assert!(corr_density.abs() < 0.9, "|corr(diffusion_index, density)| must be < 0.9");
+    assert!(
+        corr_density.abs() < 0.9,
+        "|corr(diffusion_index, density)| must be < 0.9"
+    );
     assert!(
         corr_propagation_raw_new.abs() > 0.2 || corr_cyclic.abs() > 0.2,
         "expected meaningful correlation with propagation or cyclic penalty"
     );
-    assert!(corr_propagation_raw_new.abs() < 0.9, "|corr(diffusion_index, propagation)| must be < 0.9");
-    assert!(partial_corr_prop_given_density_new.abs() < 0.6, "partial corr must be < 0.6");
+    assert!(
+        corr_propagation_raw_new.abs() < 0.9,
+        "|corr(diffusion_index, propagation)| must be < 0.9"
+    );
+    assert!(
+        partial_corr_prop_given_density_new.abs() < 0.6,
+        "partial corr must be < 0.6"
+    );
 
     // Phase B' gates
     assert!(
@@ -912,7 +977,9 @@ pub fn benchmark_lambda_grid_phase_c() {
     }
 
     println!("Lambda Grid Results (kappa=0.8, alpha=3.0, beta=3.0)");
-    println!("λ | acc | acc_old_and | Δcons | Δprop_raw | Δcyc_raw | score_mean | score_var | stability | corr(prop,density) | partial(gap,prop|density)");
+    println!(
+        "λ | acc | acc_old_and | Δcons | Δprop_raw | Δcyc_raw | score_mean | score_var | stability | corr(prop,density) | partial(gap,prop|density)"
+    );
     for r in &rows {
         println!(
             "{:.2} | {:.4} | {:.4} | {:+.4} | {:+.6} | {:+.6} | {:+.6} | {:.6} | {:.6} | {:.4} | {:.4}",
@@ -1142,12 +1209,9 @@ fn evaluate_lambda_metrics(
             let delta_cyc = after_cyc - before_cyc;
             let after_mod = modularity_score(&simulated.uds);
             let delta_mod = after_mod - before_mod;
-            let delta_complexity =
-                simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
+            let delta_complexity = simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
 
-            let score = delta_cons
-                + gamma * (-delta_prop).max(0.0)
-                + 0.8 * delta_mod.max(0.0)
+            let score = delta_cons + gamma * (-delta_prop).max(0.0) + 0.8 * delta_mod.max(0.0)
                 - alpha * delta_prop.max(0.0)
                 - beta * delta_cyc.max(0.0)
                 - 0.02 * delta_complexity.max(0.0);
@@ -1249,11 +1313,15 @@ fn evaluate_dynamic_lambda_metrics(
 
         for diff in candidates {
             let mut simulated = state.clone();
-            simulated.begin_tx().expect("begin tx for dynamic lambda metrics");
+            simulated
+                .begin_tx()
+                .expect("begin tx for dynamic lambda metrics");
             if simulated.apply_diff(diff).is_err() {
                 continue;
             }
-            simulated.commit_tx().expect("commit tx for dynamic lambda metrics");
+            simulated
+                .commit_tx()
+                .expect("commit tx for dynamic lambda metrics");
 
             let after_density = compute_graph_density(&simulated.uds);
             let after_lambda = lambda_for_mode(mode, after_density);
@@ -1266,12 +1334,9 @@ fn evaluate_dynamic_lambda_metrics(
             let delta_cyc = after_cyc - before_cyc;
             let after_mod = modularity_score(&simulated.uds);
             let delta_mod = after_mod - before_mod;
-            let delta_complexity =
-                simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
+            let delta_complexity = simulated.uds.nodes.len() as f64 - state.uds.nodes.len() as f64;
 
-            let score = delta_cons
-                + gamma * (-delta_prop).max(0.0)
-                + 0.8 * delta_mod.max(0.0)
+            let score = delta_cons + gamma * (-delta_prop).max(0.0) + 0.8 * delta_mod.max(0.0)
                 - alpha * delta_prop.max(0.0)
                 - beta * delta_cyc.max(0.0)
                 - 0.02 * delta_complexity.max(0.0);
@@ -1502,7 +1567,10 @@ fn build_best_two_step_candidate(
                 first: Box::new(first_diff.clone()),
                 second: Box::new(second_diff),
             };
-            let score = state.evaluate_diff(&candidate).map(|r| r.score).unwrap_or(0.0);
+            let score = state
+                .evaluate_diff(&candidate)
+                .map(|r| r.score)
+                .unwrap_or(0.0);
             if score <= 0.0 {
                 continue;
             }
@@ -1525,7 +1593,10 @@ fn split_preview_passes_guard(
     _baseline_eval: &agent_core::domain::DesignScoreVector,
     diff: &ProposedDiff,
 ) -> bool {
-    state.evaluate_diff(diff).map(|r| r.accepted).unwrap_or(false)
+    state
+        .evaluate_diff(diff)
+        .map(|r| r.accepted)
+        .unwrap_or(false)
 }
 
 fn diff_contains_rewire(diff: &ProposedDiff) -> bool {
@@ -1542,7 +1613,9 @@ fn diff_kind(diff: &ProposedDiff) -> &'static str {
     match diff {
         ProposedDiff::SplitHighOutDegreeNode { .. } => "Split",
         ProposedDiff::RemoveNode { .. } => "RemoveNode",
-        ProposedDiff::SetDependencies { .. } | ProposedDiff::RewireHighImpactEdge { .. } => "Rewire",
+        ProposedDiff::SetDependencies { .. } | ProposedDiff::RewireHighImpactEdge { .. } => {
+            "Rewire"
+        }
         ProposedDiff::TwoStep { .. } => "Other",
         _ => "Other",
     }
@@ -2394,9 +2467,7 @@ fn build_random_uds(
     rng: &mut LcgRng,
 ) -> UnifiedDesignState {
     let mut uds = UnifiedDesignState::default();
-    let keys = (0..node_count)
-        .map(|i| format!("N{i}"))
-        .collect::<Vec<_>>();
+    let keys = (0..node_count).map(|i| format!("N{i}")).collect::<Vec<_>>();
 
     for key in &keys {
         let value = if rng.gen_bool(empty_ratio.clamp(0.0, 1.0)) {
@@ -2525,8 +2596,8 @@ fn build_random_uds(
     }
 
     // Ensure density-linked baseline cyclicity so cyclic_penalty correlates with density.
-    let forced_self_loops = ((density.clamp(0.0, 1.0) * node_count as f64).round() as usize)
-        .min(node_count);
+    let forced_self_loops =
+        ((density.clamp(0.0, 1.0) * node_count as f64).round() as usize).min(node_count);
     for key in keys.iter().take(forced_self_loops) {
         uds.dependencies
             .entry(key.clone())
@@ -2536,11 +2607,10 @@ fn build_random_uds(
 
     // Inject invalid owner dependency keys with density-coupled probability.
     if rng.gen_bool((0.05 + 0.25 * density).clamp(0.0, 1.0)) {
-        uds.dependencies
-            .insert(
-                format!("MISSING_OWNER_{}", rng.gen_usize(0, 999)),
-                vec![keys[0].clone()],
-            );
+        uds.dependencies.insert(
+            format!("MISSING_OWNER_{}", rng.gen_usize(0, 999)),
+            vec![keys[0].clone()],
+        );
     }
 
     uds
@@ -2632,11 +2702,7 @@ fn correlation(xs: &[f64], ys: &[f64]) -> f64 {
     }
 
     let denom = (vx * vy).sqrt();
-    if denom == 0.0 {
-        0.0
-    } else {
-        cov / denom
-    }
+    if denom == 0.0 { 0.0 } else { cov / denom }
 }
 
 fn partial_correlation_single_control(x: &[f64], y: &[f64], z: &[f64]) -> f64 {
@@ -2683,10 +2749,7 @@ impl LcgRng {
     }
 
     fn next_u64(&mut self) -> u64 {
-        self.state = self
-            .state
-            .wrapping_mul(6364136223846793005)
-            .wrapping_add(1);
+        self.state = self.state.wrapping_mul(6364136223846793005).wrapping_add(1);
         self.state
     }
 

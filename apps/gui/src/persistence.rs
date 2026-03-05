@@ -99,10 +99,10 @@ pub fn save_checkpoint(state: &AppState, path: &Path) -> Result<(), PersistError
         Some(h) => h,
         None => {
             let history = PersistedHistory {
-            schema_version: PERSISTED_SCHEMA_VERSION,
-            base: PersistedState::from_state(state),
-            deltas: Vec::new(),
-        };
+                schema_version: PERSISTED_SCHEMA_VERSION,
+                base: PersistedState::from_state(state),
+                deltas: Vec::new(),
+            };
             return save_history_atomically(&history, path);
         }
     };
@@ -191,7 +191,10 @@ pub fn load_checkpoint_history(path: &Path) -> Result<Option<PersistedHistory>, 
     load_persisted_history(path)
 }
 
-pub fn load_checkpoint_at_version(path: &Path, version_id: u64) -> Result<Option<AppState>, PersistError> {
+pub fn load_checkpoint_at_version(
+    path: &Path,
+    version_id: u64,
+) -> Result<Option<AppState>, PersistError> {
     let history = match load_persisted_history(path)? {
         Some(h) => h,
         None => return Ok(None),
@@ -392,7 +395,10 @@ fn generate_diffs(from: &UnifiedDesignState, to: &UnifiedDesignState) -> Vec<Pro
     diffs
 }
 
-fn apply_diff_to_uds(uds: &mut UnifiedDesignState, diff: &ProposedDiff) -> Result<(), PersistError> {
+fn apply_diff_to_uds(
+    uds: &mut UnifiedDesignState,
+    diff: &ProposedDiff,
+) -> Result<(), PersistError> {
     match diff {
         ProposedDiff::UpsertNode { key, value } => {
             uds.nodes.insert(key.clone(), value.clone());
@@ -435,13 +441,11 @@ fn apply_diff_to_uds(uds: &mut UnifiedDesignState, diff: &ProposedDiff) -> Resul
                     "delta split failed: missing owner {key}"
                 )));
             }
-            let deps = uds
-                .dependencies
-                .get(key)
-                .cloned()
-                .ok_or_else(|| PersistError::IntegrityViolation(format!(
+            let deps = uds.dependencies.get(key).cloned().ok_or_else(|| {
+                PersistError::IntegrityViolation(format!(
                     "delta split failed: missing dependencies for {key}"
-                )))?;
+                ))
+            })?;
 
             let mut normalized = deps;
             normalized.sort();
@@ -474,7 +478,10 @@ fn apply_diff_to_uds(uds: &mut UnifiedDesignState, diff: &ProposedDiff) -> Resul
             uds.dependencies.insert(key.clone(), owner_deps);
         }
         ProposedDiff::RewireHighImpactEdge { key, from, to } => {
-            if !uds.nodes.contains_key(key) || !uds.nodes.contains_key(from) || !uds.nodes.contains_key(to) {
+            if !uds.nodes.contains_key(key)
+                || !uds.nodes.contains_key(from)
+                || !uds.nodes.contains_key(to)
+            {
                 return Err(PersistError::IntegrityViolation(format!(
                     "delta rewire failed: invalid node in {key}:{from}->{to}"
                 )));
@@ -484,12 +491,11 @@ fn apply_diff_to_uds(uds: &mut UnifiedDesignState, diff: &ProposedDiff) -> Resul
                     "delta rewire failed: self loop {key}->{to}"
                 )));
             }
-            let deps = uds
-                .dependencies
-                .get_mut(key)
-                .ok_or_else(|| PersistError::IntegrityViolation(format!(
+            let deps = uds.dependencies.get_mut(key).ok_or_else(|| {
+                PersistError::IntegrityViolation(format!(
                     "delta rewire failed: missing owner deps for {key}"
-                )))?;
+                ))
+            })?;
             if !deps.iter().any(|d| d == from) {
                 return Err(PersistError::IntegrityViolation(format!(
                     "delta rewire failed: missing source edge {key}->{from}"
@@ -525,9 +531,15 @@ fn next_split_node_key(uds: &UnifiedDesignState, base: &str) -> String {
 }
 
 fn recompute_eval(uds: &UnifiedDesignState) -> Result<DesignScoreVector, PersistError> {
-    let mut app = AppState::from_persisted(0, compute_hash(uds), uds.clone(), DesignScoreVector::default());
-    app.evaluate_now()
-        .map_err(|e| PersistError::IntegrityViolation(format!("evaluation recompute failed: {e:?}")))?;
+    let mut app = AppState::from_persisted(
+        0,
+        compute_hash(uds),
+        uds.clone(),
+        DesignScoreVector::default(),
+    );
+    app.evaluate_now().map_err(|e| {
+        PersistError::IntegrityViolation(format!("evaluation recompute failed: {e:?}"))
+    })?;
     Ok(app.evaluation)
 }
 
