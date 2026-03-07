@@ -6,8 +6,8 @@ on:
     branches: [main]
 
 jobs:
-  lint:
-    name: Lint
+  build:
+    name: Build
     runs-on: ubuntu-latest
 
     steps:
@@ -17,11 +17,14 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
+      - name: cargo check
+        run: cargo check --workspace --locked
+
       - name: fmt
         run: cargo fmt --all -- --check
 
       - name: clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
       - name: secret scan
         uses: gitleaks/gitleaks-action@v2
@@ -36,9 +39,9 @@ jobs:
       - name: python lint
         run: ruff check .
 
-  build:
-    name: Build
-    needs: [lint]
+  tier1_unit:
+    name: Tier1 Unit Correctness
+    needs: [build]
     runs-on: ubuntu-latest
 
     steps:
@@ -47,9 +50,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@master
 
       - uses: Swatinem/rust-cache@v2
-
-      - name: build
-        run: cargo check --workspace
 
       - name: boundary rules
         run: |
@@ -84,9 +84,27 @@ jobs:
             exit 1
           fi
 
-  test:
-    name: Test
-    needs: [build]
+      - name: memory_space unit
+        run: cargo test -p memory_space --lib --locked
+
+      - name: reasoning_agent unit
+        run: cargo test -p reasoning_agent --lib --locked
+
+      - name: hybrid_vm unit
+        run: cargo test -p hybrid_vm --lib --locked
+
+      - name: semantic_dhm unit
+        run: cargo test -p semantic_dhm --lib --locked
+
+      - name: recomposer unit
+        run: cargo test -p recomposer --lib --locked
+
+      - name: agent_core unit
+        run: cargo test -p agent_core --lib --locked
+
+  tier2_math:
+    name: Tier2 Mathematical Property
+    needs: [tier1_unit]
     runs-on: ubuntu-latest
 
     steps:
@@ -96,12 +114,24 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: test
-        run: cargo test --workspace
+      - name: memory_space property tests
+        run: cargo test -p memory_space --lib proptest_props --locked
 
-  release-test:
-    name: Release Test
-    needs: [build]
+      - name: field_engine property tests
+        run: cargo test -p field_engine --lib proptest_props --locked
+
+      - name: recomposer property tests
+        run: cargo test -p recomposer --lib proptest_props --locked
+
+      - name: pareto property tests
+        run: cargo test -p agent_core --test contract hypervolume_monotonicity --locked
+
+      - name: hypervolume monotonicity
+        run: cargo test -p agent_core --test engine pareto --locked
+
+  tier3_integration:
+    name: Tier3 Integration
+    needs: [tier2_math]
     runs-on: ubuntu-latest
 
     steps:
@@ -111,5 +141,59 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: release test
-        run: cargo test --workspace --release
+      - name: reasoning pipeline integration
+        run: cargo test -p reasoning_agent --test integration --locked
+
+      - name: cli integration
+        run: cargo test -p design_cli --test integration --locked
+
+      - name: failure injection recall override
+        run: cargo test -p reasoning_agent --test recall_override --locked
+
+      - name: failure injection false resonance
+        run: cargo test -p reasoning_agent --test false_resonance --locked
+
+      - name: simulation stability
+        run: cargo test -p reasoning_agent --test simulation_stability --locked
+
+  tier4_stress:
+    name: Tier4 Stress Scaling
+    needs: [tier3_integration]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: scaling stress tests
+        run: cargo test -p reasoning_agent --test scaling --release --locked
+
+      - name: deep trace stability
+        run: cargo test -p agent_core --test heavy --release --features ci-heavy --locked
+
+  tier5_determinism:
+    name: Tier5 Determinism Scientific
+    needs: [tier4_stress]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: deterministic suite
+        run: cargo test -p reasoning_agent --test deterministic --locked -- --test-threads=1
+
+      - name: deterministic evaluation
+        run: cargo test -p reasoning_agent --test evaluation_determinism --locked -- --test-threads=1
+
+      - name: deterministic contract
+        run: cargo test -p agent_core --test contract deterministic_engine_fast_10_seeds_3_runs_hash_and_hv_equal --locked -- --test-threads=1
+
+      - name: deterministic memory ranking
+        run: cargo test -p memory_space_index search_is_deterministic --locked -- --test-threads=1
