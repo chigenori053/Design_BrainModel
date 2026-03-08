@@ -5,5 +5,7 @@ edition = "2024"
 
 [dependencies]
 concept_engine = { workspace = true }
+design_domain = { workspace = true }
 memory_space_complex = { workspace = true }
 memory_space_core = { workspace = true }
+world_model_core = { workspace = true }

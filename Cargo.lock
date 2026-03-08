@@ -956,6 +956,7 @@ dependencies = [
  "analysis_tools",
  "clap",
  "design_reasoning",
+ "design_search_engine",
  "hybrid_vm",
  "runtime_core",
  "runtime_vm",
@@ -972,6 +973,10 @@ version = "0.1.0"
 dependencies = [
  "interface_ui",
 ]
+
+[[package]]
+name = "design_domain"
+version = "0.1.0"
 
 [[package]]
 name = "design_gui"
@@ -1014,8 +1019,10 @@ name = "design_search_engine"
 version = "0.1.0"
 dependencies = [
  "concept_engine",
+ "design_domain",
  "memory_space_complex",
  "memory_space_core",
+ "world_model_core",
 ]
 
 [[package]]
@@ -3178,6 +3185,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "semantic_domain"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+]
+
+[[package]]
 name = "semver"
 version = "1.0.27"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4617,6 +4631,7 @@ dependencies = [
 name = "world_model_core"
 version = "0.1.0"
 dependencies = [
+ "design_domain",
  "memory_space_core",
 ]
 

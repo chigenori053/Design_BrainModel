@@ -2,6 +2,8 @@
 members = [
     "crates/concept_engine",
     "crates/concept_field",
+    "crates/domain/design_domain",
+    "crates/domain/semantic_domain",
     "crates/engine/design_search_engine",
     "crates/phase1_integration_tests",
     "crates/search_controller",
@@ -74,6 +76,8 @@ design_reasoning = { path = "crates/design_reasoning" }
 reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }
 world_model_core = { path = "crates/core/world_model_core" }
+design_domain = { path = "crates/domain/design_domain" }
+semantic_domain = { path = "crates/domain/semantic_domain" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }
