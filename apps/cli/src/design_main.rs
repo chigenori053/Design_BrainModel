@@ -12,9 +12,15 @@ use hybrid_vm::{
     ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
     rank_frontier_by_human_coherence,
 };
+use runtime_core::{ModalityInput, RuntimeStage};
+use runtime_vm::{ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter};
 use semantic_dhm::CausalEdge;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use world_model_core::{
+    ConsistencyEvaluator, DeltaConsistencyEvaluator, DeterministicWorldModel, HypothesisGenerator,
+    SimpleHypothesisGenerator, WorldModel,
+};
 
 const CLI_VERSION: &str = "0.1.0";
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
@@ -73,6 +79,10 @@ enum Commands {
     Export {
         #[arg(long)]
         out: Option<String>,
+    },
+    Phase9 {
+        #[arg(long, default_value = "Phase9 architecture check")]
+        input: String,
     },
 }
 
@@ -199,6 +209,20 @@ struct SemanticAnalysisDump {
     report: analysis_tools::CorrelationReport,
 }
 
+#[derive(Debug, Serialize)]
+struct Phase9ArchitectureReport {
+    phase: &'static str,
+    request_id: String,
+    accepted_modalities: Vec<&'static str>,
+    recall_candidates: usize,
+    runtime_stage: &'static str,
+    event_count: usize,
+    recalled_memories: usize,
+    generated_hypotheses: usize,
+    world_model_consistency: f64,
+    outputs: Vec<String>,
+}
+
 fn main() {
     if let Err(err) = run() {
         let err_json = json!({
@@ -281,6 +305,7 @@ fn run() -> Result<(), String> {
                 deterministic: true,
             },
         ),
+        Commands::Phase9 { input } => run_phase9(input),
     }
 }
 
@@ -664,6 +689,77 @@ fn parse_vec4_pipe(v: &str) -> Option<[f64; 4]> {
         out[i] = p.parse::<f64>().ok()?;
     }
     Some(out)
+}
+
+fn run_phase9(input: String) -> Result<(), String> {
+    let accepted_modalities = ModalityInput::accepted_modalities();
+
+    let mut vm = RuntimeHybridVm::new(RuntimeExecutionMode::Reasoning);
+    vm.set_input_text(input.clone());
+    vm.execute();
+
+    let phase9_ctx = Phase9RuntimeAdapter::from_legacy(vm.context());
+    let current_state = phase9_ctx
+        .world_state
+        .clone()
+        .unwrap_or_else(|| world_model_core::WorldState::new(1, vec![1.0, 1.0, 1.0]));
+    let generator = SimpleHypothesisGenerator;
+    let generated = generator
+        .generate(&current_state, phase9_ctx.recall_result.as_ref())
+        .map_err(|e| format!("failed to generate hypotheses: {e}"))?;
+    let selected_hypothesis = generated
+        .first()
+        .cloned()
+        .ok_or_else(|| "world model generated no hypotheses".to_string())?;
+    let model = DeterministicWorldModel;
+    let prediction = model
+        .transition(&current_state, &selected_hypothesis)
+        .map_err(|e| format!("failed to evaluate transition: {e}"))?;
+    let evaluator = DeltaConsistencyEvaluator;
+    let consistency = evaluator
+        .evaluate(&current_state, &prediction)
+        .map_err(|e| format!("failed to evaluate consistency: {e}"))?;
+
+    let report = Phase9ArchitectureReport {
+        phase: "Phase9",
+        request_id: phase9_ctx.request_id.0,
+        accepted_modalities: accepted_modalities
+            .iter()
+            .map(|modality| modality.as_str())
+            .collect(),
+        recall_candidates: phase9_ctx
+            .recall_result
+            .as_ref()
+            .map(|result| result.candidates.len())
+            .unwrap_or(0),
+        runtime_stage: match phase9_ctx.stage {
+            RuntimeStage::Input => "input",
+            RuntimeStage::Normalize => "normalize",
+            RuntimeStage::Recall => "recall",
+            RuntimeStage::HypothesisGeneration => "hypothesis_generation",
+            RuntimeStage::TransitionEvaluation => "transition_evaluation",
+            RuntimeStage::ConsistencyEvaluation => "consistency_evaluation",
+            RuntimeStage::Output => "output",
+        },
+        event_count: phase9_ctx.event_bus.len(),
+        recalled_memories: Phase9RuntimeAdapter::snapshot(vm.context()).recalled_memories,
+        generated_hypotheses: phase9_ctx.hypotheses.len() + generated.len(),
+        world_model_consistency: round6(consistency.value),
+        outputs: vec![
+            format!("input:{input}"),
+            format!("selected_hypothesis:{}", selected_hypothesis.hypothesis_id),
+        ],
+    };
+
+    render_success(
+        "phase9",
+        serde_json::to_value(report).map_err(|e| format!("failed to serialize report: {e}"))?,
+        JsonMeta {
+            command: "phase9",
+            hv_policy: None,
+            deterministic: true,
+        },
+    )
 }
 
 fn render_success(command: &'static str, data: Value, meta: JsonMeta) -> Result<(), String> {

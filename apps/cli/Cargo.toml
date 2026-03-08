@@ -25,7 +25,10 @@ agent_core = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }
 hybrid_vm = { workspace = true }
+runtime_vm = { workspace = true }
+runtime_core = { workspace = true }
 semantic_dhm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
+world_model_core = { workspace = true }

@@ -1,0 +1,8 @@
+[package]
+name = "memory_space_core"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+num-complex = { workspace = true }
+serde_json = { workspace = true }

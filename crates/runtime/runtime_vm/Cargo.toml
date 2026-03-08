@@ -1,0 +1,19 @@
+[package]
+name = "runtime_vm"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+brain_core = { workspace = true }
+concept_engine = { workspace = true }
+concept_field = { workspace = true }
+design_search_engine = { workspace = true }
+memory_space_api = { workspace = true }
+memory_space_complex = { workspace = true }
+memory_space_core = { workspace = true }
+reasoning_agent = { workspace = true }
+runtime_core = { workspace = true }
+search_controller = { workspace = true }
+serde_json = { workspace = true }
+semantic_dhm = { workspace = true }
+world_model_core = { workspace = true }

@@ -830,6 +830,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "concept_engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+]
+
+[[package]]
+name = "concept_field"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_complex",
+ "memory_space_core",
+]
+
+[[package]]
 name = "concurrent-queue"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -941,10 +957,13 @@ dependencies = [
  "clap",
  "design_reasoning",
  "hybrid_vm",
+ "runtime_core",
+ "runtime_vm",
  "semantic_dhm",
  "serde",
  "serde_json",
  "sha2",
+ "world_model_core",
 ]
 
 [[package]]
@@ -988,6 +1007,15 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+]
+
+[[package]]
+name = "design_search_engine"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_complex",
+ "memory_space_core",
 ]
 
 [[package]]
@@ -2079,6 +2107,54 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory_space_api"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_complex",
+ "memory_space_core",
+ "memory_space_eval",
+ "memory_space_index",
+ "memory_space_recall",
+]
+
+[[package]]
+name = "memory_space_complex"
+version = "0.1.0"
+dependencies = [
+ "memory_space_core",
+]
+
+[[package]]
+name = "memory_space_core"
+version = "0.1.0"
+dependencies = [
+ "num-complex",
+ "serde_json",
+]
+
+[[package]]
+name = "memory_space_eval"
+version = "0.1.0"
+
+[[package]]
+name = "memory_space_index"
+version = "0.1.0"
+dependencies = [
+ "memory_space_complex",
+ "memory_space_core",
+ "memory_space_recall",
+]
+
+[[package]]
+name = "memory_space_recall"
+version = "0.1.0"
+dependencies = [
+ "memory_space_complex",
+ "memory_space_core",
+]
+
+[[package]]
 name = "memory_store"
 version = "0.1.0"
 
@@ -2594,6 +2670,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "phase1_integration_tests"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_api",
+ "reasoning_agent",
+ "semantic_dhm",
+]
+
+[[package]]
 name = "pin-project"
 version = "1.1.10"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2871,6 +2957,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20675572f6f24e9e76ef639bc5552774ed45f1c30e2951e1e99c59888861c539"
 
 [[package]]
+name = "reasoning_agent"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_api",
+ "memory_space_complex",
+ "memory_space_core",
+ "memory_space_index",
+]
+
+[[package]]
 name = "recomposer"
 version = "0.1.0"
 dependencies = [
@@ -2941,10 +3038,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 
 [[package]]
+name = "runtime_core"
+version = "0.1.0"
+dependencies = [
+ "memory_space_core",
+ "num-complex",
+ "serde_json",
+ "world_model_core",
+]
+
+[[package]]
 name = "runtime_vm"
 version = "0.1.0"
 dependencies = [
  "brain_core",
+ "concept_engine",
+ "concept_field",
+ "design_search_engine",
+ "memory_space_api",
+ "memory_space_complex",
+ "memory_space_core",
+ "reasoning_agent",
+ "runtime_core",
+ "search_controller",
+ "semantic_dhm",
+ "serde_json",
+ "world_model_core",
 ]
 
 [[package]]
@@ -3038,9 +3157,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "search_controller"
+version = "0.1.0"
+dependencies = [
+ "concept_engine",
+ "memory_space_api",
+ "memory_space_complex",
+ "memory_space_core",
+]
+
+[[package]]
 name = "semantic_dhm"
 version = "0.1.0"
 dependencies = [
+ "concept_engine",
  "meaning_extractor",
  "memory_store",
  "serde",
@@ -4481,6 +4611,13 @@ dependencies = [
  "serde_json",
  "unicode-xid",
  "wasmparser",
+]
+
+[[package]]
+name = "world_model_core"
+version = "0.1.0"
+dependencies = [
+ "memory_space_core",
 ]
 
 [[package]]

@@ -1,0 +1,11 @@
+[package]
+name = "reasoning_agent"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+concept_engine = { workspace = true }
+memory_space_api = { workspace = true }
+memory_space_core = { workspace = true }
+memory_space_complex = { workspace = true }
+memory_space_index = { workspace = true }

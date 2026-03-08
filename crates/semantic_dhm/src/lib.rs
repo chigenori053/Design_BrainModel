@@ -4,6 +4,7 @@ use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use concept_engine::{Canonicalizer, ConceptId as CanonicalConceptId, ConceptRegistry};
 use meaning_extractor::{MeaningStructure, NodeId, RelationType, RoleType};
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
 use serde::{Deserialize, Serialize};
@@ -40,6 +41,41 @@ impl From<io::Error> for SemanticError {
 pub const D_SEM: usize = 384;
 pub const D_STRUCT: usize = 384;
 pub const SIM_PRECISION: f64 = 1000.0;
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SemanticUnit {
+    pub concept: CanonicalConceptId,
+    pub context_vector: Vec<f32>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct SemanticEngine {
+    canonicalizer: Canonicalizer,
+}
+
+impl SemanticEngine {
+    pub fn new() -> Self {
+        Self {
+            canonicalizer: Canonicalizer::new(ConceptRegistry::default()),
+        }
+    }
+
+    pub fn from_canonicalizer(canonicalizer: Canonicalizer) -> Self {
+        Self { canonicalizer }
+    }
+
+    pub fn text_to_semantic_unit(&mut self, text: &str, embedding: &[f32]) -> SemanticUnit {
+        let concept = self.canonicalizer.canonicalize(text, embedding);
+        SemanticUnit {
+            concept,
+            context_vector: embedding.to_vec(),
+        }
+    }
+
+    pub fn canonicalizer(&self) -> &Canonicalizer {
+        &self.canonicalizer
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct L2Config {
@@ -1850,5 +1886,23 @@ mod tests {
         assert_eq!(migrated.len(), 1);
         assert_eq!(migrated[0].parent_id, L1Id(99));
         assert!(!migrated[0].metrics.is_empty());
+    }
+
+    #[test]
+    fn semantic_engine_maps_similar_texts_to_same_concept() {
+        let mut engine = SemanticEngine::new();
+        let first = engine.text_to_semantic_unit("optimize query", &[1.0, 0.0, 0.0]);
+        let second = engine.text_to_semantic_unit("query optimization", &[0.99, 0.01, 0.0]);
+
+        assert_eq!(first.concept, second.concept);
+    }
+
+    #[test]
+    fn semantic_unit_keeps_context_vector() {
+        let mut engine = SemanticEngine::new();
+        let input = vec![0.1, 0.2, 0.3];
+        let unit = engine.text_to_semantic_unit("database", &input);
+
+        assert_eq!(unit.context_vector, input);
     }
 }

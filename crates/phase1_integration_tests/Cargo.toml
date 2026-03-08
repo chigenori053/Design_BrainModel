@@ -1,0 +1,30 @@
+[package]
+name = "phase1_integration_tests"
+version = "0.1.0"
+edition = "2024"
+
+[dev-dependencies]
+concept_engine = { workspace = true }
+semantic_dhm = { workspace = true }
+memory_space_api = { workspace = true }
+reasoning_agent = { workspace = true }
+
+[[test]]
+name = "concept_pipeline"
+path = "../../tests/integration/concept_pipeline.rs"
+
+[[test]]
+name = "canonicalization"
+path = "../../tests/integration/canonicalization.rs"
+
+[[test]]
+name = "memory_recall"
+path = "../../tests/integration/memory_recall.rs"
+
+[[test]]
+name = "reasoning_pipeline"
+path = "../../tests/integration/reasoning_pipeline.rs"
+
+[[test]]
+name = "concept_graph"
+path = "../../tests/integration/concept_graph.rs"

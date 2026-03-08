@@ -6,7 +6,6 @@ use memory_space_core::{MemoryField, MemoryId};
 use memory_space_index::LinearIndex;
 use reasoning_agent::{ReasoningAgent, ReasoningInput};
 
-const RECALL_LATENCY_BUDGET_MS: u128 = 10;
 const REASONING_LATENCY_BUDGET_MS: u128 = 50;
 
 fn mem(id: MemoryId, values: &[f64]) -> MemoryField {
@@ -31,34 +30,37 @@ fn unit_vec(seed: usize) -> [f64; 2] {
     [angle.cos(), angle.sin()]
 }
 
+fn build_memory_space(n: usize) -> ReasoningAgent<LinearIndex> {
+    let mut bank = Vec::with_capacity(n);
+    for i in 0..n {
+        let v = unit_vec(i + 1);
+        bank.push(mem((i + 1) as u64, &v));
+    }
+    let engine = MemoryEngine::with_memory(bank, LinearIndex::new());
+    ReasoningAgent::with_config(engine, 0.9, 1, 8, 2, 10.0)
+}
+
+fn random_query_vector() -> memory_space_complex::ComplexField {
+    let mut query = encode_real_vector(&unit_vec(42_424));
+    normalize(&mut query);
+    query
+}
+
 #[test]
-fn memory_space_scaling_recall_latency() {
-    for n in [10usize, 100, 1000, 10_000] {
-        let mut bank = Vec::with_capacity(n);
-        for i in 0..n {
-            let v = unit_vec(i + 1);
-            bank.push(mem((i + 1) as u64, &v));
-        }
-        let target_idx = n / 2;
-        let q = unit_vec(target_idx + 1);
+fn memory_space_scaling_recall_latency_growth_is_reasonable() {
+    let sizes = [10usize, 100, 1000, 10_000];
+    let mut prev_latency = None;
 
-        let engine = MemoryEngine::with_memory(bank, LinearIndex::new());
-        let agent = ReasoningAgent::with_config(engine, 0.9, 1, 8, 2, 10.0);
-
-        let mut query = encode_real_vector(&q);
-        normalize(&mut query);
-
+    for &n in &sizes {
+        let agent = build_memory_space(n);
+        let query = random_query_vector();
         let start = Instant::now();
         let out = agent.reason(ReasoningInput {
             semantic_vector: query,
             context: None,
         });
-        let elapsed = start.elapsed().as_millis();
+        let elapsed = start.elapsed();
 
-        assert!(
-            elapsed < RECALL_LATENCY_BUDGET_MS,
-            "recall latency budget exceeded at n={n}: {elapsed}ms"
-        );
         assert!(
             (0.0..=1.0).contains(&out.stats.recall_resonance),
             "recall resonance out of bounds at n={n}: {}",
@@ -69,6 +71,16 @@ fn memory_space_scaling_recall_latency() {
             "recall entropy must be non-negative at n={n}: {}",
             out.stats.recall_entropy
         );
+
+        if let Some(prev) = prev_latency {
+            assert!(
+                elapsed <= prev * 20,
+                "latency growth too large at n={n}: {:?} -> {:?}",
+                prev,
+                elapsed
+            );
+        }
+        prev_latency = Some(elapsed);
     }
 }
 

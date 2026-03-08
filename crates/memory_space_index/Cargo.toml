@@ -1,0 +1,9 @@
+[package]
+name = "memory_space_index"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+memory_space_core = { workspace = true }
+memory_space_complex = { workspace = true }
+memory_space_recall = { workspace = true }

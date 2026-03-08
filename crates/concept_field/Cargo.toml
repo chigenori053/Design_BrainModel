@@ -1,0 +1,9 @@
+[package]
+name = "concept_field"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+concept_engine = { workspace = true }
+memory_space_complex = { workspace = true }
+memory_space_core = { workspace = true }

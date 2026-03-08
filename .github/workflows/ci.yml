@@ -144,6 +144,21 @@ jobs:
       - name: reasoning pipeline integration
         run: cargo test -p reasoning_agent --test integration --locked
 
+      - name: phase1 concept pipeline test
+        run: cargo test -p phase1_integration_tests --test concept_pipeline --locked
+
+      - name: phase1 canonicalization test
+        run: cargo test -p phase1_integration_tests --test canonicalization --locked
+
+      - name: phase1 memory recall test
+        run: cargo test -p phase1_integration_tests --test memory_recall --locked
+
+      - name: phase1 reasoning pipeline test
+        run: cargo test -p phase1_integration_tests --test reasoning_pipeline --locked
+
+      - name: phase1 concept graph test
+        run: cargo test -p phase1_integration_tests --test concept_graph --locked
+
       - name: cli integration
         run: cargo test -p design_cli --test integration --locked
 

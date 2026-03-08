@@ -1,5 +1,10 @@
 [workspace]
 members = [
+    "crates/concept_engine",
+    "crates/concept_field",
+    "crates/engine/design_search_engine",
+    "crates/phase1_integration_tests",
+    "crates/search_controller",
     "crates/analysis_tools",
     "crates/agent_core",
     "crates/brain_core",
@@ -11,9 +16,15 @@ members = [
     "crates/profile",
     "crates/memory_store",
     "crates/shm",
-    "crates/memory_space",
+    "crates/memory_space_legacy",
+    "crates/core/memory_space_core",
+    "crates/memory_space_complex",
+    "crates/memory_space_recall",
+    "crates/memory_space_eval",
+    "crates/memory_space_api",
+    "crates/memory_space_index",
     "crates/num-complex",
-    "crates/runtime_vm",
+    "crates/runtime/runtime_vm",
     "crates/interface_ui",
     "crates/language_dhm",
     "crates/knowledge_store",
@@ -21,15 +32,22 @@ members = [
     "crates/semantic_dhm",
     "crates/recomposer",
     "crates/design_reasoning",
+    "crates/reasoning_agent",
+    "crates/runtime/runtime_core",
     "apps/cli",
     "apps/gui",
     "apps/desktop",
     "apps/server",
-    "apps/lsp"
+    "apps/lsp",
+    "crates/core/world_model_core"
 ]
 resolver = "2"
 
 [workspace.dependencies]
+concept_engine = { path = "crates/concept_engine" }
+concept_field = { path = "crates/concept_field" }
+design_search_engine = { path = "crates/engine/design_search_engine" }
+search_controller = { path = "crates/search_controller" }
 analysis_tools = { path = "crates/analysis_tools" }
 agent_core = { path = "crates/agent_core" }
 brain_core = { path = "crates/brain_core" }
@@ -40,16 +58,25 @@ field_engine = { path = "crates/field_engine" }
 hybrid_vm = { path = "crates/hybrid_vm" }
 interface_ui = { path = "crates/interface_ui" }
 memory_store = { path = "crates/memory_store" }
-memory_space = { path = "crates/memory_space" }
+memory_space = { path = "crates/memory_space_legacy" }
+memory_space_core = { path = "crates/core/memory_space_core" }
+memory_space_complex = { path = "crates/memory_space_complex" }
+memory_space_recall = { path = "crates/memory_space_recall" }
+memory_space_eval = { path = "crates/memory_space_eval" }
+memory_space_api = { path = "crates/memory_space_api" }
+memory_space_index = { path = "crates/memory_space_index" }
 language_dhm = { path = "crates/language_dhm" }
 knowledge_store = { path = "crates/knowledge_store" }
 meaning_extractor = { path = "crates/meaning_extractor" }
 semantic_dhm = { path = "crates/semantic_dhm" }
 recomposer = { path = "crates/recomposer" }
 design_reasoning = { path = "crates/design_reasoning" }
+reasoning_agent = { path = "crates/reasoning_agent" }
+runtime_core = { path = "crates/runtime/runtime_core" }
+world_model_core = { path = "crates/core/world_model_core" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
-runtime_vm = { path = "crates/runtime_vm" }
+runtime_vm = { path = "crates/runtime/runtime_vm" }
 shm = { path = "crates/shm" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

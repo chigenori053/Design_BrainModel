@@ -27,7 +27,10 @@ fn stable_result_hash(out: &ReasoningResult) -> u64 {
     fnv1a(&mut h, &[out.stats.used_recall as u8]);
     fnv1a(&mut h, &out.stats.recall_resonance.to_bits().to_le_bytes());
     fnv1a(&mut h, &out.stats.recall_entropy.to_bits().to_le_bytes());
-    fnv1a(&mut h, &(out.stats.hypotheses_generated as u64).to_le_bytes());
+    fnv1a(
+        &mut h,
+        &(out.stats.hypotheses_generated as u64).to_le_bytes(),
+    );
     fnv1a(&mut h, &(out.stats.simulation_steps as u64).to_le_bytes());
     fnv1a(&mut h, &out.stats.evaluation_score.to_bits().to_le_bytes());
     fnv1a(&mut h, &out.confidence.to_bits().to_le_bytes());
@@ -47,16 +50,19 @@ fn field_close(a: &ComplexField, b: &ComplexField, eps: f64) -> bool {
     if a.data.len() != b.data.len() {
         return false;
     }
-    a.data
-        .iter()
-        .zip(&b.data)
-        .all(|(l, r)| rel_err(l.re as f64, r.re as f64) <= eps && rel_err(l.im as f64, r.im as f64) <= eps)
+    a.data.iter().zip(&b.data).all(|(l, r)| {
+        rel_err(l.re as f64, r.re as f64) <= eps && rel_err(l.im as f64, r.im as f64) <= eps
+    })
 }
 
 #[test]
 fn multi_run_determinism_1000_fixed_seed() {
     let engine = MemoryEngine::with_memory(
-        vec![mem(1, &[1.0, 0.0]), mem(2, &[0.0, 1.0]), mem(3, &[0.6, 0.8])],
+        vec![
+            mem(1, &[1.0, 0.0]),
+            mem(2, &[0.0, 1.0]),
+            mem(3, &[0.6, 0.8]),
+        ],
         LinearIndex::new(),
     );
     let agent = ReasoningAgent::with_config(engine, 0.95, 3, 8, 2, 0.5);
@@ -82,7 +88,11 @@ fn multi_run_determinism_1000_fixed_seed() {
 #[test]
 fn floating_point_stability_relative_error_below_1e_6() {
     let engine = MemoryEngine::with_memory(
-        vec![mem(1, &[1.0, 0.0]), mem(2, &[0.2, 0.98]), mem(3, &[0.8, 0.2])],
+        vec![
+            mem(1, &[1.0, 0.0]),
+            mem(2, &[0.2, 0.98]),
+            mem(3, &[0.8, 0.2]),
+        ],
         LinearIndex::new(),
     );
     let agent = ReasoningAgent::with_config(engine, 0.95, 3, 8, 3, 0.5);
@@ -106,11 +116,33 @@ fn floating_point_stability_relative_error_below_1e_6() {
 
 #[test]
 fn order_invariance_with_shuffled_input() {
-    let a = vec![mem(1, &[1.0, 0.0]), mem(2, &[0.0, 1.0]), mem(3, &[0.7, 0.3])];
-    let b = vec![mem(3, &[0.7, 0.3]), mem(1, &[1.0, 0.0]), mem(2, &[0.0, 1.0])];
+    let a = vec![
+        mem(1, &[1.0, 0.0]),
+        mem(2, &[0.0, 1.0]),
+        mem(3, &[0.7, 0.3]),
+    ];
+    let b = vec![
+        mem(3, &[0.7, 0.3]),
+        mem(1, &[1.0, 0.0]),
+        mem(2, &[0.0, 1.0]),
+    ];
 
-    let agent_a = ReasoningAgent::with_config(MemoryEngine::with_memory(a, LinearIndex::new()), 0.95, 3, 8, 2, 0.5);
-    let agent_b = ReasoningAgent::with_config(MemoryEngine::with_memory(b, LinearIndex::new()), 0.95, 3, 8, 2, 0.5);
+    let agent_a = ReasoningAgent::with_config(
+        MemoryEngine::with_memory(a, LinearIndex::new()),
+        0.95,
+        3,
+        8,
+        2,
+        0.5,
+    );
+    let agent_b = ReasoningAgent::with_config(
+        MemoryEngine::with_memory(b, LinearIndex::new()),
+        0.95,
+        3,
+        8,
+        2,
+        0.5,
+    );
 
     let mut query = encode_real_vector(&[1.0, 0.0]);
     normalize(&mut query);
