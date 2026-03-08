@@ -34,3 +34,4 @@ pub use search_controller::SearchController;
 pub use search_state::SearchState;
 pub use search_state::SearchState as Phase9SearchState;
 pub use world_model_core::{Action, EvaluationVector};
+pub use design_grammar::{GrammarEngine, GrammarValidation};

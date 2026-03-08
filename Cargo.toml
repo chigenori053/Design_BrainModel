@@ -3,6 +3,7 @@ members = [
     "crates/concept_engine",
     "crates/concept_field",
     "crates/domain/design_domain",
+    "crates/domain/design_grammar",
     "crates/domain/semantic_domain",
     "crates/engine/design_search_engine",
     "crates/world_model",
@@ -78,6 +79,7 @@ reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }
 world_model_core = { path = "crates/core/world_model_core" }
 design_domain = { path = "crates/domain/design_domain" }
+design_grammar = { path = "crates/domain/design_grammar" }
 semantic_domain = { path = "crates/domain/semantic_domain" }
 world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }

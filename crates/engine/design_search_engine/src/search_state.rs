@@ -1,4 +1,5 @@
 use world_model_core::WorldState;
+use design_grammar::GrammarValidation;
 
 /// Phase9-D search state: wraps a WorldState with search metadata.
 #[derive(Clone, Debug, PartialEq)]
@@ -8,6 +9,7 @@ pub struct SearchState {
     pub depth: usize,
     pub score: f64,
     pub pareto_rank: usize,
+    pub grammar_validation: Option<GrammarValidation>,
 }
 
 impl SearchState {
@@ -18,6 +20,7 @@ impl SearchState {
             depth: 0,
             score: 0.0,
             pareto_rank: 0,
+            grammar_validation: None,
         }
     }
 }

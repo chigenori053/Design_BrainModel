@@ -1,4 +1,5 @@
 use crate::{ArchitectureGraph, ClassUnit, Dependency, DesignUnit, StructureUnit};
+use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Architecture {
@@ -55,6 +56,15 @@ impl Architecture {
             .flat_map(|class_unit| class_unit.structures.iter())
             .flat_map(|structure| structure.design_units.iter())
             .map(|unit| unit.id.0)
+            .collect()
+    }
+
+    pub fn design_units_by_id(&self) -> BTreeMap<u64, &DesignUnit> {
+        self.classes
+            .iter()
+            .flat_map(|class_unit| class_unit.structures.iter())
+            .flat_map(|structure| structure.design_units.iter())
+            .map(|unit| (unit.id.0, unit))
             .collect()
     }
 }

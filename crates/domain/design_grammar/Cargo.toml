@@ -1,0 +1,9 @@
+[package]
+name = "design_grammar"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+design_domain = { workspace = true }
+semantic_domain = { workspace = true }
+world_model_core = { workspace = true }

@@ -1,5 +1,6 @@
 use design_domain::{
-    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, StructureUnit,
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer,
+    StructureUnit,
 };
 use memory_space_core::RecallResult;
 
@@ -100,7 +101,7 @@ impl SimulationResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Action {
-    AddDesignUnit { name: String },
+    AddDesignUnit { name: String, layer: Layer },
     RemoveDesignUnit,
     ConnectDependency { from: u64, to: u64 },
     SplitStructure,
@@ -169,10 +170,10 @@ impl WorldState {
         next.history.push(action.clone());
 
         match action {
-            Action::AddDesignUnit { name } => {
+            Action::AddDesignUnit { name, layer } => {
                 let next_id = next.architecture.design_unit_count() as u64 + 1;
                 next.architecture
-                    .add_design_unit(DesignUnit::new(next_id, name.clone()));
+                    .add_design_unit(DesignUnit::with_layer(next_id, name.clone(), *layer));
             }
             Action::RemoveDesignUnit => {
                 next.architecture.remove_design_unit();
@@ -501,6 +502,7 @@ mod tests {
         let next = state.apply_action(
             &Action::AddDesignUnit {
                 name: "ValidateRequest".into(),
+                layer: Layer::Service,
             },
             2,
         );

@@ -979,6 +979,15 @@ name = "design_domain"
 version = "0.1.0"
 
 [[package]]
+name = "design_grammar"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+ "semantic_domain",
+ "world_model_core",
+]
+
+[[package]]
 name = "design_gui"
 version = "0.1.0"
 dependencies = [
@@ -1020,6 +1029,7 @@ version = "0.1.0"
 dependencies = [
  "concept_engine",
  "design_domain",
+ "design_grammar",
  "memory_space_complex",
  "memory_space_core",
  "world_model",

@@ -1,3 +1,5 @@
+use design_domain::Layer;
+use design_grammar::GrammarEngine;
 use memory_space_core::RecallResult;
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::WorldState;
@@ -22,6 +24,7 @@ impl SearchController for BeamSearchController {
     ) -> Vec<SearchState> {
         let evaluator = DefaultArchitectureEvaluator;
         let simulator = DefaultSimulationEngine;
+        let grammar = GrammarEngine::default();
         let mut root_state = initial_state.clone();
         if let Some(recalled) = recall.and_then(|recall_result| initial_state.recall_seed(recall_result)) {
             if recall
@@ -34,7 +37,9 @@ impl SearchController for BeamSearchController {
         }
 
         let mut root = SearchState::new(root_state.state_id, root_state.clone());
-        assess_state(&mut root, recall, &evaluator, &simulator);
+        if !assess_state(&mut root, recall, &evaluator, &simulator, &grammar) {
+            return Vec::new();
+        }
         root.depth = 0;
 
         let mut beam = vec![root];
@@ -45,8 +50,9 @@ impl SearchController for BeamSearchController {
             for parent in &beam {
                 let children = expand(parent, depth, config.max_candidates);
                 for mut child in children {
-                    assess_state(&mut child, recall, &evaluator, &simulator);
-                    candidates.push(child);
+                    if assess_state(&mut child, recall, &evaluator, &simulator, &grammar) {
+                        candidates.push(child);
+                    }
                 }
             }
 
@@ -64,9 +70,22 @@ impl SearchController for BeamSearchController {
 /// Deterministic expansion from the action model.
 fn expand(parent: &SearchState, depth: usize, max_candidates: usize) -> Vec<SearchState> {
     let unit_ids = parent.world_state.architecture.all_design_unit_ids();
+    let layer = match depth % 4 {
+        1 => Layer::Ui,
+        2 => Layer::Service,
+        3 => Layer::Repository,
+        _ => Layer::Database,
+    };
+    let unit_name = match layer {
+        Layer::Ui => format!("ControllerDepth{depth}"),
+        Layer::Service => format!("ServiceDepth{depth}"),
+        Layer::Repository => format!("RepositoryDepth{depth}"),
+        Layer::Database => format!("DatabaseDepth{depth}"),
+    };
     let mut actions = vec![
         world_model_core::Action::AddDesignUnit {
-            name: format!("DesignUnitDepth{depth}"),
+            name: unit_name,
+            layer,
         },
         world_model_core::Action::SplitStructure,
         world_model_core::Action::MergeStructure,
@@ -103,6 +122,7 @@ fn expand(parent: &SearchState, depth: usize, max_candidates: usize) -> Vec<Sear
                 depth,
                 score: 0.0,
                 pareto_rank: 0,
+                grammar_validation: None,
             }
         })
         .collect()
@@ -113,10 +133,18 @@ fn assess_state(
     recall: Option<&RecallResult>,
     evaluator: &impl ArchitectureEvaluator,
     simulator: &impl SimulationEngine,
-) {
+    grammar: &GrammarEngine,
+) -> bool {
+    let validation = grammar.validate_world_state(&state.world_state);
+    state.grammar_validation = Some(validation.clone());
+    if !validation.valid {
+        return false;
+    }
+
     let simulation = simulator.simulate(&state.world_state, recall);
     state.world_state.simulation = Some(simulation);
     state.world_state.evaluation = evaluator.evaluate_vector(state);
     state.world_state.score = state.world_state.evaluation.total();
     state.score = evaluator.evaluate(state);
+    true
 }
