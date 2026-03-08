@@ -16,4 +16,5 @@ runtime_core = { workspace = true }
 search_controller = { workspace = true }
 serde_json = { workspace = true }
 semantic_dhm = { workspace = true }
+world_model = { workspace = true }
 world_model_core = { workspace = true }

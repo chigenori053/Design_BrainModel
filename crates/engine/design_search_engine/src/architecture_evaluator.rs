@@ -20,4 +20,16 @@ impl ArchitectureEvaluator for DefaultArchitectureEvaluator {
         let depth_decay = 1.0 / (1.0 + state.depth as f64 * 0.1);
         (self.evaluate_vector(state).total() * depth_decay).clamp(0.0, 1.0)
     }
+
+    fn evaluate_vector(&self, state: &SearchState) -> EvaluationVector {
+        let mut vector =
+            evaluate_architecture(&state.world_state.architecture, &state.world_state.constraints);
+        if let Some(simulation) = &state.world_state.simulation {
+            vector.simulation_quality = simulation.total();
+            vector.constraint_satisfaction =
+                ((vector.constraint_satisfaction + simulation.constraint_score) / 2.0)
+                    .clamp(0.0, 1.0);
+        }
+        vector
+    }
 }

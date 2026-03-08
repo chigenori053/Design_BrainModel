@@ -7,6 +7,7 @@ use crate::modality::ModalityInput;
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RequestId(pub String);
 
+/// Phase9-D extended pipeline stages.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RuntimeStage {
     #[default]
@@ -14,9 +15,25 @@ pub enum RuntimeStage {
     Normalize,
     Recall,
     HypothesisGeneration,
+    /// Phase9-D: architecture search via BeamSearchController
+    Search,
+    /// Phase11: architecture simulation via WorldModel
+    Simulation,
+    /// Phase9-D: architecture evaluation
+    Evaluation,
+    /// Phase9-D: candidate ranking
+    Ranking,
     TransitionEvaluation,
     ConsistencyEvaluation,
     Output,
+}
+
+/// Search results stored in context after Phase9-D search stage.
+#[derive(Debug, Clone, Default)]
+pub struct SearchSummary {
+    pub search_states: usize,
+    pub best_score: f64,
+    pub best_simulation_score: f64,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -29,6 +46,8 @@ pub struct Phase9RuntimeContext {
     pub evaluation: Option<ConsistencyScore>,
     pub stage: RuntimeStage,
     pub event_bus: RuntimeEventBus,
+    /// Phase9-D: populated after the Search → Ranking stages.
+    pub search_summary: Option<SearchSummary>,
 }
 
 impl Phase9RuntimeContext {

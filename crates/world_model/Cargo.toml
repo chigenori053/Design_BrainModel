@@ -1,12 +1,9 @@
 [package]
-name = "design_search_engine"
+name = "world_model"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-concept_engine = { workspace = true }
 design_domain = { workspace = true }
-memory_space_complex = { workspace = true }
 memory_space_core = { workspace = true }
-world_model = { workspace = true }
 world_model_core = { workspace = true }

@@ -9,6 +9,7 @@ pub struct EvaluationVector {
     pub dependency_quality: f64,
     pub constraint_satisfaction: f64,
     pub complexity: f64,
+    pub simulation_quality: f64,
 }
 
 impl EvaluationVector {
@@ -16,16 +17,18 @@ impl EvaluationVector {
         let reward = self.structural_quality
             + self.dependency_quality
             + self.constraint_satisfaction
-            + (1.0 - self.complexity);
-        (reward / 4.0).clamp(0.0, 1.0)
+            + (1.0 - self.complexity)
+            + self.simulation_quality;
+        (reward / 5.0).clamp(0.0, 1.0)
     }
 
-    pub fn objectives(&self) -> [f64; 4] {
+    pub fn objectives(&self) -> [f64; 5] {
         [
             self.structural_quality,
             self.dependency_quality,
             self.constraint_satisfaction,
             1.0 - self.complexity,
+            self.simulation_quality,
         ]
     }
 }
@@ -37,7 +40,61 @@ impl Default for EvaluationVector {
             dependency_quality: 0.0,
             constraint_satisfaction: 1.0,
             complexity: 0.0,
+            simulation_quality: 0.0,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SystemModelMetrics {
+    pub dependency_cycles: usize,
+    pub module_coupling: f64,
+    pub layering_score: f64,
+    pub call_edges: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MathModelMetrics {
+    pub algebraic_score: f64,
+    pub logic_score: f64,
+    pub constraint_solver_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GeometryModelMetrics {
+    pub graph_layout_score: f64,
+    pub layout_balance_score: f64,
+    pub spatial_constraint_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionModelMetrics {
+    pub runtime_complexity: f64,
+    pub memory_usage: f64,
+    pub dependency_cost: f64,
+    pub latency_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimulationResult {
+    pub performance_score: f64,
+    pub correctness_score: f64,
+    pub constraint_score: f64,
+    pub confidence_score: f64,
+    pub system: SystemModelMetrics,
+    pub math: MathModelMetrics,
+    pub geometry: GeometryModelMetrics,
+    pub execution: ExecutionModelMetrics,
+}
+
+impl SimulationResult {
+    pub fn total(&self) -> f64 {
+        ((self.performance_score
+            + self.correctness_score
+            + self.constraint_score
+            + self.confidence_score)
+            / 4.0)
+            .clamp(0.0, 1.0)
     }
 }
 
@@ -56,6 +113,7 @@ pub struct WorldState {
     pub architecture: Architecture,
     pub constraints: Vec<Constraint>,
     pub evaluation: EvaluationVector,
+    pub simulation: Option<SimulationResult>,
     pub score: f64,
     pub depth: usize,
     pub history: Vec<Action>,
@@ -71,6 +129,7 @@ impl WorldState {
             architecture,
             constraints: Vec::new(),
             score: evaluation.total(),
+            simulation: None,
             depth: 0,
             history: Vec::new(),
             features,
@@ -90,6 +149,7 @@ impl WorldState {
             architecture,
             constraints,
             evaluation: evaluation.clone(),
+            simulation: None,
             score: evaluation.total(),
             depth: 0,
             history: Vec::new(),
@@ -152,6 +212,7 @@ impl WorldState {
         }
 
         next.evaluation = evaluate_architecture(&next.architecture, &next.constraints);
+        next.simulation = None;
         next.score = next.evaluation.total();
         next.features = features_from_architecture(&next.architecture, &next.evaluation);
         next
@@ -162,6 +223,7 @@ impl WorldState {
         let mut seeded = WorldState::new(self.state_id, candidate.feature_vector.clone());
         seeded.constraints = self.constraints.clone();
         seeded.evaluation = evaluate_architecture(&seeded.architecture, &seeded.constraints);
+        seeded.simulation = None;
         seeded.score = (seeded.evaluation.total() + candidate.relevance_score * 0.2).clamp(0.0, 1.0);
         seeded.features = features_from_architecture(&seeded.architecture, &seeded.evaluation);
         Some(seeded)
@@ -342,6 +404,7 @@ fn features_from_architecture(
         architecture.dependencies.len() as f64,
         evaluation.structural_quality,
         evaluation.dependency_quality,
+        evaluation.simulation_quality,
     ]
 }
 
@@ -378,6 +441,7 @@ pub fn evaluate_architecture(
         dependency_quality,
         constraint_satisfaction,
         complexity,
+        simulation_quality: 0.0,
     }
 }
 
@@ -426,7 +490,7 @@ mod tests {
 
         let hypotheses = generator.generate(&current, Some(&recall)).unwrap();
 
-        assert_eq!(hypotheses[0].predicted_state.features, vec![1.0, 0.0, 0.5, 0.6]);
+        assert_eq!(hypotheses[0].predicted_state.features, vec![1.0, 0.0, 0.5, 0.6, 0.0]);
         assert_eq!(hypotheses[0].score, 0.9);
     }
 

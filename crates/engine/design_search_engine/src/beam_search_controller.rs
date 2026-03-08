@@ -1,4 +1,5 @@
 use memory_space_core::RecallResult;
+use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::WorldState;
 
 use crate::architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
@@ -20,6 +21,7 @@ impl SearchController for BeamSearchController {
         config: &SearchConfig,
     ) -> Vec<SearchState> {
         let evaluator = DefaultArchitectureEvaluator;
+        let simulator = DefaultSimulationEngine;
         let mut root_state = initial_state.clone();
         if let Some(recalled) = recall.and_then(|recall_result| initial_state.recall_seed(recall_result)) {
             if recall
@@ -32,9 +34,7 @@ impl SearchController for BeamSearchController {
         }
 
         let mut root = SearchState::new(root_state.state_id, root_state.clone());
-        root.world_state.evaluation = evaluator.evaluate_vector(&root);
-        root.world_state.score = root.world_state.evaluation.total();
-        root.score = evaluator.evaluate(&root);
+        assess_state(&mut root, recall, &evaluator, &simulator);
         root.depth = 0;
 
         let mut beam = vec![root];
@@ -45,9 +45,7 @@ impl SearchController for BeamSearchController {
             for parent in &beam {
                 let children = expand(parent, depth, config.max_candidates);
                 for mut child in children {
-                    child.world_state.evaluation = evaluator.evaluate_vector(&child);
-                    child.world_state.score = child.world_state.evaluation.total();
-                    child.score = evaluator.evaluate(&child);
+                    assess_state(&mut child, recall, &evaluator, &simulator);
                     candidates.push(child);
                 }
             }
@@ -108,4 +106,17 @@ fn expand(parent: &SearchState, depth: usize, max_candidates: usize) -> Vec<Sear
             }
         })
         .collect()
+}
+
+fn assess_state(
+    state: &mut SearchState,
+    recall: Option<&RecallResult>,
+    evaluator: &impl ArchitectureEvaluator,
+    simulator: &impl SimulationEngine,
+) {
+    let simulation = simulator.simulate(&state.world_state, recall);
+    state.world_state.simulation = Some(simulation);
+    state.world_state.evaluation = evaluator.evaluate_vector(state);
+    state.world_state.score = state.world_state.evaluation.total();
+    state.score = evaluator.evaluate(state);
 }

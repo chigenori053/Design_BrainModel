@@ -2,8 +2,9 @@ use memory_space_core::{
     InMemoryMemoryStore, MemoryEngine, MemoryRecord, ModalityInput, RecallConfig, RecallQuery,
 };
 use runtime_core::{
-    Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage,
+    Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage, SearchSummary,
 };
+use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{
     ConsistencyEvaluator, ConsistencyScore, DeltaConsistencyEvaluator, DeterministicWorldModel,
     Hypothesis, HypothesisGenerator, SimpleHypothesisGenerator, WorldModel, WorldState,
@@ -18,6 +19,7 @@ pub struct Phase9RuntimeSnapshot {
     pub stage: RuntimeStage,
     pub recalled_memories: usize,
     pub hypotheses: usize,
+    pub simulation_score: f64,
     pub events: Vec<RuntimeEvent>,
 }
 
@@ -42,7 +44,14 @@ impl Phase9RuntimeAdapter {
         };
         let memory_engine = MemoryEngine::new(seed_memory_store(ctx));
         let recall_result = memory_engine.recall(&recall_query, RecallConfig { top_k: 3 });
-        let world_state = WorldState::new(ctx.tick, context_vector);
+        let mut world_state = WorldState::new(ctx.tick, context_vector);
+        let simulator = DefaultSimulationEngine;
+        let simulation = simulator.simulate(&world_state, Some(&recall_result));
+        world_state.simulation = Some(simulation.clone());
+        world_state.evaluation.simulation_quality = simulation.total();
+        world_state.score = world_state.evaluation.total();
+        let world_score = world_state.score;
+        let simulation_score = simulation.total();
         let hypothesis_generator = SimpleHypothesisGenerator;
         let hypotheses = hypothesis_generator
             .generate(&world_state, Some(&recall_result))
@@ -67,6 +76,11 @@ impl Phase9RuntimeAdapter {
             evaluation,
             stage: map_stage(ctx),
             event_bus: Default::default(),
+            search_summary: Some(SearchSummary {
+                search_states: 1,
+                best_score: world_score,
+                best_simulation_score: simulation_score,
+            }),
         };
 
         publish_taxonomy_events(&mut phase9);
@@ -85,6 +99,12 @@ impl Phase9RuntimeAdapter {
                 .map(|result| result.candidates.len())
                 .unwrap_or(0),
             hypotheses: phase9.hypotheses.len(),
+            simulation_score: phase9
+                .world_state
+                .as_ref()
+                .and_then(|world_state| world_state.simulation.as_ref())
+                .map(|simulation| simulation.total())
+                .unwrap_or(0.0),
             events: phase9.event_bus.events().cloned().collect(),
         }
     }
@@ -132,6 +152,9 @@ fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
     if !ctx.hypotheses.is_empty() {
         ctx.advance(RuntimeStage::HypothesisGeneration);
         ctx.event_bus.publish(RuntimeEvent::HypothesisGenerated);
+        ctx.advance(RuntimeStage::Simulation);
+        ctx.event_bus.publish(RuntimeEvent::SimulationStarted);
+        ctx.event_bus.publish(RuntimeEvent::SimulationCompleted);
         ctx.advance(RuntimeStage::TransitionEvaluation);
         ctx.event_bus.publish(RuntimeEvent::TransitionEvaluated);
     }

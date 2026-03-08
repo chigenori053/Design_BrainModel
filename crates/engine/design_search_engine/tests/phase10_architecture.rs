@@ -26,6 +26,8 @@ fn recall_first_uses_memory_seed_when_confidence_is_high() {
     assert_eq!(states.len(), 1);
     assert_eq!(states[0].world_state.architecture.design_unit_count(), 3);
     assert_eq!(states[0].world_state.architecture.dependencies.len(), 1);
+    assert!(states[0].world_state.simulation.is_some());
+    assert!(states[0].world_state.evaluation.simulation_quality > 0.0);
 }
 
 #[test]

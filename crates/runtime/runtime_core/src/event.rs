@@ -10,6 +10,13 @@ pub enum RuntimeEvent {
     TransitionEvaluated,
     ConsistencyScored,
     OutputProduced,
+    // Phase9-D: design search events
+    SearchStarted,
+    CandidateExpanded,
+    SimulationStarted,
+    SimulationCompleted,
+    CandidatePruned,
+    CandidateRanked,
 }
 
 #[derive(Debug, Clone, Default)]

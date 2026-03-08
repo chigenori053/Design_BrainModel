@@ -5,6 +5,7 @@ members = [
     "crates/domain/design_domain",
     "crates/domain/semantic_domain",
     "crates/engine/design_search_engine",
+    "crates/world_model",
     "crates/phase1_integration_tests",
     "crates/search_controller",
     "crates/analysis_tools",
@@ -78,6 +79,7 @@ runtime_core = { path = "crates/runtime/runtime_core" }
 world_model_core = { path = "crates/core/world_model_core" }
 design_domain = { path = "crates/domain/design_domain" }
 semantic_domain = { path = "crates/domain/semantic_domain" }
+world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }
