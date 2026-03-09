@@ -18,7 +18,8 @@ fn constraint_filtering() {
         },
         config: SearchConfig {
             beam_width: 8,
-            max_iterations: 20,
+            max_depth: 20,
+            max_candidates: 64,
         },
     };
 

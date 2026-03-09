@@ -1,0 +1,23 @@
+{
+  "name": "python_worker_optional",
+  "languages": ["python"],
+  "loc_target": 90,
+  "expected_patterns": ["event driven"],
+  "expected_layers": ["entry", "worker"],
+  "expected_services": ["worker_service"],
+  "expected_call_edges": [
+    ["worker::EventHandler.dispatch", "tasks::TaskWorker.run"]
+  ],
+  "expected_type_edges": [
+    ["worker::EventHandler", "tasks::TaskWorker"]
+  ],
+  "expected_design_graph": {
+    "nodes": [
+      {"name": "event_handler", "kind": "ServiceUnit"},
+      {"name": "task_worker", "kind": "ComponentUnit"}
+    ],
+    "edges": [
+      {"from": "event_handler", "to": "task_worker", "kind": "control"}
+    ]
+  }
+}

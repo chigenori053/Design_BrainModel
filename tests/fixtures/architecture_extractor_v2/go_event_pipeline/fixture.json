@@ -1,0 +1,24 @@
+{
+  "name": "go_event_pipeline",
+  "languages": ["go"],
+  "loc_target": 140,
+  "expected_patterns": ["pipeline"],
+  "expected_layers": ["ingest", "process", "publish"],
+  "expected_services": ["pipeline"],
+  "expected_call_edges": [
+    ["pipeline::Stage1Ingest", "pipeline::Stage2Transform"],
+    ["pipeline::Stage2Transform", "pipeline::Stage3Publish"]
+  ],
+  "expected_type_edges": [],
+  "expected_design_graph": {
+    "nodes": [
+      {"name": "stage1_ingest", "kind": "ComponentUnit"},
+      {"name": "stage2_transform", "kind": "ComponentUnit"},
+      {"name": "stage3_publish", "kind": "ServiceUnit"}
+    ],
+    "edges": [
+      {"from": "stage1_ingest", "to": "stage2_transform", "kind": "dataflow"},
+      {"from": "stage2_transform", "to": "stage3_publish", "kind": "dataflow"}
+    ]
+  }
+}

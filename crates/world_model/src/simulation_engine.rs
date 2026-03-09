@@ -57,16 +57,16 @@ impl SimulationEngine for DefaultSimulationEngine {
             .map(|candidate| candidate.relevance_score)
             .unwrap_or(0.5);
 
-        let performance_score = ((execution.latency_score + (1.0 - execution.dependency_cost)) / 2.0)
-            .clamp(0.0, 1.0);
-        let correctness_score = ((math.logic_score + system.layering_score + geometry.graph_layout_score)
-            / 3.0)
-            .clamp(0.0, 1.0);
+        let performance_score =
+            ((execution.latency_score + (1.0 - execution.dependency_cost)) / 2.0).clamp(0.0, 1.0);
+        let correctness_score =
+            ((math.logic_score + system.layering_score + geometry.graph_layout_score) / 3.0)
+                .clamp(0.0, 1.0);
         let constraint_score = ((math.constraint_solver_score + geometry.spatial_constraint_score)
             / 2.0)
             .clamp(0.0, 1.0);
-        let confidence_score = ((recall_confidence + math.algebraic_score + module_coupling) / 3.0)
-            .clamp(0.0, 1.0);
+        let confidence_score =
+            ((recall_confidence + math.algebraic_score + module_coupling) / 3.0).clamp(0.0, 1.0);
 
         SimulationResult {
             performance_score,

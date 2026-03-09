@@ -24,6 +24,7 @@ analysis_tools = { workspace = true }
 agent_core = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }
+design_search_engine = { workspace = true }
 hybrid_vm = { workspace = true }
 runtime_vm = { workspace = true }
 runtime_core = { workspace = true }

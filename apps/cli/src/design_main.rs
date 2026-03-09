@@ -8,12 +8,18 @@ use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_ph
 use analysis_tools::{CaseData, compute_correlation};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
+use design_search_engine::{
+    BeamSearchController, SearchConfig as DesignSearchConfig, SearchController as _,
+    rank_candidates,
+};
 use hybrid_vm::{
     ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
     rank_frontier_by_human_coherence,
 };
 use runtime_core::{ModalityInput, RuntimeStage};
-use runtime_vm::{ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter};
+use runtime_vm::{
+    ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter,
+};
 use semantic_dhm::CausalEdge;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -220,6 +226,9 @@ struct Phase9ArchitectureReport {
     recalled_memories: usize,
     generated_hypotheses: usize,
     world_model_consistency: f64,
+    // Phase9-D fields
+    search_states: usize,
+    best_score: f64,
     outputs: Vec<String>,
 }
 
@@ -720,8 +729,19 @@ fn run_phase9(input: String) -> Result<(), String> {
         .evaluate(&current_state, &prediction)
         .map_err(|e| format!("failed to evaluate consistency: {e}"))?;
 
+    // Phase9-D: DesignSearch
+    let search_controller = BeamSearchController;
+    let search_config = DesignSearchConfig::default();
+    let search_states = search_controller.search(
+        current_state.clone(),
+        phase9_ctx.recall_result.as_ref(),
+        &search_config,
+    );
+    let ranked = rank_candidates(search_states.clone());
+    let best_score = ranked.first().map(|c| c.score).unwrap_or(0.0);
+
     let report = Phase9ArchitectureReport {
-        phase: "Phase9",
+        phase: "Phase9-D",
         request_id: phase9_ctx.request_id.0,
         accepted_modalities: accepted_modalities
             .iter()
@@ -737,6 +757,9 @@ fn run_phase9(input: String) -> Result<(), String> {
             RuntimeStage::Normalize => "normalize",
             RuntimeStage::Recall => "recall",
             RuntimeStage::HypothesisGeneration => "hypothesis_generation",
+            RuntimeStage::Search => "search",
+            RuntimeStage::Evaluation => "evaluation",
+            RuntimeStage::Ranking => "ranking",
             RuntimeStage::TransitionEvaluation => "transition_evaluation",
             RuntimeStage::ConsistencyEvaluation => "consistency_evaluation",
             RuntimeStage::Output => "output",
@@ -745,6 +768,8 @@ fn run_phase9(input: String) -> Result<(), String> {
         recalled_memories: Phase9RuntimeAdapter::snapshot(vm.context()).recalled_memories,
         generated_hypotheses: phase9_ctx.hypotheses.len() + generated.len(),
         world_model_consistency: round6(consistency.value),
+        search_states: search_states.len(),
+        best_score: round6(best_score),
         outputs: vec![
             format!("input:{input}"),
             format!("selected_hypothesis:{}", selected_hypothesis.hypothesis_id),

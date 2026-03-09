@@ -1,6 +1,4 @@
-use crate::{
-    FeatureIndex, MemoryStore, RecallConfig, RecallQuery, RecallResult,
-};
+use crate::{FeatureIndex, MemoryStore, RecallConfig, RecallQuery, RecallResult};
 
 #[derive(Debug, Clone)]
 pub struct MemoryEngine<S> {
@@ -22,7 +20,12 @@ where
     pub fn recall(&self, query: &RecallQuery, config: RecallConfig) -> RecallResult {
         let top_k = config.top_k.max(1);
         let records = self.store.query(query, top_k);
-        let candidates = self.index.rank(query, &records).into_iter().take(top_k).collect();
+        let candidates = self
+            .index
+            .rank(query, &records)
+            .into_iter()
+            .take(top_k)
+            .collect();
         RecallResult { candidates }
     }
 }

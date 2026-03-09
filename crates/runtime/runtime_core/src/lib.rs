@@ -5,7 +5,7 @@ pub mod modality;
 pub mod ports;
 
 pub use agent::{AgentInput, AgentOutput, RuntimeAgent};
-pub use context::{Phase9RuntimeContext, RequestId, RuntimeStage};
+pub use context::{Phase9RuntimeContext, RequestId, RuntimeStage, SearchSummary};
 pub use event::{RuntimeEvent, RuntimeEventBus};
 pub use modality::{AudioBuffer, ImageBuffer, ModalityInput, ModalityKind};
 pub use ports::{

@@ -20,7 +20,9 @@ fn search_only_returns_grammar_valid_candidates() {
             .map(|validation| validation.valid)
             .unwrap_or(false)
     }));
-    assert!(states
-        .iter()
-        .all(|state| state.world_state.simulation.is_some()));
+    assert!(
+        states
+            .iter()
+            .all(|state| state.world_state.simulation.is_some())
+    );
 }

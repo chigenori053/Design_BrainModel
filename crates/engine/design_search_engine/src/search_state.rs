@@ -1,5 +1,5 @@
-use world_model_core::WorldState;
 use design_grammar::GrammarValidation;
+use world_model_core::WorldState;
 
 /// Phase9-D search state: wraps a WorldState with search metadata.
 #[derive(Clone, Debug, PartialEq)]

@@ -22,7 +22,7 @@ impl DesignSearchEngine {
         graph.insert_state(seed.clone());
 
         let mut beam = vec![seed];
-        for _ in 0..self.config.max_iterations {
+        for _ in 0..self.config.max_depth {
             let mut candidates = Vec::new();
             for parent in &beam {
                 for mut child in self.strategy.expand(parent) {

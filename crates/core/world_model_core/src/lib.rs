@@ -172,8 +172,11 @@ impl WorldState {
         match action {
             Action::AddDesignUnit { name, layer } => {
                 let next_id = next.architecture.design_unit_count() as u64 + 1;
-                next.architecture
-                    .add_design_unit(DesignUnit::with_layer(next_id, name.clone(), *layer));
+                next.architecture.add_design_unit(DesignUnit::with_layer(
+                    next_id,
+                    name.clone(),
+                    *layer,
+                ));
             }
             Action::RemoveDesignUnit => {
                 next.architecture.remove_design_unit();
@@ -194,7 +197,8 @@ impl WorldState {
                 let class = &mut next.architecture.classes[0];
                 if let Some(source) = class.structures.first_mut() {
                     if source.design_units.len() > 1 {
-                        let split_from = source.design_units.split_off(source.design_units.len() / 2);
+                        let split_from =
+                            source.design_units.split_off(source.design_units.len() / 2);
                         let mut structure =
                             StructureUnit::new(class.structures.len() as u64 + 1, "split_2");
                         structure.design_units = split_from;
@@ -207,7 +211,9 @@ impl WorldState {
                 let class = &mut next.architecture.classes[0];
                 if class.structures.len() >= 2 {
                     let mut merged = class.structures.remove(1);
-                    class.structures[0].design_units.append(&mut merged.design_units);
+                    class.structures[0]
+                        .design_units
+                        .append(&mut merged.design_units);
                 }
             }
         }
@@ -225,7 +231,8 @@ impl WorldState {
         seeded.constraints = self.constraints.clone();
         seeded.evaluation = evaluate_architecture(&seeded.architecture, &seeded.constraints);
         seeded.simulation = None;
-        seeded.score = (seeded.evaluation.total() + candidate.relevance_score * 0.2).clamp(0.0, 1.0);
+        seeded.score =
+            (seeded.evaluation.total() + candidate.relevance_score * 0.2).clamp(0.0, 1.0);
         seeded.features = features_from_architecture(&seeded.architecture, &seeded.evaluation);
         Some(seeded)
     }
@@ -383,7 +390,10 @@ fn architecture_from_features(features: &[f64]) -> Architecture {
         .round()
         .clamp(0.0, 8.0) as usize;
     for index in 0..units {
-        architecture.add_design_unit(DesignUnit::new(index as u64 + 1, format!("design_unit_{index}")));
+        architecture.add_design_unit(DesignUnit::new(
+            index as u64 + 1,
+            format!("design_unit_{index}"),
+        ));
     }
     if features.get(1).copied().unwrap_or_default() > 0.5 && units >= 2 {
         architecture.dependencies.push(Dependency {
@@ -491,7 +501,10 @@ mod tests {
 
         let hypotheses = generator.generate(&current, Some(&recall)).unwrap();
 
-        assert_eq!(hypotheses[0].predicted_state.features, vec![1.0, 0.0, 0.5, 0.6, 0.0]);
+        assert_eq!(
+            hypotheses[0].predicted_state.features,
+            vec![1.0, 0.0, 0.5, 0.6, 0.0]
+        );
         assert_eq!(hypotheses[0].score, 0.9);
     }
 

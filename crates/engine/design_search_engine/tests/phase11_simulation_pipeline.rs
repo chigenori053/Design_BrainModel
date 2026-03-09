@@ -22,8 +22,14 @@ fn search_pipeline_populates_simulation_before_scoring() {
     let states = controller.search(initial, Some(&recall), &config);
 
     assert!(!states.is_empty());
-    assert!(states.iter().all(|state| state.world_state.simulation.is_some()));
-    assert!(states
-        .iter()
-        .all(|state| state.world_state.evaluation.simulation_quality > 0.0));
+    assert!(
+        states
+            .iter()
+            .all(|state| state.world_state.simulation.is_some())
+    );
+    assert!(
+        states
+            .iter()
+            .all(|state| state.world_state.evaluation.simulation_quality > 0.0)
+    );
 }

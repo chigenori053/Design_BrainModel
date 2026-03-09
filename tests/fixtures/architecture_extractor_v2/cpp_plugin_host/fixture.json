@@ -1,0 +1,25 @@
+{
+  "name": "cpp_plugin_host",
+  "languages": ["c", "cpp"],
+  "loc_target": 180,
+  "expected_patterns": ["plugin architecture"],
+  "expected_layers": ["host", "extension"],
+  "expected_services": ["plugin_host"],
+  "expected_call_edges": [
+    ["plugin_host::start_plugin", "plugin_api::name"]
+  ],
+  "expected_type_edges": [
+    ["sample_plugin::SamplePlugin", "plugin_api::PluginApi"]
+  ],
+  "expected_design_graph": {
+    "nodes": [
+      {"name": "plugin_host", "kind": "ServiceUnit"},
+      {"name": "plugin_api", "kind": "ComponentUnit"},
+      {"name": "sample_plugin", "kind": "ModuleUnit"}
+    ],
+    "edges": [
+      {"from": "plugin_host", "to": "plugin_api", "kind": "control"},
+      {"from": "sample_plugin", "to": "plugin_api", "kind": "dependency"}
+    ]
+  }
+}

@@ -85,7 +85,10 @@ pub fn validate_constraint_rules(
 
     for constraint in constraints {
         if !constraint.satisfied_by(architecture) {
-            issues.push(format!("constraint '{}' rejected architecture", constraint.name));
+            issues.push(format!(
+                "constraint '{}' rejected architecture",
+                constraint.name
+            ));
         }
     }
 
@@ -93,5 +96,9 @@ pub fn validate_constraint_rules(
 }
 
 fn starts_with_uppercase(value: &str) -> bool {
-    value.chars().next().map(|c| c.is_ascii_uppercase()).unwrap_or(false)
+    value
+        .chars()
+        .next()
+        .map(|c| c.is_ascii_uppercase())
+        .unwrap_or(false)
 }

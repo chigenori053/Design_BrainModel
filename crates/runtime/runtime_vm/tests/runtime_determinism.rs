@@ -13,8 +13,16 @@ fn same_input_yields_same_event_sequence() {
     let left = execute_phase9("phase9 determinism");
     let right = execute_phase9("phase9 determinism");
 
-    let left_events = left.event_bus.events().cloned().collect::<Vec<RuntimeEvent>>();
-    let right_events = right.event_bus.events().cloned().collect::<Vec<RuntimeEvent>>();
+    let left_events = left
+        .event_bus
+        .events()
+        .cloned()
+        .collect::<Vec<RuntimeEvent>>();
+    let right_events = right
+        .event_bus
+        .events()
+        .cloned()
+        .collect::<Vec<RuntimeEvent>>();
 
     assert_eq!(left_events, right_events);
 }

@@ -7,7 +7,10 @@ pub trait ArchitectureEvaluator {
     fn evaluate(&self, state: &SearchState) -> f64;
 
     fn evaluate_vector(&self, state: &SearchState) -> EvaluationVector {
-        evaluate_architecture(&state.world_state.architecture, &state.world_state.constraints)
+        evaluate_architecture(
+            &state.world_state.architecture,
+            &state.world_state.constraints,
+        )
     }
 }
 
@@ -22,8 +25,10 @@ impl ArchitectureEvaluator for DefaultArchitectureEvaluator {
     }
 
     fn evaluate_vector(&self, state: &SearchState) -> EvaluationVector {
-        let mut vector =
-            evaluate_architecture(&state.world_state.architecture, &state.world_state.constraints);
+        let mut vector = evaluate_architecture(
+            &state.world_state.architecture,
+            &state.world_state.constraints,
+        );
         if let Some(simulation) = &state.world_state.simulation {
             vector.simulation_quality = simulation.total();
             vector.constraint_satisfaction =

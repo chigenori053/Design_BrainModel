@@ -9,8 +9,18 @@ pub struct DependencyRule {
 impl Default for DependencyRule {
     fn default() -> Self {
         Self {
-            allowed: vec![Layer::Ui, Layer::Service, Layer::Repository, Layer::Database],
-            forbidden: vec![Layer::Database, Layer::Repository, Layer::Service, Layer::Ui],
+            allowed: vec![
+                Layer::Ui,
+                Layer::Service,
+                Layer::Repository,
+                Layer::Database,
+            ],
+            forbidden: vec![
+                Layer::Database,
+                Layer::Repository,
+                Layer::Service,
+                Layer::Ui,
+            ],
         }
     }
 }

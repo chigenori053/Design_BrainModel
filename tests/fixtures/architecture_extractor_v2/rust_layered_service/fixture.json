@@ -1,0 +1,27 @@
+{
+  "name": "rust_layered_service",
+  "languages": ["rust"],
+  "loc_target": 120,
+  "expected_patterns": ["layered architecture"],
+  "expected_layers": ["interface", "application", "data"],
+  "expected_services": ["api"],
+  "expected_call_edges": [
+    ["api_gateway::handle", "user_service::load_user"],
+    ["user_service::load_user", "user_repository::find"]
+  ],
+  "expected_type_edges": [
+    ["api_gateway::ApiGateway", "user_service::UserService"],
+    ["user_service::UserService", "user_repository::UserRepository"]
+  ],
+  "expected_design_graph": {
+    "nodes": [
+      {"name": "api_gateway", "kind": "ServiceUnit"},
+      {"name": "user_service", "kind": "ComponentUnit"},
+      {"name": "user_repository", "kind": "ModuleUnit"}
+    ],
+    "edges": [
+      {"from": "api_gateway", "to": "user_service", "kind": "dependency"},
+      {"from": "user_service", "to": "user_repository", "kind": "dependency"}
+    ]
+  }
+}

@@ -1,5 +1,5 @@
 use design_search_engine::{
-    BeamSearchController, SearchConfig, SearchController as _, rank_candidates, prune_candidates,
+    BeamSearchController, SearchConfig, SearchController as _, prune_candidates, rank_candidates,
 };
 use memory_space_core::RecallResult;
 use world_model_core::WorldState;
@@ -34,7 +34,10 @@ fn beam_search_controller_is_deterministic() {
         assert_eq!(sa.state_id, sb.state_id, "state_id must match");
         assert_eq!(sa.depth, sb.depth, "depth must match");
         assert!((sa.score - sb.score).abs() < 1e-10, "score must match");
-        assert_eq!(sa.world_state.features, sb.world_state.features, "features must match");
+        assert_eq!(
+            sa.world_state.features, sb.world_state.features,
+            "features must match"
+        );
     }
 }
 
@@ -96,7 +99,11 @@ fn best_candidate_has_highest_score() {
 #[test]
 fn prune_candidates_respects_beam_width() {
     let controller = BeamSearchController;
-    let config = SearchConfig { max_depth: 2, max_candidates: 64, beam_width: 3 };
+    let config = SearchConfig {
+        max_depth: 2,
+        max_candidates: 64,
+        beam_width: 3,
+    };
     let initial = make_world_state();
 
     let states = controller.search(initial, None, &config);
@@ -109,7 +116,11 @@ fn prune_candidates_respects_beam_width() {
 #[test]
 fn search_respects_beam_width() {
     let controller = BeamSearchController;
-    let config = SearchConfig { max_depth: 2, max_candidates: 64, beam_width: 2 };
+    let config = SearchConfig {
+        max_depth: 2,
+        max_candidates: 64,
+        beam_width: 2,
+    };
     let initial = make_world_state();
 
     let states = controller.search(initial, None, &config);

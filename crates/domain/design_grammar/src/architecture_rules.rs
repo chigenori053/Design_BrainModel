@@ -23,7 +23,10 @@ pub fn validate_architecture_rules(architecture: &Architecture) -> Vec<String> {
 
     for class_unit in &architecture.classes {
         if class_unit.structures.is_empty() {
-            issues.push(format!("class '{}' must contain at least one structure", class_unit.name));
+            issues.push(format!(
+                "class '{}' must contain at least one structure",
+                class_unit.name
+            ));
         }
 
         for structure in &class_unit.structures {

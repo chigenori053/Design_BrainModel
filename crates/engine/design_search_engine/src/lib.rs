@@ -28,10 +28,10 @@ pub use search_strategy::{BeamSearchStrategy, SearchStrategy};
 // Phase9-D exports
 pub use architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
 pub use beam_search_controller::BeamSearchController;
+pub use design_grammar::{GrammarEngine, GrammarValidation};
 pub use pruning::prune_candidates;
 pub use ranking::{RankedCandidate, rank_candidates};
 pub use search_controller::SearchController;
 pub use search_state::SearchState;
 pub use search_state::SearchState as Phase9SearchState;
 pub use world_model_core::{Action, EvaluationVector};
-pub use design_grammar::{GrammarEngine, GrammarValidation};

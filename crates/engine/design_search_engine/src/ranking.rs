@@ -44,20 +44,20 @@ pub fn rank_candidates(states: Vec<SearchState>) -> Vec<RankedCandidate> {
         let dominated_by = ranked
             .iter()
             .enumerate()
-            .filter(|(other_index, other)| *other_index != index && dominates(&other.state, &ranked[index].state))
+            .filter(|(other_index, other)| {
+                *other_index != index && dominates(&other.state, &ranked[index].state)
+            })
             .count();
         ranked[index].pareto_rank = dominated_by;
         ranked[index].state.pareto_rank = dominated_by;
     }
 
     ranked.sort_by(|lhs, rhs| {
-        lhs.pareto_rank
-            .cmp(&rhs.pareto_rank)
-            .then_with(|| {
-                rhs.score
-            .total_cmp(&lhs.score)
-            .then_with(|| lhs.state.state_id.cmp(&rhs.state.state_id))
-            })
+        lhs.pareto_rank.cmp(&rhs.pareto_rank).then_with(|| {
+            rhs.score
+                .total_cmp(&lhs.score)
+                .then_with(|| lhs.state.state_id.cmp(&rhs.state.state_id))
+        })
     });
 
     ranked

@@ -1,5 +1,5 @@
 use design_search_engine::{
-    rank_candidates, BeamSearchController, SearchConfig, SearchController as _, SearchState,
+    BeamSearchController, SearchConfig, SearchController as _, SearchState, rank_candidates,
 };
 use memory_space_core::{RecallCandidate, RecallResult};
 use world_model_core::WorldState;
