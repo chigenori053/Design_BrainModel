@@ -12,9 +12,14 @@ fn runtime_adapter_emits_simulation_events_and_summary() {
 
     assert!(events.contains(&RuntimeEvent::SimulationStarted));
     assert!(events.contains(&RuntimeEvent::SimulationCompleted));
-    assert!(phase
-        .search_summary
-        .as_ref()
-        .map(|summary| summary.best_simulation_score > 0.0)
-        .unwrap_or(false));
+    assert!(events.contains(&RuntimeEvent::CausalAnalysisStarted));
+    assert!(events.contains(&RuntimeEvent::CausalClosureComputed));
+    assert!(events.contains(&RuntimeEvent::CausalValidationPassed));
+    assert!(
+        phase
+            .search_summary
+            .as_ref()
+            .map(|summary| summary.best_simulation_score > 0.0)
+            .unwrap_or(false)
+    );
 }

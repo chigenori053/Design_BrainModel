@@ -1,3 +1,4 @@
+use causal_domain::CausalRelation;
 use memory_space_complex::ComplexField;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -18,6 +19,7 @@ pub struct DesignUnit {
     pub id: DesignUnitId,
     pub unit_type: DesignUnitType,
     pub dependencies: Vec<DesignUnitId>,
+    pub causal_relations: Vec<CausalRelation>,
 }
 
 #[derive(Clone, Debug, PartialEq)]

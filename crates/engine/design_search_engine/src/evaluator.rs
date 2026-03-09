@@ -15,10 +15,15 @@ impl Evaluator {
             .iter()
             .map(|unit| unit.dependencies.len())
             .sum::<usize>() as f64;
+        let causal_edges = state
+            .design_units
+            .iter()
+            .map(|unit| unit.causal_relations.len())
+            .sum::<usize>() as f64;
         let dependency = if unit_count <= f64::EPSILON {
             0.0
         } else {
-            (1.0 - (dep_edges / (unit_count * 4.0))).clamp(0.0, 1.0)
+            (1.0 - ((dep_edges + causal_edges) / (unit_count * 4.0))).clamp(0.0, 1.0)
         };
 
         let concept_alignment = if concepts.is_empty() {

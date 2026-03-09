@@ -4,7 +4,7 @@ use world_model_core::WorldState;
 
 use crate::{
     architecture_rules::validate_architecture_rules,
-    constraint_rules::{validate_constraint_rules, ConstraintRule},
+    constraint_rules::{ConstraintRule, validate_constraint_rules},
     dependency_rules::validate_dependency_rules,
     validation::GrammarValidation,
 };
@@ -18,6 +18,7 @@ impl GrammarEngine {
     pub fn validate_architecture(&self, architecture: &Architecture) -> GrammarValidation {
         let mut messages = validate_architecture_rules(architecture);
         messages.extend(validate_dependency_rules(architecture));
+        messages.extend(architecture.causal_graph().validate().issues);
         GrammarValidation::from_messages(messages)
     }
 
@@ -31,10 +32,16 @@ impl GrammarEngine {
             for structure in &class_unit.structures {
                 for unit in &structure.design_units {
                     if unit.outputs.len() > unit.inputs.len() + 2 {
-                        messages.push(format!("design unit '{}' has incompatible io shape", unit.name));
+                        messages.push(format!(
+                            "design unit '{}' has incompatible io shape",
+                            unit.name
+                        ));
                     }
                     if unit.dependencies.contains(&unit.id) {
-                        messages.push(format!("design unit '{}' has circular data flow", unit.name));
+                        messages.push(format!(
+                            "design unit '{}' has circular data flow",
+                            unit.name
+                        ));
                     }
                 }
             }
@@ -108,6 +115,7 @@ impl GrammarEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use causal_domain::{CausalRelation, CausalRelationKind};
     use design_domain::{Dependency, DependencyKind, DesignUnit, DesignUnitId};
 
     #[test]
@@ -124,5 +132,32 @@ mod tests {
         let validation = GrammarEngine::default().validate_architecture(&architecture);
 
         assert!(!validation.valid);
+    }
+
+    #[test]
+    fn grammar_engine_rejects_causal_cycles() {
+        let mut architecture = Architecture::seeded();
+        let mut controller = DesignUnit::with_layer(1, "ControllerUnit", Layer::Ui);
+        controller.causal_relations.push(CausalRelation {
+            target: 2,
+            kind: CausalRelationKind::Requires,
+        });
+        let mut service = DesignUnit::with_layer(2, "ServiceUnit", Layer::Service);
+        service.causal_relations.push(CausalRelation {
+            target: 1,
+            kind: CausalRelationKind::Requires,
+        });
+        architecture.add_design_unit(controller);
+        architecture.add_design_unit(service);
+
+        let validation = GrammarEngine::default().validate_architecture(&architecture);
+
+        assert!(!validation.valid);
+        assert!(
+            validation
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("causal cycle"))
+        );
     }
 }

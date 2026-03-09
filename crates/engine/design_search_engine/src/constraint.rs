@@ -17,5 +17,10 @@ impl ConstraintEngine {
     pub fn is_valid(&self, state: &DesignState) -> bool {
         let hard_limit = (self.intent_nodes.len() * 8).max(8);
         state.design_units.len() <= hard_limit
+            && state.design_units.iter().all(|unit| {
+                unit.causal_relations
+                    .iter()
+                    .all(|relation| relation.target != unit.id.0)
+            })
     }
 }

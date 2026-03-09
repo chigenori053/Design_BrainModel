@@ -304,6 +304,7 @@ impl Agent for DesignSearchAgent {
                     } else {
                         vec![DesignUnitId(idx as u64)]
                     },
+                    causal_relations: Vec::new(),
                 })
                 .collect(),
             evaluation: None,

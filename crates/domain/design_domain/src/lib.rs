@@ -9,6 +9,9 @@ pub mod structure_unit;
 
 pub use architecture::Architecture;
 pub use architecture_graph::ArchitectureGraph;
+pub use causal_domain::{
+    CausalEdge, CausalGraph, CausalRelation, CausalRelationKind, CausalValidation,
+};
 pub use class_unit::ClassUnit;
 pub use constraint::Constraint;
 pub use dependency::{Dependency, DependencyKind};

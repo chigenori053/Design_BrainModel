@@ -1,3 +1,4 @@
+use causal_domain::{CausalRelation, CausalRelationKind};
 use memory_space_complex::{ComplexField, normalize};
 use memory_space_core::Complex64;
 
@@ -27,6 +28,14 @@ impl SearchStrategy for BeamSearchStrategy {
                 Vec::new()
             } else {
                 vec![state.design_units[0].id]
+            },
+            causal_relations: if state.design_units.is_empty() {
+                Vec::new()
+            } else {
+                vec![CausalRelation {
+                    target: state.design_units[0].id.0,
+                    kind: CausalRelationKind::Requires,
+                }]
             },
         });
         add.id = DesignStateId(state.id.0.wrapping_mul(31).wrapping_add(1));

@@ -1,4 +1,6 @@
-use crate::{ArchitectureGraph, ClassUnit, Dependency, DesignUnit, StructureUnit};
+use causal_domain::{CausalGraph, CausalRelationKind};
+
+use crate::{ArchitectureGraph, ClassUnit, Dependency, DependencyKind, DesignUnit, StructureUnit};
 use std::collections::BTreeMap;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -11,7 +13,9 @@ pub struct Architecture {
 impl Architecture {
     pub fn seeded() -> Self {
         let mut architecture = Self::default();
-        architecture.classes.push(ClassUnit::new(1, "ApplicationService"));
+        architecture
+            .classes
+            .push(ClassUnit::new(1, "ApplicationService"));
         architecture.classes[0]
             .structures
             .push(StructureUnit::new(1, "handle_request"));
@@ -27,7 +31,10 @@ impl Architecture {
     }
 
     pub fn structure_count(&self) -> usize {
-        self.classes.iter().map(|class_unit| class_unit.structures.len()).sum()
+        self.classes
+            .iter()
+            .map(|class_unit| class_unit.structures.len())
+            .sum()
     }
 
     pub fn ensure_seeded(&mut self) {
@@ -66,5 +73,32 @@ impl Architecture {
             .flat_map(|structure| structure.design_units.iter())
             .map(|unit| (unit.id.0, unit))
             .collect()
+    }
+
+    pub fn causal_graph(&self) -> CausalGraph {
+        let mut graph = CausalGraph::new();
+        let units = self.design_units_by_id();
+
+        for unit_id in units.keys() {
+            graph.add_node(*unit_id);
+        }
+
+        for dependency in &self.dependencies {
+            let kind = match dependency.kind {
+                DependencyKind::Calls | DependencyKind::Reads | DependencyKind::Writes => {
+                    CausalRelationKind::Requires
+                }
+                DependencyKind::Emits => CausalRelationKind::Emits,
+            };
+            graph.add_edge(dependency.from.0, dependency.to.0, kind);
+        }
+
+        for unit in units.values() {
+            for relation in &unit.causal_relations {
+                graph.add_edge(unit.id.0, relation.target, relation.kind);
+            }
+        }
+
+        graph
     }
 }

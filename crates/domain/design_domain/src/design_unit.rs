@@ -1,3 +1,5 @@
+use causal_domain::CausalRelation;
+
 use crate::Layer;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -11,6 +13,7 @@ pub struct DesignUnit {
     pub inputs: Vec<String>,
     pub outputs: Vec<String>,
     pub dependencies: Vec<DesignUnitId>,
+    pub causal_relations: Vec<CausalRelation>,
     pub semantics: Vec<String>,
 }
 
@@ -24,6 +27,7 @@ impl DesignUnit {
             inputs: Vec::new(),
             outputs: Vec::new(),
             dependencies: Vec::new(),
+            causal_relations: Vec::new(),
             semantics: Vec::new(),
         }
     }

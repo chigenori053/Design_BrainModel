@@ -2,6 +2,7 @@
 members = [
     "crates/concept_engine",
     "crates/concept_field",
+    "crates/domain/causal_domain",
     "crates/domain/design_domain",
     "crates/domain/design_grammar",
     "crates/domain/semantic_domain",
@@ -85,6 +86,7 @@ world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }
+causal_domain = { path = "crates/domain/causal_domain" }
 shm = { path = "crates/shm" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

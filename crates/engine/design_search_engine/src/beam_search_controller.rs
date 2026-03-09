@@ -26,7 +26,9 @@ impl SearchController for BeamSearchController {
         let simulator = DefaultSimulationEngine;
         let grammar = GrammarEngine::default();
         let mut root_state = initial_state.clone();
-        if let Some(recalled) = recall.and_then(|recall_result| initial_state.recall_seed(recall_result)) {
+        if let Some(recalled) =
+            recall.and_then(|recall_result| initial_state.recall_seed(recall_result))
+        {
             if recall
                 .and_then(|result| result.candidates.first())
                 .map(|candidate| candidate.relevance_score >= 0.8)
@@ -141,10 +143,33 @@ fn assess_state(
         return false;
     }
 
+    let causal_graph = state.world_state.architecture.causal_graph();
+    let causal_validation = causal_graph.validate();
+    if !causal_validation.valid {
+        return false;
+    }
+    let causal_score = score_causal_closure(&causal_graph);
+
     let simulation = simulator.simulate(&state.world_state, recall);
     state.world_state.simulation = Some(simulation);
     state.world_state.evaluation = evaluator.evaluate_vector(state);
-    state.world_state.score = state.world_state.evaluation.total();
-    state.score = evaluator.evaluate(state);
+    state.world_state.score =
+        (state.world_state.evaluation.total() + causal_score * 0.1).clamp(0.0, 1.0);
+    state.score = (evaluator.evaluate(state) + causal_score * 0.1).clamp(0.0, 1.0);
     true
+}
+
+fn score_causal_closure(graph: &design_domain::CausalGraph) -> f64 {
+    let node_count = graph.nodes().count();
+    if node_count <= 1 {
+        return 0.0;
+    }
+
+    let reachable = graph
+        .closure_map()
+        .values()
+        .map(|closure| closure.len())
+        .sum::<usize>() as f64;
+    let max_reachable = (node_count * (node_count - 1)) as f64;
+    (reachable / max_reachable).clamp(0.0, 1.0)
 }

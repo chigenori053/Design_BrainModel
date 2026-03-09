@@ -13,7 +13,8 @@ fn beam_search_selection() {
         constraint_engine: ConstraintEngine::default(),
         config: SearchConfig {
             beam_width: 2,
-            max_iterations: 4,
+            max_depth: 4,
+            max_candidates: 64,
         },
     };
 

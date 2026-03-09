@@ -1,3 +1,4 @@
+use causal_domain::{CausalRelation, CausalRelationKind};
 use concept_engine::ConceptId;
 use design_search_engine::{
     DesignState, DesignStateId, DesignUnit, DesignUnitId, DesignUnitType, Evaluator,
@@ -15,6 +16,7 @@ fn evaluation_ranking() {
             id: DesignUnitId(1),
             unit_type: DesignUnitType::ClassUnit,
             dependencies: Vec::new(),
+            causal_relations: Vec::new(),
         }],
         evaluation: None,
         state_vector: ComplexField::new(Vec::new()),
@@ -27,11 +29,16 @@ fn evaluation_ranking() {
                 id: DesignUnitId(1),
                 unit_type: DesignUnitType::ClassUnit,
                 dependencies: Vec::new(),
+                causal_relations: Vec::new(),
             },
             DesignUnit {
                 id: DesignUnitId(2),
                 unit_type: DesignUnitType::StructureUnit,
                 dependencies: vec![DesignUnitId(1)],
+                causal_relations: vec![CausalRelation {
+                    target: 1,
+                    kind: CausalRelationKind::Requires,
+                }],
             },
         ],
         evaluation: None,

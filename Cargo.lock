@@ -671,6 +671,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "causal_domain"
+version = "0.1.0"
+
+[[package]]
 name = "cc"
 version = "1.2.56"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -977,11 +981,15 @@ dependencies = [
 [[package]]
 name = "design_domain"
 version = "0.1.0"
+dependencies = [
+ "causal_domain",
+]
 
 [[package]]
 name = "design_grammar"
 version = "0.1.0"
 dependencies = [
+ "causal_domain",
  "design_domain",
  "semantic_domain",
  "world_model_core",
@@ -1027,6 +1035,7 @@ dependencies = [
 name = "design_search_engine"
 version = "0.1.0"
 dependencies = [
+ "causal_domain",
  "concept_engine",
  "design_domain",
  "design_grammar",

@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+causal_domain = { workspace = true }
 concept_engine = { workspace = true }
 design_domain = { workspace = true }
 design_grammar = { workspace = true }

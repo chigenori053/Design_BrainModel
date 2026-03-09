@@ -1,9 +1,7 @@
 use memory_space_core::{
     InMemoryMemoryStore, MemoryEngine, MemoryRecord, ModalityInput, RecallConfig, RecallQuery,
 };
-use runtime_core::{
-    Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage, SearchSummary,
-};
+use runtime_core::{Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage, SearchSummary};
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{
     ConsistencyEvaluator, ConsistencyScore, DeltaConsistencyEvaluator, DeterministicWorldModel,
@@ -155,6 +153,16 @@ fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
         ctx.advance(RuntimeStage::Simulation);
         ctx.event_bus.publish(RuntimeEvent::SimulationStarted);
         ctx.event_bus.publish(RuntimeEvent::SimulationCompleted);
+        ctx.event_bus.publish(RuntimeEvent::CausalAnalysisStarted);
+        if let Some(world_state) = ctx.world_state.as_ref() {
+            let causal_validation = world_state.architecture.causal_graph().validate();
+            ctx.event_bus.publish(RuntimeEvent::CausalClosureComputed);
+            if causal_validation.valid {
+                ctx.event_bus.publish(RuntimeEvent::CausalValidationPassed);
+            } else {
+                ctx.event_bus.publish(RuntimeEvent::CausalValidationFailed);
+            }
+        }
         ctx.advance(RuntimeStage::TransitionEvaluation);
         ctx.event_bus.publish(RuntimeEvent::TransitionEvaluated);
     }

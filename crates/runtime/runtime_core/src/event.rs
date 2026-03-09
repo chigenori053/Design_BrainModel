@@ -15,6 +15,10 @@ pub enum RuntimeEvent {
     CandidateExpanded,
     SimulationStarted,
     SimulationCompleted,
+    CausalAnalysisStarted,
+    CausalClosureComputed,
+    CausalValidationPassed,
+    CausalValidationFailed,
     CandidatePruned,
     CandidateRanked,
 }
