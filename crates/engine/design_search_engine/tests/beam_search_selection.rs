@@ -15,6 +15,8 @@ fn beam_search_selection() {
             beam_width: 2,
             max_depth: 4,
             max_candidates: 64,
+            experience_bias: 0.2,
+            policy_bias: 0.15,
         },
     };
 

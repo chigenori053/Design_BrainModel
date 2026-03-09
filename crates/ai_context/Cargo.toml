@@ -1,0 +1,13 @@
+[package]
+name = "ai_context"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_domain = { workspace = true }
+evaluation_engine = { workspace = true }
+language_core = { workspace = true }
+memory_graph = { workspace = true }
+
+[dev-dependencies]
+design_domain = { workspace = true }

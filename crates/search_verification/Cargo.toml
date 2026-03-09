@@ -1,0 +1,13 @@
+[package]
+name = "search_verification"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+design_domain = { workspace = true }
+design_search_engine = { workspace = true }
+memory_space_phase14 = { workspace = true }
+policy_engine = { workspace = true }
+runtime_core = { workspace = true }
+runtime_vm = { workspace = true }
+world_model_core = { workspace = true }

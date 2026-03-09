@@ -1,0 +1,9 @@
+[package]
+name = "language_reasoning"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+language_core = { workspace = true }
+design_domain = { workspace = true }
+semantic_domain = { workspace = true }

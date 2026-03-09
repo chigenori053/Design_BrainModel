@@ -3,11 +3,13 @@ use world_model_core::WorldState;
 
 #[test]
 fn search_only_returns_grammar_valid_candidates() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig {
         max_depth: 2,
         max_candidates: 8,
         beam_width: 4,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
     };
 
     let states = controller.search(WorldState::new(1, vec![1.0, 0.0]), None, &config);

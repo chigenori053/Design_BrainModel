@@ -730,7 +730,7 @@ fn run_phase9(input: String) -> Result<(), String> {
         .map_err(|e| format!("failed to evaluate consistency: {e}"))?;
 
     // Phase9-D: DesignSearch
-    let search_controller = BeamSearchController;
+    let search_controller = BeamSearchController::default();
     let search_config = DesignSearchConfig::default();
     let search_states = search_controller.search(
         current_state.clone(),

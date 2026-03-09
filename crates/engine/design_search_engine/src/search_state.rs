@@ -1,4 +1,7 @@
+use architecture_domain::ArchitectureState;
 use design_grammar::GrammarValidation;
+use evaluation_engine::EvaluationResult;
+use world_model_core::Action;
 use world_model_core::WorldState;
 
 /// Phase9-D search state: wraps a WorldState with search metadata.
@@ -6,9 +9,14 @@ use world_model_core::WorldState;
 pub struct SearchState {
     pub state_id: u64,
     pub world_state: WorldState,
+    pub architecture_state: ArchitectureState,
+    pub evaluation_result: Option<EvaluationResult>,
     pub depth: usize,
     pub score: f64,
+    pub prior_score: f64,
+    pub policy_score: f64,
     pub pareto_rank: usize,
+    pub source_action: Option<Action>,
     pub grammar_validation: Option<GrammarValidation>,
 }
 
@@ -17,9 +25,14 @@ impl SearchState {
         Self {
             state_id,
             world_state,
+            architecture_state: ArchitectureState::default(),
+            evaluation_result: None,
             depth: 0,
             score: 0.0,
+            prior_score: 1.0,
+            policy_score: 0.0,
             pareto_rank: 0,
+            source_action: None,
             grammar_validation: None,
         }
     }

@@ -4,11 +4,13 @@ use world_model_core::WorldState;
 
 #[test]
 fn search_pipeline_populates_simulation_before_scoring() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
     };
     let initial = WorldState::new(1, vec![2.0, 1.0]);
     let recall = RecallResult {

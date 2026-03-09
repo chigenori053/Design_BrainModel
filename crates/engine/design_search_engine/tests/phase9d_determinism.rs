@@ -21,13 +21,12 @@ fn make_recall() -> RecallResult {
 /// Same input → same search tree (state count and ordering must match).
 #[test]
 fn beam_search_controller_is_deterministic() {
-    let controller = BeamSearchController;
     let config = SearchConfig::default();
     let initial = make_world_state();
     let recall = make_recall();
 
-    let a = controller.search(initial.clone(), Some(&recall), &config);
-    let b = controller.search(initial, Some(&recall), &config);
+    let a = BeamSearchController::default().search(initial.clone(), Some(&recall), &config);
+    let b = BeamSearchController::default().search(initial, Some(&recall), &config);
 
     assert_eq!(a.len(), b.len(), "search state count must be identical");
     for (sa, sb) in a.iter().zip(b.iter()) {
@@ -44,12 +43,11 @@ fn beam_search_controller_is_deterministic() {
 /// Same input without recall → same result.
 #[test]
 fn beam_search_controller_deterministic_no_recall() {
-    let controller = BeamSearchController;
     let config = SearchConfig::default();
     let initial = make_world_state();
 
-    let a = controller.search(initial.clone(), None, &config);
-    let b = controller.search(initial, None, &config);
+    let a = BeamSearchController::default().search(initial.clone(), None, &config);
+    let b = BeamSearchController::default().search(initial, None, &config);
 
     assert_eq!(a.len(), b.len());
     for (sa, sb) in a.iter().zip(b.iter()) {
@@ -61,7 +59,7 @@ fn beam_search_controller_deterministic_no_recall() {
 /// rank_candidates produces the same ordering for same input.
 #[test]
 fn ranking_is_deterministic() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig::default();
     let initial = make_world_state();
     let recall = make_recall();
@@ -81,7 +79,7 @@ fn ranking_is_deterministic() {
 /// Best candidate has score >= all others.
 #[test]
 fn best_candidate_has_highest_score() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig::default();
     let initial = make_world_state();
 
@@ -98,11 +96,13 @@ fn best_candidate_has_highest_score() {
 /// prune_candidates returns at most beam_width elements.
 #[test]
 fn prune_candidates_respects_beam_width() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 3,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
     };
     let initial = make_world_state();
 
@@ -115,11 +115,13 @@ fn prune_candidates_respects_beam_width() {
 /// beam_width config controls maximum candidates retained.
 #[test]
 fn search_respects_beam_width() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 2,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
     };
     let initial = make_world_state();
 

@@ -99,7 +99,7 @@ impl SimulationResult {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     AddDesignUnit { name: String, layer: Layer },
     RemoveDesignUnit,

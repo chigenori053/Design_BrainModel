@@ -3,6 +3,7 @@ members = [
     "crates/concept_engine",
     "crates/concept_field",
     "crates/domain/causal_domain",
+    "crates/domain/architecture_domain",
     "crates/domain/design_domain",
     "crates/domain/design_grammar",
     "crates/domain/semantic_domain",
@@ -19,6 +20,12 @@ members = [
     "crates/field_engine",
     "crates/hybrid_vm",
     "crates/profile",
+    "crates/memory_space",
+    "crates/memory_graph",
+    "crates/search_verification",
+    "crates/policy_engine",
+    "crates/evaluation_engine",
+    "crates/ai_context",
     "crates/memory_store",
     "crates/shm",
     "crates/memory_space_legacy",
@@ -31,12 +38,15 @@ members = [
     "crates/num-complex",
     "crates/runtime/runtime_vm",
     "crates/interface_ui",
+    "crates/language_core",
+    "crates/language_reasoning",
     "crates/language_dhm",
     "crates/knowledge_store",
     "crates/meaning_extractor",
     "crates/semantic_dhm",
     "crates/recomposer",
     "crates/design_reasoning",
+    "crates/code_generation_core",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
     "apps/cli",
@@ -62,6 +72,8 @@ dhm = { path = "crates/dhm" }
 field_engine = { path = "crates/field_engine" }
 hybrid_vm = { path = "crates/hybrid_vm" }
 interface_ui = { path = "crates/interface_ui" }
+language_core = { path = "crates/language_core" }
+language_reasoning = { path = "crates/language_reasoning" }
 memory_store = { path = "crates/memory_store" }
 memory_space = { path = "crates/memory_space_legacy" }
 memory_space_core = { path = "crates/core/memory_space_core" }
@@ -85,9 +97,17 @@ semantic_domain = { path = "crates/domain/semantic_domain" }
 world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
+memory_space_phase14 = { path = "crates/memory_space" }
+policy_engine = { path = "crates/policy_engine" }
+search_verification = { path = "crates/search_verification" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }
 causal_domain = { path = "crates/domain/causal_domain" }
+architecture_domain = { path = "crates/domain/architecture_domain" }
 shm = { path = "crates/shm" }
+evaluation_engine = { path = "crates/evaluation_engine" }
+memory_graph = { path = "crates/memory_graph" }
+ai_context = { path = "crates/ai_context" }
+code_generation_core = { path = "crates/code_generation_core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 proptest = "1"

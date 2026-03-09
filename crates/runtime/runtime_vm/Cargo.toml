@@ -4,10 +4,17 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ai_context = { workspace = true }
+architecture_domain = { workspace = true }
 brain_core = { workspace = true }
 concept_engine = { workspace = true }
 concept_field = { workspace = true }
 design_search_engine = { workspace = true }
+evaluation_engine = { workspace = true }
+language_core = { workspace = true }
+language_reasoning = { workspace = true }
+memory_graph = { workspace = true }
+memory_space_phase14 = { workspace = true }
 memory_space_api = { workspace = true }
 memory_space_complex = { workspace = true }
 memory_space_core = { workspace = true }

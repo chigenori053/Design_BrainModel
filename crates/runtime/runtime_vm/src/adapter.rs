@@ -1,7 +1,21 @@
+use ai_context::{AIContext, EvaluationState, ExperienceState, RuntimeState as AiRuntimeState};
+use architecture_domain::ArchitectureState;
+use evaluation_engine::EvaluationEngine;
+use language_core::{
+    LanguageState, language_search, semantic_graph_to_constraints, semantic_parser,
+};
+use language_reasoning::{meaning_reasoning_search, reasoning_graph_to_constraints};
+use memory_graph::DesignExperienceGraph;
 use memory_space_core::{
     InMemoryMemoryStore, MemoryEngine, MemoryRecord, ModalityInput, RecallConfig, RecallQuery,
 };
-use runtime_core::{Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage, SearchSummary};
+use memory_space_phase14::{
+    DesignExperience, InMemoryMemorySpace, MemorySpace, architecture_hash,
+    layer_sequence_from_state,
+};
+use runtime_core::{
+    Phase9RuntimeContext, RequestId, RuntimeEvent, RuntimeStage, SearchMetrics, SearchSummary,
+};
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{
     ConsistencyEvaluator, ConsistencyScore, DeltaConsistencyEvaluator, DeterministicWorldModel,
@@ -42,12 +56,33 @@ impl Phase9RuntimeAdapter {
         };
         let memory_engine = MemoryEngine::new(seed_memory_store(ctx));
         let recall_result = memory_engine.recall(&recall_query, RecallConfig { top_k: 3 });
+        let parsed_language_state = match &modality_input {
+            ModalityInput::Text(text) => Some(semantic_parser(text)),
+            _ => None,
+        };
+        let reasoned_language_state = parsed_language_state.as_ref().map(apply_meaning_reasoning);
+        let language_state = reasoned_language_state.clone().map(language_search);
         let mut world_state = WorldState::new(ctx.tick, context_vector);
+        if let Some(language_state) = &language_state {
+            world_state.constraints = semantic_graph_to_constraints(language_state);
+            world_state
+                .constraints
+                .extend(reasoning_graph_to_constraints(
+                    &language_state.semantic_graph,
+                ));
+        }
         let simulator = DefaultSimulationEngine;
         let simulation = simulator.simulate(&world_state, Some(&recall_result));
         world_state.simulation = Some(simulation.clone());
         world_state.evaluation.simulation_quality = simulation.total();
-        world_state.score = world_state.evaluation.total();
+        let architecture_state = ArchitectureState::from_architecture(
+            &world_state.architecture,
+            world_state.constraints.clone(),
+        );
+        let evaluation_result = EvaluationEngine::default().evaluate(&architecture_state);
+        world_state.score = ((world_state.evaluation.total() + evaluation_result.total_score)
+            / 2.0)
+            .clamp(0.0, 1.0);
         let world_score = world_state.score;
         let simulation_score = simulation.total();
         let hypothesis_generator = SimpleHypothesisGenerator;
@@ -65,8 +100,9 @@ impl Phase9RuntimeAdapter {
             })
             .or(Some(ConsistencyScore { value: 0.5 }));
 
+        let request_id = format!("legacy-tick-{}", ctx.tick);
         let mut phase9 = Phase9RuntimeContext {
-            request_id: RequestId(format!("legacy-tick-{}", ctx.tick)),
+            request_id: RequestId(request_id.clone()),
             modality_input,
             recall_result: Some(recall_result),
             world_state: Some(world_state),
@@ -79,9 +115,40 @@ impl Phase9RuntimeAdapter {
                 best_score: world_score,
                 best_simulation_score: simulation_score,
             }),
+            search_metrics: Some(SearchMetrics {
+                explored_states: 1,
+                unique_architectures: 1,
+                pattern_matches: 0,
+                policy_score_mean: 0.0,
+                architecture_similarity: 1.0,
+            }),
+            ai_context: Some(AIContext::new(
+                architecture_state,
+                language_state
+                    .as_ref()
+                    .map(|state| state.semantic_graph.clone())
+                    .unwrap_or_default(),
+                ExperienceState {
+                    graph: DesignExperienceGraph::default(),
+                },
+                EvaluationState {
+                    latest: Some(evaluation_result),
+                    history: vec![evaluation_result],
+                },
+                AiRuntimeState {
+                    request_id,
+                    stage: format!("{:?}", map_stage(ctx)),
+                    event_count: 0,
+                },
+            )),
         };
 
-        publish_taxonomy_events(&mut phase9);
+        publish_taxonomy_events(
+            &mut phase9,
+            parsed_language_state.as_ref(),
+            reasoned_language_state.as_ref(),
+            language_state.as_ref(),
+        );
         phase9
     }
 
@@ -131,10 +198,36 @@ fn map_stage(ctx: &RuntimeContext) -> RuntimeStage {
     }
 }
 
-fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
+fn publish_taxonomy_events(
+    ctx: &mut Phase9RuntimeContext,
+    parsed_language_state: Option<&LanguageState>,
+    reasoned_language_state: Option<&LanguageState>,
+    language_state: Option<&LanguageState>,
+) {
     ctx.event_bus.publish(RuntimeEvent::InputAccepted);
     ctx.advance(RuntimeStage::Normalize);
     ctx.event_bus.publish(RuntimeEvent::ModalityNormalized);
+    if ctx.ai_context.is_some() {
+        ctx.event_bus.publish(RuntimeEvent::AIContextInitialized);
+    }
+    if parsed_language_state.is_some() {
+        ctx.event_bus.publish(RuntimeEvent::LanguageParsingStarted);
+        ctx.event_bus
+            .publish(RuntimeEvent::LanguageParsingCompleted);
+    }
+    if reasoned_language_state.is_some() {
+        ctx.event_bus.publish(RuntimeEvent::MeaningReasoningStarted);
+        ctx.event_bus
+            .publish(RuntimeEvent::SemanticInferenceApplied);
+        ctx.event_bus
+            .publish(RuntimeEvent::MeaningReasoningCompleted);
+    }
+    if language_state.is_some() {
+        ctx.event_bus.publish(RuntimeEvent::LanguageSearchStarted);
+        ctx.event_bus.publish(RuntimeEvent::LanguageSearchCompleted);
+        ctx.event_bus
+            .publish(RuntimeEvent::ArchitectureStateCreated);
+    }
 
     ctx.advance(RuntimeStage::Recall);
     ctx.event_bus.publish(RuntimeEvent::MemoryRecallRequested);
@@ -150,11 +243,20 @@ fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
     if !ctx.hypotheses.is_empty() {
         ctx.advance(RuntimeStage::HypothesisGeneration);
         ctx.event_bus.publish(RuntimeEvent::HypothesisGenerated);
+        ctx.event_bus.publish(RuntimeEvent::PatternMatchStarted);
+        ctx.event_bus.publish(RuntimeEvent::PolicyEvaluationStarted);
         ctx.advance(RuntimeStage::Simulation);
         ctx.event_bus.publish(RuntimeEvent::SimulationStarted);
         ctx.event_bus.publish(RuntimeEvent::SimulationCompleted);
         ctx.event_bus.publish(RuntimeEvent::CausalAnalysisStarted);
+        ctx.event_bus.publish(RuntimeEvent::EvaluationStarted);
         if let Some(world_state) = ctx.world_state.as_ref() {
+            let mut memory = InMemoryMemorySpace::with_bootstrap_patterns();
+            let matched = memory.recall_patterns(world_state);
+            if !matched.is_empty() {
+                ctx.event_bus.publish(RuntimeEvent::PatternMatched);
+            }
+            ctx.event_bus.publish(RuntimeEvent::PatternMatchCompleted);
             let causal_validation = world_state.architecture.causal_graph().validate();
             ctx.event_bus.publish(RuntimeEvent::CausalClosureComputed);
             if causal_validation.valid {
@@ -162,6 +264,66 @@ fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
             } else {
                 ctx.event_bus.publish(RuntimeEvent::CausalValidationFailed);
             }
+            let before = memory.experience_count();
+            memory.store_experience(DesignExperience {
+                semantic_context: parsed_language_state
+                    .map(|state| state.to_meaning_graph())
+                    .unwrap_or_default(),
+                inferred_semantics: reasoned_language_state
+                    .map(|state| state.to_meaning_graph())
+                    .unwrap_or_default(),
+                architecture: world_state.architecture.clone(),
+                architecture_hash: architecture_hash(world_state),
+                causal_graph: world_state.architecture.causal_graph(),
+                dependency_edges: world_state.architecture.graph.edges.clone(),
+                layer_sequence: layer_sequence_from_state(world_state),
+                score: world_state
+                    .score
+                    .max(
+                        world_state
+                            .simulation
+                            .as_ref()
+                            .map(|simulation| simulation.total())
+                            .unwrap_or(0.0),
+                    )
+                    .max(0.8),
+                search_depth: world_state.depth,
+            });
+            if memory.experience_count() > before {
+                ctx.event_bus.publish(RuntimeEvent::ExperienceStored);
+                ctx.event_bus.publish(RuntimeEvent::PolicyUpdated);
+            }
+            if let Some(ai_context) = ctx.ai_context.as_mut() {
+                if let Some(result) = ai_context.evaluation_state.latest {
+                    ai_context.experience_state.graph.record_experience(
+                        reasoned_language_state
+                            .map(|state| state.to_meaning_graph())
+                            .unwrap_or_default(),
+                        architecture_hash(world_state),
+                        ai_context.architecture_state.clone(),
+                        result,
+                    );
+                    ctx.event_bus.publish(RuntimeEvent::ExperienceGraphUpdated);
+                }
+            }
+            ctx.event_bus
+                .publish(RuntimeEvent::PolicyEvaluationCompleted);
+            ctx.event_bus.publish(RuntimeEvent::EvaluationCompleted);
+            ctx.search_metrics = Some(SearchMetrics {
+                explored_states: 1,
+                unique_architectures: 1,
+                pattern_matches: matched.len(),
+                policy_score_mean: if matched.is_empty() {
+                    0.0
+                } else {
+                    matched
+                        .iter()
+                        .map(|pattern| pattern.average_score)
+                        .sum::<f64>()
+                        / matched.len() as f64
+                },
+                architecture_similarity: 1.0,
+            });
         }
         ctx.advance(RuntimeStage::TransitionEvaluation);
         ctx.event_bus.publish(RuntimeEvent::TransitionEvaluated);
@@ -173,6 +335,17 @@ fn publish_taxonomy_events(ctx: &mut Phase9RuntimeContext) {
 
     ctx.advance(RuntimeStage::Output);
     ctx.event_bus.publish(RuntimeEvent::OutputProduced);
+    if let Some(ai_context) = ctx.ai_context.as_mut() {
+        ai_context.runtime_state.stage = format!("{:?}", ctx.stage);
+        ai_context.runtime_state.event_count = ctx.event_bus.len();
+    }
+}
+
+fn apply_meaning_reasoning(state: &LanguageState) -> LanguageState {
+    let mut next = state.clone();
+    next.semantic_graph = meaning_reasoning_search(state.semantic_graph.clone());
+    next.generated_sentence = None;
+    next
 }
 
 fn lift_context_vector(ctx: &RuntimeContext) -> Vec<f64> {

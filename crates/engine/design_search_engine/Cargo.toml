@@ -4,11 +4,16 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+architecture_domain = { workspace = true }
 causal_domain = { workspace = true }
 concept_engine = { workspace = true }
 design_domain = { workspace = true }
 design_grammar = { workspace = true }
+evaluation_engine = { workspace = true }
+memory_space_phase14 = { workspace = true }
+memory_graph = { workspace = true }
 memory_space_complex = { workspace = true }
 memory_space_core = { workspace = true }
+policy_engine = { workspace = true }
 world_model = { workspace = true }
 world_model_core = { workspace = true }

@@ -151,6 +151,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ai_context"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "design_domain",
+ "evaluation_engine",
+ "language_core",
+ "memory_graph",
+]
+
+[[package]]
 name = "analysis_tools"
 version = "0.1.0"
 dependencies = [
@@ -264,6 +275,13 @@ dependencies = [
  "percent-encoding",
  "windows-sys 0.60.2",
  "x11rb",
+]
+
+[[package]]
+name = "architecture_domain"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
 ]
 
 [[package]]
@@ -777,6 +795,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "code_generation_core"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1035,12 +1060,17 @@ dependencies = [
 name = "design_search_engine"
 version = "0.1.0"
 dependencies = [
+ "architecture_domain",
  "causal_domain",
  "concept_engine",
  "design_domain",
  "design_grammar",
+ "evaluation_engine",
+ "memory_graph",
  "memory_space_complex",
  "memory_space_core",
+ "memory_space_phase14",
+ "policy_engine",
  "world_model",
  "world_model_core",
 ]
@@ -1321,6 +1351,14 @@ name = "error-code"
 version = "3.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "dea2df4cf52843e0452895c455a1a2cfbb842a1e7329671acf418fdc53ed4c59"
+
+[[package]]
+name = "evaluation_engine"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "design_domain",
+]
 
 [[package]]
 name = "event-listener"
@@ -2007,10 +2045,27 @@ dependencies = [
 ]
 
 [[package]]
+name = "language_core"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+ "semantic_domain",
+]
+
+[[package]]
 name = "language_dhm"
 version = "0.1.0"
 dependencies = [
  "memory_store",
+]
+
+[[package]]
+name = "language_reasoning"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+ "language_core",
+ "semantic_domain",
 ]
 
 [[package]]
@@ -2126,6 +2181,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "memory_graph"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "design_domain",
+ "evaluation_engine",
+ "language_core",
+ "semantic_domain",
+]
+
+[[package]]
 name = "memory_space"
 version = "1.0.0"
 dependencies = [
@@ -2171,6 +2237,16 @@ dependencies = [
  "memory_space_complex",
  "memory_space_core",
  "memory_space_recall",
+]
+
+[[package]]
+name = "memory_space_phase14"
+version = "0.1.0"
+dependencies = [
+ "causal_domain",
+ "design_domain",
+ "semantic_domain",
+ "world_model_core",
 ]
 
 [[package]]
@@ -2763,6 +2839,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "policy_engine"
+version = "0.1.0"
+dependencies = [
+ "causal_domain",
+ "design_domain",
+ "memory_space_phase14",
+ "world_model_core",
+]
+
+[[package]]
 name = "polling"
 version = "3.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3068,6 +3154,7 @@ checksum = "19b30a45b0cd0bcca8037f3d0dc3421eaf95327a17cad11964fb8179b4fc4832"
 name = "runtime_core"
 version = "0.1.0"
 dependencies = [
+ "ai_context",
  "memory_space_core",
  "num-complex",
  "serde_json",
@@ -3078,13 +3165,20 @@ dependencies = [
 name = "runtime_vm"
 version = "0.1.0"
 dependencies = [
+ "ai_context",
+ "architecture_domain",
  "brain_core",
  "concept_engine",
  "concept_field",
  "design_search_engine",
+ "evaluation_engine",
+ "language_core",
+ "language_reasoning",
+ "memory_graph",
  "memory_space_api",
  "memory_space_complex",
  "memory_space_core",
+ "memory_space_phase14",
  "reasoning_agent",
  "runtime_core",
  "search_controller",
@@ -3192,6 +3286,19 @@ dependencies = [
  "memory_space_api",
  "memory_space_complex",
  "memory_space_core",
+]
+
+[[package]]
+name = "search_verification"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+ "design_search_engine",
+ "memory_space_phase14",
+ "policy_engine",
+ "runtime_core",
+ "runtime_vm",
+ "world_model_core",
 ]
 
 [[package]]

@@ -1,0 +1,13 @@
+[package]
+name = "memory_graph"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_domain = { workspace = true }
+evaluation_engine = { workspace = true }
+semantic_domain = { workspace = true }
+
+[dev-dependencies]
+design_domain = { workspace = true }
+language_core = { workspace = true }

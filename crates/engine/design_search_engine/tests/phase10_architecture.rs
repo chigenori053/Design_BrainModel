@@ -6,11 +6,13 @@ use world_model_core::WorldState;
 
 #[test]
 fn recall_first_uses_memory_seed_when_confidence_is_high() {
-    let controller = BeamSearchController;
+    let controller = BeamSearchController::default();
     let config = SearchConfig {
         max_depth: 0,
         max_candidates: 8,
         beam_width: 4,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
     };
     let initial = WorldState::new(1, vec![0.0, 0.0]);
     let recall = RecallResult {

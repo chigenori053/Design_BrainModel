@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+ai_context = { workspace = true }
 memory_space_core = { workspace = true }
 num-complex = { workspace = true }
 serde_json = { workspace = true }
