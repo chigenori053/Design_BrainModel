@@ -40,7 +40,7 @@ jobs:
         run: ruff check .
 
   tier1_unit:
-    name: Tier1 Unit Correctness
+    name: Tier1 Invariants And Engines
     needs: [build]
     runs-on: ubuntu-latest
 
@@ -84,23 +84,11 @@ jobs:
             exit 1
           fi
 
-      - name: memory_space unit
-        run: cargo test -p memory_space --lib --locked
+      - name: invariants suite
+        run: bash scripts/run_ci_test_suite.sh invariants
 
-      - name: reasoning_agent unit
-        run: cargo test -p reasoning_agent --lib --locked
-
-      - name: hybrid_vm unit
-        run: cargo test -p hybrid_vm --lib --locked
-
-      - name: semantic_dhm unit
-        run: cargo test -p semantic_dhm --lib --locked
-
-      - name: recomposer unit
-        run: cargo test -p recomposer --lib --locked
-
-      - name: agent_core unit
-        run: cargo test -p agent_core --lib --locked
+      - name: engine suite
+        run: bash scripts/run_ci_test_suite.sh engine
 
   tier2_math:
     name: Tier2 Mathematical Property
@@ -141,35 +129,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: reasoning pipeline integration
-        run: cargo test -p reasoning_agent --test integration --locked
-
-      - name: phase1 concept pipeline test
-        run: cargo test -p phase1_integration_tests --test concept_pipeline --locked
-
-      - name: phase1 canonicalization test
-        run: cargo test -p phase1_integration_tests --test canonicalization --locked
-
-      - name: phase1 memory recall test
-        run: cargo test -p phase1_integration_tests --test memory_recall --locked
-
-      - name: phase1 reasoning pipeline test
-        run: cargo test -p phase1_integration_tests --test reasoning_pipeline --locked
-
-      - name: phase1 concept graph test
-        run: cargo test -p phase1_integration_tests --test concept_graph --locked
-
-      - name: cli integration
-        run: cargo test -p design_cli --test integration --locked
-
-      - name: failure injection recall override
-        run: cargo test -p reasoning_agent --test recall_override --locked
-
-      - name: failure injection false resonance
-        run: cargo test -p reasoning_agent --test false_resonance --locked
-
-      - name: simulation stability
-        run: cargo test -p reasoning_agent --test simulation_stability --locked
+      - name: integration suite
+        run: bash scripts/run_ci_test_suite.sh integration
 
   tier4_stress:
     name: Tier4 Stress Scaling
@@ -190,7 +151,7 @@ jobs:
         run: cargo test -p agent_core --test heavy --release --features ci-heavy --locked
 
   tier5_determinism:
-    name: Tier5 Determinism Scientific
+    name: Tier5 Determinism
     needs: [tier4_stress]
     runs-on: ubuntu-latest
 
@@ -201,14 +162,5 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: deterministic suite
-        run: cargo test -p reasoning_agent --test deterministic --locked -- --test-threads=1
-
-      - name: deterministic evaluation
-        run: cargo test -p reasoning_agent --test evaluation_determinism --locked -- --test-threads=1
-
-      - name: deterministic contract
-        run: cargo test -p agent_core --test contract deterministic_engine_fast_10_seeds_3_runs_hash_and_hv_equal --locked -- --test-threads=1
-
-      - name: deterministic memory ranking
-        run: cargo test -p memory_space_index search_is_deterministic --locked -- --test-threads=1
+      - name: determinism suite
+        run: bash scripts/run_ci_test_suite.sh determinism

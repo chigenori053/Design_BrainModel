@@ -4,6 +4,7 @@ use memory_space_phase14::{DesignExperience, MemorySpace};
 use world_model_core::WorldState;
 
 #[test]
+#[ignore = "experimental"]
 fn experience_prior_biases_search_toward_matching_patterns() {
     let controller = BeamSearchController::default();
     {

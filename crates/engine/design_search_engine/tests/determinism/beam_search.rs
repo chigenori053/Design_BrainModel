@@ -18,7 +18,6 @@ fn make_recall() -> RecallResult {
     }
 }
 
-/// Same input → same search tree (state count and ordering must match).
 #[test]
 fn beam_search_controller_is_deterministic() {
     let config = SearchConfig::default();
@@ -40,7 +39,6 @@ fn beam_search_controller_is_deterministic() {
     }
 }
 
-/// Same input without recall → same result.
 #[test]
 fn beam_search_controller_deterministic_no_recall() {
     let config = SearchConfig::default();
@@ -56,7 +54,6 @@ fn beam_search_controller_deterministic_no_recall() {
     }
 }
 
-/// rank_candidates produces the same ordering for same input.
 #[test]
 fn ranking_is_deterministic() {
     let controller = BeamSearchController::default();
@@ -76,7 +73,6 @@ fn ranking_is_deterministic() {
     }
 }
 
-/// Best candidate has score >= all others.
 #[test]
 fn best_candidate_has_highest_score() {
     let controller = BeamSearchController::default();
@@ -93,7 +89,6 @@ fn best_candidate_has_highest_score() {
     }
 }
 
-/// prune_candidates returns at most beam_width elements.
 #[test]
 fn prune_candidates_respects_beam_width() {
     let controller = BeamSearchController::default();
@@ -112,7 +107,6 @@ fn prune_candidates_respects_beam_width() {
     assert!(pruned.len() <= 3, "prune must not exceed beam_width");
 }
 
-/// beam_width config controls maximum candidates retained.
 #[test]
 fn search_respects_beam_width() {
     let controller = BeamSearchController::default();

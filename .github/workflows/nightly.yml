@@ -17,11 +17,11 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: release tests
-        run: cargo test --workspace --release --locked
+      - name: release suite
+        run: bash scripts/run_ci_test_suite.sh all --release
 
-      - name: ignored tests
-        run: cargo test --workspace --locked -- --ignored
+      - name: experimental tests
+        run: bash scripts/run_ci_test_suite.sh experiments
 
       - name: install cargo-audit
         run: cargo install cargo-audit --locked

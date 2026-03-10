@@ -35,3 +35,31 @@ fn search_pipeline_populates_simulation_before_scoring() {
             .all(|state| state.world_state.evaluation.simulation_quality > 0.0)
     );
 }
+
+#[test]
+fn search_only_returns_grammar_valid_candidates() {
+    let controller = BeamSearchController::default();
+    let config = SearchConfig {
+        max_depth: 2,
+        max_candidates: 8,
+        beam_width: 4,
+        experience_bias: 0.2,
+        policy_bias: 0.15,
+    };
+
+    let states = controller.search(WorldState::new(1, vec![1.0, 0.0]), None, &config);
+
+    assert!(!states.is_empty());
+    assert!(states.iter().all(|state| {
+        state
+            .grammar_validation
+            .as_ref()
+            .map(|validation| validation.valid)
+            .unwrap_or(false)
+    }));
+    assert!(
+        states
+            .iter()
+            .all(|state| state.world_state.simulation.is_some())
+    );
+}

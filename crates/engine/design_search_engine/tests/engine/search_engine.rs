@@ -1,8 +1,37 @@
 use design_search_engine::{
-    BeamSearchController, SearchConfig, SearchController as _, SearchState, rank_candidates,
+    BeamSearchController, BeamSearchStrategy, ConstraintEngine, DesignSearchEngine, DesignState,
+    DesignStateId, Evaluator, SearchConfig, SearchController as _, SearchState, rank_candidates,
 };
+use memory_space_complex::ComplexField;
 use memory_space_core::{RecallCandidate, RecallResult};
 use world_model_core::WorldState;
+
+#[test]
+fn beam_search_selection() {
+    let engine = DesignSearchEngine {
+        strategy: Box::new(BeamSearchStrategy),
+        evaluator: Evaluator,
+        constraint_engine: ConstraintEngine::default(),
+        config: SearchConfig {
+            beam_width: 2,
+            max_depth: 4,
+            max_candidates: 64,
+            experience_bias: 0.2,
+            policy_bias: 0.15,
+        },
+    };
+
+    let initial = DesignState {
+        id: DesignStateId(1),
+        design_units: Vec::new(),
+        evaluation: None,
+        state_vector: ComplexField::new(Vec::new()),
+    };
+
+    let out = engine.search(initial, &[concept_engine::ConceptId::from_name("DATABASE")]);
+    assert!(!out.states.is_empty());
+    assert!(!out.edges.is_empty());
+}
 
 #[test]
 fn recall_first_uses_memory_seed_when_confidence_is_high() {
