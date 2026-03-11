@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+architecture_knowledge = { workspace = true }
+architecture_memory = { workspace = true }
+architecture_metrics = { workspace = true }
+architecture_rules = { workspace = true }
 architecture_state_v2 = { workspace = true }
 geometry_engine = { workspace = true }
 

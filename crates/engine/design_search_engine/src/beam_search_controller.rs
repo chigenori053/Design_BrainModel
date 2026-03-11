@@ -14,6 +14,7 @@ use world_model_core::{Action, WorldState};
 use crate::architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
 use crate::pruning::prune_candidates;
 use crate::search_config::SearchConfig;
+use crate::search_context::SearchContext;
 use crate::search_controller::SearchController;
 use crate::search_state::SearchState;
 
@@ -50,7 +51,8 @@ impl SearchController for BeamSearchController {
         recall: Option<&RecallResult>,
         config: &SearchConfig,
     ) -> Vec<SearchState> {
-        self.search_trace(initial_state, recall, config).final_beam
+        self.search_trace_with_context(initial_state, recall, config, &SearchContext::default())
+            .final_beam
     }
 }
 
@@ -60,6 +62,16 @@ impl BeamSearchController {
         initial_state: WorldState,
         recall: Option<&RecallResult>,
         config: &SearchConfig,
+    ) -> SearchTrace {
+        self.search_trace_with_context(initial_state, recall, config, &SearchContext::default())
+    }
+
+    pub fn search_trace_with_context(
+        &self,
+        initial_state: WorldState,
+        recall: Option<&RecallResult>,
+        config: &SearchConfig,
+        ctx: &SearchContext,
     ) -> SearchTrace {
         let evaluator = DefaultArchitectureEvaluator;
         let evaluation_engine = EvaluationEngine::default();
@@ -115,11 +127,11 @@ impl BeamSearchController {
                 let children = expand(
                     parent,
                     depth,
-                    config.max_candidates,
+                    ctx.constrained_candidates(config),
                     SearchPrior::from_patterns(
                         &parent.world_state,
                         &matched_patterns,
-                        &candidate_actions(parent, depth, config.max_candidates),
+                        &candidate_actions(parent, depth, ctx.constrained_candidates(config)),
                     ),
                     evaluate_policy(
                         &parent.world_state,
@@ -138,6 +150,9 @@ impl BeamSearchController {
                         config.experience_bias,
                         config.policy_bias,
                     ) {
+                        child.score = (child.score + ctx.score_bias(&child)).clamp(0.0, 1.0);
+                        child.world_state.score =
+                            (child.world_state.score + ctx.score_bias(&child)).clamp(0.0, 1.0);
                         candidates.push(child);
                     }
                 }
@@ -148,7 +163,7 @@ impl BeamSearchController {
             }
 
             explored_state_count += candidates.len();
-            beam = prune_candidates(candidates, config.beam_width);
+            beam = prune_candidates(candidates, ctx.constrained_beam_width(config));
             let best_score = beam.iter().map(|state| state.score).fold(0.0_f64, f64::max);
             let running_best = depth_best_scores
                 .last()

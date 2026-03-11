@@ -6,6 +6,7 @@ pub mod engine;
 pub mod evaluator;
 pub mod hypothesis_graph;
 pub mod search_config;
+pub mod search_context;
 pub mod search_strategy;
 
 // Phase9-D: WorldState-based search with SearchController trait
@@ -35,6 +36,7 @@ pub use beam_search_controller::{BeamSearchController, SearchTrace};
 pub use design_grammar::{GrammarEngine, GrammarValidation};
 pub use pruning::prune_candidates;
 pub use ranking::{rank_candidates, RankedCandidate};
+pub use search_context::SearchContext;
 pub use search_controller::SearchController;
 pub use search_state::SearchState;
 pub use search_state::SearchState as Phase9SearchState;

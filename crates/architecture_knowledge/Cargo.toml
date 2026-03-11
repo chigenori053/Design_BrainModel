@@ -1,0 +1,10 @@
+[package]
+name = "architecture_knowledge"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_metrics = { workspace = true }
+architecture_reasoner = { workspace = true }
+architecture_rules = { workspace = true }
+

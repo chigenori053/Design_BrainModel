@@ -5,6 +5,10 @@ members = [
     "crates/geometry_engine",
     "crates/architecture_state",
     "crates/architecture_evaluator",
+    "crates/architecture_metrics",
+    "crates/architecture_rules",
+    "crates/architecture_knowledge",
+    "crates/architecture_memory",
     "crates/code_language_core",
     "crates/concept_engine",
     "crates/concept_field",
@@ -72,6 +76,10 @@ architecture_reasoner = { path = "crates/architecture_reasoner" }
 geometry_engine = { path = "crates/geometry_engine" }
 architecture_state_v2 = { path = "crates/architecture_state", package = "architecture_state" }
 architecture_evaluator_core = { path = "crates/architecture_evaluator", package = "architecture_evaluator" }
+architecture_metrics = { path = "crates/architecture_metrics" }
+architecture_rules = { path = "crates/architecture_rules" }
+architecture_knowledge = { path = "crates/architecture_knowledge" }
+architecture_memory = { path = "crates/architecture_memory" }
 code_language_core = { path = "crates/code_language_core" }
 concept_engine = { path = "crates/concept_engine" }
 concept_field = { path = "crates/concept_field" }
