@@ -15,6 +15,11 @@ fn runtime_adapter_emits_simulation_events_and_summary() {
     assert!(events.contains(&RuntimeEvent::MeaningReasoningStarted));
     assert!(events.contains(&RuntimeEvent::SemanticInferenceApplied));
     assert!(events.contains(&RuntimeEvent::MeaningReasoningCompleted));
+    assert!(events.contains(&RuntimeEvent::KnowledgeQueryIssued));
+    assert!(events.contains(&RuntimeEvent::KnowledgeRetrieved));
+    assert!(events.contains(&RuntimeEvent::KnowledgeParsed));
+    assert!(events.contains(&RuntimeEvent::KnowledgeValidated));
+    assert!(events.contains(&RuntimeEvent::KnowledgeIntegrated));
     assert!(events.contains(&RuntimeEvent::LanguageSearchStarted));
     assert!(events.contains(&RuntimeEvent::LanguageSearchCompleted));
     assert!(events.contains(&RuntimeEvent::SimulationStarted));

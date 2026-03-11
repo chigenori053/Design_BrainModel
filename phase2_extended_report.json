@@ -1,0 +1,377 @@
+{
+  "version": "v1.0",
+  "scope": "Phase2 Extended Validation",
+  "started_at_utc": "2026-03-08T02:17:26Z",
+  "overall_status": "PASS",
+  "success_criteria": {
+    "recall_accuracy_gt": 0.75,
+    "search_improvement_gt": 0.2,
+    "recall_latency_ms_lt": 10.0
+  },
+  "results": [
+    {
+      "test_id": "P2-E1",
+      "category": "Recall Generalization",
+      "status": "PASS",
+      "metrics": {
+        "recall_accuracy": 1.0,
+        "semantic_match_score": 1.0,
+        "variance": 0.0
+      },
+      "thresholds": {
+        "recall_accuracy_gt": 0.75,
+        "variance_lt": 0.1
+      },
+      "details": [
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC6",
+          "problem": "Graph database",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC7",
+          "problem": "Realtime analytics",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC8",
+          "problem": "Machine learning pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC9",
+          "problem": "Distributed cache",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D1",
+          "dataset_size": 50000,
+          "case_id": "TC10",
+          "problem": "3D rendering engine",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC6",
+          "problem": "Graph database",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC7",
+          "problem": "Realtime analytics",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC8",
+          "problem": "Machine learning pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC9",
+          "problem": "Distributed cache",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D2",
+          "dataset_size": 100000,
+          "case_id": "TC10",
+          "problem": "3D rendering engine",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC6",
+          "problem": "Graph database",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC7",
+          "problem": "Realtime analytics",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC8",
+          "problem": "Machine learning pipeline",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC9",
+          "problem": "Distributed cache",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "dataset": "D3",
+          "dataset_size": 250000,
+          "case_id": "TC10",
+          "problem": "3D rendering engine",
+          "design_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        }
+      ]
+    },
+    {
+      "test_id": "P2-E2",
+      "category": "Search Variance",
+      "status": "PASS",
+      "metrics": {
+        "search_improvement": 0.575836,
+        "solution_diversity": 0.593333,
+        "variance": 0.674439
+      },
+      "thresholds": {
+        "search_improvement_gt": 0.2,
+        "variance_gt": 0.05
+      },
+      "details": [
+        {
+          "beam_width": 10,
+          "search_depth": 5,
+          "search_improvement": 0.275561,
+          "solution_diversity": 0.41
+        },
+        {
+          "beam_width": 10,
+          "search_depth": 10,
+          "search_improvement": 0.426722,
+          "solution_diversity": 0.46
+        },
+        {
+          "beam_width": 10,
+          "search_depth": 15,
+          "search_improvement": 0.607982,
+          "solution_diversity": 0.51
+        },
+        {
+          "beam_width": 20,
+          "search_depth": 5,
+          "search_improvement": 0.350787,
+          "solution_diversity": 0.49
+        },
+        {
+          "beam_width": 20,
+          "search_depth": 10,
+          "search_improvement": 0.501948,
+          "solution_diversity": 0.54
+        },
+        {
+          "beam_width": 20,
+          "search_depth": 15,
+          "search_improvement": 0.683209,
+          "solution_diversity": 0.59
+        },
+        {
+          "beam_width": 50,
+          "search_depth": 5,
+          "search_improvement": 0.617579,
+          "solution_diversity": 0.73
+        },
+        {
+          "beam_width": 50,
+          "search_depth": 10,
+          "search_improvement": 0.76874,
+          "solution_diversity": 0.78
+        },
+        {
+          "beam_width": 50,
+          "search_depth": 15,
+          "search_improvement": 0.95,
+          "solution_diversity": 0.83
+        }
+      ]
+    },
+    {
+      "test_id": "P2-E3",
+      "category": "Dataset Expansion",
+      "status": "PASS",
+      "metrics": {
+        "recall_latency_ms": 1.493332,
+        "recall_accuracy": 0.89,
+        "index_build_time_ms": 45.40628,
+        "accuracy_drop": 0.072917
+      },
+      "thresholds": {
+        "recall_latency_ms_lt": 10.0,
+        "accuracy_drop_lt": 0.1
+      },
+      "details": [
+        {
+          "memory_count": 50000,
+          "recall_latency_ms": 0.880618,
+          "recall_accuracy": 0.96,
+          "index_build_time_ms": 2.8,
+          "accuracy_drop": 0.0
+        },
+        {
+          "memory_count": 200000,
+          "recall_latency_ms": 1.119382,
+          "recall_accuracy": 0.93,
+          "index_build_time_ms": 10.164215,
+          "accuracy_drop": 0.03125
+        },
+        {
+          "memory_count": 1000000,
+          "recall_latency_ms": 1.493332,
+          "recall_accuracy": 0.89,
+          "index_build_time_ms": 45.40628,
+          "accuracy_drop": 0.072917
+        }
+      ]
+    }
+  ]
+}

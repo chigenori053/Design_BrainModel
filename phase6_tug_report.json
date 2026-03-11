@@ -1,0 +1,348 @@
+{
+  "version": "v1.0",
+  "scope": "TUG – Test Under Governance / Phase6 Integration Validation",
+  "started_at_utc": "2026-03-08T03:33:51Z",
+  "requested_targets": [
+    "ripgrep",
+    "tokio",
+    "serde"
+  ],
+  "resolved_targets": [
+    {
+      "requested_target": "ripgrep",
+      "resolved_name": "regex",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.12.3",
+      "note": "ripgrep source tree was not available locally; regex crate was used as offline proxy"
+    },
+    {
+      "requested_target": "tokio",
+      "resolved_name": "tokio",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0",
+      "note": null
+    },
+    {
+      "requested_target": "serde",
+      "resolved_name": "serde",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228",
+      "note": null
+    }
+  ],
+  "overall_status": "PASS",
+  "success_criteria": {
+    "architecture_extraction_success": true,
+    "designgraph_generation_success": true,
+    "design_search_convergence": true,
+    "worldmodel_simulation_stable": true,
+    "design_quality_delta_gt": 0.05,
+    "code_build_success": true
+  },
+  "aggregate_metrics": {
+    "design_quality_delta_mean": 0.31594,
+    "build_success_rate": 1.0
+  },
+  "results": [
+    {
+      "system": "regex",
+      "requested_target": "ripgrep",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.12.3",
+      "domain": "text search proxy",
+      "note": "ripgrep source tree was not available locally; regex crate was used as offline proxy",
+      "steps": [
+        {
+          "name": "repository_ingestion",
+          "status": "PASS",
+          "metrics": {
+            "file_count": 12,
+            "module_index_count": 12
+          }
+        },
+        {
+          "name": "architecture_extraction",
+          "status": "PASS",
+          "metrics": {
+            "extraction_accuracy": 1.0,
+            "node_count": 12,
+            "edge_count": 13,
+            "layer_count": 8,
+            "module_detection_accuracy": 1.0,
+            "dependency_detection_accuracy": 1.0
+          }
+        },
+        {
+          "name": "designgraph_compression",
+          "status": "PASS",
+          "metrics": {
+            "compression_ratio": 5.0,
+            "information_loss": 0.052167,
+            "compressed_nodes": 3,
+            "compressed_edges": 2
+          }
+        },
+        {
+          "name": "design_search",
+          "status": "PASS",
+          "metrics": {
+            "hypothesis_count": 3,
+            "search_convergence": true,
+            "top_quality": 0.880832
+          }
+        },
+        {
+          "name": "worldmodel_simulation",
+          "status": "PASS",
+          "metrics": {
+            "latency": 10.0,
+            "throughput": 1459.143333,
+            "cpu_usage": 0.322656,
+            "memory_usage": 0.282848,
+            "stable": true
+          }
+        },
+        {
+          "name": "pareto_optimization",
+          "status": "PASS",
+          "metrics": {
+            "pareto_frontier_size": 1,
+            "frontier_names": [
+              "regex_optimized"
+            ]
+          }
+        },
+        {
+          "name": "architecture_improvement",
+          "status": "PASS",
+          "metrics": {
+            "design_quality_delta": 0.392344
+          }
+        },
+        {
+          "name": "code_regeneration",
+          "status": "PASS",
+          "metrics": {
+            "build_success": true,
+            "regenerated_path": "/Users/chigenori/development/Design_BrainModel/.tmp_phase6_tug/regex"
+          }
+        },
+        {
+          "name": "system_validation",
+          "status": "PASS",
+          "metrics": {
+            "test_pass": true,
+            "output_tail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          }
+        }
+      ],
+      "aggregate": {
+        "architecture_extraction_success": true,
+        "designgraph_generation_success": true,
+        "design_search_convergence": true,
+        "worldmodel_simulation_stable": true,
+        "design_quality_delta": 0.392344,
+        "code_build_success": true,
+        "test_pass": true
+      }
+    },
+    {
+      "system": "tokio",
+      "requested_target": "tokio",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0",
+      "domain": "async runtime",
+      "note": null,
+      "steps": [
+        {
+          "name": "repository_ingestion",
+          "status": "PASS",
+          "metrics": {
+            "file_count": 372,
+            "module_index_count": 372
+          }
+        },
+        {
+          "name": "architecture_extraction",
+          "status": "PASS",
+          "metrics": {
+            "extraction_accuracy": 0.997357,
+            "node_count": 372,
+            "edge_count": 946,
+            "layer_count": 17,
+            "module_detection_accuracy": 1.0,
+            "dependency_detection_accuracy": 0.994715
+          }
+        },
+        {
+          "name": "designgraph_compression",
+          "status": "PASS",
+          "metrics": {
+            "compression_ratio": 5.250996,
+            "information_loss": 0.055086,
+            "compressed_nodes": 93,
+            "compressed_edges": 158
+          }
+        },
+        {
+          "name": "design_search",
+          "status": "PASS",
+          "metrics": {
+            "hypothesis_count": 3,
+            "search_convergence": true,
+            "top_quality": 0.9055
+          }
+        },
+        {
+          "name": "worldmodel_simulation",
+          "status": "PASS",
+          "metrics": {
+            "latency": 10.0,
+            "throughput": 6088.644946,
+            "cpu_usage": 0.95,
+            "memory_usage": 0.95,
+            "stable": true
+          }
+        },
+        {
+          "name": "pareto_optimization",
+          "status": "PASS",
+          "metrics": {
+            "pareto_frontier_size": 1,
+            "frontier_names": [
+              "tokio_optimized"
+            ]
+          }
+        },
+        {
+          "name": "architecture_improvement",
+          "status": "PASS",
+          "metrics": {
+            "design_quality_delta": 0.213997
+          }
+        },
+        {
+          "name": "code_regeneration",
+          "status": "PASS",
+          "metrics": {
+            "build_success": true,
+            "regenerated_path": "/Users/chigenori/development/Design_BrainModel/.tmp_phase6_tug/tokio"
+          }
+        },
+        {
+          "name": "system_validation",
+          "status": "PASS",
+          "metrics": {
+            "test_pass": true,
+            "output_tail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          }
+        }
+      ],
+      "aggregate": {
+        "architecture_extraction_success": true,
+        "designgraph_generation_success": true,
+        "design_search_convergence": true,
+        "worldmodel_simulation_stable": true,
+        "design_quality_delta": 0.213997,
+        "code_build_success": true,
+        "test_pass": true
+      }
+    },
+    {
+      "system": "serde",
+      "requested_target": "serde",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228",
+      "domain": "serialization framework",
+      "note": null,
+      "steps": [
+        {
+          "name": "repository_ingestion",
+          "status": "PASS",
+          "metrics": {
+            "file_count": 24,
+            "module_index_count": 24
+          }
+        },
+        {
+          "name": "architecture_extraction",
+          "status": "PASS",
+          "metrics": {
+            "extraction_accuracy": 0.952055,
+            "node_count": 24,
+            "edge_count": 73,
+            "layer_count": 4,
+            "module_detection_accuracy": 1.0,
+            "dependency_detection_accuracy": 0.90411
+          }
+        },
+        {
+          "name": "designgraph_compression",
+          "status": "PASS",
+          "metrics": {
+            "compression_ratio": 5.388889,
+            "information_loss": 0.056083,
+            "compressed_nodes": 6,
+            "compressed_edges": 12
+          }
+        },
+        {
+          "name": "design_search",
+          "status": "PASS",
+          "metrics": {
+            "hypothesis_count": 3,
+            "search_convergence": true,
+            "top_quality": 0.88093
+          }
+        },
+        {
+          "name": "worldmodel_simulation",
+          "status": "PASS",
+          "metrics": {
+            "latency": 10.0,
+            "throughput": 1603.911667,
+            "cpu_usage": 0.465312,
+            "memory_usage": 0.401696,
+            "stable": true
+          }
+        },
+        {
+          "name": "pareto_optimization",
+          "status": "PASS",
+          "metrics": {
+            "pareto_frontier_size": 1,
+            "frontier_names": [
+              "serde_optimized"
+            ]
+          }
+        },
+        {
+          "name": "architecture_improvement",
+          "status": "PASS",
+          "metrics": {
+            "design_quality_delta": 0.341479
+          }
+        },
+        {
+          "name": "code_regeneration",
+          "status": "PASS",
+          "metrics": {
+            "build_success": true,
+            "regenerated_path": "/Users/chigenori/development/Design_BrainModel/.tmp_phase6_tug/serde"
+          }
+        },
+        {
+          "name": "system_validation",
+          "status": "PASS",
+          "metrics": {
+            "test_pass": true,
+            "output_tail": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+          }
+        }
+      ],
+      "aggregate": {
+        "architecture_extraction_success": true,
+        "designgraph_generation_success": true,
+        "design_search_convergence": true,
+        "worldmodel_simulation_stable": true,
+        "design_quality_delta": 0.341479,
+        "code_build_success": true,
+        "test_pass": true
+      }
+    }
+  ]
+}

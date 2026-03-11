@@ -1,0 +1,310 @@
+{
+  "version": "v1.0",
+  "scope": "Phase5 Real System Benchmark",
+  "mode": "offline real-system benchmark",
+  "started_at_utc": "2026-03-08T02:37:18Z",
+  "evaluated_systems": [
+    {
+      "name": "CodeEditor",
+      "domain": "editor",
+      "path": "/Users/chigenori/development/CodeEditor"
+    },
+    {
+      "name": "regex",
+      "domain": "text processing",
+      "path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.12.3"
+    },
+    {
+      "name": "syn",
+      "domain": "compiler/parser",
+      "path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/syn-2.0.117"
+    },
+    {
+      "name": "h2",
+      "domain": "networking",
+      "path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/h2-0.3.27"
+    },
+    {
+      "name": "image",
+      "domain": "media pipeline",
+      "path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/image-0.25.9"
+    }
+  ],
+  "requested_reference_systems": [
+    "Redis",
+    "Nginx module",
+    "Rust compiler component",
+    "Bevy engine module",
+    "Kubernetes controller"
+  ],
+  "overall_status": "PASS",
+  "success_criteria": {
+    "extraction_accuracy_gt": 0.85,
+    "design_validity_gt": 0.9,
+    "improvement_score_gt": 0.05,
+    "build_success_rate_gt": 0.8,
+    "test_pass_rate_gt": 0.85
+  },
+  "results": [
+    {
+      "test_id": "P5-R1",
+      "category": "Architecture Extraction",
+      "status": "PASS",
+      "metrics": {
+        "extraction_accuracy": 0.952772
+      },
+      "thresholds": {
+        "extraction_accuracy_gt": 0.85
+      },
+      "system_results": [
+        {
+          "system": "CodeEditor",
+          "domain": "editor",
+          "module_detection_accuracy": 1.0,
+          "dependency_detection_accuracy": 0.625,
+          "extraction_accuracy": 0.8125,
+          "module_count": 4,
+          "dependency_count": 8
+        },
+        {
+          "system": "regex",
+          "domain": "text processing",
+          "module_detection_accuracy": 1.0,
+          "dependency_detection_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 12,
+          "dependency_count": 13
+        },
+        {
+          "system": "syn",
+          "domain": "compiler/parser",
+          "module_detection_accuracy": 1.0,
+          "dependency_detection_accuracy": 0.968354,
+          "extraction_accuracy": 0.984177,
+          "module_count": 55,
+          "dependency_count": 316
+        },
+        {
+          "system": "h2",
+          "domain": "networking",
+          "module_detection_accuracy": 1.0,
+          "dependency_detection_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 52,
+          "dependency_count": 184
+        },
+        {
+          "system": "image",
+          "domain": "media pipeline",
+          "module_detection_accuracy": 1.0,
+          "dependency_detection_accuracy": 0.934363,
+          "extraction_accuracy": 0.967181,
+          "module_count": 71,
+          "dependency_count": 259
+        }
+      ]
+    },
+    {
+      "test_id": "P5-R2",
+      "category": "DesignGraph Reconstruction",
+      "status": "PASS",
+      "metrics": {
+        "design_validity": 1.0
+      },
+      "thresholds": {
+        "design_validity_gt": 0.9
+      },
+      "system_results": [
+        {
+          "system": "CodeEditor",
+          "domain": "editor",
+          "valid_design_graph": true,
+          "valid_design_graph_rate": 1.0,
+          "acyclic": true,
+          "service_boundaries": true
+        },
+        {
+          "system": "regex",
+          "domain": "text processing",
+          "valid_design_graph": true,
+          "valid_design_graph_rate": 1.0,
+          "acyclic": true,
+          "service_boundaries": true
+        },
+        {
+          "system": "syn",
+          "domain": "compiler/parser",
+          "valid_design_graph": true,
+          "valid_design_graph_rate": 1.0,
+          "acyclic": true,
+          "service_boundaries": true
+        },
+        {
+          "system": "h2",
+          "domain": "networking",
+          "valid_design_graph": true,
+          "valid_design_graph_rate": 1.0,
+          "acyclic": true,
+          "service_boundaries": true
+        },
+        {
+          "system": "image",
+          "domain": "media pipeline",
+          "valid_design_graph": true,
+          "valid_design_graph_rate": 1.0,
+          "acyclic": true,
+          "service_boundaries": true
+        }
+      ]
+    },
+    {
+      "test_id": "P5-R3",
+      "category": "Design Improvement",
+      "status": "PASS",
+      "metrics": {
+        "improvement_score": 0.118623
+      },
+      "thresholds": {
+        "improvement_score_gt": 0.05
+      },
+      "system_results": [
+        {
+          "system": "CodeEditor",
+          "domain": "editor",
+          "improvement_score": 0.214224,
+          "hotspot_module": "crate",
+          "refactor_candidates": 6
+        },
+        {
+          "system": "regex",
+          "domain": "text processing",
+          "improvement_score": 0.123521,
+          "hotspot_module": "regex::bytes",
+          "refactor_candidates": 1
+        },
+        {
+          "system": "syn",
+          "domain": "compiler/parser",
+          "improvement_score": 0.081295,
+          "hotspot_module": "expr",
+          "refactor_candidates": 22
+        },
+        {
+          "system": "h2",
+          "domain": "networking",
+          "improvement_score": 0.101726,
+          "hotspot_module": "hpack::huffman::table",
+          "refactor_candidates": 1
+        },
+        {
+          "system": "image",
+          "domain": "media pipeline",
+          "improvement_score": 0.072347,
+          "hotspot_module": "images::dynimage",
+          "refactor_candidates": 12
+        }
+      ]
+    },
+    {
+      "test_id": "P5-R4",
+      "category": "Code Regeneration",
+      "status": "PASS",
+      "metrics": {
+        "build_success_rate": 1.0
+      },
+      "thresholds": {
+        "build_success_rate_gt": 0.8
+      },
+      "system_results": [
+        {
+          "system": "CodeEditor",
+          "domain": "editor",
+          "build_success": true,
+          "generated_module": "/Users/chigenori/development/Design_BrainModel/.tmp_phase5_benchmark/CodeEditor/src/designbrain_generated.rs",
+          "validation_mode": "standalone regenerated artifact",
+          "validation_output": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        },
+        {
+          "system": "regex",
+          "domain": "text processing",
+          "build_success": true,
+          "generated_module": "/Users/chigenori/development/Design_BrainModel/.tmp_phase5_benchmark/regex/src/designbrain_generated.rs",
+          "validation_mode": "standalone regenerated artifact",
+          "validation_output": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        },
+        {
+          "system": "syn",
+          "domain": "compiler/parser",
+          "build_success": true,
+          "generated_module": "/Users/chigenori/development/Design_BrainModel/.tmp_phase5_benchmark/syn/src/designbrain_generated.rs",
+          "validation_mode": "standalone regenerated artifact",
+          "validation_output": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        },
+        {
+          "system": "h2",
+          "domain": "networking",
+          "build_success": true,
+          "generated_module": "/Users/chigenori/development/Design_BrainModel/.tmp_phase5_benchmark/h2/src/designbrain_generated.rs",
+          "validation_mode": "standalone regenerated artifact",
+          "validation_output": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        },
+        {
+          "system": "image",
+          "domain": "media pipeline",
+          "build_success": true,
+          "generated_module": "/Users/chigenori/development/Design_BrainModel/.tmp_phase5_benchmark/image/src/designbrain_generated.rs",
+          "validation_mode": "standalone regenerated artifact",
+          "validation_output": "running 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s\n\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s"
+        }
+      ]
+    },
+    {
+      "test_id": "P5-R5",
+      "category": "System Validation",
+      "status": "PASS",
+      "metrics": {
+        "test_pass_rate": 1.0
+      },
+      "thresholds": {
+        "test_pass_rate_gt": 0.85
+      },
+      "system_results": [
+        {
+          "system": "CodeEditor",
+          "domain": "editor",
+          "test_pass": true,
+          "build_success": true,
+          "validation_mode": "standalone regenerated artifact"
+        },
+        {
+          "system": "regex",
+          "domain": "text processing",
+          "test_pass": true,
+          "build_success": true,
+          "validation_mode": "standalone regenerated artifact"
+        },
+        {
+          "system": "syn",
+          "domain": "compiler/parser",
+          "test_pass": true,
+          "build_success": true,
+          "validation_mode": "standalone regenerated artifact"
+        },
+        {
+          "system": "h2",
+          "domain": "networking",
+          "test_pass": true,
+          "build_success": true,
+          "validation_mode": "standalone regenerated artifact"
+        },
+        {
+          "system": "image",
+          "domain": "media pipeline",
+          "test_pass": true,
+          "build_success": true,
+          "validation_mode": "standalone regenerated artifact"
+        }
+      ]
+    }
+  ]
+}

@@ -2,6 +2,8 @@ use ai_context::{AIContext, EvaluationState, ExperienceState, RuntimeState};
 use architecture_domain::ArchitectureState;
 use design_domain::{Architecture, DesignUnit, Layer};
 use evaluation_engine::EvaluationEngine;
+use knowledge_engine::KnowledgeGraph;
+use knowledge_lifecycle::LifecycleMetrics;
 use language_core::semantic_parser;
 
 #[test]
@@ -15,6 +17,10 @@ fn ai_context_is_deterministic_for_same_input() {
     let baseline = AIContext::new(
         architecture_state.clone(),
         semantic.clone(),
+        KnowledgeGraph::default(),
+        Default::default(),
+        Default::default(),
+        LifecycleMetrics::default(),
         ExperienceState::default(),
         EvaluationState {
             latest: Some(evaluation),
@@ -30,6 +36,10 @@ fn ai_context_is_deterministic_for_same_input() {
     let candidate = AIContext::new(
         architecture_state,
         semantic,
+        KnowledgeGraph::default(),
+        Default::default(),
+        Default::default(),
+        LifecycleMetrics::default(),
         ExperienceState::default(),
         EvaluationState {
             latest: Some(evaluation),

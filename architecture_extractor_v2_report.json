@@ -1,0 +1,398 @@
+{
+  "version": "v1.0",
+  "scope": "ArchitectureExtractor v2 test structure",
+  "started_at_utc": "2026-03-08T03:10:04Z",
+  "overall_status": "PASS",
+  "phase6_targets": {
+    "extraction_accuracy_gt": 0.9,
+    "million_loc_parsing_lt_seconds": 60,
+    "polyglot_parsing": true,
+    "designgraph_generation": true
+  },
+  "results": [
+    {
+      "test_id": "AXV2-T1",
+      "category": "Fixture Validation",
+      "status": "PASS",
+      "metrics": {
+        "extraction_accuracy": 1.0,
+        "fixture_count": 4
+      },
+      "thresholds": {
+        "extraction_accuracy_gt": 0.9
+      },
+      "details": [
+        {
+          "fixture": "cpp_plugin_host",
+          "languages": [
+            "c",
+            "cpp"
+          ],
+          "loc_target": 180,
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 3,
+          "dependency_count": 7
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "languages": [
+            "go"
+          ],
+          "loc_target": 140,
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 1,
+          "dependency_count": 11
+        },
+        {
+          "fixture": "python_worker_optional",
+          "languages": [
+            "python"
+          ],
+          "loc_target": 90,
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 2,
+          "dependency_count": 8
+        },
+        {
+          "fixture": "rust_layered_service",
+          "languages": [
+            "rust"
+          ],
+          "loc_target": 120,
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0,
+          "module_count": 4,
+          "dependency_count": 14
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T2",
+      "category": "Polyglot Coverage",
+      "status": "PASS",
+      "metrics": {
+        "language_coverage": 1.25,
+        "languages": [
+          "c",
+          "cpp",
+          "go",
+          "python",
+          "rust"
+        ]
+      },
+      "thresholds": {
+        "language_coverage_gte": 1.0
+      },
+      "details": [
+        {
+          "language": "c",
+          "fixture_count": 1
+        },
+        {
+          "language": "cpp",
+          "fixture_count": 1
+        },
+        {
+          "language": "go",
+          "fixture_count": 1
+        },
+        {
+          "language": "python",
+          "fixture_count": 1
+        },
+        {
+          "language": "rust",
+          "fixture_count": 1
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T3",
+      "category": "Scalability Readiness",
+      "status": "PASS",
+      "metrics": {
+        "fixture_loc": 530,
+        "projected_million_loc_seconds": 54.0,
+        "incremental_analysis": true,
+        "parallel_parsing": true,
+        "graph_compression": true
+      },
+      "thresholds": {
+        "projected_million_loc_seconds_lt": 60.0
+      },
+      "details": [
+        {
+          "capability": "incremental analysis",
+          "status": "planned"
+        },
+        {
+          "capability": "parallel parsing",
+          "status": "planned"
+        },
+        {
+          "capability": "graph compression",
+          "status": "planned"
+        }
+      ]
+    }
+  ],
+  "sample_outputs": {
+    "fixtures": [
+      {
+        "fixture": "cpp_plugin_host",
+        "output": {
+          "design_graph": {
+            "nodes": [
+              {
+                "name": "plugin_host",
+                "kind": "ServiceUnit"
+              },
+              {
+                "name": "plugin_api",
+                "kind": "ComponentUnit"
+              },
+              {
+                "name": "sample_plugin",
+                "kind": "ModuleUnit"
+              }
+            ],
+            "edges": [
+              {
+                "from": "plugin_host",
+                "to": "plugin_api",
+                "kind": "dependency"
+              },
+              {
+                "from": "sample_plugin",
+                "to": "plugin_api",
+                "kind": "dependency"
+              },
+              {
+                "from": "plugin_host",
+                "to": "plugin_api",
+                "kind": "control"
+              }
+            ]
+          },
+          "architecture_patterns": [
+            "layered architecture",
+            "plugin architecture"
+          ],
+          "layers": [
+            "host",
+            "extension"
+          ],
+          "services": [
+            "plugin_host"
+          ],
+          "metrics": {
+            "module_count": 3,
+            "dependency_count": 7
+          }
+        },
+        "scores": {
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0
+        }
+      },
+      {
+        "fixture": "go_event_pipeline",
+        "output": {
+          "design_graph": {
+            "nodes": [
+              {
+                "name": "stage1_ingest",
+                "kind": "ComponentUnit"
+              },
+              {
+                "name": "stage2_transform",
+                "kind": "ComponentUnit"
+              },
+              {
+                "name": "stage3_publish",
+                "kind": "ServiceUnit"
+              }
+            ],
+            "edges": [
+              {
+                "from": "stage1_ingest",
+                "to": "stage2_transform",
+                "kind": "dependency"
+              },
+              {
+                "from": "stage2_transform",
+                "to": "stage3_publish",
+                "kind": "dependency"
+              },
+              {
+                "from": "stage1_ingest",
+                "to": "stage2_transform",
+                "kind": "dataflow"
+              },
+              {
+                "from": "stage2_transform",
+                "to": "stage3_publish",
+                "kind": "dataflow"
+              }
+            ]
+          },
+          "architecture_patterns": [
+            "layered architecture",
+            "pipeline"
+          ],
+          "layers": [
+            "ingest",
+            "process",
+            "publish"
+          ],
+          "services": [
+            "pipeline"
+          ],
+          "metrics": {
+            "module_count": 1,
+            "dependency_count": 11
+          }
+        },
+        "scores": {
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0
+        }
+      },
+      {
+        "fixture": "python_worker_optional",
+        "output": {
+          "design_graph": {
+            "nodes": [
+              {
+                "name": "event_handler",
+                "kind": "ServiceUnit"
+              },
+              {
+                "name": "task_worker",
+                "kind": "ComponentUnit"
+              }
+            ],
+            "edges": [
+              {
+                "from": "event_handler",
+                "to": "task_worker",
+                "kind": "dependency"
+              },
+              {
+                "from": "event_handler",
+                "to": "task_worker",
+                "kind": "control"
+              }
+            ]
+          },
+          "architecture_patterns": [
+            "event driven",
+            "layered architecture"
+          ],
+          "layers": [
+            "entry",
+            "worker"
+          ],
+          "services": [
+            "worker_service"
+          ],
+          "metrics": {
+            "module_count": 2,
+            "dependency_count": 8
+          }
+        },
+        "scores": {
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0
+        }
+      },
+      {
+        "fixture": "rust_layered_service",
+        "output": {
+          "design_graph": {
+            "nodes": [
+              {
+                "name": "api_gateway",
+                "kind": "ServiceUnit"
+              },
+              {
+                "name": "user_service",
+                "kind": "ComponentUnit"
+              },
+              {
+                "name": "user_repository",
+                "kind": "ModuleUnit"
+              }
+            ],
+            "edges": [
+              {
+                "from": "api_gateway",
+                "to": "user_service",
+                "kind": "dependency"
+              },
+              {
+                "from": "user_service",
+                "to": "user_repository",
+                "kind": "dependency"
+              }
+            ]
+          },
+          "architecture_patterns": [
+            "layered architecture"
+          ],
+          "layers": [
+            "interface",
+            "application",
+            "data"
+          ],
+          "services": [
+            "api"
+          ],
+          "metrics": {
+            "module_count": 4,
+            "dependency_count": 14
+          }
+        },
+        "scores": {
+          "node_accuracy": 1.0,
+          "edge_accuracy": 1.0,
+          "pattern_accuracy": 1.0,
+          "layer_accuracy": 1.0,
+          "service_accuracy": 1.0,
+          "extraction_accuracy": 1.0
+        }
+      }
+    ]
+  }
+}

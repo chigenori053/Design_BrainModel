@@ -1,0 +1,143 @@
+{
+  "started_at_utc": "2026-03-08T01:59:32Z",
+  "dimension": 512,
+  "memory_count": 10000,
+  "beam_width": 20,
+  "overall_status": "PASS",
+  "architecture_validated": true,
+  "success_criteria": {
+    "recall_fidelity_gt": 0.8,
+    "search_improvement_gt": 0.1,
+    "recall_latency_ms_lt": 50.0,
+    "projection_stability_maintained": true
+  },
+  "results": [
+    {
+      "test_id": "MS-V1",
+      "category": "Memory Storage",
+      "status": "PASS",
+      "metrics": {
+        "write_latency_ms_p95": 0.001709,
+        "read_latency_ms_p95": 0.000125,
+        "memory_integrity_failures": 0,
+        "read_error_rate": 0.0
+      },
+      "thresholds": {
+        "read_error_rate_lt": 1e-06
+      }
+    },
+    {
+      "test_id": "MS-V2",
+      "category": "Resonance Recall",
+      "status": "PASS",
+      "metrics": {
+        "top_k_recall_accuracy": 0.965,
+        "ranking_stability": 0.944
+      },
+      "thresholds": {
+        "top_k_recall_accuracy_gt": 0.8
+      }
+    },
+    {
+      "test_id": "MS-V3",
+      "category": "Search Acceleration",
+      "status": "PASS",
+      "metrics": {
+        "search_cost_reduction": 0.992187,
+        "solution_quality_ratio": 1.0,
+        "convergence_step_improvement": 0.992187
+      },
+      "thresholds": {
+        "search_cost_reduction_gt": 0.1
+      }
+    },
+    {
+      "test_id": "MS-V4",
+      "category": "Knowledge Integration",
+      "status": "PASS",
+      "metrics": {
+        "knowledge_recall_rate": 1.0
+      },
+      "thresholds": {
+        "knowledge_recall_rate_gt": 0.7
+      }
+    },
+    {
+      "test_id": "MS-V5",
+      "category": "Persistence",
+      "status": "PASS",
+      "metrics": {
+        "recall_deviation": 0.0,
+        "memory_integrity_failures": 0
+      },
+      "thresholds": {
+        "recall_deviation_lt": 0.01
+      }
+    },
+    {
+      "test_id": "MS-V6",
+      "category": "Scalability",
+      "status": "PASS",
+      "metrics": {
+        "runs": [
+          {
+            "memory_count": 10000,
+            "recall_latency_ms_p95": 0.017166,
+            "index_build_time_ms": 0.518083,
+            "estimated_memory_usage_mb": 1.678
+          },
+          {
+            "memory_count": 100000,
+            "recall_latency_ms_p95": 0.072125,
+            "index_build_time_ms": 4.7255,
+            "estimated_memory_usage_mb": 16.785
+          },
+          {
+            "memory_count": 1000000,
+            "recall_latency_ms_p95": 0.060375,
+            "index_build_time_ms": 46.691458,
+            "estimated_memory_usage_mb": 167.847
+          }
+        ]
+      },
+      "thresholds": {
+        "recall_latency_ms_p95_lt": 50.0
+      }
+    },
+    {
+      "test_id": "MS-IS",
+      "category": "Interference Stability",
+      "status": "PASS",
+      "metrics": {
+        "variance": 3.281e-05,
+        "numerical_stability": true
+      },
+      "thresholds": {
+        "variance_lt": 0.001
+      }
+    },
+    {
+      "test_id": "MS-PT",
+      "category": "Projection",
+      "status": "PASS",
+      "metrics": {
+        "information_loss": 0.0,
+        "projection_stability": 1.0
+      },
+      "thresholds": {
+        "information_loss_lt": 0.1
+      }
+    },
+    {
+      "test_id": "MS-RM",
+      "category": "Reasoning Memory",
+      "status": "PASS",
+      "metrics": {
+        "convergence_improvement": 0.066618
+      },
+      "thresholds": {
+        "convergence_improvement_gt": 0.05
+      }
+    }
+  ]
+}

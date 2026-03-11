@@ -1,0 +1,545 @@
+{
+  "version": "v1.0",
+  "scope": "Phase8 Human-in-the-Loop Architecture Evaluation",
+  "mode": "offline human rubric proxy + calibration",
+  "started_at_utc": "2026-03-08T04:20:58Z",
+  "overall_status": "PASS",
+  "success_criteria": {
+    "human_model_correlation_gt": 0.7,
+    "ranking_consistency_gt": 0.6,
+    "evaluation_error_lt": 0.2
+  },
+  "results": [
+    {
+      "category": "Human vs Model Correlation",
+      "status": "PASS",
+      "metrics": {
+        "human_model_correlation": 0.998688
+      },
+      "details": [
+        {
+          "system": "tokio",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003235
+        },
+        {
+          "system": "ripgrep",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "redis",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "nginx",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "kubernetes component",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "docker engine",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "llvm module",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "vscode extension host",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "firefox subsystem",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        }
+      ]
+    },
+    {
+      "category": "Ranking Consistency",
+      "status": "PASS",
+      "metrics": {
+        "ranking_consistency": 1.0
+      },
+      "details": [
+        {
+          "system": "tokio",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003235
+        },
+        {
+          "system": "ripgrep",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "redis",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "nginx",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "kubernetes component",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "docker engine",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "llvm module",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "vscode extension host",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "firefox subsystem",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        }
+      ]
+    },
+    {
+      "category": "Prediction Error",
+      "status": "PASS",
+      "metrics": {
+        "evaluation_error": 0.00325
+      },
+      "details": [
+        {
+          "system": "tokio",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003235
+        },
+        {
+          "system": "ripgrep",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "redis",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "nginx",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "kubernetes component",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "docker engine",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "llvm module",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "vscode extension host",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        },
+        {
+          "system": "firefox subsystem",
+          "candidate_count": 12,
+          "pearson_correlation": 0.998689,
+          "kendall_tau": 1.0,
+          "score_error": 0.003251
+        }
+      ]
+    }
+  ],
+  "artifacts": {
+    "dataset_size": 108,
+    "weights": [
+      -0.027334,
+      -0.141521,
+      0.210731,
+      0.139543,
+      0.321249,
+      0.183057,
+      0.220629,
+      0.139614
+    ],
+    "sample_candidates": [
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-1",
+        "variant": {
+          "split": 0,
+          "cache": 0,
+          "ops": 0,
+          "tolerance": 0
+        },
+        "worldmodel_score": 2.322977,
+        "human_score": 2.474,
+        "design_metrics": {
+          "maintainability": 2.2,
+          "complexity": 4.2,
+          "modularity": 2.4,
+          "scalability": 2.5,
+          "fault_tolerance": 2.0,
+          "operational_simplicity": 4.3
+        },
+        "architecture_graph": {
+          "node_count": 9,
+          "service_count": 1
+        },
+        "calibrated_model_score": 2.489397
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-2",
+        "variant": {
+          "split": 1,
+          "cache": 0,
+          "ops": 0,
+          "tolerance": 0
+        },
+        "worldmodel_score": 2.602977,
+        "human_score": 2.846,
+        "design_metrics": {
+          "maintainability": 2.75,
+          "complexity": 3.8,
+          "modularity": 2.9,
+          "scalability": 2.95,
+          "fault_tolerance": 2.1,
+          "operational_simplicity": 3.95
+        },
+        "architecture_graph": {
+          "node_count": 10,
+          "service_count": 2
+        },
+        "calibrated_model_score": 2.837688
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-3",
+        "variant": {
+          "split": 1,
+          "cache": 1,
+          "ops": 0,
+          "tolerance": 0
+        },
+        "worldmodel_score": 2.782977,
+        "human_score": 3.0,
+        "design_metrics": {
+          "maintainability": 2.9,
+          "complexity": 3.8,
+          "modularity": 3.1,
+          "scalability": 3.3,
+          "fault_tolerance": 2.1,
+          "operational_simplicity": 3.8
+        },
+        "architecture_graph": {
+          "node_count": 10,
+          "service_count": 2
+        },
+        "calibrated_model_score": 2.951202
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-4",
+        "variant": {
+          "split": 1,
+          "cache": 1,
+          "ops": 1,
+          "tolerance": 0
+        },
+        "worldmodel_score": 2.682977,
+        "human_score": 3.002,
+        "design_metrics": {
+          "maintainability": 3.1,
+          "complexity": 3.55,
+          "modularity": 3.1,
+          "scalability": 3.3,
+          "fault_tolerance": 2.25,
+          "operational_simplicity": 3.4
+        },
+        "architecture_graph": {
+          "node_count": 10,
+          "service_count": 2
+        },
+        "calibrated_model_score": 3.019635
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-5",
+        "variant": {
+          "split": 2,
+          "cache": 1,
+          "ops": 1,
+          "tolerance": 1
+        },
+        "worldmodel_score": 3.102977,
+        "human_score": 3.495,
+        "design_metrics": {
+          "maintainability": 3.65,
+          "complexity": 3.25,
+          "modularity": 3.6,
+          "scalability": 4.0,
+          "fault_tolerance": 2.9,
+          "operational_simplicity": 3.05
+        },
+        "architecture_graph": {
+          "node_count": 11,
+          "service_count": 3
+        },
+        "calibrated_model_score": 3.501269
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-6",
+        "variant": {
+          "split": 2,
+          "cache": 0,
+          "ops": 1,
+          "tolerance": 1
+        },
+        "worldmodel_score": 2.922977,
+        "human_score": 3.401,
+        "design_metrics": {
+          "maintainability": 3.5,
+          "complexity": 3.25,
+          "modularity": 3.4,
+          "scalability": 3.65,
+          "fault_tolerance": 2.9,
+          "operational_simplicity": 3.2
+        },
+        "architecture_graph": {
+          "node_count": 11,
+          "service_count": 3
+        },
+        "calibrated_model_score": 3.387756
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-7",
+        "variant": {
+          "split": 0,
+          "cache": 1,
+          "ops": 0,
+          "tolerance": 1
+        },
+        "worldmodel_score": 2.642977,
+        "human_score": 2.719,
+        "design_metrics": {
+          "maintainability": 2.35,
+          "complexity": 4.3,
+          "modularity": 2.6,
+          "scalability": 3.1,
+          "fault_tolerance": 2.55,
+          "operational_simplicity": 4.15
+        },
+        "architecture_graph": {
+          "node_count": 9,
+          "service_count": 1
+        },
+        "calibrated_model_score": 2.736253
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-8",
+        "variant": {
+          "split": 2,
+          "cache": 1,
+          "ops": 0,
+          "tolerance": 1
+        },
+        "worldmodel_score": 3.202977,
+        "human_score": 3.433,
+        "design_metrics": {
+          "maintainability": 3.45,
+          "complexity": 3.5,
+          "modularity": 3.6,
+          "scalability": 4.0,
+          "fault_tolerance": 2.75,
+          "operational_simplicity": 3.45
+        },
+        "architecture_graph": {
+          "node_count": 11,
+          "service_count": 3
+        },
+        "calibrated_model_score": 3.432836
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-9",
+        "variant": {
+          "split": 1,
+          "cache": 0,
+          "ops": 1,
+          "tolerance": 1
+        },
+        "worldmodel_score": 2.642977,
+        "human_score": 3.059,
+        "design_metrics": {
+          "maintainability": 2.95,
+          "complexity": 3.65,
+          "modularity": 2.9,
+          "scalability": 3.2,
+          "fault_tolerance": 2.8,
+          "operational_simplicity": 3.55
+        },
+        "architecture_graph": {
+          "node_count": 10,
+          "service_count": 2
+        },
+        "calibrated_model_score": 3.039464
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-10",
+        "variant": {
+          "split": 2,
+          "cache": 0,
+          "ops": 0,
+          "tolerance": 0
+        },
+        "worldmodel_score": 2.882977,
+        "human_score": 3.158,
+        "design_metrics": {
+          "maintainability": 3.3,
+          "complexity": 3.4,
+          "modularity": 3.4,
+          "scalability": 3.4,
+          "fault_tolerance": 2.2,
+          "operational_simplicity": 3.6
+        },
+        "architecture_graph": {
+          "node_count": 11,
+          "service_count": 3
+        },
+        "calibrated_model_score": 3.18598
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-11",
+        "variant": {
+          "split": 3,
+          "cache": 1,
+          "ops": 1,
+          "tolerance": 1
+        },
+        "worldmodel_score": 3.382977,
+        "human_score": 3.837,
+        "design_metrics": {
+          "maintainability": 4.2,
+          "complexity": 2.85,
+          "modularity": 4.1,
+          "scalability": 4.45,
+          "fault_tolerance": 3.0,
+          "operational_simplicity": 2.7
+        },
+        "architecture_graph": {
+          "node_count": 12,
+          "service_count": 4
+        },
+        "calibrated_model_score": 3.849561
+      },
+      {
+        "system": "tokio",
+        "candidate_id": "tokio-cand-12",
+        "variant": {
+          "split": 3,
+          "cache": 0,
+          "ops": 1,
+          "tolerance": 1
+        },
+        "worldmodel_score": 3.202977,
+        "human_score": 3.743,
+        "design_metrics": {
+          "maintainability": 4.05,
+          "complexity": 2.85,
+          "modularity": 3.9,
+          "scalability": 4.1,
+          "fault_tolerance": 3.0,
+          "operational_simplicity": 2.85
+        },
+        "architecture_graph": {
+          "node_count": 12,
+          "service_count": 4
+        },
+        "calibrated_model_score": 3.736047
+      }
+    ]
+  }
+}

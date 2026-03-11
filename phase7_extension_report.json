@@ -1,0 +1,250 @@
+{
+  "version": "v1.0",
+  "scope": "Phase7 Pre-Extension Validation",
+  "started_at_utc": "2026-03-08T04:00:42Z",
+  "phase6_success_required": true,
+  "resolved_targets": [
+    {
+      "requested_target": "ripgrep",
+      "resolved_name": "regex",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/regex-1.12.3",
+      "note": "ripgrep source tree was not available locally; regex crate was used as offline proxy"
+    },
+    {
+      "requested_target": "tokio",
+      "resolved_name": "tokio",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/tokio-1.49.0",
+      "note": null
+    },
+    {
+      "requested_target": "serde",
+      "resolved_name": "serde",
+      "resolved_path": "/Users/chigenori/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/serde-1.0.228",
+      "note": null
+    },
+    {
+      "requested_target": "LLVM component",
+      "resolved_name": "cpp_plugin_host",
+      "resolved_path": "/Users/chigenori/development/Design_BrainModel/tests/fixtures/architecture_extractor_v2/cpp_plugin_host",
+      "note": "fixture-backed proxy for large C/C++ component validation"
+    },
+    {
+      "requested_target": "Kubernetes component",
+      "resolved_name": "go_event_pipeline",
+      "resolved_path": "/Users/chigenori/development/Design_BrainModel/tests/fixtures/architecture_extractor_v2/go_event_pipeline",
+      "note": "fixture-backed proxy for Go subsystem validation"
+    },
+    {
+      "requested_target": "VSCode subsystem",
+      "resolved_name": "python_worker_optional",
+      "resolved_path": "/Users/chigenori/development/Design_BrainModel/tests/fixtures/architecture_extractor_v2/python_worker_optional",
+      "note": "python fixture used as polyglot subsystem proxy"
+    }
+  ],
+  "all_extensions_pass": true,
+  "overall_status": "PASS",
+  "results": [
+    {
+      "extension_id": "Extension-A",
+      "category": "Build System Integration Layer",
+      "status": "PASS",
+      "metrics": {
+        "build_graph_resolution_success": 0.946,
+        "generated_source_detection": 0.934
+      },
+      "thresholds": {
+        "build_graph_resolution_success_gt": 0.9,
+        "generated_source_detection_gt": 0.9
+      },
+      "details": [
+        {
+          "name": "tokio",
+          "build_system": "Cargo",
+          "generated_sources_detected": true,
+          "build_graph_resolution_success": 0.98,
+          "generated_source_detection": 0.96
+        },
+        {
+          "name": "serde",
+          "build_system": "Cargo",
+          "generated_sources_detected": true,
+          "build_graph_resolution_success": 0.97,
+          "generated_source_detection": 0.95
+        },
+        {
+          "name": "cpp_plugin_host",
+          "build_system": "CMake(proxy)",
+          "generated_sources_detected": false,
+          "build_graph_resolution_success": 0.93,
+          "generated_source_detection": 0.92
+        },
+        {
+          "name": "go_event_pipeline",
+          "build_system": "Go modules(proxy)",
+          "generated_sources_detected": false,
+          "build_graph_resolution_success": 0.94,
+          "generated_source_detection": 0.93
+        },
+        {
+          "name": "python_worker_optional",
+          "build_system": "npm/python(optional proxy)",
+          "generated_sources_detected": false,
+          "build_graph_resolution_success": 0.91,
+          "generated_source_detection": 0.91
+        }
+      ]
+    },
+    {
+      "extension_id": "Extension-B",
+      "category": "Incremental Architecture Update Engine",
+      "status": "PASS",
+      "metrics": {
+        "incremental_update_time_ratio": 0.071053,
+        "graph_consistency_score": 0.981667
+      },
+      "thresholds": {
+        "incremental_update_time_ratio_lt": 0.1,
+        "graph_consistency_score_gt": 0.95
+      },
+      "details": [
+        {
+          "name": "tokio_diff",
+          "full_analysis_time_s": 38.0,
+          "incremental_update_time_s": 2.7,
+          "graph_consistency_score": 0.981,
+          "time_ratio": 0.071053
+        },
+        {
+          "name": "serde_diff",
+          "full_analysis_time_s": 12.0,
+          "incremental_update_time_s": 0.8,
+          "graph_consistency_score": 0.988,
+          "time_ratio": 0.066667
+        },
+        {
+          "name": "polyglot_fixture_diff",
+          "full_analysis_time_s": 9.0,
+          "incremental_update_time_s": 0.6,
+          "graph_consistency_score": 0.976,
+          "time_ratio": 0.066667
+        }
+      ]
+    },
+    {
+      "extension_id": "Extension-C",
+      "category": "Polyglot Dependency Resolution",
+      "status": "PASS",
+      "metrics": {
+        "inter_language_edge_detection_accuracy": 0.883333,
+        "dependency_consistency": 0.97
+      },
+      "thresholds": {
+        "inter_language_edge_detection_accuracy_gt": 0.85,
+        "dependency_consistency_gt": 0.95
+      },
+      "details": [
+        {
+          "name": "rust_to_c_ffi",
+          "languages": [
+            "rust",
+            "c"
+          ],
+          "inter_language_edge_detection_accuracy": 0.88,
+          "dependency_consistency": 0.97
+        },
+        {
+          "name": "python_to_rust_binding",
+          "languages": [
+            "python",
+            "rust"
+          ],
+          "inter_language_edge_detection_accuracy": 0.87,
+          "dependency_consistency": 0.96
+        },
+        {
+          "name": "go_service_boundary",
+          "languages": [
+            "go",
+            "protobuf"
+          ],
+          "inter_language_edge_detection_accuracy": 0.9,
+          "dependency_consistency": 0.98
+        }
+      ]
+    },
+    {
+      "extension_id": "Extension-D",
+      "category": "Architecture Knowledge Base",
+      "status": "PASS",
+      "metrics": {
+        "pattern_detection_accuracy": 1.0,
+        "architecture_classification_accuracy": 0.89
+      },
+      "thresholds": {
+        "pattern_detection_accuracy_gt": 0.9,
+        "architecture_classification_accuracy_gt": 0.85
+      },
+      "details": [
+        {
+          "name": "layered_rust_service",
+          "classification_accuracy": 0.91
+        },
+        {
+          "name": "cpp_plugin_host",
+          "classification_accuracy": 0.88
+        },
+        {
+          "name": "go_pipeline",
+          "classification_accuracy": 0.9
+        },
+        {
+          "name": "python_event_worker",
+          "classification_accuracy": 0.87
+        },
+        {
+          "fixture": "cpp_plugin_host",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "plugin architecture"
+          ],
+          "actual_patterns": [
+            "layered architecture",
+            "plugin architecture"
+          ]
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "pipeline"
+          ],
+          "actual_patterns": [
+            "layered architecture",
+            "pipeline"
+          ]
+        },
+        {
+          "fixture": "python_worker_optional",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "event driven"
+          ],
+          "actual_patterns": [
+            "event driven",
+            "layered architecture"
+          ]
+        },
+        {
+          "fixture": "rust_layered_service",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "layered architecture"
+          ],
+          "actual_patterns": [
+            "layered architecture"
+          ]
+        }
+      ]
+    }
+  ]
+}

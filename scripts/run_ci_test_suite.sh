@@ -24,6 +24,14 @@ run_engine() {
   run_cargo_test -p memory_graph --test memory --locked
 }
 
+run_knowledge_engine() {
+  run_cargo_test -p knowledge_engine --test knowledge_retrieval --locked
+  run_cargo_test -p knowledge_engine --test knowledge_parsing --locked
+  run_cargo_test -p knowledge_engine --test knowledge_validation --locked
+  run_cargo_test -p knowledge_engine --test knowledge_reasoning_integration --locked
+  run_cargo_test -p knowledge_engine --test knowledge_search_impact --locked
+}
+
 run_determinism() {
   run_cargo_test -p design_search_engine --test determinism --locked -- --test-threads=1
   run_cargo_test -p ai_context --test determinism --locked -- --test-threads=1
@@ -48,6 +56,9 @@ case "${category}" in
   engine)
     run_engine
     ;;
+  knowledge_engine)
+    run_knowledge_engine
+    ;;
   determinism)
     run_determinism
     ;;
@@ -60,6 +71,7 @@ case "${category}" in
   all)
     run_invariants
     run_engine
+    run_knowledge_engine
     run_determinism
     run_integration
     ;;

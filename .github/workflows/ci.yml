@@ -90,6 +90,9 @@ jobs:
       - name: engine suite
         run: bash scripts/run_ci_test_suite.sh engine
 
+      - name: knowledge engine suite
+        run: bash scripts/run_ci_test_suite.sh knowledge_engine
+
   tier2_math:
     name: Tier2 Mathematical Property
     needs: [tier1_unit]

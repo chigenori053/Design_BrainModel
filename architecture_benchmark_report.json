@@ -1,0 +1,794 @@
+{
+  "version": "ADBS v1.0",
+  "phase": "Phase 2",
+  "started_at_utc": "2026-03-08T02:08:30Z",
+  "dataset_size": 50000,
+  "design_cases": [
+    {
+      "case_id": "TC1",
+      "problem": "REST API backend"
+    },
+    {
+      "case_id": "TC2",
+      "problem": "Microservice architecture"
+    },
+    {
+      "case_id": "TC3",
+      "problem": "Data processing pipeline"
+    },
+    {
+      "case_id": "TC4",
+      "problem": "Game engine subsystem"
+    },
+    {
+      "case_id": "TC5",
+      "problem": "Compiler component"
+    }
+  ],
+  "success_criteria": {
+    "design_recall_accuracy_gt": 0.75,
+    "search_improvement_gt": 0.2,
+    "valid_graph_rate_gt": 0.9,
+    "pareto_frontier_size_gte": 3
+  },
+  "aggregate_metrics": {
+    "design_recall_accuracy": 1.0,
+    "search_improvement": 0.8125,
+    "valid_graph_rate": 1.0,
+    "pareto_frontier_size": 6
+  },
+  "overall_status": "PASS",
+  "practical_design_ai_signal": true,
+  "results": [
+    {
+      "test_id": "ADBS-1",
+      "test_name": "Design Recall",
+      "status": "PASS",
+      "metrics": {
+        "design_recall_accuracy": 1.0,
+        "semantic_match_score": 1.0
+      },
+      "thresholds": {
+        "design_recall_accuracy_gt": 0.75
+      },
+      "case_results": [
+        {
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "recalled_units": [
+            "routing_layer",
+            "service_layer",
+            "rest_controller",
+            "data_repository",
+            "authentication_middleware"
+          ],
+          "top_k_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "recalled_units": [
+            "service_registry",
+            "observability_stack",
+            "api_gateway",
+            "authentication_service",
+            "message_broker"
+          ],
+          "top_k_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "recalled_units": [
+            "schema_validator",
+            "stream_processor",
+            "workflow_scheduler",
+            "analytics_store",
+            "ingestion_adapter"
+          ],
+          "top_k_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "recalled_units": [
+            "input_mapper",
+            "entity_component_system",
+            "rendering_system",
+            "physics_engine",
+            "asset_pipeline"
+          ],
+          "top_k_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        },
+        {
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "recalled_units": [
+            "lexer",
+            "ir_builder",
+            "parser",
+            "optimization_pass_manager",
+            "semantic_analyzer"
+          ],
+          "top_k_recall_accuracy": 1.0,
+          "semantic_match_score": 1.0
+        }
+      ]
+    },
+    {
+      "test_id": "ADBS-2",
+      "test_name": "Architecture Search",
+      "status": "PASS",
+      "metrics": {
+        "search_improvement": 0.8125,
+        "convergence_step_improvement": 0.8125,
+        "solution_quality_ratio": 1.0
+      },
+      "thresholds": {
+        "search_improvement_gt": 0.2
+      },
+      "case_results": [
+        {
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "search_cost_reduction": 0.8125,
+          "convergence_step_improvement": 0.8125,
+          "solution_quality_ratio": 1.0
+        },
+        {
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "search_cost_reduction": 0.8125,
+          "convergence_step_improvement": 0.8125,
+          "solution_quality_ratio": 1.0
+        },
+        {
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "search_cost_reduction": 0.8125,
+          "convergence_step_improvement": 0.8125,
+          "solution_quality_ratio": 1.0
+        },
+        {
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "search_cost_reduction": 0.8125,
+          "convergence_step_improvement": 0.8125,
+          "solution_quality_ratio": 1.0
+        },
+        {
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "search_cost_reduction": 0.8125,
+          "convergence_step_improvement": 0.8125,
+          "solution_quality_ratio": 1.0
+        }
+      ]
+    },
+    {
+      "test_id": "ADBS-3",
+      "test_name": "Graph Construction",
+      "status": "PASS",
+      "metrics": {
+        "valid_graph_rate": 1.0
+      },
+      "thresholds": {
+        "valid_graph_rate_gt": 0.9
+      },
+      "case_results": [
+        {
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "valid_graph": true,
+          "details": {
+            "dependency_ok": true,
+            "coverage_ok": true,
+            "acyclic": true,
+            "relation_kinds": {
+              "dependency": true,
+              "composition": true,
+              "communication": true
+            }
+          }
+        },
+        {
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "valid_graph": true,
+          "details": {
+            "dependency_ok": true,
+            "coverage_ok": true,
+            "acyclic": true,
+            "relation_kinds": {
+              "dependency": true,
+              "composition": true,
+              "communication": true
+            }
+          }
+        },
+        {
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "valid_graph": true,
+          "details": {
+            "dependency_ok": true,
+            "coverage_ok": true,
+            "acyclic": true,
+            "relation_kinds": {
+              "dependency": true,
+              "composition": true,
+              "communication": true
+            }
+          }
+        },
+        {
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "valid_graph": true,
+          "details": {
+            "dependency_ok": true,
+            "coverage_ok": true,
+            "acyclic": true,
+            "relation_kinds": {
+              "dependency": true,
+              "composition": true,
+              "communication": true
+            }
+          }
+        },
+        {
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "valid_graph": true,
+          "details": {
+            "dependency_ok": true,
+            "coverage_ok": true,
+            "acyclic": true,
+            "relation_kinds": {
+              "dependency": true,
+              "composition": true,
+              "communication": true
+            }
+          }
+        }
+      ]
+    },
+    {
+      "test_id": "ADBS-4",
+      "test_name": "Design Optimization",
+      "status": "PASS",
+      "metrics": {
+        "pareto_frontier_size": 6
+      },
+      "thresholds": {
+        "pareto_frontier_size_gte": 3
+      },
+      "case_results": [
+        {
+          "case_id": "TC1",
+          "problem": "REST API backend",
+          "pareto_frontier_size": 6,
+          "pareto_solutions": [
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "service_layer",
+                "data_repository",
+                "authentication_middleware"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.705,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.6594
+            },
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "service_layer",
+                "tc1_module_6",
+                "authentication_middleware"
+              ],
+              "objectives": {
+                "performance": 0.59,
+                "latency": 0.685,
+                "complexity": 0.615,
+                "resource_cost": 0.775
+              },
+              "score": 0.6586
+            },
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "service_layer",
+                "data_repository",
+                "tc1_module_8"
+              ],
+              "objectives": {
+                "performance": 0.63,
+                "latency": 0.685,
+                "complexity": 0.565,
+                "resource_cost": 0.745
+              },
+              "score": 0.6554
+            },
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "tc1_module_10",
+                "data_repository",
+                "authentication_middleware"
+              ],
+              "objectives": {
+                "performance": 0.61,
+                "latency": 0.735,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.655
+            },
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "service_layer",
+                "data_repository",
+                "tc1_module_7"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.655,
+                "complexity": 0.515,
+                "resource_cost": 0.675
+              },
+              "score": 0.639
+            },
+            {
+              "units": [
+                "rest_controller",
+                "routing_layer",
+                "service_layer",
+                "tc1_module_11",
+                "data_repository",
+                "authentication_middleware"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.735,
+                "complexity": 0.4,
+                "resource_cost": 0.63
+              },
+              "score": 0.6198
+            }
+          ]
+        },
+        {
+          "case_id": "TC2",
+          "problem": "Microservice architecture",
+          "pareto_frontier_size": 6,
+          "pareto_solutions": [
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "message_broker",
+                "observability_stack",
+                "authentication_service"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.705,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.6594
+            },
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "message_broker",
+                "tc2_module_6",
+                "authentication_service"
+              ],
+              "objectives": {
+                "performance": 0.59,
+                "latency": 0.685,
+                "complexity": 0.615,
+                "resource_cost": 0.775
+              },
+              "score": 0.6586
+            },
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "message_broker",
+                "observability_stack",
+                "tc2_module_8"
+              ],
+              "objectives": {
+                "performance": 0.63,
+                "latency": 0.685,
+                "complexity": 0.565,
+                "resource_cost": 0.745
+              },
+              "score": 0.6554
+            },
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "tc2_module_10",
+                "observability_stack",
+                "authentication_service"
+              ],
+              "objectives": {
+                "performance": 0.61,
+                "latency": 0.735,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.655
+            },
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "message_broker",
+                "observability_stack",
+                "tc2_module_7"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.655,
+                "complexity": 0.515,
+                "resource_cost": 0.675
+              },
+              "score": 0.639
+            },
+            {
+              "units": [
+                "api_gateway",
+                "service_registry",
+                "message_broker",
+                "tc2_module_11",
+                "observability_stack",
+                "authentication_service"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.735,
+                "complexity": 0.4,
+                "resource_cost": 0.63
+              },
+              "score": 0.6198
+            }
+          ]
+        },
+        {
+          "case_id": "TC3",
+          "problem": "Data processing pipeline",
+          "pareto_frontier_size": 6,
+          "pareto_solutions": [
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "stream_processor",
+                "workflow_scheduler",
+                "analytics_store"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.705,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.669
+            },
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "stream_processor",
+                "workflow_scheduler",
+                "tc3_module_8"
+              ],
+              "objectives": {
+                "performance": 0.66,
+                "latency": 0.685,
+                "complexity": 0.565,
+                "resource_cost": 0.745
+              },
+              "score": 0.665
+            },
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "stream_processor",
+                "tc3_module_6",
+                "analytics_store"
+              ],
+              "objectives": {
+                "performance": 0.62,
+                "latency": 0.66,
+                "complexity": 0.615,
+                "resource_cost": 0.775
+              },
+              "score": 0.6612
+            },
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "tc3_module_10",
+                "workflow_scheduler",
+                "analytics_store"
+              ],
+              "objectives": {
+                "performance": 0.61,
+                "latency": 0.735,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.655
+            },
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "stream_processor",
+                "workflow_scheduler",
+                "tc3_module_7"
+              ],
+              "objectives": {
+                "performance": 0.71,
+                "latency": 0.655,
+                "complexity": 0.515,
+                "resource_cost": 0.675
+              },
+              "score": 0.6486
+            },
+            {
+              "units": [
+                "ingestion_adapter",
+                "schema_validator",
+                "stream_processor",
+                "tc3_module_11",
+                "workflow_scheduler",
+                "analytics_store"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.735,
+                "complexity": 0.4,
+                "resource_cost": 0.63
+              },
+              "score": 0.6294
+            }
+          ]
+        },
+        {
+          "case_id": "TC4",
+          "problem": "Game engine subsystem",
+          "pareto_frontier_size": 6,
+          "pareto_solutions": [
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "input_mapper",
+                "asset_pipeline",
+                "entity_component_system"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.68,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.662
+            },
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "input_mapper",
+                "tc4_module_6",
+                "entity_component_system"
+              ],
+              "objectives": {
+                "performance": 0.62,
+                "latency": 0.66,
+                "complexity": 0.615,
+                "resource_cost": 0.775
+              },
+              "score": 0.6612
+            },
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "input_mapper",
+                "asset_pipeline",
+                "tc4_module_8"
+              ],
+              "objectives": {
+                "performance": 0.66,
+                "latency": 0.66,
+                "complexity": 0.565,
+                "resource_cost": 0.745
+              },
+              "score": 0.658
+            },
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "tc4_module_10",
+                "asset_pipeline",
+                "entity_component_system"
+              ],
+              "objectives": {
+                "performance": 0.64,
+                "latency": 0.71,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.6576
+            },
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "input_mapper",
+                "asset_pipeline",
+                "tc4_module_7"
+              ],
+              "objectives": {
+                "performance": 0.71,
+                "latency": 0.63,
+                "complexity": 0.515,
+                "resource_cost": 0.675
+              },
+              "score": 0.6416
+            },
+            {
+              "units": [
+                "rendering_system",
+                "physics_engine",
+                "input_mapper",
+                "tc4_module_11",
+                "asset_pipeline",
+                "entity_component_system"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.71,
+                "complexity": 0.4,
+                "resource_cost": 0.63
+              },
+              "score": 0.6224
+            }
+          ]
+        },
+        {
+          "case_id": "TC5",
+          "problem": "Compiler component",
+          "pareto_frontier_size": 6,
+          "pareto_solutions": [
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "semantic_analyzer",
+                "ir_builder",
+                "optimization_pass_manager"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.705,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.6594
+            },
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "semantic_analyzer",
+                "tc5_module_6",
+                "optimization_pass_manager"
+              ],
+              "objectives": {
+                "performance": 0.59,
+                "latency": 0.685,
+                "complexity": 0.615,
+                "resource_cost": 0.775
+              },
+              "score": 0.6586
+            },
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "semantic_analyzer",
+                "ir_builder",
+                "tc5_module_8"
+              ],
+              "objectives": {
+                "performance": 0.63,
+                "latency": 0.685,
+                "complexity": 0.565,
+                "resource_cost": 0.745
+              },
+              "score": 0.6554
+            },
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "tc5_module_10",
+                "ir_builder",
+                "optimization_pass_manager"
+              ],
+              "objectives": {
+                "performance": 0.61,
+                "latency": 0.735,
+                "complexity": 0.545,
+                "resource_cost": 0.725
+              },
+              "score": 0.655
+            },
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "semantic_analyzer",
+                "ir_builder",
+                "tc5_module_7"
+              ],
+              "objectives": {
+                "performance": 0.68,
+                "latency": 0.655,
+                "complexity": 0.515,
+                "resource_cost": 0.675
+              },
+              "score": 0.639
+            },
+            {
+              "units": [
+                "lexer",
+                "parser",
+                "semantic_analyzer",
+                "tc5_module_11",
+                "ir_builder",
+                "optimization_pass_manager"
+              ],
+              "objectives": {
+                "performance": 0.65,
+                "latency": 0.735,
+                "complexity": 0.4,
+                "resource_cost": 0.63
+              },
+              "score": 0.6198
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

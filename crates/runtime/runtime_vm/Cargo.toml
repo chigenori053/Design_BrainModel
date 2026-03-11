@@ -11,6 +11,8 @@ concept_engine = { workspace = true }
 concept_field = { workspace = true }
 design_search_engine = { workspace = true }
 evaluation_engine = { workspace = true }
+knowledge_engine = { workspace = true }
+knowledge_lifecycle = { workspace = true }
 language_core = { workspace = true }
 language_reasoning = { workspace = true }
 memory_graph = { workspace = true }

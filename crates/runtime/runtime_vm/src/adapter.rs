@@ -1,10 +1,24 @@
-use ai_context::{AIContext, EvaluationState, ExperienceState, RuntimeState as AiRuntimeState};
+use ai_context::{
+    AIContext, EvaluationState, ExperienceState, InferredKnowledge, RuntimeState as AiRuntimeState,
+    StabilizedKnowledge,
+};
 use architecture_domain::ArchitectureState;
 use evaluation_engine::EvaluationEngine;
+use knowledge_engine::{
+    KnowledgeEngine, KnowledgeGraph, ValidationScore, WebSearchRetriever,
+    integrate_knowledge_into_semantic_graph, knowledge_graph_to_constraints,
+};
+use knowledge_lifecycle::{
+    ConflictContext, KnowledgeLifecycleConfig, KnowledgeLifecycleEngine, KnowledgeLifecycleState,
+    LifecycleMetrics,
+};
 use language_core::{
     LanguageState, language_search, semantic_graph_to_constraints, semantic_parser,
 };
-use language_reasoning::{meaning_reasoning_search, reasoning_graph_to_constraints};
+use language_reasoning::{
+    knowledge_query_from_semantic_graph, knowledge_reasoning_effective_confidence,
+    meaning_reasoning_search, reasoning_graph_to_constraints,
+};
 use memory_graph::DesignExperienceGraph;
 use memory_space_core::{
     InMemoryMemoryStore, MemoryEngine, MemoryRecord, ModalityInput, RecallConfig, RecallQuery,
@@ -60,7 +74,58 @@ impl Phase9RuntimeAdapter {
             ModalityInput::Text(text) => Some(semantic_parser(text)),
             _ => None,
         };
-        let reasoned_language_state = parsed_language_state.as_ref().map(apply_meaning_reasoning);
+        let mut reasoned_language_state =
+            parsed_language_state.as_ref().map(apply_meaning_reasoning);
+        let (
+            knowledge_graph,
+            inferred_knowledge_graph,
+            lifecycle_state,
+            knowledge_validation,
+            knowledge_retrieved,
+        ) =
+            if let Some(state) = reasoned_language_state.as_mut() {
+                let knowledge_query =
+                    knowledge_query_from_semantic_graph(&state.semantic_graph, &state.source_text);
+                let knowledge = KnowledgeEngine::new(WebSearchRetriever::default())
+                    .process_query(knowledge_query);
+                let inferred_knowledge_graph = knowledge.knowledge_graph.clone();
+                let mut stabilized_knowledge_graph = inferred_knowledge_graph.clone();
+                let lifecycle_engine = KnowledgeLifecycleEngine::new(
+                    KnowledgeLifecycleConfig {
+                        current_cycle: ctx.tick,
+                        ..KnowledgeLifecycleConfig::default()
+                    },
+                    knowledge.validation,
+                    1,
+                    !state.semantic_graph.relations.is_empty(),
+                );
+                let lifecycle_state = lifecycle_engine.process_with_context(
+                    &mut stabilized_knowledge_graph,
+                    &ConflictContext {
+                        semantic_graph: state.semantic_graph.clone(),
+                        architecture_context: ArchitectureState::default(),
+                    },
+                );
+                integrate_knowledge_into_semantic_graph(
+                    &mut state.semantic_graph,
+                    &stabilized_knowledge_graph,
+                );
+                (
+                    stabilized_knowledge_graph,
+                    inferred_knowledge_graph,
+                    lifecycle_state,
+                    knowledge.validation,
+                    !knowledge.documents.is_empty(),
+                )
+            } else {
+                (
+                    KnowledgeGraph::default(),
+                    KnowledgeGraph::default(),
+                    KnowledgeLifecycleState::default(),
+                    ValidationScore::default(),
+                    false,
+                )
+            };
         let language_state = reasoned_language_state.clone().map(language_search);
         let mut world_state = WorldState::new(ctx.tick, context_vector);
         if let Some(language_state) = &language_state {
@@ -70,6 +135,9 @@ impl Phase9RuntimeAdapter {
                 .extend(reasoning_graph_to_constraints(
                     &language_state.semantic_graph,
                 ));
+            world_state
+                .constraints
+                .extend(knowledge_graph_to_constraints(&knowledge_graph));
         }
         let simulator = DefaultSimulationEngine;
         let simulation = simulator.simulate(&world_state, Some(&recall_result));
@@ -128,6 +196,14 @@ impl Phase9RuntimeAdapter {
                     .as_ref()
                     .map(|state| state.semantic_graph.clone())
                     .unwrap_or_default(),
+                knowledge_graph.clone(),
+                InferredKnowledge {
+                    graph: inferred_knowledge_graph.clone(),
+                },
+                StabilizedKnowledge {
+                    graph: knowledge_graph.clone(),
+                },
+                lifecycle_state.lifecycle_metrics.clone(),
                 ExperienceState {
                     graph: DesignExperienceGraph::default(),
                 },
@@ -148,6 +224,10 @@ impl Phase9RuntimeAdapter {
             parsed_language_state.as_ref(),
             reasoned_language_state.as_ref(),
             language_state.as_ref(),
+            &lifecycle_state,
+            &knowledge_graph,
+            knowledge_validation,
+            knowledge_retrieved,
         );
         phase9
     }
@@ -203,6 +283,10 @@ fn publish_taxonomy_events(
     parsed_language_state: Option<&LanguageState>,
     reasoned_language_state: Option<&LanguageState>,
     language_state: Option<&LanguageState>,
+    lifecycle_state: &KnowledgeLifecycleState,
+    knowledge_graph: &KnowledgeGraph,
+    knowledge_validation: ValidationScore,
+    knowledge_retrieved: bool,
 ) {
     ctx.event_bus.publish(RuntimeEvent::InputAccepted);
     ctx.advance(RuntimeStage::Normalize);
@@ -221,6 +305,66 @@ fn publish_taxonomy_events(
             .publish(RuntimeEvent::SemanticInferenceApplied);
         ctx.event_bus
             .publish(RuntimeEvent::MeaningReasoningCompleted);
+        ctx.event_bus.publish(RuntimeEvent::KnowledgeQueryIssued);
+        if knowledge_retrieved {
+            ctx.event_bus.publish(RuntimeEvent::KnowledgeRetrieved);
+        }
+        if !knowledge_graph.entities.is_empty() {
+            ctx.event_bus.publish(RuntimeEvent::KnowledgeParsed);
+        }
+        if knowledge_validation.confidence > 0.0 {
+            ctx.event_bus.publish(RuntimeEvent::KnowledgeValidated);
+        }
+        if knowledge_reasoning_effective_confidence(knowledge_graph) > 0.0 {
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeEffectiveConfidenceCalculated);
+        }
+        ctx.event_bus
+            .publish(RuntimeEvent::KnowledgeProvenanceRecorded);
+        if lifecycle_state.reliability_evaluated > 0 {
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeSourceReliabilityEvaluated);
+        }
+        if lifecycle_state.embeddings_generated > 0 {
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeEmbeddingGenerated);
+        }
+        ctx.event_bus.publish(RuntimeEvent::KnowledgeAgingApplied);
+        ctx.event_bus.publish(RuntimeEvent::KnowledgeReinforced);
+        ctx.event_bus
+            .publish(RuntimeEvent::KnowledgeSemanticClustered);
+        if lifecycle_state.pruned_relations > 0 {
+            ctx.event_bus.publish(RuntimeEvent::KnowledgePruned);
+        }
+        ctx.event_bus.publish(RuntimeEvent::KnowledgeQualityAnalyzed);
+        ctx.event_bus
+            .publish(RuntimeEvent::KnowledgeEntropyCalculated);
+        let _ = lifecycle_state.half_life.half_life;
+        ctx.event_bus
+            .publish(RuntimeEvent::KnowledgeHalfLifeCalculated);
+        let _ = lifecycle_state.lifecycle_metrics != LifecycleMetrics::default();
+        ctx.event_bus
+            .publish(RuntimeEvent::LifecycleMetricsUpdated);
+        ctx.event_bus
+            .publish(RuntimeEvent::KnowledgeTurnoverAnalyzed);
+        if lifecycle_state.conflicts_resolved > 0 {
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeConflictResolved);
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeConflictResolvedWithContext);
+        }
+        if lifecycle_state.diversification_triggered {
+            ctx.event_bus
+                .publish(RuntimeEvent::KnowledgeDiversificationTriggered);
+        }
+        if ctx
+            .ai_context
+            .as_ref()
+            .map(|ai_context| !ai_context.knowledge_graph.entities.is_empty())
+            .unwrap_or(false)
+        {
+            ctx.event_bus.publish(RuntimeEvent::KnowledgeIntegrated);
+        }
     }
     if language_state.is_some() {
         ctx.event_bus.publish(RuntimeEvent::LanguageSearchStarted);
@@ -295,14 +439,46 @@ fn publish_taxonomy_events(
             }
             if let Some(ai_context) = ctx.ai_context.as_mut() {
                 if let Some(result) = ai_context.evaluation_state.latest {
-                    ai_context.experience_state.graph.record_experience(
-                        reasoned_language_state
-                            .map(|state| state.to_meaning_graph())
-                            .unwrap_or_default(),
-                        architecture_hash(world_state),
-                        ai_context.architecture_state.clone(),
-                        result,
-                    );
+                    ai_context
+                        .experience_state
+                        .graph
+                        .record_experience_with_lifecycle(
+                            reasoned_language_state
+                                .map(|state| state.to_meaning_graph())
+                                .unwrap_or_default(),
+                            Some(ai_context.knowledge_graph.clone()),
+                            Some(knowledge_validation),
+                            Some(ai_context.inferred_knowledge.graph.clone()),
+                            Some(ai_context.stabilized_knowledge.graph.clone()),
+                            Some(KnowledgeLifecycleState {
+                                cycle: world_state.state_id,
+                                quality_metrics: Default::default(),
+                                lifecycle_metrics: ai_context.lifecycle_metrics.clone(),
+                                source_reliabilities: Vec::new(),
+                                half_life: Default::default(),
+                                provenance_recorded: ai_context
+                                    .stabilized_knowledge
+                                    .graph
+                                    .relations
+                                    .len(),
+                                reliability_evaluated: 0,
+                                embeddings_generated: 0,
+                                aged_relations: 0,
+                                reinforced_relations: 0,
+                                pruned_relations: 0,
+                                semantic_clusters: 0,
+                                semantic_pruned_relations: 0,
+                                conflicts_resolved: 0,
+                                diversification_triggered: false,
+                                exploration_weight: 1.0,
+                                reinforcement_rate_applied: 0.0,
+                                turnover_metrics: Default::default(),
+                            }),
+                            Some(ai_context.lifecycle_metrics.clone()),
+                            architecture_hash(world_state),
+                            ai_context.architecture_state.clone(),
+                            result,
+                        );
                     ctx.event_bus.publish(RuntimeEvent::ExperienceGraphUpdated);
                 }
             }

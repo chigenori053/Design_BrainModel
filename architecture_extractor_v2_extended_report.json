@@ -1,0 +1,281 @@
+{
+  "version": "v1.0",
+  "scope": "ArchitectureExtractor v2 Extended Validation (Pre-Phase6)",
+  "started_at_utc": "2026-03-08T03:25:23Z",
+  "overall_status": "PASS",
+  "phase6_transition_ready": true,
+  "success_criteria": {
+    "call_graph_accuracy_gt": 0.9,
+    "type_dependency_accuracy_gt": 0.9,
+    "pattern_detection_accuracy_gt": 0.85,
+    "graph_consistency_score_gt": 0.95,
+    "compression_ratio_gt": 5,
+    "information_loss_lt": 0.1
+  },
+  "results": [
+    {
+      "test_id": "AXV2-T4",
+      "category": "Call Graph Recovery",
+      "status": "PASS",
+      "metrics": {
+        "call_graph_accuracy": 1.0
+      },
+      "thresholds": {
+        "call_graph_accuracy_gt": 0.9
+      },
+      "details": [
+        {
+          "fixture": "cpp_plugin_host",
+          "call_graph_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "plugin_host::start_plugin",
+              "plugin_api::name"
+            ]
+          ]
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "call_graph_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "pipeline::Stage1Ingest",
+              "pipeline::Stage2Transform"
+            ],
+            [
+              "pipeline::Stage2Transform",
+              "pipeline::Stage3Publish"
+            ]
+          ]
+        },
+        {
+          "fixture": "python_worker_optional",
+          "call_graph_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "worker::EventHandler.dispatch",
+              "tasks::TaskWorker.run"
+            ]
+          ]
+        },
+        {
+          "fixture": "rust_layered_service",
+          "call_graph_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "api_gateway::handle",
+              "user_service::load_user"
+            ],
+            [
+              "user_service::load_user",
+              "user_repository::find"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T5",
+      "category": "Type Dependency Recovery",
+      "status": "PASS",
+      "metrics": {
+        "type_dependency_accuracy": 1.0
+      },
+      "thresholds": {
+        "type_dependency_accuracy_gt": 0.9
+      },
+      "details": [
+        {
+          "fixture": "cpp_plugin_host",
+          "type_dependency_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "sample_plugin::SamplePlugin",
+              "plugin_api::PluginApi"
+            ]
+          ]
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "type_dependency_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": []
+        },
+        {
+          "fixture": "python_worker_optional",
+          "type_dependency_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "worker::EventHandler",
+              "tasks::TaskWorker"
+            ]
+          ]
+        },
+        {
+          "fixture": "rust_layered_service",
+          "type_dependency_accuracy": 1.0,
+          "missing_edges": 0,
+          "false_edges": 0,
+          "actual_edges": [
+            [
+              "api_gateway::ApiGateway",
+              "user_service::UserService"
+            ],
+            [
+              "user_service::UserService",
+              "user_repository::UserRepository"
+            ]
+          ]
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T6",
+      "category": "Architecture Pattern Detection",
+      "status": "PASS",
+      "metrics": {
+        "pattern_detection_accuracy": 1.0
+      },
+      "thresholds": {
+        "pattern_detection_accuracy_gt": 0.85
+      },
+      "details": [
+        {
+          "fixture": "cpp_plugin_host",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "plugin architecture"
+          ],
+          "actual_patterns": [
+            "layered architecture",
+            "plugin architecture"
+          ]
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "pipeline"
+          ],
+          "actual_patterns": [
+            "layered architecture",
+            "pipeline"
+          ]
+        },
+        {
+          "fixture": "python_worker_optional",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "event driven"
+          ],
+          "actual_patterns": [
+            "event driven",
+            "layered architecture"
+          ]
+        },
+        {
+          "fixture": "rust_layered_service",
+          "pattern_detection_accuracy": 1.0,
+          "expected_patterns": [
+            "layered architecture"
+          ],
+          "actual_patterns": [
+            "layered architecture"
+          ]
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T7",
+      "category": "DesignGraph Consistency",
+      "status": "PASS",
+      "metrics": {
+        "graph_consistency_score": 1.0
+      },
+      "thresholds": {
+        "graph_consistency_score_gt": 0.95
+      },
+      "details": [
+        {
+          "fixture": "cpp_plugin_host",
+          "graph_consistency_score": 1.0,
+          "invalid_edges": 0,
+          "cyclic_components": 0
+        },
+        {
+          "fixture": "go_event_pipeline",
+          "graph_consistency_score": 1.0,
+          "invalid_edges": 0,
+          "cyclic_components": 0
+        },
+        {
+          "fixture": "python_worker_optional",
+          "graph_consistency_score": 1.0,
+          "invalid_edges": 0,
+          "cyclic_components": 0
+        },
+        {
+          "fixture": "rust_layered_service",
+          "graph_consistency_score": 1.0,
+          "invalid_edges": 0,
+          "cyclic_components": 0
+        }
+      ]
+    },
+    {
+      "test_id": "AXV2-T8",
+      "category": "Graph Compression Stability",
+      "status": "PASS",
+      "metrics": {
+        "compression_ratio": 9.454477,
+        "information_loss": 0.05
+      },
+      "thresholds": {
+        "compression_ratio_gt": 5,
+        "information_loss_lt": 0.1
+      },
+      "details": [
+        {
+          "scenario": "mid_graph",
+          "node_count": 4000,
+          "edge_count": 12000,
+          "compressed_nodes": 500,
+          "compressed_edges": 1154,
+          "compression_ratio": 9.673519,
+          "information_loss": 0.0404
+        },
+        {
+          "scenario": "large_graph",
+          "node_count": 25000,
+          "edge_count": 60000,
+          "compressed_nodes": 3125,
+          "compressed_edges": 5770,
+          "compression_ratio": 9.55593,
+          "information_loss": 0.0425
+        },
+        {
+          "scenario": "phase6_target",
+          "node_count": 100000,
+          "edge_count": 200000,
+          "compressed_nodes": 12500,
+          "compressed_edges": 19231,
+          "compression_ratio": 9.454477,
+          "information_loss": 0.05
+        }
+      ]
+    }
+  ]
+}

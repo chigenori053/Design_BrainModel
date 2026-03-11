@@ -1,5 +1,5 @@
 use causal_domain::{CausalRelation, CausalRelationKind};
-use memory_space_complex::{ComplexField, normalize};
+use memory_space_complex::{normalize, ComplexField};
 use memory_space_core::Complex64;
 
 use crate::design_state::{DesignState, DesignStateId, DesignUnit, DesignUnitId, DesignUnitType};
