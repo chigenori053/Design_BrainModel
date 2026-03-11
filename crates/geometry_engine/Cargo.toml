@@ -1,0 +1,11 @@
+[package]
+name = "geometry_engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_reasoner = { workspace = true }
+design_domain = { workspace = true }
+
+[dev-dependencies]
+code_ir = { workspace = true }

@@ -1,0 +1,9 @@
+[package]
+name = "knowledge_engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+design_domain = { workspace = true }
+knowledge_store = { workspace = true }
+language_core = { workspace = true }

@@ -1,5 +1,11 @@
 [workspace]
 members = [
+    "crates/code_ir",
+    "crates/architecture_reasoner",
+    "crates/geometry_engine",
+    "crates/architecture_state",
+    "crates/architecture_evaluator",
+    "crates/code_language_core",
     "crates/concept_engine",
     "crates/concept_field",
     "crates/domain/causal_domain",
@@ -41,6 +47,8 @@ members = [
     "crates/language_core",
     "crates/language_reasoning",
     "crates/language_dhm",
+    "crates/knowledge_engine",
+    "crates/knowledge_lifecycle",
     "crates/knowledge_store",
     "crates/meaning_extractor",
     "crates/semantic_dhm",
@@ -59,6 +67,12 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+code_ir = { path = "crates/code_ir" }
+architecture_reasoner = { path = "crates/architecture_reasoner" }
+geometry_engine = { path = "crates/geometry_engine" }
+architecture_state_v2 = { path = "crates/architecture_state", package = "architecture_state" }
+architecture_evaluator_core = { path = "crates/architecture_evaluator", package = "architecture_evaluator" }
+code_language_core = { path = "crates/code_language_core" }
 concept_engine = { path = "crates/concept_engine" }
 concept_field = { path = "crates/concept_field" }
 design_search_engine = { path = "crates/engine/design_search_engine" }
@@ -84,6 +98,8 @@ memory_space_api = { path = "crates/memory_space_api" }
 memory_space_index = { path = "crates/memory_space_index" }
 language_dhm = { path = "crates/language_dhm" }
 knowledge_store = { path = "crates/knowledge_store" }
+knowledge_engine = { path = "crates/knowledge_engine" }
+knowledge_lifecycle = { path = "crates/knowledge_lifecycle" }
 meaning_extractor = { path = "crates/meaning_extractor" }
 semantic_dhm = { path = "crates/semantic_dhm" }
 recomposer = { path = "crates/recomposer" }

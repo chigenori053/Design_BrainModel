@@ -1,0 +1,13 @@
+[package]
+name = "architecture_evaluator"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_state_v2 = { workspace = true }
+geometry_engine = { workspace = true }
+
+[dev-dependencies]
+architecture_reasoner = { workspace = true }
+code_ir = { workspace = true }
+design_domain = { workspace = true }

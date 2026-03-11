@@ -1,4 +1,5 @@
 // Phase9-C: DesignSearchEngine (design-state based beam search)
+pub mod architecture_cognition;
 pub mod constraint;
 pub mod design_state;
 pub mod engine;
@@ -15,6 +16,9 @@ pub mod ranking;
 pub mod search_controller;
 pub mod search_state;
 
+pub use architecture_cognition::{
+    ArchitectureCognitionSearchIntegration, ArchitectureCognitionSnapshot,
+};
 pub use constraint::{ConstraintEngine, IntentNode};
 pub use design_state::{
     DesignState, DesignStateId, DesignUnit, DesignUnitId, DesignUnitType, EvaluationScore,
@@ -30,7 +34,7 @@ pub use architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvalu
 pub use beam_search_controller::BeamSearchController;
 pub use design_grammar::{GrammarEngine, GrammarValidation};
 pub use pruning::prune_candidates;
-pub use ranking::{RankedCandidate, rank_candidates};
+pub use ranking::{rank_candidates, RankedCandidate};
 pub use search_controller::SearchController;
 pub use search_state::SearchState;
 pub use search_state::SearchState as Phase9SearchState;

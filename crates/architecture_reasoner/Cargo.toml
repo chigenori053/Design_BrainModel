@@ -1,0 +1,8 @@
+[package]
+name = "architecture_reasoner"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+code_ir = { workspace = true }
+design_domain = { workspace = true }
