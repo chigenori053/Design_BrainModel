@@ -3,6 +3,7 @@ use code_ir::CodeIr;
 use design_domain::{
     Architecture, ClassUnit, Dependency, DependencyKind, DesignUnit, DesignUnitId, StructureUnit,
 };
+use std::collections::BTreeSet;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedSourceFile {
@@ -15,11 +16,18 @@ pub struct CodeLanguageCore {
     reasoner: ReverseArchitectureReasoner,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct RoundTripReport {
+    pub node_recall: f64,
+    pub dependency_recall: f64,
+    pub consistency_rate: f64,
+}
+
 impl CodeLanguageCore {
     pub fn parse_sources(&self, files: &[ParsedSourceFile]) -> CodeIr {
         let mut units = Vec::new();
         for (index, file) in files.iter().enumerate() {
-            let module_name = file
+            let fallback_name = file
                 .path
                 .rsplit('/')
                 .next()
@@ -28,25 +36,48 @@ impl CodeLanguageCore {
                 .trim_end_matches(".ts")
                 .trim_end_matches(".py")
                 .to_string();
-            let mut unit = DesignUnit::new(index as u64 + 1, module_name);
+            let mut discovered_name = None;
+            let mut unit = DesignUnit::new(index as u64 + 1, fallback_name.clone());
             for line in file.source.lines() {
                 let trimmed = line.trim();
-                if let Some(name) = parse_symbol(trimmed, "fn ") {
+                if let Some(name) = parse_function_name(trimmed) {
                     unit.outputs.push(name.to_string());
                 }
-                if let Some(name) = parse_symbol(trimmed, "struct ") {
+                if let Some(name) = parse_type_name(trimmed) {
+                    if discovered_name.is_none() {
+                        discovered_name = Some(name.to_string());
+                    }
                     unit.semantics.push(format!("owns {}", name));
                 }
-                if let Some(name) = parse_use(trimmed) {
-                    unit.inputs.push(name.to_string());
+                for name in parse_use_identifiers(trimmed) {
+                    unit.inputs.push(name);
                 }
+            }
+            if let Some(name) = discovered_name {
+                unit.name = name;
+            } else {
+                unit.name = fallback_name;
             }
             units.push(unit);
         }
 
-        for index in 0..units.len().saturating_sub(1) {
-            let target = units[index + 1].id;
-            units[index].dependencies.push(target);
+        let known_symbols = units
+            .iter()
+            .map(|unit| (unit.name.clone(), unit.id))
+            .collect::<Vec<_>>();
+        for unit in &mut units {
+            let inferred = unit
+                .inputs
+                .iter()
+                .filter_map(|input| {
+                    known_symbols
+                        .iter()
+                        .find(|(name, _)| name == input)
+                        .map(|(_, id)| *id)
+                })
+                .filter(|dependency| *dependency != unit.id)
+                .collect::<BTreeSet<_>>();
+            unit.dependencies.extend(inferred);
         }
 
         CodeIr::from_design_units(&units)
@@ -62,13 +93,35 @@ impl CodeLanguageCore {
     }
 
     pub fn generate_code(&self, graph: &ArchitectureGraph) -> Vec<(String, String)> {
+        let node_names = graph
+            .nodes
+            .iter()
+            .map(|node| (node.id, node.name.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
         graph.nodes
             .iter()
             .map(|node| {
-                let file_name = format!("{}.rs", node.name.to_ascii_lowercase());
+                let file_name = format!("{}.rs", to_snake_case(&node.name));
+                let dependencies = graph
+                    .dependency_edges()
+                    .filter(|edge| edge.from == node.id)
+                    .filter_map(|edge| node_names.get(&edge.to))
+                    .map(|dependency| {
+                        format!(
+                            "use crate::{}::{};",
+                            to_snake_case(dependency),
+                            dependency
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                let dependency_block = if dependencies.is_empty() {
+                    String::new()
+                } else {
+                    format!("{}\n\n", dependencies.join("\n"))
+                };
                 let source = format!(
-                    "pub struct {};\n\nimpl {} {{\n    pub fn responsibility(&self) -> &'static str {{\n        \"{}\"\n    }}\n}}\n",
-                    node.name, node.name, node.responsibility
+                    "{}pub struct {};\n\nimpl {} {{\n    pub fn responsibility(&self) -> &'static str {{\n        \"{}\"\n    }}\n}}\n",
+                    dependency_block, node.name, node.name, node.responsibility
                 );
                 (file_name, source)
             })
@@ -82,6 +135,77 @@ impl CodeLanguageCore {
         let ir = self.architecture_to_code_ir(architecture);
         let graph = self.reasoner.infer_from_code_ir(&ir);
         self.generate_code(&graph)
+    }
+
+    pub fn evaluate_generation_quality(&self, graph: &ArchitectureGraph) -> f64 {
+        let generated = self.generate_code(graph);
+        if generated.is_empty() {
+            return 0.0;
+        }
+        let score = generated.iter().fold(0.0, |sum, (_, source)| {
+            let mut local = 0.0;
+            if source.contains("pub struct ") {
+                local += 0.4;
+            }
+            if source.contains("impl ") {
+                local += 0.3;
+            }
+            if source.contains("responsibility") {
+                local += 0.3;
+            }
+            sum + local
+        });
+        (score / generated.len() as f64).clamp(0.0, 1.0)
+    }
+
+    pub fn evaluate_roundtrip_consistency(&self, architecture: &Architecture) -> RoundTripReport {
+        let original_ir = self.architecture_to_code_ir(architecture);
+        let original_graph = self.reasoner.infer_from_code_ir(&original_ir);
+        let generated = self.generate_code(&original_graph);
+        let parsed_files = generated
+            .into_iter()
+            .map(|(path, source)| ParsedSourceFile { path, source })
+            .collect::<Vec<_>>();
+        let recovered_graph = self.reverse_architecture(&parsed_files);
+
+        let original_nodes = original_graph
+            .nodes
+            .iter()
+            .map(|node| node.name.clone())
+            .collect::<BTreeSet<_>>();
+        let recovered_nodes = recovered_graph
+            .nodes
+            .iter()
+            .map(|node| node.name.clone())
+            .collect::<BTreeSet<_>>();
+        let matched_nodes = original_nodes.intersection(&recovered_nodes).count();
+
+        let original_edges = original_graph
+            .dependency_edges()
+            .map(|edge| (edge.from, edge.to))
+            .collect::<BTreeSet<_>>();
+        let recovered_edges = recovered_graph
+            .dependency_edges()
+            .map(|edge| (edge.from, edge.to))
+            .collect::<BTreeSet<_>>();
+        let matched_edges = original_edges.intersection(&recovered_edges).count();
+
+        let node_recall = if original_nodes.is_empty() {
+            1.0
+        } else {
+            matched_nodes as f64 / original_nodes.len() as f64
+        };
+        let dependency_recall = if original_edges.is_empty() {
+            1.0
+        } else {
+            matched_edges as f64 / original_edges.len() as f64
+        };
+
+        RoundTripReport {
+            node_recall,
+            dependency_recall,
+            consistency_rate: ((node_recall + dependency_recall) / 2.0).clamp(0.0, 1.0),
+        }
     }
 }
 
@@ -138,20 +262,89 @@ pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
     }
 }
 
-fn parse_symbol<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
-    line.strip_prefix(marker)
-        .and_then(|rest| {
-            rest.split(|ch: char| ch == '(' || ch == '{' || ch.is_whitespace())
-                .next()
-        })
-        .filter(|name| !name.is_empty())
+fn parse_type_name(line: &str) -> Option<&str> {
+    parse_after_keywords(line, &["pub struct ", "struct ", "pub enum ", "enum "])
 }
 
-fn parse_use(line: &str) -> Option<&str> {
-    line.strip_prefix("use ")
-        .and_then(|rest| rest.split("::").last())
-        .map(|segment| segment.trim_end_matches(';').trim())
-        .filter(|name| !name.is_empty())
+fn parse_function_name(line: &str) -> Option<&str> {
+    parse_after_keywords(
+        line,
+        &[
+            "pub async fn ",
+            "async fn ",
+            "pub fn ",
+            "fn ",
+            "pub(crate) fn ",
+            "pub(crate) async fn ",
+        ],
+    )
+}
+
+fn parse_after_keywords<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str> {
+    keywords.iter().find_map(|keyword| {
+        line.strip_prefix(keyword)
+            .and_then(|rest| {
+                rest.split(|ch: char| {
+                    ch == '(' || ch == '{' || ch == ';' || ch == ':' || ch.is_whitespace()
+                })
+                .next()
+            })
+            .filter(|name| !name.is_empty())
+    })
+}
+
+fn parse_use_identifiers(line: &str) -> Vec<String> {
+    let Some(rest) = line.strip_prefix("use ") else {
+        return Vec::new();
+    };
+    let path = rest.trim_end_matches(';').trim();
+    if let Some((prefix, group)) = path.split_once("::{") {
+        let root = prefix.split("::").last().unwrap_or(prefix).trim();
+        let mut names = if root.is_empty() {
+            Vec::new()
+        } else {
+            vec![root.to_string()]
+        };
+        names.extend(
+            group
+                .trim_end_matches('}')
+                .split(',')
+                .map(|segment| segment.trim())
+                .filter(|segment| !segment.is_empty() && *segment != "self")
+                .map(|segment| {
+                    segment
+                        .split_whitespace()
+                        .last()
+                        .unwrap_or(segment)
+                        .trim_matches('{')
+                        .trim_matches('}')
+                        .to_string()
+                }),
+        );
+        return names;
+    }
+
+    path.split("::")
+        .last()
+        .map(|segment| segment.trim().to_string())
+        .into_iter()
+        .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn to_snake_case(name: &str) -> String {
+    let mut out = String::new();
+    for (index, ch) in name.chars().enumerate() {
+        if ch.is_ascii_uppercase() {
+            if index > 0 {
+                out.push('_');
+            }
+            out.push(ch.to_ascii_lowercase());
+        } else {
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[cfg(test)]
