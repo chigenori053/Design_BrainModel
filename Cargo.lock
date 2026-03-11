@@ -157,6 +157,8 @@ dependencies = [
  "architecture_domain",
  "design_domain",
  "evaluation_engine",
+ "knowledge_engine",
+ "knowledge_lifecycle",
  "language_core",
  "memory_graph",
 ]
@@ -278,10 +280,89 @@ dependencies = [
 ]
 
 [[package]]
+name = "architecture_behavior"
+version = "0.1.0"
+dependencies = [
+ "execution_graph",
+ "execution_simulator",
+ "performance_model",
+ "workload_model",
+]
+
+[[package]]
 name = "architecture_domain"
 version = "0.1.0"
 dependencies = [
  "design_domain",
+]
+
+[[package]]
+name = "architecture_evaluator"
+version = "0.1.0"
+dependencies = [
+ "architecture_behavior",
+ "architecture_knowledge",
+ "architecture_memory",
+ "architecture_metrics",
+ "architecture_reasoner",
+ "architecture_rules",
+ "architecture_state",
+ "code_ir",
+ "design_domain",
+ "execution_graph",
+ "geometry_engine",
+ "workload_model",
+]
+
+[[package]]
+name = "architecture_knowledge"
+version = "0.1.0"
+dependencies = [
+ "architecture_metrics",
+ "architecture_reasoner",
+ "architecture_rules",
+]
+
+[[package]]
+name = "architecture_memory"
+version = "0.1.0"
+dependencies = [
+ "architecture_knowledge",
+ "architecture_metrics",
+ "architecture_reasoner",
+]
+
+[[package]]
+name = "architecture_metrics"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+]
+
+[[package]]
+name = "architecture_reasoner"
+version = "0.1.0"
+dependencies = [
+ "code_ir",
+ "design_domain",
+]
+
+[[package]]
+name = "architecture_rules"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+]
+
+[[package]]
+name = "architecture_state"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+ "code_ir",
+ "design_domain",
+ "geometry_engine",
+ "knowledge_engine",
 ]
 
 [[package]]
@@ -802,6 +883,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "code_ir"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+]
+
+[[package]]
+name = "code_language_core"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+ "code_ir",
+ "design_domain",
+]
+
+[[package]]
 name = "codespan-reporting"
 version = "0.11.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1061,11 +1158,20 @@ name = "design_search_engine"
 version = "0.1.0"
 dependencies = [
  "architecture_domain",
+ "architecture_evaluator",
+ "architecture_knowledge",
+ "architecture_memory",
+ "architecture_reasoner",
+ "architecture_state",
  "causal_domain",
+ "code_ir",
+ "code_language_core",
  "concept_engine",
  "design_domain",
  "design_grammar",
  "evaluation_engine",
+ "geometry_engine",
+ "knowledge_engine",
  "memory_graph",
  "memory_space_complex",
  "memory_space_core",
@@ -1382,6 +1488,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_graph"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+ "code_ir",
+ "design_domain",
+]
+
+[[package]]
+name = "execution_simulator"
+version = "0.1.0"
+dependencies = [
+ "execution_graph",
+ "performance_model",
+ "workload_model",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.3.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1541,6 +1665,15 @@ checksum = "85649ca51fd72272d7821adaf274ad91c288277713d9c18820d8499a7ff69e9a"
 dependencies = [
  "typenum",
  "version_check",
+]
+
+[[package]]
+name = "geometry_engine"
+version = "0.1.0"
+dependencies = [
+ "architecture_reasoner",
+ "code_ir",
+ "design_domain",
 ]
 
 [[package]]
@@ -2038,6 +2171,24 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2db585e1d738fc771bf08a151420d3ed193d9d895a36df7f6f8a9456b911ddc"
 
 [[package]]
+name = "knowledge_engine"
+version = "0.1.0"
+dependencies = [
+ "design_domain",
+ "knowledge_store",
+ "language_core",
+]
+
+[[package]]
+name = "knowledge_lifecycle"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "knowledge_engine",
+ "language_core",
+]
+
+[[package]]
 name = "knowledge_store"
 version = "0.1.0"
 dependencies = [
@@ -2064,6 +2215,7 @@ name = "language_reasoning"
 version = "0.1.0"
 dependencies = [
  "design_domain",
+ "knowledge_engine",
  "language_core",
  "semantic_domain",
 ]
@@ -2187,6 +2339,8 @@ dependencies = [
  "architecture_domain",
  "design_domain",
  "evaluation_engine",
+ "knowledge_engine",
+ "knowledge_lifecycle",
  "language_core",
  "semantic_domain",
 ]
@@ -2773,6 +2927,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 
 [[package]]
+name = "performance_model"
+version = "0.1.0"
+dependencies = [
+ "execution_graph",
+ "workload_model",
+]
+
+[[package]]
 name = "phase1_integration_tests"
 version = "0.1.0"
 dependencies = [
@@ -3172,6 +3334,8 @@ dependencies = [
  "concept_field",
  "design_search_engine",
  "evaluation_engine",
+ "knowledge_engine",
+ "knowledge_lifecycle",
  "language_core",
  "language_reasoning",
  "memory_graph",
@@ -3588,6 +3752,13 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "system_model"
+version = "0.1.0"
+dependencies = [
+ "execution_graph",
 ]
 
 [[package]]
@@ -4754,6 +4925,10 @@ dependencies = [
  "unicode-xid",
  "wasmparser",
 ]
+
+[[package]]
+name = "workload_model"
+version = "0.1.0"
 
 [[package]]
 name = "world_model"

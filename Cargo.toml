@@ -10,6 +10,12 @@ members = [
     "crates/architecture_knowledge",
     "crates/architecture_memory",
     "crates/code_language_core",
+    "crates/execution_graph",
+    "crates/execution_simulator",
+    "crates/system_model",
+    "crates/workload_model",
+    "crates/performance_model",
+    "crates/architecture_behavior",
     "crates/concept_engine",
     "crates/concept_field",
     "crates/domain/causal_domain",
@@ -81,6 +87,12 @@ architecture_rules = { path = "crates/architecture_rules" }
 architecture_knowledge = { path = "crates/architecture_knowledge" }
 architecture_memory = { path = "crates/architecture_memory" }
 code_language_core = { path = "crates/code_language_core" }
+execution_graph = { path = "crates/execution_graph" }
+execution_simulator = { path = "crates/execution_simulator" }
+system_model = { path = "crates/system_model" }
+workload_model = { path = "crates/workload_model" }
+performance_model = { path = "crates/performance_model" }
+architecture_behavior = { path = "crates/architecture_behavior" }
 concept_engine = { path = "crates/concept_engine" }
 concept_field = { path = "crates/concept_field" }
 design_search_engine = { path = "crates/engine/design_search_engine" }

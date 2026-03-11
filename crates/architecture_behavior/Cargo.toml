@@ -1,0 +1,11 @@
+[package]
+name = "architecture_behavior"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+execution_graph = { workspace = true }
+execution_simulator = { workspace = true }
+performance_model = { workspace = true }
+workload_model = { workspace = true }
+

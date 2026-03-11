@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+architecture_behavior = { workspace = true }
 architecture_knowledge = { workspace = true }
 architecture_memory = { workspace = true }
 architecture_metrics = { workspace = true }
 architecture_rules = { workspace = true }
 architecture_state_v2 = { workspace = true }
+execution_graph = { workspace = true }
 geometry_engine = { workspace = true }
+workload_model = { workspace = true }
 
 [dev-dependencies]
 architecture_reasoner = { workspace = true }

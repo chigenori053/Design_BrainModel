@@ -1,9 +1,12 @@
+use architecture_behavior::{BehaviorAnalysis, BehaviorAnalyzer};
 use architecture_knowledge::{KnowledgeAnalyzer, PatternDetection};
 use architecture_memory::{recall_similar_architecture, ArchitectureMemory};
 use architecture_metrics::{ArchitectureMetrics, MetricsCalculator};
 use architecture_rules::{RuleValidator, RuleViolation};
 use architecture_state_v2::{ArchitectureEvaluation, ArchitectureState};
+use execution_graph::ExecutionGraphBuilder;
 use geometry_engine::GeometryEngine;
+use workload_model::WorkloadModel;
 
 pub trait ArchitectureEvaluator {
     fn evaluate(&self, state: &ArchitectureState) -> ArchitectureEvaluation;
@@ -33,6 +36,24 @@ pub struct EvaluationDetails {
     pub violations: Vec<RuleViolation>,
     pub pattern_detection: PatternDetection,
     pub recalled_patterns: Vec<String>,
+    pub behavior: Option<BehaviorAnalysis>,
+    pub score_v3: Option<ArchitectureScoreV3>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ArchitectureScoreV3 {
+    pub structural_score: f64,
+    pub rule_score: f64,
+    pub knowledge_score: f64,
+    pub behavior_score: f64,
+}
+
+impl ArchitectureScoreV3 {
+    pub fn total(&self) -> f64 {
+        ((self.structural_score + self.rule_score + self.knowledge_score + self.behavior_score)
+            / 4.0)
+            .clamp(0.0, 1.0)
+    }
 }
 
 #[derive(Clone, Debug, Default)]
@@ -104,7 +125,29 @@ impl DefaultArchitectureEvaluator {
             violations,
             pattern_detection: detection,
             recalled_patterns,
+            behavior: None,
+            score_v3: None,
         }
+    }
+
+    pub fn evaluate_v3(
+        &self,
+        state: &ArchitectureState,
+        workload: &WorkloadModel,
+        memory: Option<&ArchitectureMemory>,
+    ) -> EvaluationDetails {
+        let mut details = self.evaluate_details(state, memory);
+        let execution_graph = ExecutionGraphBuilder.build(&state.architecture_graph);
+        let behavior = BehaviorAnalyzer.analyze(&execution_graph, workload);
+        let score_v3 = ArchitectureScoreV3 {
+            structural_score: details.score.structural,
+            rule_score: details.score.rule_score,
+            knowledge_score: details.score.knowledge_score,
+            behavior_score: behavior.behavior_score,
+        };
+        details.behavior = Some(behavior);
+        details.score_v3 = Some(score_v3);
+        details
     }
 }
 
