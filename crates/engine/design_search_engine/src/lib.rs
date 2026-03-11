@@ -31,7 +31,7 @@ pub use search_strategy::{BeamSearchStrategy, SearchStrategy};
 
 // Phase9-D exports
 pub use architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
-pub use beam_search_controller::BeamSearchController;
+pub use beam_search_controller::{BeamSearchController, SearchTrace};
 pub use design_grammar::{GrammarEngine, GrammarValidation};
 pub use pruning::prune_candidates;
 pub use ranking::{rank_candidates, RankedCandidate};

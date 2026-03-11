@@ -35,6 +35,7 @@ impl CodeLanguageCore {
                 .trim_end_matches(".rs")
                 .trim_end_matches(".ts")
                 .trim_end_matches(".py")
+                .trim_end_matches(".go")
                 .to_string();
             let mut discovered_name = None;
             let mut unit = DesignUnit::new(index as u64 + 1, fallback_name.clone());
@@ -51,6 +52,15 @@ impl CodeLanguageCore {
                 }
                 for name in parse_use_identifiers(trimmed) {
                     unit.inputs.push(name);
+                }
+                for name in parse_derive_identifiers(trimmed) {
+                    unit.inputs.push(name);
+                }
+                for name in parse_trait_bounds(trimmed) {
+                    unit.inputs.push(name);
+                }
+                for generic in parse_generic_parameters(trimmed) {
+                    unit.semantics.push(format!("generic {}", generic));
                 }
             }
             if let Some(name) = discovered_name {
@@ -263,7 +273,19 @@ pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
 }
 
 fn parse_type_name(line: &str) -> Option<&str> {
-    parse_after_keywords(line, &["pub struct ", "struct ", "pub enum ", "enum "])
+    parse_after_keywords(
+        line,
+        &[
+            "pub struct ",
+            "struct ",
+            "pub enum ",
+            "enum ",
+            "pub trait ",
+            "trait ",
+            "class ",
+            "type ",
+        ],
+    )
 }
 
 fn parse_function_name(line: &str) -> Option<&str> {
@@ -276,6 +298,8 @@ fn parse_function_name(line: &str) -> Option<&str> {
             "fn ",
             "pub(crate) fn ",
             "pub(crate) async fn ",
+            "def ",
+            "func ",
         ],
     )
 }
@@ -285,7 +309,12 @@ fn parse_after_keywords<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str>
         line.strip_prefix(keyword)
             .and_then(|rest| {
                 rest.split(|ch: char| {
-                    ch == '(' || ch == '{' || ch == ';' || ch == ':' || ch.is_whitespace()
+                    ch == '('
+                        || ch == '{'
+                        || ch == ';'
+                        || ch == ':'
+                        || ch == '<'
+                        || ch.is_whitespace()
                 })
                 .next()
             })
@@ -294,7 +323,50 @@ fn parse_after_keywords<'a>(line: &'a str, keywords: &[&str]) -> Option<&'a str>
 }
 
 fn parse_use_identifiers(line: &str) -> Vec<String> {
+    if let Some(rest) = line.strip_prefix("from ") {
+        let mut names = Vec::new();
+        if let Some((_, imported)) = rest.split_once(" import ") {
+            names.extend(
+                imported
+                    .split(',')
+                    .map(|segment| segment.trim())
+                    .filter(|segment| !segment.is_empty())
+                    .map(|segment| segment.to_string()),
+            );
+        }
+        return names;
+    }
+
+    if let Some(rest) = line.strip_prefix("import ") {
+        return rest
+            .split(',')
+            .map(|segment| {
+                segment
+                    .split_whitespace()
+                    .next()
+                    .unwrap_or(segment)
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or(segment)
+                    .trim_matches('"')
+                    .trim()
+                    .to_string()
+            })
+            .filter(|segment| !segment.is_empty())
+            .collect();
+    }
+
     let Some(rest) = line.strip_prefix("use ") else {
+        if let Some(rest) = line.strip_prefix("import ") {
+            return rest
+                .trim_matches('"')
+                .split('/')
+                .last()
+                .map(|segment| segment.trim().to_string())
+                .into_iter()
+                .filter(|segment| !segment.is_empty())
+                .collect();
+        }
         return Vec::new();
     };
     let path = rest.trim_end_matches(';').trim();
@@ -329,6 +401,57 @@ fn parse_use_identifiers(line: &str) -> Vec<String> {
         .map(|segment| segment.trim().to_string())
         .into_iter()
         .filter(|segment| !segment.is_empty())
+        .collect()
+}
+
+fn parse_derive_identifiers(line: &str) -> Vec<String> {
+    let Some(rest) = line.strip_prefix("#[derive(") else {
+        return Vec::new();
+    };
+    rest.trim_end_matches(")]")
+        .split(',')
+        .map(|segment| segment.trim())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| segment.to_string())
+        .collect()
+}
+
+fn parse_trait_bounds(line: &str) -> Vec<String> {
+    let Some((_, generic_block)) = line.split_once('<') else {
+        return Vec::new();
+    };
+    let Some((bounds, _)) = generic_block.split_once('>') else {
+        return Vec::new();
+    };
+    bounds
+        .split(',')
+        .filter_map(|segment| segment.split_once(':').map(|(_, traits)| traits))
+        .flat_map(|traits| traits.split('+'))
+        .map(|trait_name| trait_name.trim())
+        .filter(|trait_name| !trait_name.is_empty())
+        .map(|trait_name| trait_name.to_string())
+        .collect()
+}
+
+fn parse_generic_parameters(line: &str) -> Vec<String> {
+    let Some((_, generic_block)) = line.split_once('<') else {
+        return Vec::new();
+    };
+    let Some((params, _)) = generic_block.split_once('>') else {
+        return Vec::new();
+    };
+    params
+        .split(',')
+        .map(|segment| segment.trim())
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            segment
+                .split(':')
+                .next()
+                .unwrap_or(segment)
+                .trim()
+                .to_string()
+        })
         .collect()
 }
 

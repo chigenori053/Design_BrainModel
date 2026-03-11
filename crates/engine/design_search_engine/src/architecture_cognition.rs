@@ -2,9 +2,9 @@ use architecture_evaluator_core::{ArchitectureEvaluator, DefaultArchitectureEval
 use architecture_reasoner::ReverseArchitectureReasoner;
 use architecture_state_v2::ArchitectureState;
 use code_ir::CodeIr;
-use knowledge_engine::{KnowledgeEngine, KnowledgeQuery};
+use knowledge_engine::{knowledge_graph_to_constraints, KnowledgeEngine, KnowledgeQuery};
 
-use crate::SearchState;
+use crate::{SearchConfig, SearchState};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ArchitectureCognitionSnapshot {
@@ -18,6 +18,13 @@ pub struct ArchitectureCognitionSearchIntegration {
     knowledge_engine: KnowledgeEngine,
     reasoner: ReverseArchitectureReasoner,
     evaluator: DefaultArchitectureEvaluator,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct KnowledgeConstrainedSearchPlan {
+    pub config: SearchConfig,
+    pub constraint_count: usize,
+    pub confidence: f64,
 }
 
 impl ArchitectureCognitionSearchIntegration {
@@ -48,6 +55,47 @@ impl ArchitectureCognitionSearchIntegration {
                 .map(|evaluation| evaluation.overall)
                 .unwrap_or_default(),
             architecture_state,
+        }
+    }
+
+    pub fn knowledge_constrained_plan(
+        &self,
+        problem: impl Into<String>,
+        base: SearchConfig,
+    ) -> KnowledgeConstrainedSearchPlan {
+        let knowledge = self.knowledge_engine.process_query(KnowledgeQuery {
+            text: problem.into(),
+            semantic_hints: Vec::new(),
+        });
+        let constraints = knowledge_graph_to_constraints(&knowledge.knowledge_graph);
+        let confidence = knowledge.validation.confidence;
+        let has_constraints = !constraints.is_empty();
+        let candidate_scale = if has_constraints {
+            0.25
+        } else if confidence >= 0.6 {
+            0.375
+        } else {
+            0.6
+        };
+        let beam_scale = if has_constraints {
+            0.5
+        } else if confidence >= 0.6 {
+            0.5
+        } else {
+            0.75
+        };
+
+        KnowledgeConstrainedSearchPlan {
+            config: SearchConfig {
+                max_depth: base.max_depth,
+                max_candidates: ((base.max_candidates as f64 * candidate_scale).round() as usize)
+                    .max(1),
+                beam_width: ((base.beam_width as f64 * beam_scale).round() as usize).max(1),
+                experience_bias: (base.experience_bias + confidence * 0.2).clamp(0.0, 1.0),
+                policy_bias: (base.policy_bias + confidence * 0.2).clamp(0.0, 1.0),
+            },
+            constraint_count: constraints.len(),
+            confidence,
         }
     }
 }

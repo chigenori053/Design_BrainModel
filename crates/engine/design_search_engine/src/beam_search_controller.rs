@@ -6,8 +6,8 @@ use design_grammar::GrammarEngine;
 use evaluation_engine::EvaluationEngine;
 use memory_graph::DesignExperienceGraph;
 use memory_space_core::RecallResult;
-use memory_space_phase14::{InMemoryMemorySpace, MemorySpace, SearchPrior, store_state_experience};
-use policy_engine::{PolicyStore, evaluate_policy, policy_weight_for_action};
+use memory_space_phase14::{store_state_experience, InMemoryMemorySpace, MemorySpace, SearchPrior};
+use policy_engine::{evaluate_policy, policy_weight_for_action, PolicyStore};
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{Action, WorldState};
 
@@ -16,6 +16,13 @@ use crate::pruning::prune_candidates;
 use crate::search_config::SearchConfig;
 use crate::search_controller::SearchController;
 use crate::search_state::SearchState;
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SearchTrace {
+    pub final_beam: Vec<SearchState>,
+    pub explored_state_count: usize,
+    pub depth_best_scores: Vec<f64>,
+}
 
 /// Beam search implementation of `SearchController`.
 /// Deterministic: same input → same search tree → same ranking.
@@ -43,6 +50,17 @@ impl SearchController for BeamSearchController {
         recall: Option<&RecallResult>,
         config: &SearchConfig,
     ) -> Vec<SearchState> {
+        self.search_trace(initial_state, recall, config).final_beam
+    }
+}
+
+impl BeamSearchController {
+    pub fn search_trace(
+        &self,
+        initial_state: WorldState,
+        recall: Option<&RecallResult>,
+        config: &SearchConfig,
+    ) -> SearchTrace {
         let evaluator = DefaultArchitectureEvaluator;
         let evaluation_engine = EvaluationEngine::default();
         let simulator = DefaultSimulationEngine;
@@ -82,11 +100,13 @@ impl SearchController for BeamSearchController {
             config.experience_bias,
             config.policy_bias,
         ) {
-            return Vec::new();
+            return SearchTrace::default();
         }
         root.depth = 0;
 
         let mut beam = vec![root];
+        let mut explored_state_count = beam.len();
+        let mut depth_best_scores = vec![beam[0].score];
 
         for depth in 1..=config.max_depth {
             let mut candidates: Vec<SearchState> = Vec::new();
@@ -127,7 +147,15 @@ impl SearchController for BeamSearchController {
                 break;
             }
 
+            explored_state_count += candidates.len();
             beam = prune_candidates(candidates, config.beam_width);
+            let best_score = beam.iter().map(|state| state.score).fold(0.0_f64, f64::max);
+            let running_best = depth_best_scores
+                .last()
+                .copied()
+                .map(|previous| previous.max(best_score))
+                .unwrap_or(best_score);
+            depth_best_scores.push(running_best);
         }
 
         if let Ok(mut memory) = self.memory.lock() {
@@ -151,7 +179,11 @@ impl SearchController for BeamSearchController {
             }
         }
 
-        beam
+        SearchTrace {
+            final_beam: beam,
+            explored_state_count,
+            depth_best_scores,
+        }
     }
 }
 
