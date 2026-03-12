@@ -14,8 +14,16 @@ fn policy_stability_avoids_collapse() {
         update_policy_from_memory(&controller);
 
         let states = run_all_scenarios(&controller, &verification_config(policy_bias));
+        let unique_count = unique_architecture_count(&states);
+        let entropy = action_entropy(&states);
 
-        assert!(unique_architecture_count(&states) >= 19);
-        assert!(action_entropy(&states) >= 0.5);
+        assert!(
+            unique_count >= 19,
+            "policy_bias={policy_bias}, unique_count={unique_count}, entropy={entropy}"
+        );
+        assert!(
+            entropy >= 0.5,
+            "policy_bias={policy_bias}, unique_count={unique_count}, entropy={entropy}"
+        );
     }
 }

@@ -11,6 +11,7 @@ pub mod search_strategy;
 
 // Phase9-D: WorldState-based search with SearchController trait
 pub mod architecture_evaluator;
+pub mod audit;
 pub mod beam_search_controller;
 pub mod pruning;
 pub mod ranking;
@@ -19,6 +20,12 @@ pub mod search_state;
 
 pub use architecture_cognition::{
     ArchitectureCognitionSearchIntegration, ArchitectureCognitionSnapshot,
+};
+pub use audit::{
+    AccessController, ArchitectureAuditor, AuditContext, AuditCore, AuditDecision, AuditResult,
+    AuditTelemetry, AuditTelemetryEvent, CapabilityLimits, FeatureAccess, IntentAuditor,
+    PaymentStatus, PlanTier, PolicyCategory, PolicyEnforcement, PolicyEngine, PolicyRegistry,
+    PolicyRule, PolicySeverity, SubscriptionController, SubscriptionStatus,
 };
 pub use constraint::{ConstraintEngine, IntentNode};
 pub use design_state::{
@@ -34,8 +41,11 @@ pub use search_strategy::{BeamSearchStrategy, SearchStrategy};
 pub use architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
 pub use beam_search_controller::{BeamSearchController, SearchTrace};
 pub use design_grammar::{GrammarEngine, GrammarValidation};
-pub use pruning::prune_candidates;
-pub use ranking::{rank_candidates, RankedCandidate};
+pub use pruning::{
+    PruneCandidatesOutcome, SearchNodeDiversityPruned, architecture_similarity, prune_candidates,
+    prune_candidates_with_telemetry, select_diverse_nodes,
+};
+pub use ranking::{RankedCandidate, rank_candidates};
 pub use search_context::SearchContext;
 pub use search_controller::SearchController;
 pub use search_state::SearchState;

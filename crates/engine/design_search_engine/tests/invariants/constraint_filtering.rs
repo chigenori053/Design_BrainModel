@@ -20,6 +20,7 @@ fn constraint_filtering() {
             beam_width: 8,
             max_depth: 20,
             max_candidates: 64,
+            diversity_threshold: 0.85,
             experience_bias: 0.2,
             policy_bias: 0.15,
         },

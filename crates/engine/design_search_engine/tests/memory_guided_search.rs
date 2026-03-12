@@ -1,6 +1,6 @@
 use architecture_knowledge::{ArchitectureKnowledge, ArchitecturePattern, ArchitecturePatternKind};
 use architecture_memory::ArchitectureMemory;
-use design_search_engine::{BeamSearchController, SearchConfig, SearchContext};
+use design_search_engine::{AuditContext, BeamSearchController, SearchConfig, SearchContext};
 use world_model_core::WorldState;
 
 #[test]
@@ -10,6 +10,7 @@ fn test16_memory_guided_search() {
         max_depth: 8,
         max_candidates: 16,
         beam_width: 8,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };
@@ -28,6 +29,9 @@ fn test16_memory_guided_search() {
             name: "Microservice architecture".into(),
             evidence: vec!["seed".into()],
         }]),
+        audit_context: AuditContext::default(),
+        feature_access: Default::default(),
+        intent_text: None,
     };
     let guided = controller.search_trace_with_context(
         WorldState::new(1, vec![2.0, 1.0]),

@@ -31,6 +31,7 @@ fn experience_prior_biases_search_toward_matching_patterns() {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
+        diversity_threshold: 0.85,
         experience_bias: 0.4,
         policy_bias: 0.15,
     };

@@ -11,6 +11,7 @@ fn test4_search_integration_converges_within_configured_depth() {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };

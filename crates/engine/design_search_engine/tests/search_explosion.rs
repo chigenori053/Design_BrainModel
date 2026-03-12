@@ -8,6 +8,7 @@ fn test7_search_explosion_stability() {
         max_depth: 10,
         max_candidates: 16,
         beam_width: 8,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };

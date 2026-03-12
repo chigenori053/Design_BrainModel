@@ -6,13 +6,14 @@ use design_grammar::GrammarEngine;
 use evaluation_engine::EvaluationEngine;
 use memory_graph::DesignExperienceGraph;
 use memory_space_core::RecallResult;
-use memory_space_phase14::{store_state_experience, InMemoryMemorySpace, MemorySpace, SearchPrior};
-use policy_engine::{evaluate_policy, policy_weight_for_action, PolicyStore};
+use memory_space_phase14::{InMemoryMemorySpace, MemorySpace, SearchPrior, store_state_experience};
+use policy_engine::{PolicyStore, evaluate_policy, policy_weight_for_action};
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{Action, WorldState};
 
 use crate::architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
-use crate::pruning::prune_candidates;
+use crate::audit::{AuditCore, AuditDecision, AuditTelemetryEvent};
+use crate::pruning::{SearchNodeDiversityPruned, prune_candidates_with_telemetry};
 use crate::search_config::SearchConfig;
 use crate::search_context::SearchContext;
 use crate::search_controller::SearchController;
@@ -23,6 +24,8 @@ pub struct SearchTrace {
     pub final_beam: Vec<SearchState>,
     pub explored_state_count: usize,
     pub depth_best_scores: Vec<f64>,
+    pub diversity_pruned: Vec<SearchNodeDiversityPruned>,
+    pub audit_events: Vec<AuditTelemetryEvent>,
 }
 
 /// Beam search implementation of `SearchController`.
@@ -32,6 +35,7 @@ pub struct BeamSearchController {
     pub memory: Arc<Mutex<InMemoryMemorySpace>>,
     pub policy_store: Arc<Mutex<PolicyStore>>,
     pub experience_graph: Arc<Mutex<DesignExperienceGraph>>,
+    pub audit_core: AuditCore,
 }
 
 impl Default for BeamSearchController {
@@ -40,6 +44,7 @@ impl Default for BeamSearchController {
             memory: Arc::new(Mutex::new(InMemoryMemorySpace::with_bootstrap_patterns())),
             policy_store: Arc::new(Mutex::new(PolicyStore::default())),
             experience_graph: Arc::new(Mutex::new(DesignExperienceGraph::default())),
+            audit_core: AuditCore::default(),
         }
     }
 }
@@ -77,6 +82,21 @@ impl BeamSearchController {
         let evaluation_engine = EvaluationEngine::default();
         let simulator = DefaultSimulationEngine;
         let grammar = GrammarEngine::default();
+        let request_text = ctx.intent_text.as_deref().unwrap_or("architecture search");
+        let request_audit =
+            self.audit_core
+                .audit_request(&ctx.audit_context, ctx.feature_access, request_text);
+        let mut audit_events = request_audit.telemetry.events.clone();
+        if request_audit.decision == AuditDecision::Block {
+            return SearchTrace {
+                final_beam: Vec::new(),
+                explored_state_count: 0,
+                depth_best_scores: Vec::new(),
+                diversity_pruned: Vec::new(),
+                audit_events,
+            };
+        }
+        let effective_config = config.apply_capability_limits(&request_audit.capability_limits);
         let matched_patterns = self
             .memory
             .lock()
@@ -109,29 +129,48 @@ impl BeamSearchController {
             &evaluation_engine,
             &simulator,
             &grammar,
-            config.experience_bias,
-            config.policy_bias,
+            effective_config.experience_bias,
+            effective_config.policy_bias,
         ) {
-            return SearchTrace::default();
+            return SearchTrace {
+                audit_events,
+                ..SearchTrace::default()
+            };
         }
         root.depth = 0;
+        let root_audit = self.audit_core.audit_architecture(&root.architecture_state);
+        audit_events.extend(root_audit.telemetry.events);
+        if root_audit.decision == AuditDecision::Block {
+            return SearchTrace {
+                final_beam: Vec::new(),
+                explored_state_count: 0,
+                depth_best_scores: Vec::new(),
+                diversity_pruned: Vec::new(),
+                audit_events,
+            };
+        }
 
         let mut beam = vec![root];
         let mut explored_state_count = beam.len();
         let mut depth_best_scores = vec![beam[0].score];
+        let mut diversity_pruned = Vec::new();
 
-        for depth in 1..=config.max_depth {
+        for depth in 1..=effective_config.max_depth {
             let mut candidates: Vec<SearchState> = Vec::new();
 
             for parent in &beam {
                 let children = expand(
                     parent,
                     depth,
-                    ctx.constrained_candidates(config),
+                    ctx.constrained_candidates(&effective_config),
                     SearchPrior::from_patterns(
                         &parent.world_state,
                         &matched_patterns,
-                        &candidate_actions(parent, depth, ctx.constrained_candidates(config)),
+                        &candidate_actions(
+                            parent,
+                            depth,
+                            ctx.constrained_candidates(&effective_config),
+                        ),
                     ),
                     evaluate_policy(
                         &parent.world_state,
@@ -147,9 +186,16 @@ impl BeamSearchController {
                         &evaluation_engine,
                         &simulator,
                         &grammar,
-                        config.experience_bias,
-                        config.policy_bias,
+                        effective_config.experience_bias,
+                        effective_config.policy_bias,
                     ) {
+                        let architecture_audit = self
+                            .audit_core
+                            .audit_architecture(&child.architecture_state);
+                        audit_events.extend(architecture_audit.telemetry.events);
+                        if architecture_audit.decision == AuditDecision::Block {
+                            continue;
+                        }
                         child.score = (child.score + ctx.score_bias(&child)).clamp(0.0, 1.0);
                         child.world_state.score =
                             (child.world_state.score + ctx.score_bias(&child)).clamp(0.0, 1.0);
@@ -163,7 +209,13 @@ impl BeamSearchController {
             }
 
             explored_state_count += candidates.len();
-            beam = prune_candidates(candidates, ctx.constrained_beam_width(config));
+            let prune_outcome = prune_candidates_with_telemetry(
+                candidates,
+                ctx.constrained_beam_width(&effective_config),
+                effective_config.diversity_threshold,
+            );
+            diversity_pruned.extend(prune_outcome.diversity_pruned);
+            beam = prune_outcome.selected;
             let best_score = beam.iter().map(|state| state.score).fold(0.0_f64, f64::max);
             let running_best = depth_best_scores
                 .last()
@@ -198,6 +250,8 @@ impl BeamSearchController {
             final_beam: beam,
             explored_state_count,
             depth_best_scores,
+            diversity_pruned,
+            audit_events,
         }
     }
 }

@@ -96,13 +96,14 @@ fn prune_candidates_respects_beam_width() {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 3,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };
     let initial = make_world_state();
 
     let states = controller.search(initial, None, &config);
-    let pruned = prune_candidates(states, 3);
+    let pruned = prune_candidates(states, 3, 0.85);
 
     assert!(pruned.len() <= 3, "prune must not exceed beam_width");
 }
@@ -114,6 +115,7 @@ fn search_respects_beam_width() {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 2,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };

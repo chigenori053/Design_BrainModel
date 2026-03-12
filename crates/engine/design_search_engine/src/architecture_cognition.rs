@@ -2,7 +2,7 @@ use architecture_evaluator_core::{ArchitectureEvaluator, DefaultArchitectureEval
 use architecture_reasoner::ReverseArchitectureReasoner;
 use architecture_state_v2::ArchitectureState;
 use code_ir::CodeIr;
-use knowledge_engine::{knowledge_graph_to_constraints, KnowledgeEngine, KnowledgeQuery};
+use knowledge_engine::{KnowledgeEngine, KnowledgeQuery, knowledge_graph_to_constraints};
 
 use crate::{SearchConfig, SearchState};
 
@@ -91,6 +91,7 @@ impl ArchitectureCognitionSearchIntegration {
                 max_candidates: ((base.max_candidates as f64 * candidate_scale).round() as usize)
                     .max(1),
                 beam_width: ((base.beam_width as f64 * beam_scale).round() as usize).max(1),
+                diversity_threshold: base.diversity_threshold,
                 experience_bias: (base.experience_bias + confidence * 0.2).clamp(0.0, 1.0),
                 policy_bias: (base.policy_bias + confidence * 0.2).clamp(0.0, 1.0),
             },

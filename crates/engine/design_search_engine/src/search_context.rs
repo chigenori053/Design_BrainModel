@@ -1,12 +1,18 @@
 use architecture_knowledge::ArchitectureKnowledge;
 use architecture_memory::ArchitectureMemory;
 
-use crate::{SearchConfig, SearchState};
+use crate::{
+    SearchConfig, SearchState,
+    audit::{AuditContext, FeatureAccess},
+};
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SearchContext {
     pub knowledge: ArchitectureKnowledge,
     pub memory: ArchitectureMemory,
+    pub audit_context: AuditContext,
+    pub feature_access: FeatureAccess,
+    pub intent_text: Option<String>,
 }
 
 impl SearchContext {

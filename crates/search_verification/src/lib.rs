@@ -13,6 +13,7 @@ pub fn verification_config(policy_bias: f64) -> SearchConfig {
         max_depth: 10,
         max_candidates: 64,
         beam_width: 32,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias,
     }

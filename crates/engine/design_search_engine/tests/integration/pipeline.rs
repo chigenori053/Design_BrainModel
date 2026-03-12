@@ -9,6 +9,7 @@ fn search_pipeline_populates_simulation_before_scoring() {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };
@@ -43,6 +44,7 @@ fn search_only_returns_grammar_valid_candidates() {
         max_depth: 2,
         max_candidates: 8,
         beam_width: 4,
+        diversity_threshold: 0.85,
         experience_bias: 0.2,
         policy_bias: 0.15,
     };
