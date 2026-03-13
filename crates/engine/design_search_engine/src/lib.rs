@@ -15,6 +15,7 @@ pub mod audit;
 pub mod beam_search_controller;
 pub mod pruning;
 pub mod ranking;
+pub mod reasoning;
 pub mod search_controller;
 pub mod search_state;
 
@@ -46,6 +47,22 @@ pub use pruning::{
     prune_candidates_with_telemetry, select_diverse_nodes,
 };
 pub use ranking::{RankedCandidate, rank_candidates};
+pub use reasoning::{
+    ArchitectureHypothesis, HypothesisGenerator, HypothesisValidation, IntentGraph, IntentParser,
+    KnowledgeRetriever as ReasoningKnowledgeRetriever, ReasoningConfig, ReasoningEngine,
+    ReasoningResult, ReasoningTelemetry, ReasoningTelemetryEvent, ReasoningValidator,
+    runtime_hypotheses_from_reasoning,
+};
+pub use math_reasoning_engine::{
+    ComplexityClass, ComplexityEstimate, DefaultMathematicalReasoningEngine, MathematicalProblem,
+    MathematicalReasoningEngine, MathematicalResult, MathProblemType,
+    MathReasoningTelemetryEvent, MathReasoningTrace,
+};
+pub use simulation_scheduler::{
+    DefaultSimulationScheduler, LightSimulationResult, LightSimulationTrace, KnowledgeScore,
+    ScheduledSimulationBatch, ScheduledCandidate, SchedulerTelemetryEvent,
+    SimulationSchedulerConfig, SimulationSchedulerTrace,
+};
 pub use search_context::SearchContext;
 pub use search_controller::SearchController;
 pub use search_state::SearchState;

@@ -1172,11 +1172,13 @@ dependencies = [
  "evaluation_engine",
  "geometry_engine",
  "knowledge_engine",
+ "math_reasoning_engine",
  "memory_graph",
  "memory_space_complex",
  "memory_space_core",
  "memory_space_phase14",
  "policy_engine",
+ "simulation_scheduler",
  "world_model",
  "world_model_core",
 ]
@@ -2299,6 +2301,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62bb907fe88d54d8d9ce32a3cceab4218ed2f6b7d35617cafe9adf84e43919cb"
 dependencies = [
  "libc",
+]
+
+[[package]]
+name = "math_reasoning_engine"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "design_domain",
 ]
 
 [[package]]
@@ -3594,6 +3604,16 @@ name = "simd-adler32"
 version = "0.3.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e320a6c5ad31d271ad523dcf3ad13e2767ad8b1cb8f047f75a8aeaf8da139da2"
+
+[[package]]
+name = "simulation_scheduler"
+version = "0.1.0"
+dependencies = [
+ "architecture_domain",
+ "design_domain",
+ "world_model",
+ "world_model_core",
+]
 
 [[package]]
 name = "slab"

@@ -99,6 +99,59 @@ impl SimulationResult {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SimulationTelemetryEventKind {
+    Started,
+    Step,
+    Completed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimulationTelemetryEvent {
+    pub simulation_id: u64,
+    pub kind: SimulationTelemetryEventKind,
+    pub step_index: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SimulationTrace {
+    pub simulation_id: u64,
+    pub step_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateTransitionTrace {
+    pub simulation_id: u64,
+    pub transition_count: usize,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ConstraintValidationTrace {
+    pub simulation_id: u64,
+    pub validation_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct BehaviorPredictionTrace {
+    pub simulation_id: u64,
+    pub predicted_score: f64,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SimulationTraceBundle {
+    pub simulation_trace: SimulationTrace,
+    pub state_transition_trace: StateTransitionTrace,
+    pub constraint_validation_trace: ConstraintValidationTrace,
+    pub behavior_prediction_trace: BehaviorPredictionTrace,
+    pub trace_complete: bool,
+}
+
+impl SimulationTraceBundle {
+    pub fn simulation_id(&self) -> u64 {
+        self.simulation_trace.simulation_id
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Action {
     AddDesignUnit { name: String, layer: Layer },

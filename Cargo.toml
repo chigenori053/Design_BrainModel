@@ -53,6 +53,8 @@ members = [
     "crates/memory_space_index",
     "crates/num-complex",
     "crates/runtime/runtime_vm",
+    "crates/simulation_scheduler",
+    "crates/math_reasoning_engine",
     "crates/interface_ui",
     "crates/language_core",
     "crates/language_reasoning",
@@ -137,6 +139,8 @@ memory_space_phase14 = { path = "crates/memory_space" }
 policy_engine = { path = "crates/policy_engine" }
 search_verification = { path = "crates/search_verification" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }
+simulation_scheduler = { path = "crates/simulation_scheduler" }
+math_reasoning_engine = { path = "crates/math_reasoning_engine" }
 causal_domain = { path = "crates/domain/causal_domain" }
 architecture_domain = { path = "crates/domain/architecture_domain" }
 shm = { path = "crates/shm" }

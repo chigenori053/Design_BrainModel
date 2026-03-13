@@ -46,6 +46,7 @@ pub enum RuntimeEvent {
     SearchStarted,
     CandidateExpanded,
     SimulationStarted,
+    SimulationStep,
     SimulationCompleted,
     CausalAnalysisStarted,
     CausalClosureComputed,

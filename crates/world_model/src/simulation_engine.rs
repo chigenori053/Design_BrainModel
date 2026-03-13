@@ -1,6 +1,8 @@
 use memory_space_core::RecallResult;
 use world_model_core::{
-    ExecutionModelMetrics, GeometryModelMetrics, MathModelMetrics, SimulationResult,
+    BehaviorPredictionTrace, ConstraintValidationTrace, ExecutionModelMetrics,
+    GeometryModelMetrics, MathModelMetrics, SimulationResult, SimulationTelemetryEvent,
+    SimulationTelemetryEventKind, SimulationTrace, SimulationTraceBundle, StateTransitionTrace,
     SystemModelMetrics, WorldState,
 };
 
@@ -17,6 +19,67 @@ pub trait SimulationEngine {
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct DefaultSimulationEngine;
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct TracedSimulation {
+    pub result: SimulationResult,
+    pub telemetry_events: Vec<SimulationTelemetryEvent>,
+    pub traces: SimulationTraceBundle,
+}
+
+impl DefaultSimulationEngine {
+    pub fn simulate_with_trace(
+        &self,
+        state: &WorldState,
+        recall: Option<&RecallResult>,
+    ) -> TracedSimulation {
+        let result = self.simulate(state, recall);
+        let simulation_id = state.state_id;
+        let step_count = 4;
+        let mut telemetry_events = Vec::with_capacity(step_count + 2);
+        telemetry_events.push(SimulationTelemetryEvent {
+            simulation_id,
+            kind: SimulationTelemetryEventKind::Started,
+            step_index: None,
+        });
+        for step_index in 0..step_count {
+            telemetry_events.push(SimulationTelemetryEvent {
+                simulation_id,
+                kind: SimulationTelemetryEventKind::Step,
+                step_index: Some(step_index),
+            });
+        }
+        telemetry_events.push(SimulationTelemetryEvent {
+            simulation_id,
+            kind: SimulationTelemetryEventKind::Completed,
+            step_index: None,
+        });
+
+        TracedSimulation {
+            traces: SimulationTraceBundle {
+                simulation_trace: SimulationTrace {
+                    simulation_id,
+                    step_count,
+                },
+                state_transition_trace: StateTransitionTrace {
+                    simulation_id,
+                    transition_count: state.history.len() + 1,
+                },
+                constraint_validation_trace: ConstraintValidationTrace {
+                    simulation_id,
+                    validation_score: result.constraint_score,
+                },
+                behavior_prediction_trace: BehaviorPredictionTrace {
+                    simulation_id,
+                    predicted_score: result.correctness_score,
+                },
+                trace_complete: true,
+            },
+            result,
+            telemetry_events,
+        }
+    }
+}
 
 impl SimulationEngine for DefaultSimulationEngine {
     fn simulate(&self, state: &WorldState, recall: Option<&RecallResult>) -> SimulationResult {
@@ -95,5 +158,23 @@ mod tests {
         assert!((0.0..=1.0).contains(&result.correctness_score));
         assert!((0.0..=1.0).contains(&result.constraint_score));
         assert!((0.0..=1.0).contains(&result.total()));
+    }
+
+    #[test]
+    fn traced_simulation_emits_started_step_completed_sequence() {
+        let state = WorldState::from_architecture(1, Architecture::seeded(), Vec::new());
+        let traced = DefaultSimulationEngine.simulate_with_trace(&state, None);
+
+        assert_eq!(traced.telemetry_events.len(), 6);
+        assert_eq!(
+            traced.telemetry_events[0].kind,
+            SimulationTelemetryEventKind::Started
+        );
+        assert_eq!(
+            traced.telemetry_events.last().expect("completed").kind,
+            SimulationTelemetryEventKind::Completed
+        );
+        assert_eq!(traced.traces.simulation_trace.step_count, 4);
+        assert!(traced.traces.trace_complete);
     }
 }

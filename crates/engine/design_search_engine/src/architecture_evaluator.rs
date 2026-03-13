@@ -1,4 +1,4 @@
-use world_model_core::{evaluate_architecture, EvaluationVector};
+use world_model_core::{EvaluationVector, evaluate_architecture};
 
 use crate::search_state::SearchState;
 
@@ -29,6 +29,11 @@ impl ArchitectureEvaluator for DefaultArchitectureEvaluator {
             &state.world_state.architecture,
             &state.world_state.constraints,
         );
+        if let Some(math) = &state.math_reasoning {
+            vector.constraint_satisfaction =
+                ((vector.constraint_satisfaction + math.result.validity_score as f64) / 2.0)
+                    .clamp(0.0, 1.0);
+        }
         if let Some(simulation) = &state.world_state.simulation {
             vector.simulation_quality = simulation.total();
             vector.constraint_satisfaction =

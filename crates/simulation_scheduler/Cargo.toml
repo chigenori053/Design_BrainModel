@@ -1,0 +1,10 @@
+[package]
+name = "simulation_scheduler"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+architecture_domain = { workspace = true }
+design_domain = { workspace = true }
+world_model = { workspace = true }
+world_model_core = { workspace = true }

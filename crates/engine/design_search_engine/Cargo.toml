@@ -23,6 +23,8 @@ memory_space_phase14 = { workspace = true }
 memory_graph = { workspace = true }
 memory_space_complex = { workspace = true }
 memory_space_core = { workspace = true }
+math_reasoning_engine = { workspace = true }
 policy_engine = { workspace = true }
+simulation_scheduler = { workspace = true }
 world_model = { workspace = true }
 world_model_core = { workspace = true }

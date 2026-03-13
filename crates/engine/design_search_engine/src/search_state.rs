@@ -1,6 +1,7 @@
 use architecture_domain::ArchitectureState;
 use design_grammar::GrammarValidation;
 use evaluation_engine::EvaluationResult;
+use math_reasoning_engine::MathReasoningTrace;
 use world_model_core::Action;
 use world_model_core::WorldState;
 
@@ -18,6 +19,7 @@ pub struct SearchState {
     pub pareto_rank: usize,
     pub source_action: Option<Action>,
     pub grammar_validation: Option<GrammarValidation>,
+    pub math_reasoning: Option<MathReasoningTrace>,
 }
 
 impl SearchState {
@@ -34,6 +36,7 @@ impl SearchState {
             pareto_rank: 0,
             source_action: None,
             grammar_validation: None,
+            math_reasoning: None,
         }
     }
 }
