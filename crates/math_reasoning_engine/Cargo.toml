@@ -6,3 +6,4 @@ edition = "2024"
 [dependencies]
 architecture_domain = { workspace = true }
 design_domain = { workspace = true }
+world_model = { workspace = true }

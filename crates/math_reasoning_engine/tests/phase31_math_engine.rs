@@ -3,9 +3,11 @@ use design_domain::{Architecture, Constraint, Dependency, DependencyKind, Design
 use math_reasoning_engine::{
     ComplexityClass, ConstraintSolver, DefaultMathematicalReasoningEngine,
     DeterministicConstraintSolver, DeterministicNumericalValidator, DeterministicSymbolicReasoner,
-    HeuristicComplexityEstimator, MathematicalReasoningEngine, NumericalValidator,
-    SymbolicReasoner, ComplexityEstimator,
+    HeuristicComplexityEstimator, MathEngine, MathematicalReasoningEngine, NumericalValidator,
+    SymbolicReasoner, ComplexityEstimator, GraphAnalysisEngine, DeterministicGraphAnalysisEngine,
+    architecture_search_step,
 };
+use world_model::{ArchitectureAction, DesignAction, WorldModel};
 
 fn architecture_state(
     nodes: usize,
@@ -121,4 +123,74 @@ fn test34_08_performance() {
     let average = started.elapsed() / 100;
 
     assert!(average.as_millis() < 20, "avg latency was {:?}", average);
+}
+
+#[test]
+fn test34_09_graph_analysis_reports_depth_and_cycles() {
+    let graph = DeterministicGraphAnalysisEngine;
+    let architecture = architecture_state(4, &[(1, 2), (2, 3), (3, 1), (3, 4)], Vec::new());
+
+    let metrics = graph.analyze(&architecture);
+
+    assert_eq!(metrics.node_count, 4);
+    assert_eq!(metrics.edge_count, 4);
+    assert!(metrics.max_depth >= 2);
+    assert_eq!(metrics.cycle_count, 1);
+}
+
+#[test]
+fn test34_10_world_model_evaluation_is_deterministic() {
+    let engine = DefaultMathematicalReasoningEngine::default();
+    let world = WorldModel::from_architecture(
+        {
+            let mut architecture = Architecture::seeded();
+            architecture.add_design_unit(DesignUnit::with_layer(1, "ApiService", Layer::Service));
+            architecture.add_design_unit(DesignUnit::with_layer(2, "Store", Layer::Database));
+            architecture.dependencies.push(Dependency {
+                from: DesignUnitId(1),
+                to: DesignUnitId(2),
+                kind: DependencyKind::Calls,
+            });
+            architecture.graph.edges.push((1, 2));
+            architecture
+        },
+        Vec::new(),
+    );
+
+    let left = engine.evaluate(&world);
+    let right = engine.evaluate(&world);
+
+    assert_eq!(left, right);
+}
+
+#[test]
+fn test34_11_evaluate_action_updates_scores_stably() {
+    let engine = DefaultMathematicalReasoningEngine::default();
+    let mut architecture = Architecture::seeded();
+    architecture.add_design_unit(DesignUnit::with_layer(1, "ApiService", Layer::Service));
+    let world = WorldModel::from_architecture(architecture, Vec::new());
+    let action = DesignAction::Architecture(ArchitectureAction::AddComponent {
+        component: DesignUnit::with_layer(2, "UserRepository", Layer::Repository),
+    });
+
+    let score = engine.evaluate_action(&world, &action);
+
+    assert!((0.0..=1.0).contains(&score.performance));
+    assert!((0.0..=1.0).contains(&score.complexity));
+    assert!((0.0..=1.0).contains(&score.maintainability));
+    assert!((0.0..=1.0).contains(&score.correctness));
+}
+
+#[test]
+fn test34_12_search_compatibility_returns_ranked_action_scores() {
+    let engine = DefaultMathematicalReasoningEngine::default();
+    let mut architecture = Architecture::seeded();
+    architecture.add_design_unit(DesignUnit::with_layer(1, "ApiService", Layer::Service));
+    architecture.add_design_unit(DesignUnit::with_layer(2, "UserRepository", Layer::Repository));
+    let world = WorldModel::from_architecture(architecture, Vec::new());
+
+    let ranked = architecture_search_step(&world, &engine);
+
+    assert!(!ranked.is_empty());
+    assert!(ranked.iter().all(|(_, score)| (0.0..=1.0).contains(&score.correctness)));
 }
