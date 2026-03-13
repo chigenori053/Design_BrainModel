@@ -19,16 +19,22 @@ fn test17_execution_graph_generation() {
     let execution = ExecutionGraphBuilder.build(&graph);
 
     assert_eq!(execution.nodes.len(), 4);
-    assert!(execution
-        .nodes
-        .iter()
-        .any(|node| matches!(node, ExecutionNode::Queue(name) if name == "EventQueue")));
-    assert!(execution
-        .edges
-        .iter()
-        .any(|edge| matches!(edge.edge_type, ExecutionEdgeType::AsyncMessage)));
-    assert!(execution
-        .edges
-        .iter()
-        .any(|edge| matches!(edge.edge_type, ExecutionEdgeType::DataAccess)));
+    assert!(
+        execution
+            .nodes
+            .iter()
+            .any(|node| matches!(node, ExecutionNode::Queue(name) if name == "EventQueue"))
+    );
+    assert!(
+        execution
+            .edges
+            .iter()
+            .any(|edge| matches!(edge.edge_type, ExecutionEdgeType::AsyncMessage))
+    );
+    assert!(
+        execution
+            .edges
+            .iter()
+            .any(|edge| matches!(edge.edge_type, ExecutionEdgeType::DataAccess))
+    );
 }

@@ -8,11 +8,7 @@ use knowledge_lifecycle::KnowledgeHalfLifeMonitor;
 fn half_life_is_median_survival_cycles() {
     let graph = KnowledgeGraph {
         entities: vec![],
-        relations: vec![
-            relation(2),
-            relation(4),
-            relation(8),
-        ],
+        relations: vec![relation(2), relation(4), relation(8)],
     };
 
     let half_life = KnowledgeHalfLifeMonitor { current_cycle: 10 }.calculate(&graph);

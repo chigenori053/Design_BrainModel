@@ -37,6 +37,11 @@ impl ArchitectureCognitionSearchIntegration {
         let knowledge = self.knowledge_engine.process_query(KnowledgeQuery {
             text: problem.clone(),
             semantic_hints: Vec::new(),
+            semantic_vector: Vec::new(),
+            keywords: Vec::new(),
+            relation_types: Vec::new(),
+            max_results: 64,
+            confidence_threshold: 0.0,
         });
         let code_ir = CodeIr::from_architecture(&search_state.world_state.architecture);
         let architecture_graph = self.reasoner.infer_from_code_ir(&code_ir);
@@ -66,6 +71,11 @@ impl ArchitectureCognitionSearchIntegration {
         let knowledge = self.knowledge_engine.process_query(KnowledgeQuery {
             text: problem.into(),
             semantic_hints: Vec::new(),
+            semantic_vector: Vec::new(),
+            keywords: Vec::new(),
+            relation_types: Vec::new(),
+            max_results: 64,
+            confidence_threshold: 0.0,
         });
         let constraints = knowledge_graph_to_constraints(&knowledge.knowledge_graph);
         let confidence = knowledge.validation.confidence;

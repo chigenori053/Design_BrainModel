@@ -24,8 +24,18 @@ fn knowledge_lifecycle_pipeline_persists_metrics_and_events() {
     assert!(events.contains(&RuntimeEvent::KnowledgeTurnoverAnalyzed));
     assert_eq!(ai_context.experience_state.graph.lifecycle_states.len(), 1);
     assert_eq!(ai_context.experience_state.graph.lifecycle_metrics.len(), 1);
-    assert_eq!(ai_context.experience_state.graph.inferred_knowledges.len(), 1);
-    assert_eq!(ai_context.experience_state.graph.stabilized_knowledges.len(), 1);
+    assert_eq!(
+        ai_context.experience_state.graph.inferred_knowledges.len(),
+        1
+    );
+    assert_eq!(
+        ai_context
+            .experience_state
+            .graph
+            .stabilized_knowledges
+            .len(),
+        1
+    );
     assert!(ai_context.lifecycle_metrics.average_confidence > 0.0);
     assert!(ai_context.lifecycle_metrics.entropy > 0.0);
     assert!(ai_context.lifecycle_metrics.turnover_rate >= 0.0);

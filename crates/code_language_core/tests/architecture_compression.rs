@@ -132,10 +132,6 @@ fn graph_entropy(graph: &ArchitectureGraph) -> f64 {
     let total = counts.values().sum::<usize>() as f64;
     counts.values().fold(0.0, |sum, count| {
         let p = *count as f64 / total;
-        if p == 0.0 {
-            sum
-        } else {
-            sum - p * p.log2()
-        }
+        if p == 0.0 { sum } else { sum - p * p.log2() }
     })
 }

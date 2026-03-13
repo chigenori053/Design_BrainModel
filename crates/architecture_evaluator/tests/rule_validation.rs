@@ -14,10 +14,14 @@ fn test14_rule_enforcement() {
 
     let violations = RuleValidator.validate(&graph);
 
-    assert!(violations
-        .iter()
-        .any(|violation| matches!(violation.rule, ArchitectureRule::NoDependencyCycle)));
-    assert!(violations
-        .iter()
-        .any(|violation| matches!(violation.rule, ArchitectureRule::LayerViolation)));
+    assert!(
+        violations
+            .iter()
+            .any(|violation| matches!(violation.rule, ArchitectureRule::NoDependencyCycle))
+    );
+    assert!(
+        violations
+            .iter()
+            .any(|violation| matches!(violation.rule, ArchitectureRule::LayerViolation))
+    );
 }

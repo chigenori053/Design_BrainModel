@@ -1,6 +1,7 @@
 use knowledge_engine::{
-    default_reliability_for_source, EntityId, KnowledgeConfidence, KnowledgeEntity, KnowledgeGraph,
-    KnowledgeProvenance, KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore,
+    EntityId, KnowledgeConfidence, KnowledgeEntity, KnowledgeGraph, KnowledgeProvenance,
+    KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore,
+    default_reliability_for_source,
 };
 use knowledge_lifecycle::{KnowledgeLifecycleConfig, KnowledgeLifecycleEngine};
 
@@ -8,16 +9,48 @@ use knowledge_lifecycle::{KnowledgeLifecycleConfig, KnowledgeLifecycleEngine};
 fn lifecycle_remains_stable_over_1000_cycles() {
     let mut graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "rest".into() },
-            KnowledgeEntity { id: EntityId(2), label: "stateless".into() },
-            KnowledgeEntity { id: EntityId(3), label: "cache".into() },
-            KnowledgeEntity { id: EntityId(4), label: "service".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "rest".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "stateless".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(3),
+                label: "cache".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(4),
+                label: "service".into(),
+            },
         ],
         relations: vec![
-            build_relation(EntityId(1), EntityId(2), RelationType::Constrains, KnowledgeSource::LocalDocument),
-            build_relation(EntityId(3), EntityId(4), RelationType::Recommends, KnowledgeSource::ExperienceDerived),
-            build_relation(EntityId(4), EntityId(1), RelationType::Requires, KnowledgeSource::Inferred),
-            build_relation(EntityId(1), EntityId(2), RelationType::Supports, KnowledgeSource::WebSearch),
+            build_relation(
+                EntityId(1),
+                EntityId(2),
+                RelationType::Constrains,
+                KnowledgeSource::LocalDocument,
+            ),
+            build_relation(
+                EntityId(3),
+                EntityId(4),
+                RelationType::Recommends,
+                KnowledgeSource::ExperienceDerived,
+            ),
+            build_relation(
+                EntityId(4),
+                EntityId(1),
+                RelationType::Requires,
+                KnowledgeSource::Inferred,
+            ),
+            build_relation(
+                EntityId(1),
+                EntityId(2),
+                RelationType::Supports,
+                KnowledgeSource::WebSearch,
+            ),
         ],
     };
     let initial_size = graph.relations.len();

@@ -8,8 +8,14 @@ use knowledge_lifecycle::SemanticClusterEngine;
 fn semantic_cluster_uses_similarity_threshold() {
     let graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "a".into() },
-            KnowledgeEntity { id: EntityId(2), label: "b".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "a".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "b".into(),
+            },
         ],
         relations: vec![
             relation(EntityId(1), EntityId(2), 0.8),

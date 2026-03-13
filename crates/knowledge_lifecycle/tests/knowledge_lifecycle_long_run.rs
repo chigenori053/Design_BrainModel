@@ -1,6 +1,7 @@
 use knowledge_engine::{
-    default_reliability_for_source, EntityId, KnowledgeConfidence, KnowledgeEntity, KnowledgeGraph,
-    KnowledgeProvenance, KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore,
+    EntityId, KnowledgeConfidence, KnowledgeEntity, KnowledgeGraph, KnowledgeProvenance,
+    KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore,
+    default_reliability_for_source,
 };
 use knowledge_lifecycle::{KnowledgeLifecycleConfig, KnowledgeLifecycleEngine};
 
@@ -33,11 +34,26 @@ fn long_run_lifecycle_stays_within_revision_thresholds() {
     }
     let mut graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "rest".into() },
-            KnowledgeEntity { id: EntityId(2), label: "service".into() },
-            KnowledgeEntity { id: EntityId(3), label: "cache".into() },
-            KnowledgeEntity { id: EntityId(4), label: "gateway".into() },
-            KnowledgeEntity { id: EntityId(5), label: "worker".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "rest".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "service".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(3),
+                label: "cache".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(4),
+                label: "gateway".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(5),
+                label: "worker".into(),
+            },
         ],
         relations,
     };

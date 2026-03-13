@@ -36,8 +36,8 @@ fn entropy_monitor_detects_diversity_collapse() {
         ],
     };
     let monitor = KnowledgeEntropyMonitor {
-            entropy_threshold: 0.6,
-        };
+        entropy_threshold: 0.6,
+    };
     let entropy = monitor.calculate(&graph);
 
     assert!(monitor.is_collapse(&entropy));

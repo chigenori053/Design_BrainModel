@@ -85,11 +85,7 @@ fn dependency_entropy(graph: &ArchitectureGraph) -> f64 {
     let total = counts.values().sum::<usize>() as f64;
     let raw = counts.values().fold(0.0, |sum, count| {
         let p = *count as f64 / total;
-        if p == 0.0 {
-            sum
-        } else {
-            sum - p * p.log2()
-        }
+        if p == 0.0 { sum } else { sum - p * p.log2() }
     });
     let max = (counts.len().max(1) as f64).log2().max(1.0);
     (raw / max).clamp(0.0, 1.0)

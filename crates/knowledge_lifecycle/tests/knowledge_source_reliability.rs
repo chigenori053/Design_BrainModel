@@ -39,6 +39,14 @@ fn source_reliability_evaluator_collects_reliability_by_source() {
     let reliabilities = KnowledgeSourceReliabilityEvaluator.evaluate(&graph);
 
     assert_eq!(reliabilities.len(), 2);
-    assert!(reliabilities.iter().any(|entry| entry.reliability_score == 0.9));
-    assert!(reliabilities.iter().any(|entry| entry.reliability_score == 0.6));
+    assert!(
+        reliabilities
+            .iter()
+            .any(|entry| entry.reliability_score == 0.9)
+    );
+    assert!(
+        reliabilities
+            .iter()
+            .any(|entry| entry.reliability_score == 0.6)
+    );
 }

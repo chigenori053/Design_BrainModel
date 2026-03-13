@@ -11,9 +11,11 @@ fn pipeline_execution_and_context_propagation() {
     assert!(!ctx.semantic_units.is_empty());
     assert!(!ctx.concepts.is_empty());
     assert!(!ctx.intent_nodes.is_empty());
+    assert!(ctx.reasoning_result.is_some());
     assert!(ctx.search_state.is_some());
     assert!(ctx.hypothesis_graph.is_some());
     assert!(ctx.design_state.is_some());
+    assert!(!ctx.hypotheses.is_empty());
 }
 
 #[test]
@@ -44,9 +46,11 @@ fn pipeline_phase17_initializes_ai_context_and_updates_experience_graph() {
     assert!(events.contains(&RuntimeEvent::KnowledgeHalfLifeCalculated));
     assert!(events.contains(&RuntimeEvent::LifecycleMetricsUpdated));
     assert!(events.contains(&RuntimeEvent::KnowledgeTurnoverAnalyzed));
-    assert!(events.contains(&RuntimeEvent::KnowledgeConflictResolvedWithContext)
-        || events.contains(&RuntimeEvent::KnowledgeConflictResolved)
-        || !ai_context.knowledge_graph.relations.is_empty());
+    assert!(
+        events.contains(&RuntimeEvent::KnowledgeConflictResolvedWithContext)
+            || events.contains(&RuntimeEvent::KnowledgeConflictResolved)
+            || !ai_context.knowledge_graph.relations.is_empty()
+    );
     assert!(events.contains(&RuntimeEvent::ArchitectureStateCreated));
     assert!(events.contains(&RuntimeEvent::EvaluationStarted));
     assert!(events.contains(&RuntimeEvent::EvaluationCompleted));
@@ -58,7 +62,10 @@ fn pipeline_phase17_initializes_ai_context_and_updates_experience_graph() {
     assert!(ai_context.lifecycle_metrics.average_confidence > 0.0);
     assert!(ai_context.lifecycle_metrics.entropy > 0.0);
     assert!(ai_context.lifecycle_metrics.turnover_rate >= 0.0);
-    assert!(ai_context.lifecycle_metrics.half_life <= vm.context().tick as u64 || vm.context().tick == 0);
+    assert!(
+        ai_context.lifecycle_metrics.half_life <= vm.context().tick as u64
+            || vm.context().tick == 0
+    );
     assert_eq!(ai_context.experience_state.graph.edges.len(), 1);
     assert_eq!(ai_context.experience_state.graph.knowledges.len(), 1);
     assert_eq!(ai_context.experience_state.graph.lifecycle_states.len(), 1);

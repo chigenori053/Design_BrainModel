@@ -1,7 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use architecture_domain::ArchitectureState;
-use knowledge_engine::{KnowledgeGraph, KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore};
+use knowledge_engine::{
+    KnowledgeGraph, KnowledgeRelation, KnowledgeSource, RelationType, ValidationScore,
+};
 use language_core::SemanticGraph;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -227,7 +229,9 @@ pub struct KnowledgeAgingEngine {
 
 impl KnowledgeAgingEngine {
     pub fn decay_confidence(&self, knowledge: &mut KnowledgeRelation) {
-        let age = self.current_cycle.saturating_sub(knowledge.provenance.timestamp) as f64;
+        let age = self
+            .current_cycle
+            .saturating_sub(knowledge.provenance.timestamp) as f64;
         let factor = (-self.decay_rate * age).exp();
         knowledge.confidence = knowledge
             .confidence
@@ -409,7 +413,10 @@ impl KnowledgeHalfLifeMonitor {
         let mut survival_cycles = graph
             .relations
             .iter()
-            .map(|relation| self.current_cycle.saturating_sub(relation.provenance.timestamp))
+            .map(|relation| {
+                self.current_cycle
+                    .saturating_sub(relation.provenance.timestamp)
+            })
             .collect::<Vec<_>>();
         if survival_cycles.is_empty() {
             return KnowledgeHalfLife::default();
@@ -585,7 +592,12 @@ pub struct KnowledgeLifecycleEngine {
 
 impl Default for KnowledgeLifecycleEngine {
     fn default() -> Self {
-        Self::new(KnowledgeLifecycleConfig::default(), ValidationScore::default(), 0, false)
+        Self::new(
+            KnowledgeLifecycleConfig::default(),
+            ValidationScore::default(),
+            0,
+            false,
+        )
     }
 }
 
@@ -687,8 +699,12 @@ impl KnowledgeLifecycleEngine {
                     })
                 });
                 graph.relations.extend(resolution.resolved_relations);
-                graph.relations.sort_by(|lhs, rhs| relation_key(lhs).cmp(&relation_key(rhs)));
-                graph.relations.dedup_by(|lhs, rhs| relation_key(lhs) == relation_key(rhs));
+                graph
+                    .relations
+                    .sort_by(|lhs, rhs| relation_key(lhs).cmp(&relation_key(rhs)));
+                graph
+                    .relations
+                    .dedup_by(|lhs, rhs| relation_key(lhs) == relation_key(rhs));
             }
         }
 
@@ -705,7 +721,9 @@ impl KnowledgeLifecycleEngine {
         state.turnover_metrics = self.turnover_monitor.analyze(
             previous_relations,
             graph.relations.len(),
-            state.pruned_relations.saturating_sub(state.semantic_pruned_relations),
+            state
+                .pruned_relations
+                .saturating_sub(state.semantic_pruned_relations),
         );
         state.half_life = self.half_life_monitor.calculate(graph);
         state.lifecycle_metrics = LifecycleMetrics {

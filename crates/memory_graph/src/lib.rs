@@ -1,9 +1,7 @@
 use architecture_domain::ArchitectureState;
 use evaluation_engine::EvaluationResult;
 use knowledge_engine::{KnowledgeGraph, ValidationScore};
-use knowledge_lifecycle::{
-    KnowledgeLifecycleState, LifecycleMetrics,
-};
+use knowledge_lifecycle::{KnowledgeLifecycleState, LifecycleMetrics};
 use semantic_domain::MeaningGraph;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]

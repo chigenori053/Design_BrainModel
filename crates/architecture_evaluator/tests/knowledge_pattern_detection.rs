@@ -15,12 +15,16 @@ fn test15_pattern_detection() {
 
     let detection = KnowledgeAnalyzer::default().detect(&graph);
 
-    assert!(detection
-        .matched_patterns
-        .iter()
-        .any(|pattern| pattern.kind == ArchitecturePatternKind::Layered));
-    assert!(detection
-        .matched_patterns
-        .iter()
-        .any(|pattern| pattern.kind == ArchitecturePatternKind::Microservice));
+    assert!(
+        detection
+            .matched_patterns
+            .iter()
+            .any(|pattern| pattern.kind == ArchitecturePatternKind::Layered)
+    );
+    assert!(
+        detection
+            .matched_patterns
+            .iter()
+            .any(|pattern| pattern.kind == ArchitecturePatternKind::Microservice)
+    );
 }

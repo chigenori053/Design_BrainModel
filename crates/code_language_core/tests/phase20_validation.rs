@@ -1,5 +1,5 @@
 use architecture_reasoner::ReverseArchitectureReasoner;
-use code_language_core::{architecture_from_code_ir, CodeLanguageCore, ParsedSourceFile};
+use code_language_core::{CodeLanguageCore, ParsedSourceFile, architecture_from_code_ir};
 use design_domain::{Architecture, Dependency, DependencyKind, DesignUnit, DesignUnitId};
 
 fn sample_architecture() -> Architecture {
@@ -33,12 +33,16 @@ fn test1_architecture_to_code_generation_quality() {
     let quality = core.evaluate_generation_quality(&graph);
 
     assert_eq!(generated.len(), 3);
-    assert!(generated
-        .iter()
-        .all(|(_, source)| source.contains("pub struct ")));
-    assert!(generated
-        .iter()
-        .any(|(_, source)| source.contains("use crate::user_service::UserService;")));
+    assert!(
+        generated
+            .iter()
+            .all(|(_, source)| source.contains("pub struct "))
+    );
+    assert!(
+        generated
+            .iter()
+            .any(|(_, source)| source.contains("use crate::user_service::UserService;"))
+    );
     assert!(quality >= 0.95, "quality={quality}");
 }
 
@@ -92,22 +96,26 @@ pub struct UserDto {
     let graph = core.reverse_architecture(&files);
 
     assert_eq!(ir.modules.len(), 3);
-    assert!(ir
-        .interfaces
-        .iter()
-        .any(|interface| interface.name == "Router"));
-    assert!(ir
-        .interfaces
-        .iter()
-        .any(|interface| interface.name == "Json"));
-    assert!(ir
-        .interfaces
-        .iter()
-        .any(|interface| interface.name == "JoinHandle"));
-    assert!(ir
-        .interfaces
-        .iter()
-        .any(|interface| interface.name == "Serialize"));
+    assert!(
+        ir.interfaces
+            .iter()
+            .any(|interface| interface.name == "Router")
+    );
+    assert!(
+        ir.interfaces
+            .iter()
+            .any(|interface| interface.name == "Json")
+    );
+    assert!(
+        ir.interfaces
+            .iter()
+            .any(|interface| interface.name == "JoinHandle")
+    );
+    assert!(
+        ir.interfaces
+            .iter()
+            .any(|interface| interface.name == "Serialize")
+    );
     assert!(graph.nodes.iter().any(|node| node.name == "ApiController"));
     assert!(graph.nodes.iter().any(|node| node.name == "UserService"));
     assert!(graph.nodes.iter().any(|node| node.name == "UserDto"));

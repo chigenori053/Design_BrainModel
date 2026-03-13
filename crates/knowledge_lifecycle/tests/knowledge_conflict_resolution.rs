@@ -1,17 +1,23 @@
+use architecture_domain::ArchitectureState;
 use knowledge_engine::{
     EntityId, KnowledgeConfidence, KnowledgeEntity, KnowledgeGraph, KnowledgeProvenance,
     KnowledgeRelation, KnowledgeSource, RelationType,
 };
 use knowledge_lifecycle::{ConflictContext, KnowledgeConflictResolver};
-use architecture_domain::ArchitectureState;
 use language_core::SemanticGraph;
 
 #[test]
 fn conflict_resolution_keeps_relation_with_highest_effective_confidence() {
     let graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "supports".into() },
-            KnowledgeEntity { id: EntityId(2), label: "requires".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "supports".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "requires".into(),
+            },
         ],
         relations: vec![
             KnowledgeRelation {
@@ -51,5 +57,8 @@ fn conflict_resolution_keeps_relation_with_highest_effective_confidence() {
     );
 
     assert_eq!(resolution.resolved_count, 1);
-    assert_eq!(resolution.resolved_relations[0].relation_type, RelationType::Supports);
+    assert_eq!(
+        resolution.resolved_relations[0].relation_type,
+        RelationType::Supports
+    );
 }

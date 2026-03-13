@@ -1,6 +1,6 @@
 use architecture_behavior::{BehaviorAnalysis, BehaviorAnalyzer};
 use architecture_knowledge::{KnowledgeAnalyzer, PatternDetection};
-use architecture_memory::{recall_similar_architecture, ArchitectureMemory};
+use architecture_memory::{ArchitectureMemory, recall_similar_architecture};
 use architecture_metrics::{ArchitectureMetrics, MetricsCalculator};
 use architecture_rules::{RuleValidator, RuleViolation};
 use architecture_state_v2::{ArchitectureEvaluation, ArchitectureState};

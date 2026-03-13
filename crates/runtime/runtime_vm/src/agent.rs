@@ -3,7 +3,8 @@ use concept_field::{ConceptVector, build_field_from_vectors, concept_vector_from
 use design_search_engine::{
     BeamSearchStrategy, ConstraintEngine, DesignSearchEngine, DesignState, DesignStateId,
     DesignUnit, DesignUnitId, DesignUnitType, Evaluator, HypothesisGraph,
-    IntentNode as SearchIntentNode, SearchConfig as DesignSearchConfig,
+    IntentNode as SearchIntentNode, ReasoningEngine, SearchConfig as DesignSearchConfig,
+    runtime_hypotheses_from_reasoning,
 };
 use memory_space_api::{ConceptMemorySpace as MemorySpace, MemoryEntry};
 use memory_space_complex::ComplexField;
@@ -263,6 +264,7 @@ impl Agent for ReasoningRuntimeAgent {
 
 pub struct DesignSearchAgent {
     engine: DesignSearchEngine,
+    reasoning_engine: ReasoningEngine,
 }
 
 impl Default for DesignSearchAgent {
@@ -274,6 +276,7 @@ impl Default for DesignSearchAgent {
                 constraint_engine: ConstraintEngine::default(),
                 config: DesignSearchConfig::default(),
             },
+            reasoning_engine: ReasoningEngine::default(),
         }
     }
 }
@@ -289,31 +292,47 @@ impl Agent for DesignSearchAgent {
             })
             .collect::<Vec<_>>();
         self.engine.constraint_engine = ConstraintEngine { intent_nodes };
+        let state_vector = ctx
+            .concept_field
+            .as_ref()
+            .map(|field| field.vector.clone())
+            .unwrap_or_else(|| ComplexField::new(Vec::new()));
+        let reasoning_result = self
+            .reasoning_engine
+            .reason(&ctx.input_text, state_vector.clone());
+        ctx.hypotheses = runtime_hypotheses_from_reasoning(&reasoning_result, &ctx.concepts)
+            .into_iter()
+            .map(|(a, b)| RuntimeHypothesis {
+                concept_a: a,
+                concept_b: b,
+            })
+            .collect();
+        ctx.reasoning_result = Some(reasoning_result.clone());
 
-        let initial = ctx.design_state.clone().unwrap_or_else(|| DesignState {
-            id: DesignStateId(1),
-            design_units: ctx
-                .concepts
-                .iter()
-                .enumerate()
-                .map(|(idx, _)| DesignUnit {
-                    id: DesignUnitId((idx + 1) as u64),
-                    unit_type: DesignUnitType::DesignUnit,
-                    dependencies: if idx == 0 {
-                        Vec::new()
-                    } else {
-                        vec![DesignUnitId(idx as u64)]
-                    },
-                    causal_relations: Vec::new(),
-                })
-                .collect(),
-            evaluation: None,
-            state_vector: ctx
-                .concept_field
-                .as_ref()
-                .map(|field| field.vector.clone())
-                .unwrap_or_else(|| ComplexField::new(Vec::new())),
-        });
+        let initial = ctx
+            .design_state
+            .clone()
+            .or_else(|| reasoning_result.best_seed_state())
+            .unwrap_or_else(|| DesignState {
+                id: DesignStateId(1),
+                design_units: ctx
+                    .concepts
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, _)| DesignUnit {
+                        id: DesignUnitId((idx + 1) as u64),
+                        unit_type: DesignUnitType::DesignUnit,
+                        dependencies: if idx == 0 {
+                            Vec::new()
+                        } else {
+                            vec![DesignUnitId(idx as u64)]
+                        },
+                        causal_relations: Vec::new(),
+                    })
+                    .collect(),
+                evaluation: None,
+                state_vector,
+            });
 
         let graph: HypothesisGraph = self.engine.search(initial, &ctx.concepts);
         ctx.design_state = graph.best_state().cloned();
@@ -428,5 +447,7 @@ mod tests {
         agent.execute(&mut ctx);
         assert!(ctx.hypothesis_graph.is_some());
         assert!(ctx.design_state.is_some());
+        assert!(ctx.reasoning_result.is_some());
+        assert!(!ctx.hypotheses.is_empty());
     }
 }

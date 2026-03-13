@@ -8,8 +8,14 @@ use knowledge_lifecycle::KnowledgeSemanticCluster;
 fn redundancy_pruning_keeps_highest_confidence_relation() {
     let mut graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "a".into() },
-            KnowledgeEntity { id: EntityId(2), label: "b".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "a".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "b".into(),
+            },
         ],
         relations: vec![
             KnowledgeRelation {
@@ -45,5 +51,8 @@ fn redundancy_pruning_keeps_highest_confidence_relation() {
 
     assert_eq!(pruned, 1);
     assert_eq!(graph.relations.len(), 1);
-    assert!((graph.relations[0].confidence.effective_confidence - (0.8_f64 * 0.9_f64).sqrt()).abs() < 1e-9);
+    assert!(
+        (graph.relations[0].confidence.effective_confidence - (0.8_f64 * 0.9_f64).sqrt()).abs()
+            < 1e-9
+    );
 }

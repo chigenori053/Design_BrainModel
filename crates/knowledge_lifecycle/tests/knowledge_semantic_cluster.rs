@@ -8,13 +8,16 @@ use knowledge_lifecycle::KnowledgeSemanticCluster;
 fn semantic_cluster_groups_semantically_duplicate_relations() {
     let graph = KnowledgeGraph {
         entities: vec![
-            KnowledgeEntity { id: EntityId(1), label: "api".into() },
-            KnowledgeEntity { id: EntityId(2), label: "gateway".into() },
+            KnowledgeEntity {
+                id: EntityId(1),
+                label: "api".into(),
+            },
+            KnowledgeEntity {
+                id: EntityId(2),
+                label: "gateway".into(),
+            },
         ],
-        relations: vec![
-            relation(0.5, 0.6),
-            relation(0.9, 0.9),
-        ],
+        relations: vec![relation(0.5, 0.6), relation(0.9, 0.9)],
     };
 
     let clusters = KnowledgeSemanticCluster::default().cluster(&graph);
