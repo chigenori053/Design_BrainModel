@@ -7,7 +7,10 @@ use crate::persistence::{
     load_checkpoint_entries, save_checkpoint,
 };
 use agent_core::domain::hash::compute_hash;
-use agent_core::domain::{AppState, ParetoResult, ProposedDiff, UnifiedDesignState};
+use agent_core::domain::{
+    ActionHistory, AppState, InteractionLayer, ParetoResult, ProposedDiff, ReasoningEvent,
+    ReasoningTrace, UiEvent, UnifiedDesignState,
+};
 use eframe::egui;
 
 pub type SharedAppState = Arc<RwLock<AppState>>;
@@ -29,6 +32,9 @@ pub struct GuiViewState {
     pub pareto_result: Option<String>,
     pub latest_pareto: Option<ParetoResult>,
     pub suggested_diffs: Vec<ProposedDiff>,
+    pub action_history: ActionHistory,
+    pub latest_reasoning_events: Vec<ReasoningEvent>,
+    pub latest_reasoning_trace: Option<ReasoningTrace>,
     pub analyze_metrics: Option<AnalyzeMetrics>,
     pub show_history_modal: bool,
     pub checkpoint_entries: Vec<CheckpointEntry>,
@@ -83,6 +89,7 @@ pub struct DesignApp {
 #[derive(Debug, Clone)]
 pub enum GuiEvent {
     ApplyDiff(ProposedDiff),
+    Ui(UiEvent),
     Analyze,
     Undo,
     Redo,
@@ -108,6 +115,11 @@ pub fn handle_event(event: GuiEvent, state: &SharedAppState) -> Result<(), Strin
                 let _ = s.abort_tx();
                 return Err(format!("commit_tx failed: {err:?}"));
             }
+        }
+        GuiEvent::Ui(event) => {
+            let mut history = ActionHistory::default();
+            InteractionLayer::handle_ui_event(&mut s, &mut history, event)
+                .map_err(|e| format!("ui event failed: {e:?}"))?;
         }
         GuiEvent::Analyze => s
             .evaluate_now()

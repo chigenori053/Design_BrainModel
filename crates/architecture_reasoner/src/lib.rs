@@ -63,7 +63,7 @@ impl ReverseArchitectureReasoner {
             .modules
             .iter()
             .map(|module| ArchitectureNode {
-                id: module.id,
+                id: module.id.0,
                 name: module.name.clone(),
                 kind: infer_kind(module.name.as_str()),
                 layer: module.layer,
@@ -79,8 +79,8 @@ impl ReverseArchitectureReasoner {
             .dependencies
             .iter()
             .map(|dependency| ArchitectureEdge {
-                from: dependency.from,
-                to: dependency.to,
+                from: dependency.source.0,
+                to: dependency.target.0,
                 kind: ArchitectureEdgeKind::Dependency,
             })
             .collect::<Vec<_>>();

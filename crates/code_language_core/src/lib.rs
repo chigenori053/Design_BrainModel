@@ -224,7 +224,7 @@ pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
         .modules
         .iter()
         .map(|module| {
-            let mut unit = DesignUnit::new(module.id, module.name.clone());
+            let mut unit = DesignUnit::new(module.id.0, module.name.clone());
             unit.layer = module.layer;
             unit.semantics = module.responsibilities.clone();
             unit.inputs = ir
@@ -240,8 +240,8 @@ pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
         .dependencies
         .iter()
         .map(|dependency| Dependency {
-            from: DesignUnitId(dependency.from),
-            to: DesignUnitId(dependency.to),
+            from: DesignUnitId(dependency.source.0),
+            to: DesignUnitId(dependency.target.0),
             kind: match dependency.kind {
                 DependencyKind::Calls => DependencyKind::Calls,
                 DependencyKind::Reads => DependencyKind::Reads,
@@ -266,7 +266,7 @@ pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
             edges: ir
                 .dependencies
                 .iter()
-                .map(|dependency| (dependency.from, dependency.to))
+                .map(|dependency| (dependency.source.0, dependency.target.0))
                 .collect(),
         },
     }
