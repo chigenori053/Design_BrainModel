@@ -53,23 +53,7 @@ impl OutputLayout {
     }
 }
 
-/// `code_ir::SourceTree` を書き出す。
-/// strategy / layout に応じた挙動を実装する。
-pub fn write_source_tree(
-    source_tree: &SourceTree,
-    output_dir: &Path,
-    candidate_id: usize,
-) -> Result<Vec<PathBuf>, String> {
-    write_source_tree_with_options(
-        source_tree,
-        output_dir,
-        candidate_id,
-        &OutputStrategy::New,
-        &OutputLayout::Flat,
-    )
-}
-
-/// オプション付き書き出し。
+/// `code_ir::SourceTree` を strategy / layout に応じて書き出す。
 pub fn write_source_tree_with_options(
     source_tree: &SourceTree,
     output_dir: &Path,
