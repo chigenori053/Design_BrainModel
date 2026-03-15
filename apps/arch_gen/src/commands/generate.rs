@@ -19,6 +19,7 @@ use crate::input_bridge::{
 };
 use crate::output::markdown::build_markdown;
 use crate::output::mermaid::build_mermaid;
+use crate::output::plantuml::build_plantuml;
 use crate::output::source_writer::write_source_tree;
 use crate::output::text::{CandidateDisplay, GenerationSummary, render_summary};
 
@@ -119,12 +120,12 @@ fn build_candidate(
 
 // ─── Phase9 パイプライン ─────────────────────────────────────────────────────
 
-struct PipelineResult {
-    ranked: Vec<RankedCandidate>,
-    search_states_count: usize,
+pub struct PipelineResult {
+    pub ranked: Vec<RankedCandidate>,
+    pub search_states_count: usize,
 }
 
-fn run_phase9_pipeline(req: &GenerateRequest) -> Result<PipelineResult, String> {
+pub fn run_phase9_pipeline(req: &GenerateRequest) -> Result<PipelineResult, String> {
     if req.verbose {
         eprintln!("[arch-gen] input: {}", req.input_text());
         eprintln!("[arch-gen] beam_width={}, max_depth={}", req.beam_width, req.max_depth);
@@ -237,6 +238,15 @@ fn render_output(
         "markdown" => {
             let displays: Vec<CandidateDisplay> = built.iter().map(|b| b.display.clone()).collect();
             print!("{}", build_markdown(input, search_states, &displays));
+        }
+        "plantuml" => {
+            for (i, b) in built.iter().enumerate() {
+                println!("' --- Candidate {} (score: {:.4}) ---", i + 1, b.ranked.score);
+                println!(
+                    "{}",
+                    build_plantuml(&b.display.component_names, &b.display.dependency_pairs)
+                );
+            }
         }
         _ => {
             let displays: Vec<CandidateDisplay> = built.iter().map(|b| b.display.clone()).collect();

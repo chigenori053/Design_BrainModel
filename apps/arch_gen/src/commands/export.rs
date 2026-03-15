@@ -4,6 +4,7 @@ use std::path::Path;
 use crate::input_bridge::load_design_file;
 use crate::output::markdown::build_markdown;
 use crate::output::mermaid::build_mermaid;
+use crate::output::plantuml::build_plantuml;
 use crate::output::text::{CandidateDisplay, render_evaluation};
 
 /// `export` コマンド: 保存済み design.json を指定フォーマットで出力する。
@@ -37,6 +38,19 @@ pub fn run(design_file: &str, format: &str, output: Option<&str>) -> Result<(), 
         "markdown" => {
             let displays = to_candidate_displays(&design.candidates);
             build_markdown(&design.input, design.search_states, &displays)
+        }
+
+        "plantuml" => {
+            let mut out = String::new();
+            for c in &design.candidates {
+                out.push_str(&format!(
+                    "' --- Candidate {} (score: {:.4}) ---\n",
+                    c.id, c.score
+                ));
+                out.push_str(&build_plantuml(&c.components, &to_dep_pairs(&c.dependencies)));
+                out.push('\n');
+            }
+            out
         }
 
         "text" | _ => {
