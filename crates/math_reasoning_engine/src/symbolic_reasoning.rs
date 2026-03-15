@@ -17,8 +17,7 @@ impl SymbolicReasoner for DeterministicSymbolicReasoner {
     fn reason(&self, architecture: &ArchitectureState) -> SymbolicReasoningResult {
         let summary = format!(
             "latency = dependency_count({}) + replicas({})",
-            architecture.metrics.dependency_count,
-            architecture.deployment.replicas
+            architecture.metrics.dependency_count, architecture.deployment.replicas
         );
         let validity_score = if architecture.metrics.layering_score >= 0.5 {
             0.9

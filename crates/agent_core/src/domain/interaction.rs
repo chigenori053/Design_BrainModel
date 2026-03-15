@@ -202,10 +202,10 @@ impl InteractionLayer {
             consistency: (100_u32.saturating_sub(orphan_count.saturating_mul(10))).min(100),
             structural_integrity: (100_u32
                 .saturating_sub(edge_count.saturating_sub(module_count.saturating_sub(1)) * 5))
-                .min(100),
+            .min(100),
             dependency_soundness: (100_u32
                 .saturating_sub(Self::cycle_count(&state.architecture) as u32 * 20))
-                .min(100),
+            .min(100),
         }
     }
 
@@ -297,7 +297,11 @@ impl InteractionLayer {
                 keys.sort();
                 let from = keys.first().cloned().unwrap_or_else(|| "1".into());
                 let to = keys.get(1).cloned().unwrap_or_else(|| from.clone());
-                Self::update_architecture(app_state, ArchitectureAction::AddEdge { from, to }, history)
+                Self::update_architecture(
+                    app_state,
+                    ArchitectureAction::AddEdge { from, to },
+                    history,
+                )
             }
             UiEvent::EdgeRemove => {
                 let world = Self::world_state_from_app_state(app_state);
@@ -391,7 +395,10 @@ impl InteractionLayer {
         GeometryState { node_positions }
     }
 
-    fn diff_from_action(app_state: &AppState, action: &ArchitectureAction) -> Result<ProposedDiff, TxError> {
+    fn diff_from_action(
+        app_state: &AppState,
+        action: &ArchitectureAction,
+    ) -> Result<ProposedDiff, TxError> {
         match action {
             ArchitectureAction::AddNode { node_type } => {
                 let next_id = app_state
@@ -411,7 +418,12 @@ impl InteractionLayer {
                 key: node_id.clone(),
             }),
             ArchitectureAction::AddEdge { from, to } => {
-                let mut dependencies = app_state.uds.dependencies.get(from).cloned().unwrap_or_default();
+                let mut dependencies = app_state
+                    .uds
+                    .dependencies
+                    .get(from)
+                    .cloned()
+                    .unwrap_or_default();
                 dependencies.push(to.clone());
                 dependencies.sort();
                 dependencies.dedup();
@@ -438,10 +450,12 @@ impl InteractionLayer {
                     dependencies,
                 })
             }
-            ArchitectureAction::UpdateProperty { node_id, property } => Ok(ProposedDiff::UpsertNode {
-                key: node_id.clone(),
-                value: format!("{}={}", property.key, property.value),
-            }),
+            ArchitectureAction::UpdateProperty { node_id, property } => {
+                Ok(ProposedDiff::UpsertNode {
+                    key: node_id.clone(),
+                    value: format!("{}={}", property.key, property.value),
+                })
+            }
         }
     }
 
@@ -486,7 +500,11 @@ impl InteractionLayer {
         visited.push(node_id.to_string());
         stack.push(node_id.to_string());
         let mut found = false;
-        for edge in architecture.edges.iter().filter(|edge| edge.from == node_id) {
+        for edge in architecture
+            .edges
+            .iter()
+            .filter(|edge| edge.from == node_id)
+        {
             found |= Self::dfs_cycle(&edge.to, architecture, visited, stack, cycles);
         }
         stack.pop();

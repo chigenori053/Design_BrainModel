@@ -1,7 +1,9 @@
 use std::thread;
 use std::time::Instant;
 
-use design_domain::{Architecture, Constraint, DesignUnit, Dependency, DependencyKind, DesignUnitId};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId,
+};
 use world_model::{DefaultSimulationEngine, TracedSimulation};
 use world_model_core::{SimulationTelemetryEventKind, WorldState};
 

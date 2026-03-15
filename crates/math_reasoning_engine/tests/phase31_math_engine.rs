@@ -1,11 +1,13 @@
 use architecture_domain::ArchitectureState;
-use design_domain::{Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer,
+};
 use math_reasoning_engine::{
-    ComplexityClass, ConstraintSolver, DefaultMathematicalReasoningEngine,
-    DeterministicConstraintSolver, DeterministicNumericalValidator, DeterministicSymbolicReasoner,
+    ComplexityClass, ComplexityEstimator, ConstraintSolver, DefaultMathematicalReasoningEngine,
+    DeterministicConstraintSolver, DeterministicGraphAnalysisEngine,
+    DeterministicNumericalValidator, DeterministicSymbolicReasoner, GraphAnalysisEngine,
     HeuristicComplexityEstimator, MathEngine, MathematicalReasoningEngine, NumericalValidator,
-    SymbolicReasoner, ComplexityEstimator, GraphAnalysisEngine, DeterministicGraphAnalysisEngine,
-    architecture_search_step,
+    SymbolicReasoner, architecture_search_step,
 };
 use world_model::{ArchitectureAction, DesignAction, WorldModel};
 
@@ -38,35 +40,72 @@ fn architecture_state(
 #[test]
 fn test34_01_constraint_solving() {
     let engine = DefaultMathematicalReasoningEngine::default();
-    let valid = architecture_state(3, &[(1, 2)], vec![Constraint {
-        name: "deps".into(),
-        max_design_units: Some(4),
-        max_dependencies: Some(2),
-    }]);
-    let invalid = architecture_state(3, &[(1, 2), (2, 3)], vec![Constraint {
-        name: "deps".into(),
-        max_design_units: Some(3),
-        max_dependencies: Some(1),
-    }]);
+    let valid = architecture_state(
+        3,
+        &[(1, 2)],
+        vec![Constraint {
+            name: "deps".into(),
+            max_design_units: Some(4),
+            max_dependencies: Some(2),
+        }],
+    );
+    let invalid = architecture_state(
+        3,
+        &[(1, 2), (2, 3)],
+        vec![Constraint {
+            name: "deps".into(),
+            max_design_units: Some(3),
+            max_dependencies: Some(1),
+        }],
+    );
     let solver = DeterministicConstraintSolver;
 
-    assert!(solver.solve(&engine.problem_from_architecture(&valid)).satisfied);
-    assert!(!solver.solve(&engine.problem_from_architecture(&invalid)).satisfied);
+    assert!(
+        solver
+            .solve(&engine.problem_from_architecture(&valid))
+            .satisfied
+    );
+    assert!(
+        !solver
+            .solve(&engine.problem_from_architecture(&invalid))
+            .satisfied
+    );
 }
 
 #[test]
 fn test34_02_complexity_estimation() {
     let estimator = HeuristicComplexityEstimator;
     let simple = architecture_state(3, &[(1, 2)], Vec::new());
-    let dense = architecture_state(12, &[(1, 2), (2, 3), (3, 4), (4, 5), (5, 6), (6, 7), (7, 8), (8, 9), (9, 10), (10, 11), (11, 12), (12, 1), (2, 10), (3, 11), (4, 12)], Vec::new());
-
-    assert_eq!(estimator.estimate(&simple).time_complexity, ComplexityClass::Constant);
-    assert!(
-        matches!(
-            estimator.estimate(&dense).time_complexity,
-            ComplexityClass::Linearithmic | ComplexityClass::Quadratic | ComplexityClass::Cubic
-        )
+    let dense = architecture_state(
+        12,
+        &[
+            (1, 2),
+            (2, 3),
+            (3, 4),
+            (4, 5),
+            (5, 6),
+            (6, 7),
+            (7, 8),
+            (8, 9),
+            (9, 10),
+            (10, 11),
+            (11, 12),
+            (12, 1),
+            (2, 10),
+            (3, 11),
+            (4, 12),
+        ],
+        Vec::new(),
     );
+
+    assert_eq!(
+        estimator.estimate(&simple).time_complexity,
+        ComplexityClass::Constant
+    );
+    assert!(matches!(
+        estimator.estimate(&dense).time_complexity,
+        ComplexityClass::Linearithmic | ComplexityClass::Quadratic | ComplexityClass::Cubic
+    ));
 }
 
 #[test]
@@ -186,11 +225,19 @@ fn test34_12_search_compatibility_returns_ranked_action_scores() {
     let engine = DefaultMathematicalReasoningEngine::default();
     let mut architecture = Architecture::seeded();
     architecture.add_design_unit(DesignUnit::with_layer(1, "ApiService", Layer::Service));
-    architecture.add_design_unit(DesignUnit::with_layer(2, "UserRepository", Layer::Repository));
+    architecture.add_design_unit(DesignUnit::with_layer(
+        2,
+        "UserRepository",
+        Layer::Repository,
+    ));
     let world = WorldModel::from_architecture(architecture, Vec::new());
 
     let ranked = architecture_search_step(&world, &engine);
 
     assert!(!ranked.is_empty());
-    assert!(ranked.iter().all(|(_, score)| (0.0..=1.0).contains(&score.correctness)));
+    assert!(
+        ranked
+            .iter()
+            .all(|(_, score)| (0.0..=1.0).contains(&score.correctness))
+    );
 }

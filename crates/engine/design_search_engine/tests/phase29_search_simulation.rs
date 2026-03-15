@@ -1,4 +1,6 @@
-use design_domain::{Architecture, Constraint, DesignUnit, Dependency, DependencyKind, DesignUnitId};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId,
+};
 use design_search_engine::{
     BeamSearchController, SearchConfig, SearchController as _, SearchState, rank_candidates,
 };
@@ -36,7 +38,10 @@ fn phase29_search_propagates_simulation_result_into_evaluation_vector() {
     assert!(!states.is_empty());
     for state in states {
         let simulation = state.world_state.simulation.as_ref().expect("simulation");
-        assert_eq!(state.world_state.evaluation.simulation_quality, simulation.total());
+        assert_eq!(
+            state.world_state.evaluation.simulation_quality,
+            simulation.total()
+        );
         assert!(state.evaluation_result.is_some());
     }
 }
@@ -44,7 +49,8 @@ fn phase29_search_propagates_simulation_result_into_evaluation_vector() {
 #[test]
 fn phase29_constraint_violations_reduce_search_score() {
     let controller = BeamSearchController::default();
-    let unconstrained = controller.search(state_with_dependency(Vec::new()), None, &search_config(1));
+    let unconstrained =
+        controller.search(state_with_dependency(Vec::new()), None, &search_config(1));
     let constrained = controller.search(
         state_with_dependency(vec![Constraint {
             name: "max_two_units".into(),

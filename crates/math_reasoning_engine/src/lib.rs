@@ -8,17 +8,24 @@ pub mod symbolic_reasoning;
 
 use architecture_domain::ArchitectureState;
 use design_domain::Architecture;
-use world_model::{
-    AlgorithmAction, ArchitectureAction, DesignAction, EvaluationScore, WorldModel,
-};
+use world_model::{AlgorithmAction, ArchitectureAction, DesignAction, EvaluationScore, WorldModel};
 
-pub use complexity_estimator::{ComplexityClass, ComplexityEstimate, ComplexityEstimator, HeuristicComplexityEstimator};
-pub use constraint_solver::{ConstraintSolution, ConstraintSolver, DeterministicConstraintSolver, MathConstraint, MathVariable};
+pub use complexity_estimator::{
+    ComplexityClass, ComplexityEstimate, ComplexityEstimator, HeuristicComplexityEstimator,
+};
+pub use constraint_solver::{
+    ConstraintSolution, ConstraintSolver, DeterministicConstraintSolver, MathConstraint,
+    MathVariable,
+};
 pub use graph_analysis::{DeterministicGraphAnalysisEngine, GraphAnalysisEngine, GraphMetrics};
 pub use math_telemetry::{ConstraintSolverTrace, MathReasoningTelemetryEvent, MathReasoningTrace};
-pub use numerical_validator::{DeterministicNumericalValidator, NumericalValidation, NumericalValidator};
+pub use numerical_validator::{
+    DeterministicNumericalValidator, NumericalValidation, NumericalValidator,
+};
 pub use optimization::{DeterministicOptimizationEngine, OptimizationEngine, OptimizationResult};
-pub use symbolic_reasoning::{DeterministicSymbolicReasoner, SymbolicReasoner, SymbolicReasoningResult};
+pub use symbolic_reasoning::{
+    DeterministicSymbolicReasoner, SymbolicReasoner, SymbolicReasoningResult,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MathProblemType {
@@ -66,7 +73,10 @@ pub struct DefaultMathematicalReasoningEngine {
 }
 
 impl DefaultMathematicalReasoningEngine {
-    pub fn problem_from_architecture(&self, architecture: &ArchitectureState) -> MathematicalProblem {
+    pub fn problem_from_architecture(
+        &self,
+        architecture: &ArchitectureState,
+    ) -> MathematicalProblem {
         let variables = vec![
             MathVariable {
                 name: "components".into(),
@@ -107,7 +117,8 @@ impl DefaultMathematicalReasoningEngine {
             .collect::<Vec<_>>();
         constraints.push(MathConstraint {
             expression: "replicas <= components * 4".into(),
-            satisfied: architecture.deployment.replicas <= architecture.metrics.component_count.max(1) * 4,
+            satisfied: architecture.deployment.replicas
+                <= architecture.metrics.component_count.max(1) * 4,
         });
         constraints.push(MathConstraint {
             expression: "layering >= 0.25".into(),
@@ -143,13 +154,15 @@ impl MathematicalReasoningEngine for DefaultMathematicalReasoningEngine {
         );
         telemetry.push(MathReasoningTelemetryEvent::MathReasoningCompleted);
 
-        let validity_score = (
-            (if constraint_solution.satisfied { 1.0 } else { 0.4 })
-                + complexity_estimate.score()
-                + optimization_result.score
-                + symbolic.validity_score
-                + numerical.stability_score
-        ) / 5.0;
+        let validity_score = ((if constraint_solution.satisfied {
+            1.0
+        } else {
+            0.4
+        }) + complexity_estimate.score()
+            + optimization_result.score
+            + symbolic.validity_score
+            + numerical.stability_score)
+            / 5.0;
 
         MathReasoningTrace {
             result: MathematicalResult {
@@ -231,7 +244,9 @@ pub fn architecture_search_step(
 
 fn action_order_key(action: &DesignAction) -> (u8, u64) {
     match action {
-        DesignAction::Architecture(ArchitectureAction::AddComponent { component }) => (0, component.id.0),
+        DesignAction::Architecture(ArchitectureAction::AddComponent { component }) => {
+            (0, component.id.0)
+        }
         DesignAction::Architecture(ArchitectureAction::RemoveComponent { id }) => (1, id.0),
         DesignAction::Architecture(ArchitectureAction::AddDependency { from, to, .. }) => {
             (2, from.0.saturating_mul(10_000).saturating_add(to.0))

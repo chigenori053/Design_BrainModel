@@ -228,7 +228,10 @@ impl CodeGenerator for DeterministicCodeGenerator {
                     .functions
                     .iter()
                     .filter_map(|function_id| {
-                        code_ir.functions.iter().find(|function| function.id == *function_id)
+                        code_ir
+                            .functions
+                            .iter()
+                            .find(|function| function.id == *function_id)
                     })
                     .map(|function| {
                         format!(
@@ -365,7 +368,11 @@ impl CodeIR {
                     module_type: infer_module_type(unit),
                     interfaces: module_interface_ids,
                     functions: vec![function_id],
-                    dependencies: unit.dependencies.iter().map(|dependency| ModuleId(dependency.0)).collect(),
+                    dependencies: unit
+                        .dependencies
+                        .iter()
+                        .map(|dependency| ModuleId(dependency.0))
+                        .collect(),
                     layer: unit.layer,
                     responsibilities: inferred_responsibilities(unit),
                 }
@@ -462,7 +469,12 @@ impl CodeIR {
             .collect::<BTreeSet<_>>();
         let missing_interface_count = referenced_interfaces
             .iter()
-            .filter(|interface_id| !self.interfaces.iter().any(|interface| interface.id == **interface_id))
+            .filter(|interface_id| {
+                !self
+                    .interfaces
+                    .iter()
+                    .any(|interface| interface.id == **interface_id)
+            })
             .count();
         let used_modules = self
             .dependencies
@@ -480,7 +492,10 @@ impl CodeIR {
 
     pub fn metrics(&self) -> CodeMetrics {
         let dependency_depth = dependency_depth(self);
-        let possible_edges = self.modules.len().saturating_mul(self.modules.len().saturating_sub(1));
+        let possible_edges = self
+            .modules
+            .len()
+            .saturating_mul(self.modules.len().saturating_sub(1));
         let coupling_score = if possible_edges == 0 {
             0.0
         } else {
@@ -573,7 +588,10 @@ fn map_dependency_type(kind: DependencyKind) -> DependencyType {
 
 fn inferred_responsibilities(unit: &DesignUnit) -> Vec<String> {
     if unit.semantics.is_empty() {
-        vec![format!("{} handling", unit.layer.as_str().to_ascii_lowercase())]
+        vec![format!(
+            "{} handling",
+            unit.layer.as_str().to_ascii_lowercase()
+        )]
     } else {
         unit.semantics.clone()
     }
@@ -621,7 +639,11 @@ fn dependency_cycle_count(ir: &CodeIR) -> usize {
     let mut visited = Vec::new();
     let mut stack = Vec::new();
     let mut cycles = 0;
-    let mut ids = ir.modules.iter().map(|module| module.id).collect::<Vec<_>>();
+    let mut ids = ir
+        .modules
+        .iter()
+        .map(|module| module.id)
+        .collect::<Vec<_>>();
     ids.sort();
     for module_id in ids {
         if dfs_cycle_count(module_id, ir, &mut visited, &mut stack, &mut cycles) {
@@ -675,7 +697,8 @@ fn to_snake_case(name: &str) -> String {
 }
 
 fn indent_block(block: &str) -> String {
-    block.lines()
+    block
+        .lines()
         .map(|line| format!("    {line}"))
         .collect::<Vec<_>>()
         .join("\n")

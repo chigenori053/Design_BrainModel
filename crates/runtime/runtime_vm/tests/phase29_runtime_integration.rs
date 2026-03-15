@@ -27,7 +27,10 @@ fn phase29_pipeline_propagates_simulation_into_evaluation() {
         .expect("evaluation result");
     let summary = phase.search_summary.as_ref().expect("search summary");
 
-    assert_eq!(world_state.evaluation.simulation_quality, simulation.total());
+    assert_eq!(
+        world_state.evaluation.simulation_quality,
+        simulation.total()
+    );
     assert!(evaluation.total_score > 0.0);
     assert_eq!(summary.best_simulation_score, simulation.total());
     assert!(summary.best_score >= simulation.total() * 0.5);

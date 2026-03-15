@@ -14,10 +14,13 @@ fn phase29_add_design_unit_transition_updates_state_consistently() {
 
     assert_eq!(next.state_id, 2);
     assert_eq!(next.depth, 1);
-    assert_eq!(next.history, vec![Action::AddDesignUnit {
-        name: "RuntimeGateway".into(),
-        layer: Layer::Service,
-    }]);
+    assert_eq!(
+        next.history,
+        vec![Action::AddDesignUnit {
+            name: "RuntimeGateway".into(),
+            layer: Layer::Service,
+        }]
+    );
     assert_eq!(next.architecture.design_unit_count(), 1);
     assert!(next.simulation.is_none());
 }

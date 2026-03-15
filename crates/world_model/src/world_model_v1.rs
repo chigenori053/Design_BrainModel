@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use design_domain::{Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId,
+};
 use world_model_core::{SimulationResult, WorldState};
 
 use crate::{DefaultSimulationEngine, SimulationEngine};
@@ -81,7 +83,8 @@ impl ArchitectureGraph {
     }
 
     pub fn remove_edge(&mut self, from: DesignUnitId, to: DesignUnitId) {
-        self.edges.retain(|edge| !(edge.from == from && edge.to == to));
+        self.edges
+            .retain(|edge| !(edge.from == from && edge.to == to));
     }
 }
 
@@ -200,24 +203,48 @@ pub struct WorldModelSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum ArchitectureAction {
-    AddComponent { component: DesignUnit },
-    RemoveComponent { id: DesignUnitId },
+    AddComponent {
+        component: DesignUnit,
+    },
+    RemoveComponent {
+        id: DesignUnitId,
+    },
     AddDependency {
         from: DesignUnitId,
         to: DesignUnitId,
         kind: DependencyKind,
     },
-    RemoveDependency { from: DesignUnitId, to: DesignUnitId },
-    SplitModule { id: DesignUnitId },
-    MergeModule { target: DesignUnitId, source: DesignUnitId },
+    RemoveDependency {
+        from: DesignUnitId,
+        to: DesignUnitId,
+    },
+    SplitModule {
+        id: DesignUnitId,
+    },
+    MergeModule {
+        target: DesignUnitId,
+        source: DesignUnitId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum CodeAction {
-    AddFunction { target: DesignUnitId, function_name: String },
-    RemoveFunction { target: DesignUnitId, function_name: String },
-    ModifyInterface { target: DesignUnitId, interface_name: String },
-    RefactorModule { target: DesignUnitId, pattern: String },
+    AddFunction {
+        target: DesignUnitId,
+        function_name: String,
+    },
+    RemoveFunction {
+        target: DesignUnitId,
+        function_name: String,
+    },
+    ModifyInterface {
+        target: DesignUnitId,
+        interface_name: String,
+    },
+    RefactorModule {
+        target: DesignUnitId,
+        pattern: String,
+    },
     ReplaceAlgorithm {
         target: DesignUnitId,
         algorithm: AlgorithmType,
@@ -226,10 +253,20 @@ pub enum CodeAction {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum GeometryAction {
-    MoveNode { id: DesignUnitId, position: Position },
-    ResizeNode { id: DesignUnitId, size: Size },
-    AlignNodes { nodes: Vec<DesignUnitId> },
-    ClusterNodes { nodes: Vec<DesignUnitId> },
+    MoveNode {
+        id: DesignUnitId,
+        position: Position,
+    },
+    ResizeNode {
+        id: DesignUnitId,
+        size: Size,
+    },
+    AlignNodes {
+        nodes: Vec<DesignUnitId>,
+    },
+    ClusterNodes {
+        nodes: Vec<DesignUnitId>,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -243,7 +280,9 @@ pub enum AlgorithmAction {
         parameter: String,
         value: f64,
     },
-    OptimizeStructure { target: DesignUnitId },
+    OptimizeStructure {
+        target: DesignUnitId,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -384,7 +423,8 @@ impl WorldModel {
         }
 
         self.design_state.exploration_step = self.design_state.exploration_step.saturating_add(1);
-        self.architecture_graph = ArchitectureGraph::from_architecture(&self.design_state.active_design);
+        self.architecture_graph =
+            ArchitectureGraph::from_architecture(&self.design_state.active_design);
         self.trace.action_trace.actions.push(action.clone());
         self.record_snapshot();
     }
@@ -462,8 +502,16 @@ impl WorldModel {
                     to: *to,
                     kind: *kind,
                 };
-                if !self.design_state.active_design.dependencies.contains(&dependency) {
-                    self.design_state.active_design.dependencies.push(dependency);
+                if !self
+                    .design_state
+                    .active_design
+                    .dependencies
+                    .contains(&dependency)
+                {
+                    self.design_state
+                        .active_design
+                        .dependencies
+                        .push(dependency);
                 }
                 let pair = (from.0, to.0);
                 if !self.design_state.active_design.graph.edges.contains(&pair) {
@@ -498,7 +546,10 @@ impl WorldModel {
 
     fn apply_code_action(&mut self, action: &CodeAction) {
         let target = match action {
-            CodeAction::AddFunction { target, function_name } => (*target, function_name.as_str()),
+            CodeAction::AddFunction {
+                target,
+                function_name,
+            } => (*target, function_name.as_str()),
             CodeAction::RemoveFunction {
                 target,
                 function_name,
@@ -511,14 +562,16 @@ impl WorldModel {
             CodeAction::ReplaceAlgorithm { target, .. } => (*target, "replace_algorithm"),
         };
 
-        self.design_state.exploration_metadata.labels.insert(
-            format!("code_action_{}", target.0 .0),
-            target.1.to_string(),
-        );
+        self.design_state
+            .exploration_metadata
+            .labels
+            .insert(format!("code_action_{}", target.0.0), target.1.to_string());
     }
 
     fn apply_geometry_action(&mut self, action: &GeometryAction) {
-        let geometry_world = self.geometry_world.get_or_insert_with(GeometryWorld::default);
+        let geometry_world = self
+            .geometry_world
+            .get_or_insert_with(GeometryWorld::default);
         geometry_world.enabled = true;
 
         match action {
@@ -554,10 +607,10 @@ impl WorldModel {
     fn apply_algorithm_action(&mut self, action: &AlgorithmAction) {
         match action {
             AlgorithmAction::ChangeAlgorithm { target, algorithm } => {
-                self.design_state.exploration_metadata.labels.insert(
-                    format!("algorithm_{}", target.0),
-                    format!("{algorithm:?}"),
-                );
+                self.design_state
+                    .exploration_metadata
+                    .labels
+                    .insert(format!("algorithm_{}", target.0), format!("{algorithm:?}"));
             }
             AlgorithmAction::AdjustParameter {
                 target,
@@ -574,15 +627,19 @@ impl WorldModel {
                 );
             }
             AlgorithmAction::OptimizeStructure { target } => {
-                self.design_state.exploration_metadata.labels.insert(
-                    "optimized_target".into(),
-                    target.0.to_string(),
-                );
+                self.design_state
+                    .exploration_metadata
+                    .labels
+                    .insert("optimized_target".into(), target.0.to_string());
             }
         }
     }
 
-    fn update_evaluation_from_simulation(&mut self, action: &DesignAction, result: &SimulationResult) {
+    fn update_evaluation_from_simulation(
+        &mut self,
+        action: &DesignAction,
+        result: &SimulationResult,
+    ) {
         self.evaluation_state = EvaluationState {
             scores: EvaluationScore {
                 performance: result.performance_score,
@@ -626,7 +683,9 @@ impl WorldModel {
 fn remove_component(architecture: &mut Architecture, component_id: DesignUnitId) {
     for class_unit in &mut architecture.classes {
         for structure in &mut class_unit.structures {
-            structure.design_units.retain(|unit| unit.id != component_id);
+            structure
+                .design_units
+                .retain(|unit| unit.id != component_id);
         }
     }
 
@@ -648,7 +707,11 @@ mod tests {
     fn seeded_world() -> WorldModel {
         let mut architecture = Architecture::seeded();
         architecture.add_design_unit(DesignUnit::with_layer(1, "ApiService", Layer::Service));
-        architecture.add_design_unit(DesignUnit::with_layer(2, "UserRepository", Layer::Repository));
+        architecture.add_design_unit(DesignUnit::with_layer(
+            2,
+            "UserRepository",
+            Layer::Repository,
+        ));
         WorldModel::from_architecture(architecture, Vec::new())
     }
 
@@ -677,7 +740,10 @@ mod tests {
         assert_eq!(next.current_state_id(), SnapshotStateId(1));
         assert_eq!(next.architecture_graph.edges.len(), 1);
         assert_eq!(next.trace.action_trace.actions, vec![action]);
-        assert_eq!(next.trace.action_trace.states, vec![SnapshotStateId(0), SnapshotStateId(1)]);
+        assert_eq!(
+            next.trace.action_trace.states,
+            vec![SnapshotStateId(0), SnapshotStateId(1)]
+        );
     }
 
     #[test]
@@ -702,12 +768,14 @@ mod tests {
 
         assert_eq!(restored.current_state_id(), SnapshotStateId(0));
         assert_eq!(restored.architecture_graph.nodes.len(), 2);
-        assert!(restored
-            .geometry_world
-            .as_ref()
-            .expect("geometry world")
-            .positions
-            .is_empty());
+        assert!(
+            restored
+                .geometry_world
+                .as_ref()
+                .expect("geometry world")
+                .positions
+                .is_empty()
+        );
     }
 
     #[test]
@@ -721,9 +789,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(next_states.len(), actions.len());
-        assert!(next_states.iter().all(|state| state.current_state_id() == SnapshotStateId(1)));
-        assert!(next_states
-            .iter()
-            .all(|state| state.evaluation_state.confidence >= 0.0));
+        assert!(
+            next_states
+                .iter()
+                .all(|state| state.current_state_id() == SnapshotStateId(1))
+        );
+        assert!(
+            next_states
+                .iter()
+                .all(|state| state.evaluation_state.confidence >= 0.0)
+        );
     }
 }

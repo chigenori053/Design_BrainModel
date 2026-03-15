@@ -1,5 +1,9 @@
-use design_domain::{Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer};
-use design_search_engine::{BeamSearchController, MathReasoningTelemetryEvent, SearchConfig, SearchState};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer,
+};
+use design_search_engine::{
+    BeamSearchController, MathReasoningTelemetryEvent, SearchConfig, SearchState,
+};
 use world_model_core::WorldState;
 
 fn constrained_state() -> WorldState {
@@ -74,30 +78,22 @@ fn math_reasoning_telemetry_is_complete() {
     let controller = BeamSearchController::default();
     let trace = controller.search_trace(constrained_state(), None, &SearchConfig::default());
 
-    assert!(
-        trace
-            .math_reasoning_traces
-            .iter()
-            .all(|math| math.telemetry.contains(&MathReasoningTelemetryEvent::MathReasoningStarted))
-    );
-    assert!(
-        trace
-            .math_reasoning_traces
-            .iter()
-            .all(|math| math.telemetry.contains(&MathReasoningTelemetryEvent::ConstraintSolved))
-    );
-    assert!(
-        trace
-            .math_reasoning_traces
-            .iter()
-            .all(|math| math.telemetry.contains(&MathReasoningTelemetryEvent::ComplexityEstimated))
-    );
-    assert!(
-        trace
-            .math_reasoning_traces
-            .iter()
-            .all(|math| math.telemetry.contains(&MathReasoningTelemetryEvent::MathReasoningCompleted))
-    );
+    assert!(trace.math_reasoning_traces.iter().all(|math| {
+        math.telemetry
+            .contains(&MathReasoningTelemetryEvent::MathReasoningStarted)
+    }));
+    assert!(trace.math_reasoning_traces.iter().all(|math| {
+        math.telemetry
+            .contains(&MathReasoningTelemetryEvent::ConstraintSolved)
+    }));
+    assert!(trace.math_reasoning_traces.iter().all(|math| {
+        math.telemetry
+            .contains(&MathReasoningTelemetryEvent::ComplexityEstimated)
+    }));
+    assert!(trace.math_reasoning_traces.iter().all(|math| {
+        math.telemetry
+            .contains(&MathReasoningTelemetryEvent::MathReasoningCompleted)
+    }));
 }
 
 #[test]

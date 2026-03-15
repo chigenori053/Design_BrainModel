@@ -33,7 +33,7 @@ impl OptimizationEngine for DeterministicOptimizationEngine {
         let score = (complexity_score * 0.45
             + (1.0 - graph_penalty) * 0.35
             + if constraint_satisfied { 0.20 } else { 0.05 })
-            .clamp(0.0, 1.0);
+        .clamp(0.0, 1.0);
         let pareto_rank = if score >= 0.85 {
             0
         } else if score >= 0.65 {

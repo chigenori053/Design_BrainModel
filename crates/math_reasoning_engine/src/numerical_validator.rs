@@ -30,7 +30,11 @@ impl NumericalValidator for DeterministicNumericalValidator {
         let satisfied_ratio = if problem.constraints.is_empty() {
             1.0
         } else {
-            problem.constraints.iter().filter(|constraint| constraint.satisfied).count() as f64
+            problem
+                .constraints
+                .iter()
+                .filter(|constraint| constraint.satisfied)
+                .count() as f64
                 / problem.constraints.len() as f64
         };
         let stability_score = ((1.0 - replica_ratio.min(1.0)) * 0.4

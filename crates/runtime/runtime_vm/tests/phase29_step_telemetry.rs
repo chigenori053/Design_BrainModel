@@ -44,7 +44,11 @@ fn phase29_simulation_step_events_are_ordered_between_start_and_completion() {
         .collect::<Vec<_>>();
 
     assert!(!step_indices.is_empty());
-    assert!(step_indices.iter().all(|index| started < *index && *index < completed));
+    assert!(
+        step_indices
+            .iter()
+            .all(|index| started < *index && *index < completed)
+    );
 }
 
 #[test]

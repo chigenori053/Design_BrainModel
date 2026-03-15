@@ -15,8 +15,8 @@ pub use history::{SessionHistory, SessionSnapshot};
 pub use hypothesis::{Hypothesis, Score};
 pub use interaction::{
     ActionHistory, ArchitectureAction, ArchitectureState, CodeState, Edge, EvaluationMetrics,
-    GeometryState, InteractionLayer, InteractionResult, Node, NodeId, NodeType, Position,
-    Property, ReasoningEvent, ReasoningTrace, Specification, UiEvent, WorldState,
+    GeometryState, InteractionLayer, InteractionResult, Node, NodeId, NodeType, Position, Property,
+    ReasoningEvent, ReasoningTrace, Specification, UiEvent, WorldState,
 };
 pub use metrics::{
     chm_density, need_from_objective, p_inferred, profile_modulation, stability_index,

@@ -1,5 +1,7 @@
 use architecture_domain::ArchitectureState;
-use design_domain::{Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId, Layer,
+};
 use simulation_scheduler::{
     DefaultCandidateFilter, DefaultSimulationScheduler, HeuristicKnowledgeEvaluator,
     HeuristicLightSimulationEngine, KnowledgeEvaluator, LightSimulationEngine,
@@ -46,7 +48,8 @@ fn test33_01_candidate_filtering() {
         }],
     );
 
-    let filtered = simulation_scheduler::CandidateFilter::filter(&filter, vec![valid.clone(), invalid]);
+    let filtered =
+        simulation_scheduler::CandidateFilter::filter(&filter, vec![valid.clone(), invalid]);
 
     assert_eq!(filtered, vec![valid]);
 }
@@ -86,7 +89,8 @@ fn test33_04_simulation_scheduler_ranking() {
     assert!(
         batch.scheduled[0].ranking_score >= batch.scheduled[1].ranking_score,
         "scores: {:?}",
-        batch.scheduled
+        batch
+            .scheduled
             .iter()
             .map(|candidate| candidate.ranking_score)
             .collect::<Vec<_>>()

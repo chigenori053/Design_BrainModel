@@ -1,4 +1,6 @@
-use design_domain::{Architecture, Constraint, DesignUnit, Dependency, DependencyKind, DesignUnitId};
+use design_domain::{
+    Architecture, Constraint, Dependency, DependencyKind, DesignUnit, DesignUnitId,
+};
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::WorldState;
 
@@ -20,7 +22,8 @@ fn architecture_with_edges(edges: &[(u64, u64)]) -> Architecture {
 
 #[test]
 fn phase29_dependency_chain_is_reflected_in_simulation_metrics() {
-    let state = WorldState::from_architecture(1, architecture_with_edges(&[(1, 2), (2, 3)]), Vec::new());
+    let state =
+        WorldState::from_architecture(1, architecture_with_edges(&[(1, 2), (2, 3)]), Vec::new());
     let result = DefaultSimulationEngine.simulate(&state, None);
 
     assert_eq!(result.system.call_edges, 2);
@@ -32,7 +35,8 @@ fn phase29_dependency_chain_is_reflected_in_simulation_metrics() {
 #[test]
 fn phase29_cyclic_dependencies_reduce_logic_score() {
     let acyclic = WorldState::from_architecture(1, architecture_with_edges(&[(1, 2)]), Vec::new());
-    let cyclic = WorldState::from_architecture(1, architecture_with_edges(&[(1, 2), (2, 1)]), Vec::new());
+    let cyclic =
+        WorldState::from_architecture(1, architecture_with_edges(&[(1, 2), (2, 1)]), Vec::new());
 
     let acyclic_result = DefaultSimulationEngine.simulate(&acyclic, None);
     let cyclic_result = DefaultSimulationEngine.simulate(&cyclic, None);
@@ -63,7 +67,8 @@ fn phase29_constraint_violations_lower_constraint_score() {
 
 #[test]
 fn phase29_simulation_is_deterministic_for_identical_world_state() {
-    let state = WorldState::from_architecture(42, architecture_with_edges(&[(1, 2), (2, 3)]), Vec::new());
+    let state =
+        WorldState::from_architecture(42, architecture_with_edges(&[(1, 2), (2, 3)]), Vec::new());
 
     let left = DefaultSimulationEngine.simulate(&state, None);
     let right = DefaultSimulationEngine.simulate(&state, None);

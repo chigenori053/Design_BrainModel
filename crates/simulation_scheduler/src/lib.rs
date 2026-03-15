@@ -210,9 +210,9 @@ impl LightSimulationEngine for HeuristicLightSimulationEngine {
     fn simulate(&self, architecture: &ArchitectureState) -> LightSimulationResult {
         let component_count = architecture.metrics.component_count.max(1) as f64;
         let resource_load = (architecture.deployment.replicas as f64 / component_count).max(0.0);
-        let dependency_health =
-            (1.0 - architecture.metrics.dependency_count as f64 / (component_count * 2.0))
-                .clamp(0.0, 1.0);
+        let dependency_health = (1.0
+            - architecture.metrics.dependency_count as f64 / (component_count * 2.0))
+            .clamp(0.0, 1.0);
         let feasibility_score = (architecture.metrics.layering_score * 0.5
             + dependency_health * 0.35
             + (1.0 - resource_load.min(1.0)) * 0.15)
@@ -257,7 +257,8 @@ impl IncrementalSimulation for DeterministicIncrementalSimulation {
         base: &ArchitectureState,
         modified: &ArchitectureState,
     ) -> SimulationResult {
-        let component_delta = modified.metrics.component_count as f64 - base.metrics.component_count as f64;
+        let component_delta =
+            modified.metrics.component_count as f64 - base.metrics.component_count as f64;
         let dependency_delta =
             modified.metrics.dependency_count as f64 - base.metrics.dependency_count as f64;
         let performance_score = (1.0 - dependency_delta.max(0.0) / 10.0).clamp(0.0, 1.0);
@@ -281,9 +282,9 @@ impl IncrementalSimulation for DeterministicIncrementalSimulation {
                 .count() as f64
                 / modified.constraints.len() as f64
         };
-        let confidence_score =
-            (1.0 - component_delta.abs() / modified.metrics.component_count.max(1) as f64)
-                .clamp(0.0, 1.0);
+        let confidence_score = (1.0
+            - component_delta.abs() / modified.metrics.component_count.max(1) as f64)
+            .clamp(0.0, 1.0);
         synthesize_simulation_result(
             performance_score,
             correctness_score,
@@ -352,29 +353,31 @@ impl DefaultSimulationScheduler {
             }
             let light_simulation = self.light_engine.simulate(&architecture);
             trace.light_simulated += 1;
-            trace.telemetry_events.push(
-                SchedulerTelemetryEvent::LightSimulationCompleted(hash.clone()),
-            );
+            trace
+                .telemetry_events
+                .push(SchedulerTelemetryEvent::LightSimulationCompleted(
+                    hash.clone(),
+                ));
             light_traces.push(LightSimulationTrace {
                 architecture_hash: hash.clone(),
                 knowledge_score: knowledge_score.value,
                 light_simulation,
             });
-            if light_simulation.feasibility_score
-                < self.config.light_simulation_threshold as f64
-            {
+            if light_simulation.feasibility_score < self.config.light_simulation_threshold as f64 {
                 continue;
             }
             let ranking_score =
                 knowledge_score.value * 0.45 + light_simulation.feasibility_score * 0.55;
-            scored.push((hash, architecture, knowledge_score, light_simulation, ranking_score));
+            scored.push((
+                hash,
+                architecture,
+                knowledge_score,
+                light_simulation,
+                ranking_score,
+            ));
         }
 
-        scored.sort_by(|lhs, rhs| {
-            rhs.4
-                .total_cmp(&lhs.4)
-                .then_with(|| lhs.0.cmp(&rhs.0))
-        });
+        scored.sort_by(|lhs, rhs| rhs.4.total_cmp(&lhs.4).then_with(|| lhs.0.cmp(&rhs.0)));
 
         let mut scheduled = Vec::new();
         for (hash, architecture, knowledge_score, light_simulation, ranking_score) in scored
@@ -452,7 +455,12 @@ pub fn architecture_hash(architecture: &ArchitectureState) -> String {
     let mut dependencies = architecture
         .dependencies
         .iter()
-        .map(|dependency| format!("{}-{}-{:?}", dependency.from.0, dependency.to.0, dependency.kind))
+        .map(|dependency| {
+            format!(
+                "{}-{}-{:?}",
+                dependency.from.0, dependency.to.0, dependency.kind
+            )
+        })
         .collect::<Vec<_>>();
     dependencies.sort();
     format!(
@@ -476,7 +484,9 @@ fn deterministic_state_id(architecture: &ArchitectureState) -> u64 {
     architecture
         .components
         .iter()
-        .fold(17_u64, |acc, component| acc.wrapping_mul(31).wrapping_add(component.id.0))
+        .fold(17_u64, |acc, component| {
+            acc.wrapping_mul(31).wrapping_add(component.id.0)
+        })
 }
 
 fn design_architecture_from_state(state: &ArchitectureState) -> Architecture {
@@ -485,14 +495,12 @@ fn design_architecture_from_state(state: &ArchitectureState) -> Architecture {
         dependencies: Vec::new(),
         graph: Default::default(),
     };
-    architecture
-        .classes[0]
+    architecture.classes[0]
         .structures
         .push(StructureUnit::new(1, "phase30_structure"));
 
     for component in &state.components {
-        architecture.classes[0]
-            .structures[0]
+        architecture.classes[0].structures[0]
             .design_units
             .push(DesignUnit::with_layer(
                 component.id.0,
@@ -544,9 +552,10 @@ fn synthesize_simulation_result(
                 .dependencies
                 .iter()
                 .filter(|dependency| {
-                    architecture.dependencies.iter().any(|other| {
-                        other.from == dependency.to && other.to == dependency.from
-                    })
+                    architecture
+                        .dependencies
+                        .iter()
+                        .any(|other| other.from == dependency.to && other.to == dependency.from)
                 })
                 .count()
                 / 2,
