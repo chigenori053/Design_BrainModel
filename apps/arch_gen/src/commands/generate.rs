@@ -1,5 +1,5 @@
 use std::collections::BTreeSet;
-use std::io::IsTerminal;
+use std::io::{BufReader, IsTerminal};
 use std::path::Path;
 
 use code_ir::{
@@ -19,6 +19,7 @@ use world_model_core::{
 };
 
 use crate::commands::knowledge_layer::prepare_inference_input;
+use crate::template::{EnrichedParams, enrich, prompt_and_fill, select_template};
 use crate::input_bridge::{
     GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation, arch_state_to_architecture,
     resolve_requirement, save_design_file,
@@ -42,26 +43,44 @@ pub struct GenerateArgs {
     pub verbose: bool,
     pub output_strategy: String,
     pub output_layout: String,
+    /// true のときテンプレート入力ステップをスキップする
+    pub no_template: bool,
 }
 
 pub fn run(args: GenerateArgs) -> Result<(), String> {
     let raw_text = resolve_requirement(&args.requirement)?;
-    let knowledge_context = prepare_inference_input(&raw_text)?;
+
+    // ① テンプレートによる探索補強
+    //    TTY 接続時かつ --no-template 未指定の場合のみ対話ステップを実行する
+    let enriched = if !args.no_template && std::io::stdin().is_terminal() {
+        let template = select_template(&raw_text);
+        let mut stdin = BufReader::new(std::io::stdin());
+        let mut stdout = std::io::stdout();
+        let filled = prompt_and_fill(template, &mut stdin, &mut stdout)?;
+        enrich(&raw_text, &filled, template)
+    } else {
+        EnrichedParams::passthrough(&raw_text)
+    };
+
+    let beam_width = args.beam_width + enriched.beam_width_bonus;
+    let max_depth = args.max_depth + enriched.max_depth_bonus;
+
+    let knowledge_context = prepare_inference_input(&enriched.enriched_text)?;
     let should_write_files = args.write_files && !args.no_code;
     let no_code = !should_write_files;
 
     let inference_req = GenerateRequest::new(
         knowledge_context.enriched_requirement,
-        args.beam_width,
-        args.max_depth,
+        beam_width,
+        max_depth,
         args.candidates,
         no_code,
         args.verbose,
     );
     let req = GenerateRequest::new(
-        raw_text,
-        args.beam_width,
-        args.max_depth,
+        enriched.enriched_text,
+        beam_width,
+        max_depth,
         args.candidates,
         no_code,
         args.verbose,

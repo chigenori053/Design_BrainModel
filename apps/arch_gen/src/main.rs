@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod input_bridge;
 mod output;
+mod template;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -70,6 +71,10 @@ enum Commands {
         /// 生成後に OS デフォルトアプリで出力を開く
         #[arg(long)]
         open: bool,
+
+        /// テンプレート入力ステップをスキップする（非対話・CI向け）
+        #[arg(long)]
+        no_template: bool,
     },
 
     /// 保存済み設計ファイルを評価してスコアを表示する
@@ -207,6 +212,7 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
             output_layout,
             git_add,
             open,
+            no_template,
         } => {
             let Some(requirement) = requirement else {
                 return commands::interactive::run(commands::interactive::InteractiveArgs {
@@ -233,6 +239,7 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
                 verbose,
                 output_strategy,
                 output_layout,
+                no_template,
             });
 
             if result.is_ok() {
