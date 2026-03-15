@@ -1,3 +1,4 @@
+pub mod chat;
 pub mod evaluate;
 pub mod explain;
 pub mod export;

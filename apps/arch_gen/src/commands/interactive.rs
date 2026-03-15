@@ -3,7 +3,9 @@ use std::path::Path;
 
 use design_search_engine::RankedCandidate;
 
+use crate::commands::chat::run_chat_session;
 use crate::commands::generate::{PipelineResult, run_phase9_pipeline};
+use crate::store::{DesignStore, format_store_list};
 use crate::commands::knowledge_layer::{
     StoredKnowledgeHit, grounding_knowledge_path, knowledge_layer_metrics, prepare_inference_input,
     promote_hits_to_grounding, save_temporary_web_hits, temporary_knowledge_path,
@@ -285,13 +287,69 @@ fn run_session(mut state: Option<SessionState>, startup_messages: &[String]) -> 
                         }
                     }
                     "save" => {
-                        let out_path = parts.get(1).copied().unwrap_or("design_session.json");
+                        let arg = parts.get(1).copied().unwrap_or("design_session.json");
                         let saved = build_saved_design(sess);
-                        if let Err(e) = save_design_file(&saved, Path::new(out_path)) {
-                            writeln!(out, "Error: {e}").ok();
+
+                        // 引数がファイルパスっぽければ従来の動作、それ以外はストアに保存
+                        if arg.contains('/') || arg.ends_with(".json") {
+                            if let Err(e) = save_design_file(&saved, Path::new(arg)) {
+                                writeln!(out, "Error: {e}").ok();
+                            } else {
+                                writeln!(out, "Saved to {arg}").ok();
+                            }
                         } else {
-                            writeln!(out, "Saved to {out_path}").ok();
+                            let store = DesignStore::new();
+                            match store.save(arg, &saved) {
+                                Ok(path) => writeln!(out, "Saved as '{}' → {}", arg, path.display()).ok(),
+                                Err(e)   => writeln!(out, "Error: {e}").ok(),
+                            };
                         }
+                    }
+                    "saves" | "store" => {
+                        let store = DesignStore::new();
+                        match store.list() {
+                            Ok(entries) => writeln!(out, "{}", format_store_list(&entries)).ok(),
+                            Err(e)      => writeln!(out, "Error: {e}").ok(),
+                        };
+                    }
+                    "load" => {
+                        let name = match parts.get(1) {
+                            Some(n) => *n,
+                            None => {
+                                writeln!(out, "Usage: load <name>").ok();
+                                continue;
+                            }
+                        };
+                        let store = DesignStore::new();
+                        match store.load(name) {
+                            Ok(design) => {
+                                // 読み込んだ設計でパイプラインを再実行
+                                let req = GenerateRequest::new(
+                                    design.input.clone(), 10, 5,
+                                    design.candidates.len().max(1), true, false,
+                                );
+                                match run_phase9_pipeline(&req) {
+                                    Ok(PipelineResult { ranked, .. }) => {
+                                        writeln!(out, "Loaded '{}' — {} candidates.", name, ranked.len()).ok();
+                                        print_candidates(&design.input, &ranked, &mut out);
+                                        sess.requirement = design.input;
+                                        sess.candidates = ranked;
+                                        sess.selected = None;
+                                    }
+                                    Err(e) => { writeln!(out, "Error restoring pipeline: {e}").ok(); }
+                                }
+                            }
+                            Err(e) => { writeln!(out, "Error: {e}").ok(); }
+                        }
+                    }
+                    "chat" => {
+                        run_chat_session(
+                            &sess.requirement,
+                            &sess.candidates,
+                            sess.selected,
+                            &stdin,
+                            &mut out,
+                        );
                     }
                     "w" | "web" => {
                         let query = parts.get(1).copied().unwrap_or(&sess.requirement);

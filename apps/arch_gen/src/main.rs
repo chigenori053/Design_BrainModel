@@ -3,6 +3,7 @@ use clap::{Parser, Subcommand};
 mod commands;
 mod input_bridge;
 mod output;
+mod store;
 mod template;
 
 #[derive(Parser, Debug)]
@@ -184,6 +185,25 @@ enum Commands {
         #[arg(long)]
         from: Option<String>,
     },
+
+    /// 名前付きで設計を保存・一覧・読み込みするストア管理
+    #[command(name = "/saves", visible_alias = "saves")]
+    Saves {
+        /// 保存名（省略時は一覧表示）
+        name: Option<String>,
+
+        /// 読み込むエントリ名
+        #[arg(long)]
+        load: Option<String>,
+
+        /// 削除するエントリ名
+        #[arg(long)]
+        delete: Option<String>,
+
+        /// 読み込み先の設計ファイルパス（--load と組み合わせて使用）
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn main() {
@@ -314,7 +334,51 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
         Commands::Interactive { from } | Commands::InteractiveAlias { from } => {
             commands::interactive::run(commands::interactive::InteractiveArgs { from })
         }
+
+        Commands::Saves { name, load, delete, output } => {
+            run_saves(name, load, delete, output)
+        }
     }
+}
+
+fn run_saves(
+    name: Option<String>,
+    load: Option<String>,
+    delete: Option<String>,
+    output: Option<String>,
+) -> Result<(), String> {
+    use store::{DesignStore, format_store_list};
+
+    let store = DesignStore::new();
+
+    if let Some(del_name) = delete {
+        store.delete(&del_name)?;
+        println!("Deleted '{del_name}' from store.");
+        return Ok(());
+    }
+
+    if let Some(load_name) = load {
+        let design = store.load(&load_name)?;
+        let out_path = output.as_deref().unwrap_or("design_loaded.json");
+        crate::input_bridge::save_design_file(&design, std::path::Path::new(out_path))?;
+        println!("Loaded '{load_name}' → {out_path}");
+        return Ok(());
+    }
+
+    if let Some(save_name) = name {
+        // design.json をストアに保存
+        let src = std::path::Path::new("./arch_out/design.json");
+        let design = crate::input_bridge::load_design_file(src)
+            .map_err(|_| "design.json not found. Run `generate` first.".to_string())?;
+        let path = store.save(&save_name, &design)?;
+        println!("Saved as '{}' → {}", save_name, path.display());
+        return Ok(());
+    }
+
+    // 省略時は一覧表示
+    let entries = store.list()?;
+    println!("{}", format_store_list(&entries));
+    Ok(())
 }
 
 // ─── 外部ツール連携ヘルパー ────────────────────────────────────────────────────
