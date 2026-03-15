@@ -1,16 +1,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub struct GeneratedFile {
-    pub path: String,
-    pub contents: String,
-}
+use code_ir::SourceTree;
 
-pub struct SourceTree {
-    pub files: Vec<GeneratedFile>,
-}
-
-/// `SourceTree` を `<output_dir>/candidate_<id>/` に書き出す。
+/// `code_ir::SourceTree` を `<output_dir>/candidate_<id>/` に書き出す。
 /// 書き出したファイルのパス一覧を返す。
 pub fn write_source_tree(
     source_tree: &SourceTree,
@@ -28,7 +21,7 @@ pub fn write_source_tree(
             fs::create_dir_all(parent)
                 .map_err(|e| format!("failed to create dir '{}': {e}", parent.display()))?;
         }
-        fs::write(&dest, &file.contents)
+        fs::write(&dest, &file.content)
             .map_err(|e| format!("failed to write '{}': {e}", dest.display()))?;
         written.push(dest);
     }

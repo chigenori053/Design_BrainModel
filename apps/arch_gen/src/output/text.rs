@@ -1,11 +1,24 @@
-use design_search_engine::RankedCandidate;
 use world_model_core::EvaluationVector;
+
+/// generate コマンドの1候補分の表示データ。
+#[derive(Clone)]
+pub struct CandidateDisplay {
+    pub score: f64,
+    pub pareto_rank: usize,
+    /// コンポーネント名一覧（"service_1" 等）
+    pub component_names: Vec<String>,
+    /// 依存関係 (from_name, to_name)
+    pub dependency_pairs: Vec<(String, String)>,
+    pub evaluation: EvaluationVector,
+    /// 書き出したファイルパス一覧（--no-code 時は空）
+    pub generated_files: Vec<String>,
+}
 
 pub struct GenerationSummary<'a> {
     pub input: &'a str,
     pub search_states: usize,
     pub frontier_size: usize,
-    pub candidates: &'a [RankedCandidate],
+    pub candidates: &'a [CandidateDisplay],
 }
 
 pub fn render_summary(summary: &GenerationSummary<'_>) -> String {
@@ -16,47 +29,46 @@ pub fn render_summary(summary: &GenerationSummary<'_>) -> String {
     out.push('\n');
     out.push('\n');
     out.push_str(&format!("Input: \"{}\"\n", summary.input));
-    out.push_str(&format!(
-        "Pipeline: Phase9-D (BeamSearch)\n"
-    ));
-    out.push_str(&format!(
-        "Search states evaluated: {}\n",
-        summary.search_states
-    ));
-    out.push_str(&format!(
-        "Pareto frontier size:    {}\n",
-        summary.frontier_size
-    ));
+    out.push_str("Pipeline: Phase9-D (BeamSearch)\n");
+    out.push_str(&format!("Search states evaluated: {}\n", summary.search_states));
+    out.push_str(&format!("Pareto frontier size:    {}\n", summary.frontier_size));
     out.push('\n');
 
-    for (i, candidate) in summary.candidates.iter().enumerate() {
+    for (i, c) in summary.candidates.iter().enumerate() {
         out.push_str(&format!(
             "─── Candidate {} (Score: {:.4}) ",
             i + 1,
-            candidate.score
+            c.score
         ));
-        out.push_str(&"─".repeat(30));
+        out.push_str(&"─".repeat(28));
         out.push('\n');
 
-        let arch = &candidate.state.architecture_state;
-        if !arch.components.is_empty() {
+        if !c.dependency_pairs.is_empty() {
             out.push_str("Components:\n");
-            for dep in &arch.dependencies {
-                out.push_str(&format!(
-                    "  {:?} → {:?}\n",
-                    dep.from, dep.to
-                ));
+            for (from, to) in &c.dependency_pairs {
+                out.push_str(&format!("  {from} → {to}\n"));
             }
-            out.push_str(&format!(
-                "  ({} components, {} dependencies)\n",
-                arch.components.len(),
-                arch.dependencies.len()
-            ));
+        } else if !c.component_names.is_empty() {
+            out.push_str("Components:\n");
+            for name in &c.component_names {
+                out.push_str(&format!("  {name}\n"));
+            }
         }
+        out.push_str(&format!(
+            "  ({} components, {} dependencies)\n",
+            c.component_names.len(),
+            c.dependency_pairs.len()
+        ));
         out.push('\n');
 
-        let eval = &candidate.state.world_state.evaluation;
-        out.push_str(&render_evaluation(eval));
+        out.push_str(&render_evaluation(&c.evaluation));
+
+        if !c.generated_files.is_empty() {
+            out.push_str("Generated files:\n");
+            for f in &c.generated_files {
+                out.push_str(&format!("  {f}\n"));
+            }
+        }
         out.push('\n');
     }
 

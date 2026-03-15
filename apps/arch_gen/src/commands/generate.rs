@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use code_ir::{ArchitectureToCodeIR, CodeGenerator, DeterministicArchitectureToCodeIR, DeterministicCodeGenerator};
 use design_search_engine::{
     BeamSearchController, RankedCandidate, SearchConfig as DesignSearchConfig,
     SearchController as _, rank_candidates,
@@ -13,12 +14,12 @@ use world_model_core::{
 };
 
 use crate::input_bridge::{
-    GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation, resolve_requirement,
-    save_design_file,
+    GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation,
+    arch_state_to_architecture, resolve_requirement, save_design_file,
 };
 use crate::output::mermaid::candidate_to_mermaid;
-use crate::output::source_writer::{GeneratedFile, SourceTree, write_source_tree};
-use crate::output::text::{GenerationSummary, render_summary};
+use crate::output::source_writer::write_source_tree;
+use crate::output::text::{CandidateDisplay, GenerationSummary, render_summary};
 
 pub struct GenerateArgs {
     pub requirement: String,
@@ -46,21 +47,76 @@ pub fn run(args: GenerateArgs) -> Result<(), String> {
     let PipelineResult { ranked, search_states_count } = run_phase9_pipeline(&req)?;
     let top: Vec<_> = ranked.into_iter().take(req.candidates).collect();
     let frontier_size = top.len();
-
     let output_dir = Path::new(&args.output_dir);
 
-    render_output(&args.format, req.input_text(), &top, search_states_count)?;
+    // 各候補を Architecture → CodeIR → SourceTree に変換
+    let built: Vec<BuiltCandidate> = top
+        .into_iter()
+        .enumerate()
+        .map(|(i, candidate)| build_candidate(i + 1, candidate, output_dir, req.no_code))
+        .collect::<Result<_, _>>()?;
 
-    if !req.no_code {
-        write_candidates(&top, output_dir, &args.output_dir)?;
-    }
-
-    save_design_json(&req, &top, search_states_count, output_dir)?;
+    render_output(&args.format, req.input_text(), &built, search_states_count, frontier_size)?;
+    save_design_json(&req, &built, search_states_count, output_dir)?;
 
     Ok(())
 }
 
-// ─── パイプライン実行 ──────────────────────────────────────────────────────
+// ─── 候補の変換・コード生成 ──────────────────────────────────────────────────
+
+struct BuiltCandidate {
+    ranked: RankedCandidate,
+    display: CandidateDisplay,
+}
+
+fn build_candidate(
+    id: usize,
+    candidate: RankedCandidate,
+    output_dir: &Path,
+    no_code: bool,
+) -> Result<BuiltCandidate, String> {
+    let architecture = arch_state_to_architecture(&candidate.state.architecture_state);
+    let code_ir = DeterministicArchitectureToCodeIR::transform(&architecture);
+
+    // コンポーネント名・依存関係を CodeIR から取得
+    let component_names: Vec<String> = code_ir.modules.iter().map(|m| m.name.clone()).collect();
+    let units_by_id = architecture.design_units_by_id();
+    let dependency_pairs: Vec<(String, String)> = architecture
+        .dependencies
+        .iter()
+        .filter_map(|dep| {
+            let from = units_by_id.get(&dep.from.0).map(|u| u.name.clone())?;
+            let to = units_by_id.get(&dep.to.0).map(|u| u.name.clone())?;
+            Some((from, to))
+        })
+        .collect();
+
+    let generated_files = if no_code {
+        vec![]
+    } else {
+        let source_tree = DeterministicCodeGenerator::generate(&code_ir);
+        let written = write_source_tree(&source_tree, output_dir, id)?;
+        eprintln!(
+            "[arch-gen] candidate {id} → {} file(s) written to {}/candidate_{id}/",
+            written.len(),
+            output_dir.display()
+        );
+        written.iter().map(|p| p.display().to_string()).collect()
+    };
+
+    let display = CandidateDisplay {
+        score: candidate.score,
+        pareto_rank: candidate.pareto_rank,
+        component_names,
+        dependency_pairs,
+        evaluation: candidate.state.world_state.evaluation.clone(),
+        generated_files,
+    };
+
+    Ok(BuiltCandidate { ranked: candidate, display })
+}
+
+// ─── Phase9 パイプライン ─────────────────────────────────────────────────────
 
 struct PipelineResult {
     ranked: Vec<RankedCandidate>,
@@ -104,8 +160,7 @@ fn run_phase9_pipeline(req: &GenerateRequest) -> Result<PipelineResult, String> 
     let prediction = model
         .transition(&current_state, &selected)
         .map_err(|e| format!("world model transition failed: {e}"))?;
-    let evaluator = DeltaConsistencyEvaluator;
-    let _consistency = evaluator
+    let _consistency = DeltaConsistencyEvaluator
         .evaluate(&current_state, &prediction)
         .map_err(|e| format!("consistency evaluation failed: {e}"))?;
 
@@ -115,7 +170,7 @@ fn run_phase9_pipeline(req: &GenerateRequest) -> Result<PipelineResult, String> 
     search_config.max_depth = req.max_depth;
 
     let search_states = search_controller.search(
-        current_state.clone(),
+        current_state,
         phase9_ctx.recall_result.as_ref(),
         &search_config,
     );
@@ -135,32 +190,35 @@ fn run_phase9_pipeline(req: &GenerateRequest) -> Result<PipelineResult, String> 
 fn render_output(
     format: &str,
     input: &str,
-    top: &[RankedCandidate],
+    built: &[BuiltCandidate],
     search_states: usize,
+    frontier_size: usize,
 ) -> Result<(), String> {
     match format {
         "mermaid" => {
-            for (i, candidate) in top.iter().enumerate() {
-                println!("--- Candidate {} (score: {:.4}) ---", i + 1, candidate.score);
-                println!("{}", candidate_to_mermaid(candidate));
+            for (i, b) in built.iter().enumerate() {
+                println!("--- Candidate {} (score: {:.4}) ---", i + 1, b.ranked.score);
+                println!("{}", candidate_to_mermaid(&b.ranked));
             }
         }
         "json" => {
-            let data: Vec<serde_json::Value> = top
+            let data: Vec<serde_json::Value> = built
                 .iter()
                 .enumerate()
-                .map(|(i, c)| {
+                .map(|(i, b)| {
+                    let eval = &b.ranked.state.world_state.evaluation;
                     serde_json::json!({
                         "candidate": i + 1,
-                        "score": c.score,
-                        "pareto_rank": c.pareto_rank,
+                        "score": b.ranked.score,
+                        "pareto_rank": b.ranked.pareto_rank,
+                        "components": b.display.component_names,
                         "evaluation": {
-                            "structural_quality": c.state.world_state.evaluation.structural_quality,
-                            "dependency_quality": c.state.world_state.evaluation.dependency_quality,
-                            "constraint_satisfaction": c.state.world_state.evaluation.constraint_satisfaction,
-                            "complexity": c.state.world_state.evaluation.complexity,
-                            "simulation_quality": c.state.world_state.evaluation.simulation_quality,
-                            "total": c.state.world_state.evaluation.total(),
+                            "structural_quality": eval.structural_quality,
+                            "dependency_quality": eval.dependency_quality,
+                            "constraint_satisfaction": eval.constraint_satisfaction,
+                            "complexity": eval.complexity,
+                            "simulation_quality": eval.simulation_quality,
+                            "total": eval.total(),
                         }
                     })
                 })
@@ -176,11 +234,12 @@ fn render_output(
             );
         }
         _ => {
+            let displays: Vec<CandidateDisplay> = built.iter().map(|b| b.display.clone()).collect();
             let summary = GenerationSummary {
                 input,
                 search_states,
-                frontier_size: top.len(),
-                candidates: top,
+                frontier_size,
+                candidates: &displays,
             };
             print!("{}", render_summary(&summary));
         }
@@ -188,30 +247,9 @@ fn render_output(
     Ok(())
 }
 
-fn write_candidates(
-    top: &[RankedCandidate],
-    output_dir: &Path,
-    output_dir_str: &str,
-) -> Result<(), String> {
-    for (i, candidate) in top.iter().enumerate() {
-        let source_tree = generate_stub_source_tree(candidate);
-        let written = write_source_tree(&source_tree, output_dir, i + 1)?;
-        if !written.is_empty() {
-            eprintln!(
-                "[arch-gen] candidate {} → {} file(s) written to {}/candidate_{}/",
-                i + 1,
-                written.len(),
-                output_dir_str,
-                i + 1
-            );
-        }
-    }
-    Ok(())
-}
-
 fn save_design_json(
     req: &GenerateRequest,
-    top: &[RankedCandidate],
+    built: &[BuiltCandidate],
     search_states_count: usize,
     output_dir: &Path,
 ) -> Result<(), String> {
@@ -225,21 +263,24 @@ fn save_design_json(
         generated_at: format!("{now}"),
         input: req.input_text().to_string(),
         search_states: search_states_count,
-        candidates: top
+        candidates: built
             .iter()
             .enumerate()
-            .map(|(i, c)| SavedCandidate {
-                id: i + 1,
-                score: c.score,
-                pareto_rank: c.pareto_rank,
-                evaluation: SavedEvaluation {
-                    structural_quality: c.state.world_state.evaluation.structural_quality,
-                    dependency_quality: c.state.world_state.evaluation.dependency_quality,
-                    constraint_satisfaction: c.state.world_state.evaluation.constraint_satisfaction,
-                    complexity: c.state.world_state.evaluation.complexity,
-                    simulation_quality: c.state.world_state.evaluation.simulation_quality,
-                    total: c.state.world_state.evaluation.total(),
-                },
+            .map(|(i, b)| {
+                let eval = &b.ranked.state.world_state.evaluation;
+                SavedCandidate {
+                    id: i + 1,
+                    score: b.ranked.score,
+                    pareto_rank: b.ranked.pareto_rank,
+                    evaluation: SavedEvaluation {
+                        structural_quality: eval.structural_quality,
+                        dependency_quality: eval.dependency_quality,
+                        constraint_satisfaction: eval.constraint_satisfaction,
+                        complexity: eval.complexity,
+                        simulation_quality: eval.simulation_quality,
+                        total: eval.total(),
+                    },
+                }
             })
             .collect(),
     };
@@ -248,47 +289,4 @@ fn save_design_json(
     save_design_file(&saved, &design_path)?;
     eprintln!("[arch-gen] design saved to {}", design_path.display());
     Ok(())
-}
-
-// ─── コード生成（スタブ） ────────────────────────────────────────────────────
-
-fn generate_stub_source_tree(candidate: &RankedCandidate) -> SourceTree {
-    let arch = &candidate.state.architecture_state;
-    let mut files = Vec::new();
-
-    for comp in &arch.components {
-        let name = format!("{:?}", comp.id)
-            .to_ascii_lowercase()
-            .replace(['(', ')'], "");
-        files.push(GeneratedFile {
-            path: format!("src/{name}.rs"),
-            contents: format!(
-                "// Component: {name}\n// Role: {:?}\n\npub struct {};\n\nimpl {} {{\n    pub fn new() -> Self {{ Self }}\n}}\n",
-                comp.role,
-                pascal_case(&name),
-                pascal_case(&name),
-            ),
-        });
-    }
-
-    if files.is_empty() {
-        files.push(GeneratedFile {
-            path: "src/lib.rs".to_string(),
-            contents: "// Generated by arch-gen\n".to_string(),
-        });
-    }
-
-    SourceTree { files }
-}
-
-fn pascal_case(s: &str) -> String {
-    s.split('_')
-        .map(|part| {
-            let mut c = part.chars();
-            match c.next() {
-                None => String::new(),
-                Some(f) => f.to_uppercase().collect::<String>() + c.as_str(),
-            }
-        })
-        .collect()
 }
