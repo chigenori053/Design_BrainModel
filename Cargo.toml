@@ -71,6 +71,7 @@ members = [
     "crates/code_generation_core",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
+    "apps/arch_gen",
     "apps/cli",
     "apps/gui",
     "apps/desktop",
