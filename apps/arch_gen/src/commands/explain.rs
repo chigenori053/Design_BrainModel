@@ -103,12 +103,15 @@ pub fn run(design_file: &str) -> Result<(), String> {
 /// コンポーネント名・依存構造から設計パターンを推定する（ヒューリスティック）。
 fn detect_pattern(c: &SavedCandidate) -> &'static str {
     let names: Vec<&str> = c.components.iter().map(|s| s.as_str()).collect();
-    let has_gateway =
-        names.iter().any(|n| n.contains("gateway") || n.contains("api"));
-    let has_event =
-        names.iter().any(|n| n.contains("event") || n.contains("bus") || n.contains("queue"));
-    let has_database =
-        names.iter().any(|n| n.contains("database") || n.contains("db") || n.contains("repository"));
+    let has_gateway = names
+        .iter()
+        .any(|n| n.contains("gateway") || n.contains("api"));
+    let has_event = names
+        .iter()
+        .any(|n| n.contains("event") || n.contains("bus") || n.contains("queue"));
+    let has_database = names
+        .iter()
+        .any(|n| n.contains("database") || n.contains("db") || n.contains("repository"));
     let service_count = names.iter().filter(|n| n.contains("service")).count();
 
     if has_event && service_count >= 2 {
@@ -193,7 +196,10 @@ mod tests {
         let tmp = tempfile::NamedTempFile::new().unwrap();
         let design = make_design_with(
             vec!["api_gateway", "order_service", "database_1"],
-            vec![["api_gateway", "order_service"], ["order_service", "database_1"]],
+            vec![
+                ["api_gateway", "order_service"],
+                ["order_service", "database_1"],
+            ],
         );
         save_design_file(&design, tmp.path()).unwrap();
         assert!(run(tmp.path().to_str().unwrap()).is_ok());
@@ -201,8 +207,10 @@ mod tests {
 
     #[test]
     fn test_detect_pattern_api_gateway_microservices() {
-        let design =
-            make_design_with(vec!["api_gateway", "service_1", "service_2", "service_3"], vec![]);
+        let design = make_design_with(
+            vec!["api_gateway", "service_1", "service_2", "service_3"],
+            vec![],
+        );
         let pattern = detect_pattern(&design.candidates[0]);
         assert!(pattern.contains("Microservices") || pattern.contains("Gateway"));
     }

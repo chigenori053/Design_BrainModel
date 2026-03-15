@@ -65,7 +65,11 @@ pub fn write_source_tree_with_options(
 
     // dry-run は書き出しなしでファイル一覧を表示して終了
     if *strategy == OutputStrategy::DryRun {
-        println!("[dry-run] Would write {} file(s) to {}:", source_tree.files.len(), base.display());
+        println!(
+            "[dry-run] Would write {} file(s) to {}:",
+            source_tree.files.len(),
+            base.display()
+        );
         for file in &source_tree.files {
             let dest = resolve_dest(&base, &file.path, layout);
             let status = if dest.exists() { "SKIP" } else { "NEW " };
@@ -88,7 +92,7 @@ pub fn write_source_tree_with_options(
 
         match strategy {
             OutputStrategy::Merge if dest.exists() => {
-                eprintln!("[arch-gen] SKIP (exists): {}", dest.display());
+                eprintln!("[arch_gen] SKIP (exists): {}", dest.display());
                 continue;
             }
             OutputStrategy::New | OutputStrategy::Merge | OutputStrategy::Overwrite => {
@@ -128,8 +132,14 @@ mod tests {
     fn make_tree() -> SourceTree {
         SourceTree {
             files: vec![
-                SourceFile { path: "service_1.rs".to_string(), content: "pub fn run() {}".to_string() },
-                SourceFile { path: "database_2.rs".to_string(), content: "pub struct Db;".to_string() },
+                SourceFile {
+                    path: "service_1.rs".to_string(),
+                    content: "pub fn run() {}".to_string(),
+                },
+                SourceFile {
+                    path: "database_2.rs".to_string(),
+                    content: "pub struct Db;".to_string(),
+                },
             ],
         }
     }
@@ -138,9 +148,13 @@ mod tests {
     fn test_write_new_strategy() {
         let tmp = tempfile::TempDir::new().unwrap();
         let written = write_source_tree_with_options(
-            &make_tree(), tmp.path(), 1,
-            &OutputStrategy::New, &OutputLayout::Flat,
-        ).unwrap();
+            &make_tree(),
+            tmp.path(),
+            1,
+            &OutputStrategy::New,
+            &OutputLayout::Flat,
+        )
+        .unwrap();
         assert_eq!(written.len(), 2);
         assert!(written.iter().all(|p| p.exists()));
     }
@@ -149,9 +163,13 @@ mod tests {
     fn test_dry_run_writes_nothing() {
         let tmp = tempfile::TempDir::new().unwrap();
         let written = write_source_tree_with_options(
-            &make_tree(), tmp.path(), 1,
-            &OutputStrategy::DryRun, &OutputLayout::Flat,
-        ).unwrap();
+            &make_tree(),
+            tmp.path(),
+            1,
+            &OutputStrategy::DryRun,
+            &OutputLayout::Flat,
+        )
+        .unwrap();
         assert!(written.is_empty());
         assert!(!tmp.path().join("candidate_1").exists());
     }
@@ -164,12 +182,19 @@ mod tests {
         fs::write(base.join("service_1.rs"), "existing").unwrap();
 
         let written = write_source_tree_with_options(
-            &make_tree(), tmp.path(), 1,
-            &OutputStrategy::Merge, &OutputLayout::Flat,
-        ).unwrap();
+            &make_tree(),
+            tmp.path(),
+            1,
+            &OutputStrategy::Merge,
+            &OutputLayout::Flat,
+        )
+        .unwrap();
         // service_1.rs はスキップ、database_2.rs のみ書き出し
         assert_eq!(written.len(), 1);
-        assert_eq!(fs::read_to_string(base.join("service_1.rs")).unwrap(), "existing");
+        assert_eq!(
+            fs::read_to_string(base.join("service_1.rs")).unwrap(),
+            "existing"
+        );
     }
 
     #[test]
@@ -180,9 +205,13 @@ mod tests {
         fs::write(base.join("service_1.rs"), "old content").unwrap();
 
         write_source_tree_with_options(
-            &make_tree(), tmp.path(), 1,
-            &OutputStrategy::Overwrite, &OutputLayout::Flat,
-        ).unwrap();
+            &make_tree(),
+            tmp.path(),
+            1,
+            &OutputStrategy::Overwrite,
+            &OutputLayout::Flat,
+        )
+        .unwrap();
         assert_eq!(
             fs::read_to_string(base.join("service_1.rs")).unwrap(),
             "pub fn run() {}"
@@ -199,18 +228,34 @@ mod tests {
             }],
         };
         let written = write_source_tree_with_options(
-            &tree, tmp.path(), 1,
-            &OutputStrategy::New, &OutputLayout::Module,
-        ).unwrap();
+            &tree,
+            tmp.path(),
+            1,
+            &OutputStrategy::New,
+            &OutputLayout::Module,
+        )
+        .unwrap();
         assert!(written[0].ends_with("services/user.rs"));
     }
 
     #[test]
     fn test_strategy_from_str() {
-        assert_eq!(OutputStrategy::from_str("new").unwrap(), OutputStrategy::New);
-        assert_eq!(OutputStrategy::from_str("merge").unwrap(), OutputStrategy::Merge);
-        assert_eq!(OutputStrategy::from_str("overwrite").unwrap(), OutputStrategy::Overwrite);
-        assert_eq!(OutputStrategy::from_str("dry-run").unwrap(), OutputStrategy::DryRun);
+        assert_eq!(
+            OutputStrategy::from_str("new").unwrap(),
+            OutputStrategy::New
+        );
+        assert_eq!(
+            OutputStrategy::from_str("merge").unwrap(),
+            OutputStrategy::Merge
+        );
+        assert_eq!(
+            OutputStrategy::from_str("overwrite").unwrap(),
+            OutputStrategy::Overwrite
+        );
+        assert_eq!(
+            OutputStrategy::from_str("dry-run").unwrap(),
+            OutputStrategy::DryRun
+        );
         assert!(OutputStrategy::from_str("invalid").is_err());
     }
 }

@@ -21,7 +21,14 @@ impl GenerateRequest {
         no_code: bool,
         verbose: bool,
     ) -> Self {
-        Self { raw_text, beam_width, max_depth, candidates, no_code, verbose }
+        Self {
+            raw_text,
+            beam_width,
+            max_depth,
+            candidates,
+            no_code,
+            verbose,
+        }
     }
 
     /// Phase9パイプライン（`RuntimeHybridVm::set_input_text`）へ渡すテキストを返す。
@@ -87,15 +94,16 @@ mod tests {
     fn test_resolve_missing_file_is_error() {
         let result = resolve_requirement("@/nonexistent/file.txt");
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("failed to read requirement file"));
+        assert!(
+            result
+                .unwrap_err()
+                .contains("failed to read requirement file")
+        );
     }
 
     #[test]
     fn test_generate_request_input_text() {
-        let req = GenerateRequest::new(
-            "ECサイトを設計する".to_string(),
-            10, 5, 3, false, false,
-        );
+        let req = GenerateRequest::new("ECサイトを設計する".to_string(), 10, 5, 3, false, false);
         assert_eq!(req.input_text(), "ECサイトを設計する");
         assert_eq!(req.beam_width, 10);
         assert_eq!(req.max_depth, 5);

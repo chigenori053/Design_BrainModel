@@ -6,7 +6,7 @@ mod output;
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "arch-gen",
+    name = "arch_gen",
     about = "Architecture Generative AI — Design_BrainModel Core frontend",
     disable_version_flag = true
 )]
@@ -18,9 +18,10 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     /// 要件テキストからアーキテクチャ候補を生成しコードを出力する
+    #[command(name = "/generate", visible_alias = "generate")]
     Generate {
-        /// 要件テキスト（@ファイルパス 形式、または "-" で stdin から読み込み）
-        requirement: String,
+        /// 要件テキスト（省略時は対話開始。@ファイルパス 形式、または "-" で stdin から読み込み）
+        requirement: Option<String>,
 
         /// 出力する候補数
         #[arg(short = 'n', long, default_value_t = 3, env = "ARCH_GEN_CANDIDATES")]
@@ -42,9 +43,13 @@ enum Commands {
         #[arg(long = "max-depth", default_value_t = 5)]
         max_depth: usize,
 
-        /// コード生成をスキップ（高速化）
+        /// コード生成を明示的にスキップする（互換オプション）
         #[arg(long)]
         no_code: bool,
+
+        /// 候補確定後のソースファイル生成を有効にする
+        #[arg(long)]
+        write_files: bool,
 
         /// 詳細ログを出力
         #[arg(long)]
@@ -68,17 +73,19 @@ enum Commands {
     },
 
     /// 保存済み設計ファイルを評価してスコアを表示する
+    #[command(name = "/evaluate", visible_alias = "evaluate")]
     Evaluate {
         /// 設計ファイルパス（JSON）
         design_file: String,
     },
 
     /// 設計ファイルを指定フォーマットで出力する
+    #[command(name = "/export", visible_alias = "export")]
     Export {
         /// 設計ファイルパス（JSON）
         design_file: String,
 
-        /// 出力形式: json | mermaid | markdown | plantuml | code | text
+        /// 出力形式: json | mermaid | markdown | plantuml | text
         #[arg(short, long, env = "ARCH_GEN_FORMAT")]
         format: String,
 
@@ -92,12 +99,37 @@ enum Commands {
     },
 
     /// 設計の説明レポートを生成する
+    #[command(name = "/explain", visible_alias = "explain")]
     Explain {
         /// 設計ファイルパス（JSON）
         design_file: String,
     },
 
+    /// 知識量とWebSearch配線状態を監査する
+    #[command(name = "/knowledge-audit", visible_alias = "knowledge-audit")]
+    KnowledgeAudit {
+        /// 出力形式: text | json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
+    /// 必要に応じてWeb検索で補助知識を取得する
+    #[command(name = "/web-search", visible_alias = "web-search")]
+    WebSearch {
+        /// 検索クエリ
+        query: String,
+
+        /// 出力件数
+        #[arg(short = 'n', long, default_value_t = 5)]
+        limit: usize,
+
+        /// 出力形式: text | json
+        #[arg(short, long, default_value = "text")]
+        format: String,
+    },
+
     /// 追加条件で設計を再探索する
+    #[command(name = "/refine", visible_alias = "refine")]
     Refine {
         /// 設計ファイルパス（JSON）
         design_file: String,
@@ -107,6 +139,7 @@ enum Commands {
     },
 
     /// ローカルソースコードを読み込んでアーキテクチャを逆解析する
+    #[command(name = "/scan", visible_alias = "scan")]
     Scan {
         /// スキャン対象ディレクトリ
         dir: String,
@@ -133,6 +166,7 @@ enum Commands {
     },
 
     /// 対話型設計精緻化モード
+    #[command(name = "/interactive", visible_alias = "interactive")]
     Interactive {
         /// 既存設計ファイルから開始
         #[arg(long)]
@@ -140,7 +174,7 @@ enum Commands {
     },
 
     /// `interactive` のエイリアス
-    #[command(name = "i")]
+    #[command(name = "/i", visible_alias = "i")]
     InteractiveAlias {
         #[arg(long)]
         from: Option<String>,
@@ -167,12 +201,19 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
             beam_width,
             max_depth,
             no_code,
+            write_files,
             verbose,
             output_strategy,
             output_layout,
             git_add,
             open,
         } => {
+            let Some(requirement) = requirement else {
+                return commands::interactive::run(commands::interactive::InteractiveArgs {
+                    from: None,
+                });
+            };
+
             // "-" → stdin から要件テキストを読み込む
             let requirement = if requirement == "-" {
                 read_stdin()?
@@ -188,6 +229,7 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
                 beam_width,
                 max_depth,
                 no_code,
+                write_files,
                 verbose,
                 output_strategy,
                 output_layout,
@@ -206,7 +248,12 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
 
         Commands::Evaluate { design_file } => commands::evaluate::run(&design_file),
 
-        Commands::Export { design_file, format, output, open } => {
+        Commands::Export {
+            design_file,
+            format,
+            output,
+            open,
+        } => {
             let result = commands::export::run(&design_file, &format, output.as_deref());
             if result.is_ok() {
                 if open {
@@ -220,7 +267,18 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
 
         Commands::Explain { design_file } => commands::explain::run(&design_file),
 
-        Commands::Refine { design_file, additional_requirement } => {
+        Commands::KnowledgeAudit { format } => commands::knowledge_audit::run(&format),
+
+        Commands::WebSearch {
+            query,
+            limit,
+            format,
+        } => commands::web_search::run(&query, limit, &format),
+
+        Commands::Refine {
+            design_file,
+            additional_requirement,
+        } => {
             // additional_requirement も "-" で stdin 対応
             let additional = if additional_requirement == "-" {
                 read_stdin()?
@@ -230,16 +288,21 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
             commands::refine::run(&design_file, &additional)
         }
 
-        Commands::Scan { dir, format, output, depth, include, verbose } => {
-            commands::scan::run(commands::scan::ScanArgs {
-                dir,
-                format,
-                output,
-                depth,
-                include,
-                verbose,
-            })
-        }
+        Commands::Scan {
+            dir,
+            format,
+            output,
+            depth,
+            include,
+            verbose,
+        } => commands::scan::run(commands::scan::ScanArgs {
+            dir,
+            format,
+            output,
+            depth,
+            include,
+            verbose,
+        }),
 
         Commands::Interactive { from } | Commands::InteractiveAlias { from } => {
             commands::interactive::run(commands::interactive::InteractiveArgs { from })
@@ -270,9 +333,12 @@ fn git_add_dir(dir: &str) -> Result<(), String> {
         .status()
         .map_err(|e| format!("failed to run git: {e}"))?;
     if !status.success() {
-        return Err(format!("git add '{dir}' failed with exit code {:?}", status.code()));
+        return Err(format!(
+            "git add '{dir}' failed with exit code {:?}",
+            status.code()
+        ));
     }
-    eprintln!("[arch-gen] git add {dir}");
+    eprintln!("[arch_gen] git add {dir}");
     Ok(())
 }
 
@@ -286,6 +352,6 @@ fn open_path(path: &str) {
     let cmd = "start";
 
     if let Err(e) = std::process::Command::new(cmd).arg(path).spawn() {
-        eprintln!("[arch-gen] warning: could not open '{path}': {e}");
+        eprintln!("[arch_gen] warning: could not open '{path}': {e}");
     }
 }

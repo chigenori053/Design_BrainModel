@@ -1,7 +1,5 @@
 use architecture_domain::{ArchitectureState, Component, ComponentRole};
-use design_domain::{
-    Architecture, ClassUnit, DesignUnit, Layer, StructureUnit,
-};
+use design_domain::{Architecture, ClassUnit, DesignUnit, Layer, StructureUnit};
 
 /// `ArchitectureState`（Phase9パイプライン出力）を
 /// `design_domain::Architecture`（CodeIRパイプライン入力）に変換する。
@@ -64,8 +62,12 @@ mod tests {
         Component {
             id: ComponentId(id),
             role,
-            inputs: vec![Interface { name: format!("in_{id}") }],
-            outputs: vec![Interface { name: format!("out_{id}") }],
+            inputs: vec![Interface {
+                name: format!("in_{id}"),
+            }],
+            outputs: vec![Interface {
+                name: format!("out_{id}"),
+            }],
         }
     }
 

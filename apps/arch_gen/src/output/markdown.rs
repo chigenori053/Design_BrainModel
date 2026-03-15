@@ -2,7 +2,11 @@ use crate::output::text::CandidateDisplay;
 use world_model_core::EvaluationVector;
 
 /// `CandidateDisplay` のスライスから Markdown レポートを生成する。
-pub fn build_markdown(input: &str, search_states: usize, candidates: &[CandidateDisplay]) -> String {
+pub fn build_markdown(
+    input: &str,
+    search_states: usize,
+    candidates: &[CandidateDisplay],
+) -> String {
     let mut out = String::new();
 
     out.push_str("# Architecture Generation Report\n\n");

@@ -34,7 +34,7 @@ pub fn run(args: ScanArgs) -> Result<(), String> {
     }
 
     if args.verbose {
-        eprintln!("[arch-gen] scan: {} file(s) found", files.len());
+        eprintln!("[arch_gen] scan: {} file(s) found", files.len());
     }
 
     // CodeLanguageCore でパース → CodeIr
@@ -46,7 +46,7 @@ pub fn run(args: ScanArgs) -> Result<(), String> {
 
     if args.verbose {
         eprintln!(
-            "[arch-gen] scan: {} nodes, {} edges inferred",
+            "[arch_gen] scan: {} nodes, {} edges inferred",
             graph.nodes.len(),
             graph.edges.len()
         );
@@ -54,7 +54,7 @@ pub fn run(args: ScanArgs) -> Result<(), String> {
 
     if graph.nodes.is_empty() {
         return Err(
-            "no architecture components could be inferred from the source files".to_string()
+            "no architecture components could be inferred from the source files".to_string(),
         );
     }
 
@@ -81,16 +81,25 @@ pub fn run(args: ScanArgs) -> Result<(), String> {
     let content = match args.format.as_str() {
         "mermaid" => build_mermaid(&component_names, &dependency_pairs),
         "plantuml" => build_plantuml(&component_names, &dependency_pairs),
-        "json" => build_scan_json(dir, files.len(), &component_names, &dependency_pairs, quality)?,
+        "json" => build_scan_json(
+            dir,
+            files.len(),
+            &component_names,
+            &dependency_pairs,
+            quality,
+        )?,
         "markdown" => {
             let display = scan_to_candidate_display(&component_names, &dependency_pairs, quality);
-            build_markdown(
-                &format!("scan: {}", dir.display()),
-                files.len(),
-                &[display],
-            )
+            build_markdown(&format!("scan: {}", dir.display()), files.len(), &[display])
         }
-        _ => build_scan_text(dir, files.len(), &component_names, &dependency_pairs, quality, &graph),
+        _ => build_scan_text(
+            dir,
+            files.len(),
+            &component_names,
+            &dependency_pairs,
+            quality,
+            &graph,
+        ),
     };
 
     match args.output.as_deref() {
@@ -102,7 +111,7 @@ pub fn run(args: ScanArgs) -> Result<(), String> {
             }
             std::fs::write(out, &content)
                 .map_err(|e| format!("failed to write '{}': {e}", out.display()))?;
-            eprintln!("[arch-gen] scan result saved to {}", out.display());
+            eprintln!("[arch_gen] scan result saved to {}", out.display());
         }
         None => print!("{content}"),
     }
@@ -119,8 +128,8 @@ fn collect_files(
     verbose: bool,
 ) -> Result<Vec<ParsedSourceFile>, String> {
     let pattern = format!("{}/{include}", dir.display());
-    let paths = glob::glob(&pattern)
-        .map_err(|e| format!("invalid glob pattern '{pattern}': {e}"))?;
+    let paths =
+        glob::glob(&pattern).map_err(|e| format!("invalid glob pattern '{pattern}': {e}"))?;
 
     let mut files = Vec::new();
     for entry in paths.flatten() {
@@ -138,9 +147,12 @@ fn collect_files(
 
         let path_str = entry.to_string_lossy().to_string();
         if verbose {
-            eprintln!("[arch-gen] scan: reading {path_str}");
+            eprintln!("[arch_gen] scan: reading {path_str}");
         }
-        files.push(ParsedSourceFile { path: path_str, source });
+        files.push(ParsedSourceFile {
+            path: path_str,
+            source,
+        });
     }
 
     Ok(files)

@@ -2,15 +2,18 @@
 /// スペース・ハイフン・ドット・スラッシュをアンダースコアに置換。
 pub fn sanitize_id(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_ascii_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
 /// コンポーネント名一覧と依存関係ペアから Mermaid `graph TD` 記法を生成する。
-pub fn build_mermaid(
-    component_names: &[String],
-    dependency_pairs: &[(String, String)],
-) -> String {
+pub fn build_mermaid(component_names: &[String], dependency_pairs: &[(String, String)]) -> String {
     let mut out = String::from("graph TD\n");
 
     if dependency_pairs.is_empty() {

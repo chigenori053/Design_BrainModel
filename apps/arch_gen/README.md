@@ -1,4 +1,4 @@
-# arch-gen — Architecture Generative AI CLI
+# arch_gen — Architecture Generative AI CLI
 
 > Automatically generate system architecture candidates from natural language requirements.
 > 自然言語の要件テキストからシステムアーキテクチャ候補を自動生成する CLI ツールです。
@@ -13,8 +13,8 @@
 | **Deterministic** | Same input always produces the same output (FNV-1a hash-based search) | 同じ入力は常に同じ出力（FNV-1a ハッシュベースの決定的探索）|
 | **Multi-format** | text / json / mermaid / markdown / plantuml | 5形式の出力に対応 |
 | **Zero dependency** | No external services or API keys required, works offline | 外部サービス・API キー不要、オフライン動作 |
-| **Reverse analysis** | `scan` command infers architecture from existing source code | `scan` コマンドで既存コードからアーキテクチャを逆解析 |
-| **Interactive** | `interactive` command for iterative design refinement in a REPL | `interactive` コマンドで対話的に設計を精緻化 |
+| **Reverse analysis** | `/scan` command infers architecture from existing source code | `/scan` コマンドで既存コードからアーキテクチャを逆解析 |
+| **Interactive** | `/interactive` command for iterative design refinement in a REPL | `/interactive` コマンドで対話的に設計を精緻化 |
 
 ---
 
@@ -25,8 +25,8 @@
 cargo install --path apps/arch_gen
 
 # Or build directly / または直接ビルド
-cargo build --release -p arch_gen
-# → target/release/arch-gen  (2.6 MB)
+cargo build --release -p arch_gen --bin arch_gen
+# → target/release/arch_gen
 ```
 
 ---
@@ -36,57 +36,57 @@ cargo build --release -p arch_gen
 ```bash
 # Generate architecture candidates (text output)
 # アーキテクチャ候補を生成（テキスト出力）
-arch-gen generate "Design a scalable e-commerce platform"
-arch-gen generate "ECサイトをスケーラブルに設計してください"
+arch_gen /generate "Design a scalable e-commerce platform"
+arch_gen /generate "ECサイトをスケーラブルに設計してください"
 
 # Generate from a requirements file
 # 要件ファイルから生成
-arch-gen generate @examples/requirements/ecommerce.txt -f markdown -o ./output
+arch_gen /generate @examples/requirements/ecommerce.txt -f markdown -o ./output
 
 # Read requirement from stdin
 # stdin から要件を渡す
-echo "Design a microservices API" | arch-gen generate -
+echo "Design a microservices API" | arch_gen /generate -
 
 # Evaluate a saved design
 # 保存済み設計を評価
-arch-gen evaluate ./output/design.json
+arch_gen /evaluate ./output/design.json
 
 # Export to various formats
 # 各フォーマットでエクスポート
-arch-gen export ./output/design.json -f mermaid
-arch-gen export ./output/design.json -f markdown -o ./report.md
+arch_gen /export ./output/design.json -f mermaid
+arch_gen /export ./output/design.json -f markdown -o ./report.md
 
 # Explain the design pattern and quality
 # 設計パターンと品質を解説
-arch-gen explain ./output/design.json
+arch_gen /explain ./output/design.json
 
 # Refine with additional requirements
 # 追加要件で設計を再探索
-arch-gen refine ./output/design.json "Add OAuth2 authentication and rate limiting"
-arch-gen refine ./output/design.json "OAuth2認証とレート制限を追加してください"
+arch_gen /refine ./output/design.json "Add OAuth2 authentication and rate limiting"
+arch_gen /refine ./output/design.json "OAuth2認証とレート制限を追加してください"
 
 # Scan existing source code
 # 既存ソースコードを逆解析
-arch-gen scan ./src -f mermaid
-arch-gen scan ./src --include "**/*.rs" -f markdown -o ./report/arch.md
+arch_gen /scan ./src -f mermaid
+arch_gen /scan ./src --include "**/*.rs" -f markdown -o ./report/arch.md
 
 # Interactive mode
 # 対話型モード
-arch-gen interactive
-arch-gen i --from ./output/design.json
+arch_gen /interactive
+arch_gen /i --from ./output/design.json
 ```
 
 ---
 
 ## Commands / コマンドリファレンス
 
-### `generate`
+### `/generate`
 
 Generate architecture candidates from a requirement text.
 要件テキストからアーキテクチャ候補を生成し、コードと design.json を出力します。
 
 ```
-arch-gen generate <REQUIREMENT> [OPTIONS]
+arch_gen /generate <REQUIREMENT> [OPTIONS]
 
 Arguments:
   <REQUIREMENT>    Requirement text, @file path, or "-" to read from stdin
@@ -106,22 +106,22 @@ Options:
       --open                     Open output with the OS default application
 ```
 
-### `evaluate`
+### `/evaluate`
 
 Load a saved `design.json` and display per-candidate scores and quality analysis.
 保存済み `design.json` を読み込んで各候補のスコアと品質分析を表示します。
 
 ```
-arch-gen evaluate <DESIGN_FILE>
+arch_gen /evaluate <DESIGN_FILE>
 ```
 
-### `export`
+### `/export`
 
 Export a saved design file in the specified format.
 保存済み設計ファイルを指定フォーマットで出力します。
 
 ```
-arch-gen export <DESIGN_FILE> -f <FORMAT> [OPTIONS]
+arch_gen /export <DESIGN_FILE> -f <FORMAT> [OPTIONS]
 
 Options:
   -f, --format <FMT>    json | mermaid | markdown | plantuml | text  $ARCH_GEN_FORMAT
@@ -129,31 +129,31 @@ Options:
       --open            Open the output file after export
 ```
 
-### `explain`
+### `/explain`
 
 Generate a human-readable explanation of the design pattern and quality scores.
 設計パターンの推定と品質スコアの解説テキストを生成します。
 
 ```
-arch-gen explain <DESIGN_FILE>
+arch_gen /explain <DESIGN_FILE>
 ```
 
-### `refine`
+### `/refine`
 
 Combine the original requirement with an additional requirement and re-run the pipeline.
 元の要件に追加要件を合成して Phase9 パイプラインを再実行し、`design_refined.json` として保存します。
 
 ```
-arch-gen refine <DESIGN_FILE> <ADDITIONAL_REQUIREMENT>
+arch_gen /refine <DESIGN_FILE> <ADDITIONAL_REQUIREMENT>
 ```
 
-### `scan`
+### `/scan`
 
 Walk a local directory, parse source files, and infer the architecture via reverse analysis.
 ローカルディレクトリのソースコードを読み込み、アーキテクチャを逆解析します。
 
 ```
-arch-gen scan <DIR> [OPTIONS]
+arch_gen /scan <DIR> [OPTIONS]
 
 Options:
   -f, --format <FMT>     text | mermaid | markdown | json | plantuml [default: text]
@@ -163,14 +163,14 @@ Options:
       --verbose
 ```
 
-### `interactive` / `i`
+### `/interactive` / `/i`
 
 Start an interactive REPL session for iterative architecture design.
 対話型セッションを起動して設計を段階的に精緻化します。
 
 ```
-arch-gen interactive [--from <DESIGN_FILE>]
-arch-gen i           [--from <DESIGN_FILE>]
+arch_gen /interactive [--from <DESIGN_FILE>]
+arch_gen /i           [--from <DESIGN_FILE>]
 
 Session commands:
   <requirement>   Generate candidates from a new requirement
@@ -211,10 +211,10 @@ Session commands:
 
 ```bash
 # Preview what would be generated
-arch-gen generate "API server" --output-strategy dry-run
+arch_gen /generate "API server" --output-strategy dry-run
 
 # Merge into an existing project
-arch-gen generate "API server" -o ./my-project/src --output-strategy merge
+arch_gen /generate "API server" -o ./my-project/src --output-strategy merge
 ```
 
 ---
@@ -231,7 +231,7 @@ arch-gen generate "API server" -o ./my-project/src --output-strategy merge
 ```bash
 export ARCH_GEN_FORMAT=mermaid
 export ARCH_GEN_OUTPUT=./arch_out
-arch-gen generate "ECサイト"   # uses env var defaults
+arch_gen /generate "ECサイト"   # uses env var defaults
 ```
 
 ---
@@ -251,7 +251,7 @@ examples/requirements/
 ## Architecture Overview / 内部アーキテクチャ
 
 ```
-arch-gen
+arch_gen
 ├── InputBridge
 │   ├── text_parser     — Requirement text parsing (@file reference resolution)
 │   ├── file_loader     — design.json read/write
@@ -267,13 +267,13 @@ arch-gen
 │   └── plantuml  — PlantUML @startuml
 │
 └── Commands
-    ├── generate     — Full pipeline execution + code generation
-    ├── evaluate     — Score display from design.json
-    ├── export       — Format conversion from design.json
-    ├── explain      — Design pattern analysis
-    ├── refine       — Re-search with additional requirements
-    ├── scan         — Reverse architecture analysis from source code
-    └── interactive  — REPL-based iterative design session
+    ├── /generate     — Full pipeline execution + code generation
+    ├── /evaluate     — Score display from design.json
+    ├── /export       — Format conversion from design.json
+    ├── /explain      — Design pattern analysis
+    ├── /refine       — Re-search with additional requirements
+    ├── /scan         — Reverse architecture analysis from source code
+    └── /interactive  — REPL-based iterative design session
 ```
 
 ---

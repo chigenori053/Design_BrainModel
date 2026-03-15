@@ -1,8 +1,5 @@
 /// コンポーネント名一覧と依存関係ペアから PlantUML `@startuml` 記法を生成する。
-pub fn build_plantuml(
-    component_names: &[String],
-    dependency_pairs: &[(String, String)],
-) -> String {
+pub fn build_plantuml(component_names: &[String], dependency_pairs: &[(String, String)]) -> String {
     let mut out = String::from("@startuml\n");
 
     for name in component_names {

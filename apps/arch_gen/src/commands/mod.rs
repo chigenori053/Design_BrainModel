@@ -3,5 +3,8 @@ pub mod explain;
 pub mod export;
 pub mod generate;
 pub mod interactive;
+pub mod knowledge_audit;
+pub mod knowledge_layer;
 pub mod refine;
 pub mod scan;
+pub mod web_search;

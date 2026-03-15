@@ -47,7 +47,7 @@ Design_BrainModel/
 │   └── agent_core/                 # Agent interaction layer
 │
 ├── examples/
-│   └── requirements/   # Sample requirement text files for arch-gen
+│   └── requirements/   # Sample requirement text files for arch_gen
 │
 └── docs/
     └── architecture/   # Design documents and implementation plans
@@ -57,24 +57,24 @@ Design_BrainModel/
 
 ## Quick Start / クイックスタート
 
-The primary user-facing tool is **`arch-gen`**, the Architecture Generative AI CLI.
+The primary user-facing tool is **`arch_gen`**, the Architecture Generative AI CLI.
 
 ```bash
 # Build
-cargo build --release -p arch_gen
+cargo build --release -p arch_gen --bin arch_gen
 
 # Generate architecture candidates from a requirement
-./target/release/arch-gen generate "Design a scalable e-commerce platform"
-./target/release/arch-gen generate "ECサイトをスケーラブルに設計してください"
+./target/release/arch_gen /generate "Design a scalable e-commerce platform"
+./target/release/arch_gen /generate "ECサイトをスケーラブルに設計してください"
 
 # Generate from a requirements file
-./target/release/arch-gen generate @examples/requirements/ecommerce.txt -f markdown
+./target/release/arch_gen /generate @examples/requirements/ecommerce.txt -f markdown
 
 # Scan existing source code to infer architecture
-./target/release/arch-gen scan ./src -f mermaid
+./target/release/arch_gen /scan ./src -f mermaid
 
 # Interactive design session
-./target/release/arch-gen interactive
+./target/release/arch_gen /interactive
 ```
 
 See [`apps/arch_gen/README.md`](apps/arch_gen/README.md) for the full command reference.
@@ -88,8 +88,8 @@ See [`apps/arch_gen/README.md`](apps/arch_gen/README.md) for the full command re
 | **No external LLM** | All NL processing handled internally by the Phase9 pipeline |
 | **Deterministic** | FNV-1a hash-based search guarantees identical output for identical input |
 | **Multi-format output** | text / json / mermaid / markdown / plantuml |
-| **Reverse analysis** | Infer architecture from existing Rust source code via `scan` |
-| **Interactive REPL** | Iterative design refinement with `interactive` command |
+| **Reverse analysis** | Infer architecture from existing Rust source code via `/scan` |
+| **Interactive REPL** | Iterative design refinement with `/interactive` command |
 | **Output strategies** | new / merge / overwrite / dry-run for flexible code generation |
 | **External integration** | stdin / env vars / `--git-add` / `--open` |
 
@@ -133,10 +133,10 @@ Natural Language Input
 # Build the entire workspace
 cargo build
 
-# Build arch-gen release binary
-cargo build --release -p arch_gen
+# Build arch_gen release binary
+cargo build --release -p arch_gen --bin arch_gen
 
-# Run all arch-gen tests (unit + integration)
+# Run all arch_gen tests (unit + integration)
 cargo test -p arch_gen
 
 # Run unit tests only
@@ -155,7 +155,7 @@ cargo test
 
 ## Sample Requirements / サンプル要件ファイル
 
-Ready-to-use requirement files for `arch-gen generate @<file>`:
+Ready-to-use requirement files for `arch_gen /generate @<file>`:
 
 | File | Description |
 |------|-------------|
@@ -170,7 +170,7 @@ Ready-to-use requirement files for `arch-gen generate @<file>`:
 
 | Document | Description |
 |----------|-------------|
-| [`apps/arch_gen/README.md`](apps/arch_gen/README.md) | arch-gen full command reference (EN/JA) |
+| [`apps/arch_gen/README.md`](apps/arch_gen/README.md) | arch_gen full command reference (EN/JA) |
 | [`docs/architecture/`](docs/architecture/) | Architecture design documents and implementation plans |
 | [`DESIGN.md`](DESIGN.md) | Core design policy (hash algorithm, determinism gate, API freeze) |
 

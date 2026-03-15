@@ -29,7 +29,10 @@ pub fn run(design_file: &str, format: &str, output: Option<&str>) -> Result<(), 
                     "--- Candidate {} (score: {:.4}) ---\n",
                     c.id, c.score
                 ));
-                out.push_str(&build_mermaid(&c.components, &to_dep_pairs(&c.dependencies)));
+                out.push_str(&build_mermaid(
+                    &c.components,
+                    &to_dep_pairs(&c.dependencies),
+                ));
                 out.push('\n');
             }
             out
@@ -47,13 +50,16 @@ pub fn run(design_file: &str, format: &str, output: Option<&str>) -> Result<(), 
                     "' --- Candidate {} (score: {:.4}) ---\n",
                     c.id, c.score
                 ));
-                out.push_str(&build_plantuml(&c.components, &to_dep_pairs(&c.dependencies)));
+                out.push_str(&build_plantuml(
+                    &c.components,
+                    &to_dep_pairs(&c.dependencies),
+                ));
                 out.push('\n');
             }
             out
         }
 
-        "text" | _ => {
+        "text" => {
             let mut out = String::new();
             out.push_str("Architecture Export\n");
             out.push_str(&"═".repeat(55));
@@ -81,6 +87,11 @@ pub fn run(design_file: &str, format: &str, output: Option<&str>) -> Result<(), 
             out.push('\n');
             out
         }
+        other => {
+            return Err(format!(
+                "unknown export format '{other}'; expected: json | mermaid | markdown | plantuml | text"
+            ));
+        }
     };
 
     match output {
@@ -92,7 +103,7 @@ pub fn run(design_file: &str, format: &str, output: Option<&str>) -> Result<(), 
             }
             fs::write(out, &content)
                 .map_err(|e| format!("failed to write to '{}': {e}", out.display()))?;
-            eprintln!("[arch-gen] exported to {}", out.display());
+            eprintln!("[arch_gen] exported to {}", out.display());
         }
         None => print!("{content}"),
     }
@@ -131,7 +142,9 @@ fn to_candidate_displays(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input_bridge::{SavedCandidate, SavedCodeMetrics, SavedDesign, SavedEvaluation, save_design_file};
+    use crate::input_bridge::{
+        SavedCandidate, SavedCodeMetrics, SavedDesign, SavedEvaluation, save_design_file,
+    };
 
     fn make_design() -> SavedDesign {
         SavedDesign {
@@ -190,6 +203,13 @@ mod tests {
         let (tmp, _) = write_tmp_design();
         let result = run(tmp.path().to_str().unwrap(), "markdown", None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_export_unknown_format_is_error() {
+        let (tmp, _) = write_tmp_design();
+        let result = run(tmp.path().to_str().unwrap(), "code", None);
+        assert!(result.is_err());
     }
 
     #[test]

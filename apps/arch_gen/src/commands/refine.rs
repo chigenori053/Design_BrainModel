@@ -2,8 +2,8 @@ use std::path::Path;
 
 use crate::commands::generate::{PipelineResult, run_phase9_pipeline};
 use crate::input_bridge::{
-    GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation,
-    arch_state_to_architecture, load_design_file, save_design_file,
+    GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation, arch_state_to_architecture,
+    load_design_file, save_design_file,
 };
 use crate::output::text::render_evaluation;
 use code_ir::{ArchitectureToCodeIR, DeterministicArchitectureToCodeIR};
@@ -16,7 +16,7 @@ pub fn run(design_file: &str, additional_requirement: &str) -> Result<(), String
 
     // 元の要件 + 追加要件を合成
     let combined_input = format!("{}\n{}", design.input.trim(), additional_requirement.trim());
-    eprintln!("[arch-gen] refine: combined input:");
+    eprintln!("[arch_gen] refine: combined input:");
     eprintln!("  original:    \"{}\"", design.input.trim());
     eprintln!("  additional:  \"{additional_requirement}\"");
 
@@ -29,11 +29,14 @@ pub fn run(design_file: &str, additional_requirement: &str) -> Result<(), String
         /* verbose    */ false,
     );
 
-    let PipelineResult { ranked, search_states_count } = run_phase9_pipeline(&req)?;
+    let PipelineResult {
+        ranked,
+        search_states_count,
+    } = run_phase9_pipeline(&req)?;
     let top: Vec<_> = ranked.into_iter().take(req.candidates).collect();
 
     eprintln!(
-        "[arch-gen] refine: {} search states → {} candidates",
+        "[arch_gen] refine: {} search states → {} candidates",
         search_states_count,
         top.len()
     );
@@ -81,7 +84,12 @@ pub fn run(design_file: &str, additional_requirement: &str) -> Result<(), String
                 complexity: eval.complexity,
                 simulation_quality: eval.simulation_quality,
             };
-            println!("─── Candidate {} (Score: {:.4}) {}", i + 1, c.score, "─".repeat(28));
+            println!(
+                "─── Candidate {} (Score: {:.4}) {}",
+                i + 1,
+                c.score,
+                "─".repeat(28)
+            );
             for comp in &component_names {
                 println!("  {comp}");
             }
@@ -122,7 +130,7 @@ pub fn run(design_file: &str, additional_requirement: &str) -> Result<(), String
         .join("design_refined.json");
     save_design_file(&refined, &out_path)?;
     println!("{}", "═".repeat(55));
-    eprintln!("[arch-gen] refined design saved to {}", out_path.display());
+    eprintln!("[arch_gen] refined design saved to {}", out_path.display());
 
     Ok(())
 }
@@ -130,9 +138,7 @@ pub fn run(design_file: &str, additional_requirement: &str) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input_bridge::{
-        SavedCandidate, SavedCodeMetrics, SavedDesign, SavedEvaluation,
-    };
+    use crate::input_bridge::{SavedCandidate, SavedCodeMetrics, SavedDesign, SavedEvaluation};
 
     fn make_minimal_design() -> SavedDesign {
         SavedDesign {

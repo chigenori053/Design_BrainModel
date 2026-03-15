@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [[bin]]
-name = "arch-gen"
+name = "arch_gen"
 path = "src/main.rs"
 
 [dependencies]
@@ -19,8 +19,12 @@ design_domain             = { path = "../../crates/domain/design_domain" }
 design_reasoning          = { workspace = true }
 design_search_engine      = { workspace = true }
 glob                      = "0.3"
+knowledge_store           = { workspace = true }
+memory_space_phase14      = { workspace = true }
 runtime_core              = { workspace = true }
 runtime_vm                = { workspace = true }
+reqwest                   = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+scraper                   = "0.24"
 serde                     = { workspace = true }
 serde_json                = { workspace = true }
 world_model_core          = { workspace = true }
