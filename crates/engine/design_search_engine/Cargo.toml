@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+architecture_search = { workspace = true }
 architecture_knowledge = { workspace = true }
 architecture_memory = { workspace = true }
 architecture_evaluator_core = { workspace = true }

@@ -40,8 +40,14 @@ pub use search_strategy::{BeamSearchStrategy, SearchStrategy};
 
 // Phase9-D exports
 pub use architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
+pub use architecture_search as architecture_search_core;
 pub use beam_search_controller::{BeamSearchController, SearchTrace};
 pub use design_grammar::{GrammarEngine, GrammarValidation};
+pub use math_reasoning_engine::{
+    ComplexityClass, ComplexityEstimate, DefaultMathematicalReasoningEngine, MathProblemType,
+    MathReasoningTelemetryEvent, MathReasoningTrace, MathematicalProblem,
+    MathematicalReasoningEngine, MathematicalResult,
+};
 pub use pruning::{
     PruneCandidatesOutcome, SearchNodeDiversityPruned, architecture_similarity, prune_candidates,
     prune_candidates_with_telemetry, select_diverse_nodes,
@@ -53,18 +59,13 @@ pub use reasoning::{
     ReasoningResult, ReasoningTelemetry, ReasoningTelemetryEvent, ReasoningValidator,
     runtime_hypotheses_from_reasoning,
 };
-pub use math_reasoning_engine::{
-    ComplexityClass, ComplexityEstimate, DefaultMathematicalReasoningEngine, MathematicalProblem,
-    MathematicalReasoningEngine, MathematicalResult, MathProblemType,
-    MathReasoningTelemetryEvent, MathReasoningTrace,
-};
-pub use simulation_scheduler::{
-    DefaultSimulationScheduler, LightSimulationResult, LightSimulationTrace, KnowledgeScore,
-    ScheduledSimulationBatch, ScheduledCandidate, SchedulerTelemetryEvent,
-    SimulationSchedulerConfig, SimulationSchedulerTrace,
-};
 pub use search_context::SearchContext;
 pub use search_controller::SearchController;
 pub use search_state::SearchState;
 pub use search_state::SearchState as Phase9SearchState;
+pub use simulation_scheduler::{
+    DefaultSimulationScheduler, KnowledgeScore, LightSimulationResult, LightSimulationTrace,
+    ScheduledCandidate, ScheduledSimulationBatch, SchedulerTelemetryEvent,
+    SimulationSchedulerConfig, SimulationSchedulerTrace,
+};
 pub use world_model_core::{Action, EvaluationVector};

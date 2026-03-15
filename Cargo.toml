@@ -1,5 +1,7 @@
 [workspace]
 members = [
+    "crates/architecture_ir",
+    "crates/architecture_search",
     "crates/code_ir",
     "crates/architecture_reasoner",
     "crates/geometry_engine",
@@ -79,6 +81,8 @@ members = [
 resolver = "2"
 
 [workspace.dependencies]
+architecture_ir = { path = "crates/architecture_ir" }
+architecture_search = { path = "crates/architecture_search" }
 code_ir = { path = "crates/code_ir" }
 architecture_reasoner = { path = "crates/architecture_reasoner" }
 geometry_engine = { path = "crates/geometry_engine" }
