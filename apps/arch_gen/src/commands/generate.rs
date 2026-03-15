@@ -17,7 +17,8 @@ use crate::input_bridge::{
     GenerateRequest, SavedCandidate, SavedDesign, SavedEvaluation,
     arch_state_to_architecture, resolve_requirement, save_design_file,
 };
-use crate::output::mermaid::candidate_to_mermaid;
+use crate::output::markdown::build_markdown;
+use crate::output::mermaid::build_mermaid;
 use crate::output::source_writer::write_source_tree;
 use crate::output::text::{CandidateDisplay, GenerationSummary, render_summary};
 
@@ -198,7 +199,7 @@ fn render_output(
         "mermaid" => {
             for (i, b) in built.iter().enumerate() {
                 println!("--- Candidate {} (score: {:.4}) ---", i + 1, b.ranked.score);
-                println!("{}", candidate_to_mermaid(&b.ranked));
+                println!("{}", build_mermaid(&b.display.component_names, &b.display.dependency_pairs));
             }
         }
         "json" => {
@@ -232,6 +233,10 @@ fn render_output(
                 }))
                 .map_err(|e| format!("json serialization failed: {e}"))?
             );
+        }
+        "markdown" => {
+            let displays: Vec<CandidateDisplay> = built.iter().map(|b| b.display.clone()).collect();
+            print!("{}", build_markdown(input, search_states, &displays));
         }
         _ => {
             let displays: Vec<CandidateDisplay> = built.iter().map(|b| b.display.clone()).collect();
@@ -280,6 +285,11 @@ fn save_design_json(
                         simulation_quality: eval.simulation_quality,
                         total: eval.total(),
                     },
+                    components: b.display.component_names.clone(),
+                    dependencies: b.display.dependency_pairs.iter()
+                        .map(|(f, t)| [f.clone(), t.clone()])
+                        .collect(),
+                    code_metrics: Default::default(),
                 }
             })
             .collect(),

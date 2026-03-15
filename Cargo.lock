@@ -282,6 +282,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "arch_gen"
+version = "0.1.0"
+dependencies = [
+ "agent_core",
+ "architecture_domain",
+ "clap",
+ "code_ir",
+ "design_domain",
+ "design_search_engine",
+ "runtime_core",
+ "runtime_vm",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "world_model_core",
+]
+
+[[package]]
 name = "architecture_behavior"
 version = "0.1.0"
 dependencies = [

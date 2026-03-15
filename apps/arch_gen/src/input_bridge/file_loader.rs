@@ -20,6 +20,20 @@ pub struct SavedCandidate {
     pub score: f64,
     pub pareto_rank: usize,
     pub evaluation: SavedEvaluation,
+    #[serde(default)]
+    pub components: Vec<String>,
+    #[serde(default)]
+    pub dependencies: Vec<[String; 2]>,
+    #[serde(default)]
+    pub code_metrics: SavedCodeMetrics,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct SavedCodeMetrics {
+    pub coupling_score: f64,
+    pub dependency_depth: usize,
+    pub module_count: usize,
+    pub dependency_cycles: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -79,6 +93,9 @@ mod tests {
                     simulation_quality: 0.9,
                     total: 0.86,
                 },
+                components: vec![],
+                dependencies: vec![],
+                code_metrics: Default::default(),
             }],
         }
     }

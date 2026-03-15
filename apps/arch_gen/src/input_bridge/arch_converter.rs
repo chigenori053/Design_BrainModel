@@ -1,6 +1,6 @@
 use architecture_domain::{ArchitectureState, Component, ComponentRole};
 use design_domain::{
-    Architecture, ClassUnit, DesignUnit, DesignUnitId, Layer, StructureUnit,
+    Architecture, ClassUnit, DesignUnit, Layer, StructureUnit,
 };
 
 /// `ArchitectureState`（Phase9パイプライン出力）を
@@ -59,7 +59,6 @@ fn component_layer(role: &ComponentRole) -> Layer {
 mod tests {
     use super::*;
     use architecture_domain::{ComponentId, ComponentRole, Interface};
-    use design_domain::DependencyKind;
 
     fn make_component(id: u64, role: ComponentRole) -> Component {
         Component {
