@@ -8,17 +8,21 @@ name = "arch-gen"
 path = "src/main.rs"
 
 [dependencies]
-agent_core            = { workspace = true }
-architecture_domain   = { path = "../../crates/domain/architecture_domain" }
-clap                  = { version = "4", features = ["derive"] }
-code_ir               = { workspace = true }
-design_domain         = { path = "../../crates/domain/design_domain" }
-design_search_engine  = { workspace = true }
-runtime_core          = { workspace = true }
-runtime_vm            = { workspace = true }
-serde                 = { workspace = true }
-serde_json            = { workspace = true }
-world_model_core      = { workspace = true }
+agent_core                = { workspace = true }
+architecture_domain       = { path = "../../crates/domain/architecture_domain" }
+architecture_evaluator    = { path = "../../crates/architecture_evaluator" }
+architecture_reasoner     = { workspace = true }
+clap                      = { version = "4", features = ["derive", "env"] }
+code_ir                   = { workspace = true }
+code_language_core        = { workspace = true }
+design_domain             = { path = "../../crates/domain/design_domain" }
+design_search_engine      = { workspace = true }
+glob                      = "0.3"
+runtime_core              = { workspace = true }
+runtime_vm                = { workspace = true }
+serde                     = { workspace = true }
+serde_json                = { workspace = true }
+world_model_core          = { workspace = true }
 
 [dev-dependencies]
 tempfile = "3"

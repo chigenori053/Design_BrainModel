@@ -20,7 +20,7 @@ use crate::input_bridge::{
 use crate::output::markdown::build_markdown;
 use crate::output::mermaid::build_mermaid;
 use crate::output::plantuml::build_plantuml;
-use crate::output::source_writer::write_source_tree;
+use crate::output::source_writer::{OutputLayout, OutputStrategy, write_source_tree_with_options};
 use crate::output::text::{CandidateDisplay, GenerationSummary, render_summary};
 
 pub struct GenerateArgs {
@@ -32,6 +32,8 @@ pub struct GenerateArgs {
     pub max_depth: usize,
     pub no_code: bool,
     pub verbose: bool,
+    pub output_strategy: String,
+    pub output_layout: String,
 }
 
 pub fn run(args: GenerateArgs) -> Result<(), String> {
@@ -51,11 +53,16 @@ pub fn run(args: GenerateArgs) -> Result<(), String> {
     let frontier_size = top.len();
     let output_dir = Path::new(&args.output_dir);
 
+    let strategy = OutputStrategy::from_str(&args.output_strategy)?;
+    let layout = OutputLayout::from_str(&args.output_layout)?;
+
     // 各候補を Architecture → CodeIR → SourceTree に変換
     let built: Vec<BuiltCandidate> = top
         .into_iter()
         .enumerate()
-        .map(|(i, candidate)| build_candidate(i + 1, candidate, output_dir, req.no_code))
+        .map(|(i, candidate): (usize, RankedCandidate)| {
+            build_candidate(i + 1, candidate, output_dir, req.no_code, &strategy, &layout)
+        })
         .collect::<Result<_, _>>()?;
 
     render_output(&args.format, req.input_text(), &built, search_states_count, frontier_size)?;
@@ -76,6 +83,8 @@ fn build_candidate(
     candidate: RankedCandidate,
     output_dir: &Path,
     no_code: bool,
+    strategy: &OutputStrategy,
+    layout: &OutputLayout,
 ) -> Result<BuiltCandidate, String> {
     let architecture = arch_state_to_architecture(&candidate.state.architecture_state);
     let code_ir = DeterministicArchitectureToCodeIR::transform(&architecture);
@@ -97,7 +106,7 @@ fn build_candidate(
         vec![]
     } else {
         let source_tree = DeterministicCodeGenerator::generate(&code_ir);
-        let written = write_source_tree(&source_tree, output_dir, id)?;
+        let written = write_source_tree_with_options(&source_tree, output_dir, id, strategy, layout)?;
         eprintln!(
             "[arch-gen] candidate {id} → {} file(s) written to {}/candidate_{id}/",
             written.len(),
