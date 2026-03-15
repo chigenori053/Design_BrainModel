@@ -293,6 +293,7 @@ dependencies = [
  "code_ir",
  "code_language_core",
  "design_domain",
+ "design_reasoning",
  "design_search_engine",
  "glob",
  "runtime_core",

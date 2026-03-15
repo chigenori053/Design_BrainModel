@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use crate::input_bridge::{SavedCandidate, load_design_file};
+use crate::output::narrative::verbalize_candidate;
 
 /// `explain` コマンド: 保存済み design.json を読み込み設計の説明テキストを生成する。
 pub fn run(design_file: &str) -> Result<(), String> {
@@ -81,6 +82,14 @@ pub fn run(design_file: &str) -> Result<(), String> {
             println!("  Dependency cycles: {}", c.code_metrics.dependency_cycles);
             println!();
         }
+
+        // Language Engine による自然言語解説
+        println!("Narrative Analysis (Language Engine):");
+        let narrative = verbalize_candidate(&design.input, c);
+        for line in narrative.lines() {
+            println!("  {line}");
+        }
+        println!();
 
         println!("{}", "─".repeat(55));
         println!();
