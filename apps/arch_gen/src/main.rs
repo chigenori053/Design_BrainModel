@@ -171,6 +171,37 @@ enum Commands {
         verbose: bool,
     },
 
+    /// YAML spec から Architecture Search Engine を実行する
+    #[command(name = "/search", visible_alias = "search")]
+    Search {
+        /// 探索仕様 YAML
+        spec_file: String,
+
+        /// 出力ディレクトリ
+        #[arg(short, long, default_value = "./architectures")]
+        output: String,
+
+        /// ビーム幅
+        #[arg(long = "beam-width", default_value_t = 8)]
+        beam_width: usize,
+
+        /// 探索深度
+        #[arg(long = "max-depth", default_value_t = 6)]
+        max_depth: usize,
+
+        /// 評価する最大候補数
+        #[arg(long = "max-candidates", default_value_t = 1024)]
+        max_candidates: usize,
+
+        /// Pareto frontier の最大件数
+        #[arg(long = "pareto-limit", default_value_t = 10)]
+        pareto_limit: usize,
+
+        /// タイムアウト (ms)
+        #[arg(long = "timeout-ms", default_value_t = 10000)]
+        timeout_ms: u64,
+    },
+
     /// 対話型設計精緻化モード
     #[command(name = "/interactive", visible_alias = "interactive")]
     Interactive {
@@ -333,6 +364,24 @@ fn dispatch(cmd: Commands) -> Result<(), String> {
             depth,
             include,
             verbose,
+        }),
+
+        Commands::Search {
+            spec_file,
+            output,
+            beam_width,
+            max_depth,
+            max_candidates,
+            pareto_limit,
+            timeout_ms,
+        } => commands::search::run(commands::search::SearchArgs {
+            spec_file,
+            output_dir: output,
+            beam_width,
+            max_depth,
+            max_candidates,
+            pareto_limit,
+            timeout_ms,
         }),
 
         Commands::Interactive { from } | Commands::InteractiveAlias { from } => {

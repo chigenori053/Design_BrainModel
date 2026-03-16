@@ -11,7 +11,9 @@ path = "src/main.rs"
 agent_core                = { workspace = true }
 architecture_domain       = { path = "../../crates/domain/architecture_domain" }
 architecture_evaluator    = { path = "../../crates/architecture_evaluator" }
+architecture_ir           = { workspace = true }
 architecture_reasoner     = { workspace = true }
+architecture_search       = { workspace = true }
 clap                      = { version = "4", features = ["derive", "env"] }
 code_ir                   = { workspace = true }
 code_language_core        = { workspace = true }
@@ -27,6 +29,7 @@ reqwest                   = { version = "0.12", default-features = false, featur
 scraper                   = "0.24"
 serde                     = { workspace = true }
 serde_json                = { workspace = true }
+serde_yaml                = "0.9"
 world_model_core          = { workspace = true }
 
 [dev-dependencies]

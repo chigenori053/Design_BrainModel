@@ -4,6 +4,7 @@
 //! バイナリを `cargo run -p arch_gen --bin arch_gen --` 経由で呼び出し、
 //! stdout / stderr / exit code を検証する。
 
+use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
 
@@ -101,6 +102,51 @@ fn test_generate_deterministic() {
     let (out2, ok2) = arch_gen(args);
     assert!(ok1 && ok2, "both runs should succeed");
     assert_eq!(out1, out2, "same input should produce identical output");
+}
+
+#[test]
+fn test_search_from_yaml_spec_writes_architectures() {
+    let dir = tempfile::tempdir().expect("tempdir should be created");
+    let spec_path = dir.path().join("spec.yaml");
+    let output_dir = dir.path().join("architectures");
+    fs::write(
+        &spec_path,
+        r#"system_type: web_api
+requirements:
+  - authentication
+  - logging
+  - caching
+constraints:
+  architecture: layered
+  language: rust
+"#,
+    )
+    .expect("spec should be written");
+
+    let (stdout, success) = arch_gen(&[
+        "/search",
+        spec_path.to_str().expect("utf-8 path"),
+        "--output",
+        output_dir.to_str().expect("utf-8 path"),
+        "--beam-width",
+        "6",
+        "--max-depth",
+        "6",
+    ]);
+
+    assert!(success, "search command should succeed\n{stdout}");
+    assert!(
+        stdout.contains("Architecture Search Engine"),
+        "stdout should summarize the search\n{stdout}"
+    );
+    assert!(
+        stdout.contains("template        : layered"),
+        "stdout should show selected template\n{stdout}"
+    );
+    assert!(
+        output_dir.join("arch_1.json").exists(),
+        "pareto artifact should be written"
+    );
 }
 
 #[test]

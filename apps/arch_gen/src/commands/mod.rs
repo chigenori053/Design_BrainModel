@@ -8,4 +8,5 @@ pub mod knowledge_audit;
 pub mod knowledge_layer;
 pub mod refine;
 pub mod scan;
+pub mod search;
 pub mod web_search;
