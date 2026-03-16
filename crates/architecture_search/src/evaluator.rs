@@ -1,6 +1,8 @@
+use serde::{Deserialize, Serialize};
+
 use architecture_ir::{ArchitectureAnalyzer, ArchitectureIR, BasicArchitectureAnalyzer};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct ArchitectureScore {
     pub coupling: f32,
     pub cohesion: f32,

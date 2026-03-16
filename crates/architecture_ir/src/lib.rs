@@ -7,6 +7,7 @@ mod design_unit;
 mod domain;
 mod graph;
 mod ir;
+mod interface;
 mod layer;
 mod metadata;
 mod metrics;
@@ -20,15 +21,17 @@ pub use analyzer::{
 };
 pub use builder::ArchitectureIRBuilder;
 pub use component::{
-    ComponentId, ComponentNode, ComponentType, ComponentUnit, ComponentUnitId, Visibility,
+    ComponentId, ComponentNode, ComponentProperty, ComponentType, ComponentUnit, ComponentUnitId,
+    Visibility,
 };
-pub use constraint::{ArchitectureConstraint, ConstraintType};
+pub use constraint::{ArchitectureConstraint, ConstraintType, ConstraintValue};
 pub use dependency::{DependencyEdge, DependencyType, NodeId};
 pub use design_unit::{DesignUnit, DesignUnitId, SemanticType, SourceLocation};
 pub use domain::{DomainUnit, DomainUnitId};
 pub use graph::{ArchitectureGraph, architecture_hash, export_dot};
 pub use ir::ArchitectureIR;
-pub use layer::{Layer, LayerRule};
+pub use interface::{InterfaceId, InterfaceUnit};
+pub use layer::{Layer, LayerId, LayerRule};
 pub use metadata::ArchitectureMetadata;
 pub use metrics::ComponentMetrics;
 pub use structure::{StructureType, StructureUnit, StructureUnitId};

@@ -27,3 +27,8 @@ serde_json = { workspace = true }
 semantic_dhm = { workspace = true }
 world_model = { workspace = true }
 world_model_core = { workspace = true }
+
+[dev-dependencies]
+architecture_evaluator = { path = "../../architecture_evaluator" }
+architecture_ir = { workspace = true }
+architecture_search = { workspace = true }

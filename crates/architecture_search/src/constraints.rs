@@ -1,6 +1,8 @@
-use architecture_ir::{ArchitectureIR, ComponentType, NodeId, validate_ir};
+use architecture_ir::{ArchitectureIR, validate_ir};
 
-use crate::{SearchSpace, SearchState};
+use crate::{
+    ArchitectureGrammar, ArchitectureGrammarEngine, SearchSpace, SearchState,
+};
 
 pub trait ConstraintFilter {
     fn filter(&self, candidates: Vec<SearchState>) -> Vec<SearchState>;
@@ -35,25 +37,21 @@ impl ConstraintFilter for BasicConstraintFilter {
 }
 
 fn allowed_by_rules(ir: &ArchitectureIR, search_space: &SearchSpace) -> bool {
-    ir.dependencies
+    if ir
+        .components
         .iter()
-        .all(|edge| match (edge.source, edge.target) {
-            (NodeId::Component(from), NodeId::Component(to)) => {
-                match (component_type(ir, from), component_type(ir, to)) {
-                    (Some(from_type), Some(to_type)) => search_space
-                        .allowed_dependencies
-                        .iter()
-                        .any(|rule| rule.from == *from_type && rule.to == *to_type),
-                    _ => false,
-                }
-            }
-            _ => true,
-        })
-}
+        .any(|component| search_space.forbidden_components.contains(&component.component_type))
+    {
+        return false;
+    }
 
-fn component_type(ir: &ArchitectureIR, component_id: u64) -> Option<&ComponentType> {
-    ir.components
-        .iter()
-        .find(|component| component.id == component_id)
-        .map(|component| &component.component_type)
+    let grammar = ArchitectureGrammar {
+        style: crate::ArchitectureStyle::Generic,
+        component_rules: search_space.component_rules.clone(),
+        dependency_rules: search_space.allowed_dependencies.clone(),
+        layer_rules: search_space.layer_rules.clone(),
+        interface_rules: search_space.interface_rules.clone(),
+        constraint_rule: search_space.constraint_rule.clone(),
+    };
+    ArchitectureGrammarEngine.validate(ir, &grammar).valid
 }

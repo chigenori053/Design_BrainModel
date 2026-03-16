@@ -5,3 +5,5 @@ edition = "2024"
 
 [dependencies]
 architecture_ir = { workspace = true }
+memory_space_phase14 = { workspace = true }
+serde = { workspace = true }

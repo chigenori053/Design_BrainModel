@@ -1,18 +1,22 @@
 use architecture_ir::{
     AnalysisResult, ArchitectureAnalyzer, ArchitectureConstraint, ArchitectureIR,
     ArchitectureIRBuilder, ArchitectureMetadata, BasicArchitectureAnalyzer, ComponentMetrics,
-    ComponentNode, ComponentType, ComponentUnit, ConstraintType, DependencyEdge, DependencyType,
-    DesignUnit, DomainUnit, Layer, LayerRule, NodeId, RiskLevel, SemanticType, SourceLocation,
-    StructureType, StructureUnit, ValidationError, ValidationWarning, Visibility,
-    architecture_hash, export_dot, validate_ir,
+    ComponentNode, ComponentProperty, ComponentType, ComponentUnit, ConstraintType,
+    ConstraintValue, DependencyEdge, DependencyType, DesignUnit, DomainUnit, InterfaceUnit, Layer,
+    LayerRule, NodeId, RiskLevel, SemanticType, SourceLocation, StructureType, StructureUnit,
+    ValidationError, ValidationWarning, Visibility, architecture_hash, export_dot, validate_ir,
 };
 
 fn sample_ir() -> ArchitectureIR {
     ArchitectureIR {
         metadata: ArchitectureMetadata {
+            ir_version: "v1".to_string(),
             version: "0.3".to_string(),
             language: Some("Rust".to_string()),
             created_at: 1_742_000_000,
+            score: Some(87),
+            author: Some("DesignBrainModel".to_string()),
+            evaluation: Some("healthy".to_string()),
         },
         domains: vec![DomainUnit {
             id: 10,
@@ -24,6 +28,12 @@ fn sample_ir() -> ArchitectureIR {
                 id: 1,
                 name: "ApiController".to_string(),
                 component_type: ComponentType::Controller,
+                layer: Some(1),
+                interfaces: vec![],
+                properties: vec![ComponentProperty {
+                    key: "protocol".to_string(),
+                    value: "http".to_string(),
+                }],
                 structures: vec![101],
                 visibility: Visibility::Public,
                 metrics: ComponentMetrics {
@@ -37,6 +47,9 @@ fn sample_ir() -> ArchitectureIR {
                 id: 2,
                 name: "UserService".to_string(),
                 component_type: ComponentType::Service,
+                layer: Some(2),
+                interfaces: vec![501],
+                properties: vec![],
                 structures: vec![102],
                 visibility: Visibility::Public,
                 metrics: ComponentMetrics {
@@ -50,6 +63,9 @@ fn sample_ir() -> ArchitectureIR {
                 id: 3,
                 name: "UserRepository".to_string(),
                 component_type: ComponentType::Repository,
+                layer: Some(3),
+                interfaces: vec![],
+                properties: vec![],
                 structures: vec![103],
                 visibility: Visibility::Internal,
                 metrics: ComponentMetrics {
@@ -60,6 +76,13 @@ fn sample_ir() -> ArchitectureIR {
                 },
             },
         ],
+        interfaces: vec![InterfaceUnit {
+            id: 501,
+            name: "UserRepositoryPort".to_string(),
+            input_types: vec!["CreateUser".to_string()],
+            output_types: vec!["User".to_string()],
+            owner_component: 2,
+        }],
         structures: vec![
             StructureUnit {
                 id: 101,
@@ -111,25 +134,30 @@ fn sample_ir() -> ArchitectureIR {
                 source: NodeId::Domain(10),
                 target: NodeId::Component(2),
                 dependency_type: DependencyType::Use,
+                interface: None,
             },
             DependencyEdge {
                 source: NodeId::Component(1),
                 target: NodeId::Component(2),
                 dependency_type: DependencyType::Call,
+                interface: None,
             },
             DependencyEdge {
                 source: NodeId::Component(2),
                 target: NodeId::Component(3),
                 dependency_type: DependencyType::Use,
+                interface: Some(501),
             },
             DependencyEdge {
                 source: NodeId::Structure(101),
                 target: NodeId::Structure(102),
                 dependency_type: DependencyType::Call,
+                interface: None,
             },
         ],
         layers: vec![
             Layer {
+                id: 1,
                 name: "Presentation".to_string(),
                 level: 3,
                 components: vec![1],
@@ -139,6 +167,7 @@ fn sample_ir() -> ArchitectureIR {
                 }],
             },
             Layer {
+                id: 2,
                 name: "Application".to_string(),
                 level: 2,
                 components: vec![2],
@@ -148,6 +177,7 @@ fn sample_ir() -> ArchitectureIR {
                 }],
             },
             Layer {
+                id: 3,
                 name: "Infrastructure".to_string(),
                 level: 1,
                 components: vec![3],
@@ -158,10 +188,12 @@ fn sample_ir() -> ArchitectureIR {
             ArchitectureConstraint {
                 constraint_type: ConstraintType::NoCircularDependency,
                 description: "Component dependency graph must stay acyclic.".to_string(),
+                value: Some(ConstraintValue::Boolean(true)),
             },
             ArchitectureConstraint {
                 constraint_type: ConstraintType::LayerViolation,
                 description: "Dependencies must only point inward.".to_string(),
+                value: Some(ConstraintValue::Boolean(true)),
             },
         ],
     }
@@ -198,6 +230,7 @@ fn analyzer_detects_cycles_and_layer_violations() {
         source: NodeId::Component(3),
         target: NodeId::Component(1),
         dependency_type: DependencyType::Call,
+        interface: None,
     });
 
     let result = BasicArchitectureAnalyzer.analyze(&ir);
@@ -227,6 +260,9 @@ fn legacy_component_node_maps_to_component_unit() {
         id: 7,
         name: "LegacyController".to_string(),
         component_type: ComponentType::Controller,
+        layer: None,
+        interfaces: vec![],
+        properties: vec![],
         visibility: Visibility::Public,
         metrics: ComponentMetrics {
             loc: 10,
@@ -264,9 +300,11 @@ fn ir_build_test() {
 fn query_api_test() {
     let ir = sample_ir();
     assert_eq!(ir.components().len(), 3);
+    assert_eq!(ir.interfaces().len(), 1);
     assert_eq!(ir.component_dependencies(1), vec![2]);
     assert_eq!(ir.component_dependents(3), vec![2]);
     assert_eq!(ir.component_structures(2), vec![102]);
+    assert_eq!(ir.component_interfaces(2), vec![501]);
 }
 
 #[test]
@@ -296,6 +334,7 @@ fn validation_reports_domain_and_layer_issues() {
         source: NodeId::Component(3),
         target: NodeId::Component(2),
         dependency_type: DependencyType::Use,
+        interface: None,
     });
 
     let result = validate_ir(&ir);
@@ -306,4 +345,69 @@ fn validation_reports_domain_and_layer_issues() {
             .warnings
             .contains(&ValidationWarning::DomainViolation)
     );
+}
+
+#[test]
+fn mutation_api_supports_move_split_merge() {
+    let mut ir = sample_ir();
+    ir.move_layer(1, 2);
+    assert_eq!(ir.component_by_id(1).and_then(|component| component.layer), Some(2));
+
+    ir.split_component(
+        2,
+        vec![
+            ComponentUnit {
+                id: 20,
+                name: "AuthService".to_string(),
+                component_type: ComponentType::Service,
+                layer: None,
+                interfaces: vec![],
+                properties: vec![],
+                structures: vec![],
+                visibility: Visibility::Public,
+                metrics: ComponentMetrics::default(),
+            },
+            ComponentUnit {
+                id: 21,
+                name: "UserService".to_string(),
+                component_type: ComponentType::Service,
+                layer: None,
+                interfaces: vec![],
+                properties: vec![],
+                structures: vec![],
+                visibility: Visibility::Public,
+                metrics: ComponentMetrics::default(),
+            },
+        ],
+    )
+    .expect("split should succeed");
+    assert!(ir.component_by_id(20).is_some());
+    assert!(ir.component_by_id(21).is_some());
+
+    ir.merge_components(
+        &[20, 21],
+        ComponentUnit {
+            id: 30,
+            name: "MergedService".to_string(),
+            component_type: ComponentType::Service,
+            layer: None,
+            interfaces: vec![],
+            properties: vec![],
+            structures: vec![],
+            visibility: Visibility::Public,
+            metrics: ComponentMetrics::default(),
+        },
+    )
+    .expect("merge should succeed");
+    assert!(ir.component_by_id(30).is_some());
+}
+
+#[test]
+fn validation_rejects_missing_interface_reference() {
+    let mut ir = sample_ir();
+    ir.components[1].interfaces.push(9999);
+
+    let result = validate_ir(&ir);
+
+    assert!(result.errors.contains(&ValidationError::MissingInterface));
 }

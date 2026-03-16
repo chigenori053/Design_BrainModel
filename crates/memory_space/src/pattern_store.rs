@@ -5,6 +5,11 @@ use design_domain::Layer;
 use world_model_core::WorldState;
 
 use crate::experience_store::{DesignExperience, ExperienceStore};
+use crate::memory_space::space::{embed_architecture, embed_evaluation};
+use crate::{
+    ArchitectureMetadata, DesignIntentRecord, DesignMemorySpace, EvaluationDiagnostics,
+    EvaluationMetricsV2, EvaluationRecord, EvaluationScores, ReasoningTrace, SearchStep,
+};
 use crate::pattern_extractor::{architecture_hash, extract_pattern};
 use crate::pattern_matcher::match_patterns;
 
@@ -75,6 +80,7 @@ impl PatternStore {
 pub struct InMemoryMemorySpace {
     pub experience_store: ExperienceStore,
     pub pattern_store: PatternStore,
+    pub memory_space: DesignMemorySpace,
 }
 
 impl InMemoryMemorySpace {
@@ -120,6 +126,68 @@ impl MemorySpace for InMemoryMemorySpace {
         }
         let pattern = extract_pattern(self.pattern_store.next_pattern_id(), &exp);
         self.pattern_store.upsert(pattern, exp.architecture_hash);
+        let architecture_id = format!("experience-{:016x}", exp.architecture_hash);
+        let architecture_record = DesignMemorySpace::make_architecture_record(
+            architecture_id.clone(),
+            exp.to_architecture_ir(),
+            "legacy-pattern".to_string(),
+            exp.score as f32,
+            ArchitectureMetadata {
+                search_depth: exp.search_depth,
+                generation_time: 0,
+                search_iteration: self.experience_store.experiences().len(),
+            },
+        );
+        let architecture_embedding =
+            embed_architecture(&architecture_record.architecture_ir, architecture_record.evaluation_score);
+        self.memory_space
+            .store_architecture(architecture_record.clone(), architecture_embedding);
+        let evaluation_record = EvaluationRecord {
+            architecture_hash: format!("{:016x}", exp.architecture_hash),
+            evaluation_scores: EvaluationScores {
+                overall_score: exp.score,
+                ..EvaluationScores::default()
+            },
+            evaluation_metrics: EvaluationMetricsV2 {
+                component_count: architecture_record.architecture_ir.components.len(),
+                dependency_count: architecture_record.architecture_ir.dependencies.len(),
+                layer_count: architecture_record.architecture_ir.layers.len(),
+                cycle_count: 0,
+                average_degree: if architecture_record.architecture_ir.components.is_empty() {
+                    0.0
+                } else {
+                    architecture_record.architecture_ir.dependencies.len() as f64
+                        / architecture_record.architecture_ir.components.len() as f64
+                },
+            },
+            diagnostics: EvaluationDiagnostics::default(),
+        };
+        self.memory_space
+            .store_evaluation(evaluation_record.clone(), embed_evaluation(&evaluation_record));
+        self.memory_space.store_reasoning_trace(
+            ReasoningTrace {
+                trace_id: format!("trace-{architecture_id}"),
+                intent: DesignIntentRecord {
+                    intent_id: architecture_id.clone(),
+                    system_type: "legacy".to_string(),
+                    requirements: exp
+                        .layer_sequence
+                        .iter()
+                        .map(|layer| layer.as_str().to_string())
+                        .collect(),
+                    constraints: Vec::new(),
+                },
+                selected_template: "legacy-pattern".to_string(),
+                search_steps: vec![SearchStep {
+                    step_id: 1,
+                    action: "store_experience".to_string(),
+                    score: format!("{:.3}", exp.score),
+                }],
+                candidate_architectures: vec![architecture_id.clone()],
+                final_architecture: architecture_id,
+            },
+            vec![exp.score as f32, exp.search_depth as f32, exp.layer_sequence.len() as f32],
+        );
     }
 }
 

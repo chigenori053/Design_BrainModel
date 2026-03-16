@@ -1,7 +1,7 @@
 use crate::{
     ArchitectureConstraint, ArchitectureIR, ArchitectureMetadata, ComponentMetrics, ComponentType,
-    ComponentUnit, DependencyEdge, DependencyType, DesignUnit, DomainUnit, Layer, NodeId,
-    SourceLocation, StructureType, StructureUnit, Visibility,
+    ComponentUnit, DependencyEdge, DependencyType, DesignUnit, DomainUnit, InterfaceUnit, Layer,
+    NodeId, SourceLocation, StructureType, StructureUnit, Visibility,
 };
 
 #[derive(Clone, Debug, Default)]
@@ -38,6 +38,9 @@ impl ArchitectureIRBuilder {
             id,
             name: name.into(),
             component_type,
+            layer: None,
+            interfaces: Vec::new(),
+            properties: Vec::new(),
             structures: Vec::new(),
             visibility: Visibility::Public,
             metrics: ComponentMetrics::default(),
@@ -92,6 +95,32 @@ impl ArchitectureIRBuilder {
         self
     }
 
+    pub fn add_interface(
+        mut self,
+        id: u64,
+        name: impl Into<String>,
+        owner_component: u64,
+    ) -> Self {
+        self.ir.interfaces.push(InterfaceUnit {
+            id,
+            name: name.into(),
+            input_types: Vec::new(),
+            output_types: Vec::new(),
+            owner_component,
+        });
+        if let Some(component) = self
+            .ir
+            .components
+            .iter_mut()
+            .find(|component| component.id == owner_component)
+        {
+            component.interfaces.push(id);
+            component.interfaces.sort_unstable();
+            component.interfaces.dedup();
+        }
+        self
+    }
+
     pub fn add_dependency(
         mut self,
         source: NodeId,
@@ -102,6 +131,7 @@ impl ArchitectureIRBuilder {
             source,
             target,
             dependency_type,
+            interface: None,
         });
         self
     }

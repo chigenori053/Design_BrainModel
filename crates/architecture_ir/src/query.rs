@@ -5,6 +5,10 @@ impl ArchitectureIR {
         &self.components
     }
 
+    pub fn interfaces(&self) -> &[crate::InterfaceUnit] {
+        &self.interfaces
+    }
+
     pub fn component_dependencies(&self, component: ComponentUnitId) -> Vec<ComponentUnitId> {
         let mut dependencies = self
             .dependencies
@@ -40,6 +44,12 @@ impl ArchitectureIR {
     pub fn component_structures(&self, component: ComponentUnitId) -> Vec<StructureUnitId> {
         self.component_by_id(component)
             .map(|component| component.structures.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn component_interfaces(&self, component: ComponentUnitId) -> Vec<crate::InterfaceId> {
+        self.component_by_id(component)
+            .map(|component| component.interfaces.clone())
             .unwrap_or_default()
     }
 }

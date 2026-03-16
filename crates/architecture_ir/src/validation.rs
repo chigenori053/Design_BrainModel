@@ -22,6 +22,7 @@ pub enum ValidationError {
     DanglingDependency,
     LayerViolation,
     DependencyCycle,
+    MissingInterface,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -69,6 +70,10 @@ pub fn validate_ir(ir: &ArchitectureIR) -> ValidationResult {
         errors.push(ValidationError::DependencyCycle);
     }
 
+    if has_missing_interface(ir) {
+        errors.push(ValidationError::MissingInterface);
+    }
+
     if has_domain_violation(ir) {
         warnings.push(ValidationWarning::DomainViolation);
     }
@@ -86,6 +91,7 @@ fn has_duplicate_ids(ir: &ArchitectureIR) -> bool {
         .iter()
         .map(|domain| domain.id)
         .chain(ir.components.iter().map(|component| component.id))
+        .chain(ir.interfaces.iter().map(|interface| interface.id))
         .chain(ir.structures.iter().map(|structure| structure.id))
         .chain(ir.design_units.iter().map(|design_unit| design_unit.id))
         .any(|id| !ids.insert(id))
@@ -184,4 +190,36 @@ fn has_unlayered_component(ir: &ArchitectureIR) -> bool {
     ir.components
         .iter()
         .any(|component| !layered.contains(&component.id))
+}
+
+fn has_missing_interface(ir: &ArchitectureIR) -> bool {
+    let interface_ids = ir
+        .interfaces
+        .iter()
+        .map(|interface| interface.id)
+        .collect::<BTreeSet<_>>();
+    let component_ids = ir
+        .components
+        .iter()
+        .map(|component| component.id)
+        .collect::<BTreeSet<_>>();
+
+    if ir
+        .interfaces
+        .iter()
+        .any(|interface| !component_ids.contains(&interface.owner_component))
+    {
+        return true;
+    }
+
+    ir.components.iter().any(|component| {
+        component
+            .interfaces
+            .iter()
+            .any(|interface_id| !interface_ids.contains(interface_id))
+    }) || ir.dependencies.iter().any(|edge| {
+        edge.interface
+            .map(|interface_id| !interface_ids.contains(&interface_id))
+            .unwrap_or(false)
+    })
 }

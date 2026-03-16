@@ -123,6 +123,7 @@ impl DeterministicCandidateGenerator {
                         source: edge.0,
                         target: edge.1,
                         dependency_type: DependencyType::Use,
+                        interface: None,
                     });
                     candidates.push(next);
                 }
@@ -150,6 +151,9 @@ fn add_component(ir: &mut ArchitectureIR, component_type: ComponentType) {
             component_type_count(ir, &component_type) + 1
         ),
         component_type: component_type.clone(),
+        layer: None,
+        interfaces: Vec::new(),
+        properties: Vec::new(),
         structures: Vec::new(),
         visibility: Visibility::Public,
         metrics: ComponentMetrics::default(),
@@ -163,10 +167,14 @@ fn upsert_layer(ir: &mut ArchitectureIR, component_type: ComponentType, componen
     if let Some(layer) = ir.layers.iter_mut().find(|layer| layer.name == name) {
         layer.components.push(component_id);
         layer.components.sort_unstable();
+        if let Some(component) = ir.components.iter_mut().find(|component| component.id == component_id) {
+            component.layer = Some(layer.id);
+        }
         return;
     }
 
     ir.layers.push(Layer {
+        id: ir.layers.iter().map(|layer| layer.id).max().unwrap_or(0).saturating_add(1),
         name: name.to_string(),
         level,
         components: vec![component_id],
@@ -175,8 +183,11 @@ fn upsert_layer(ir: &mut ArchitectureIR, component_type: ComponentType, componen
     ir.layers.sort_by(|lhs, rhs| {
         rhs.level
             .cmp(&lhs.level)
-            .then_with(|| lhs.name.cmp(&rhs.name))
+        .then_with(|| lhs.name.cmp(&rhs.name))
     });
+    if let Some(component) = ir.components.iter_mut().find(|component| component.id == component_id) {
+        component.layer = ir.layers.iter().find(|layer| layer.name == name).map(|layer| layer.id);
+    }
 }
 
 fn component_type_count(ir: &ArchitectureIR, component_type: &ComponentType) -> usize {
@@ -189,10 +200,13 @@ fn component_type_count(ir: &ArchitectureIR, component_type: &ComponentType) -> 
 fn default_layer(component_type: &ComponentType) -> (&'static str, u32) {
     match component_type {
         ComponentType::Controller => ("Presentation", 3),
-        ComponentType::Service | ComponentType::UseCase | ComponentType::DomainModel => {
+        ComponentType::Service | ComponentType::UseCase => {
             ("Application", 2)
         }
-        ComponentType::Repository | ComponentType::Adapter => ("Infrastructure", 1),
+        ComponentType::DomainModel | ComponentType::Interface => ("Domain", 2),
+        ComponentType::Repository | ComponentType::Adapter | ComponentType::DataModel => {
+            ("Infrastructure", 1)
+        }
         _ => ("Application", 2),
     }
 }

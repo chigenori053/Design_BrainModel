@@ -1,0 +1,98 @@
+{
+  "latency": {
+    "recall_latency_max_ms": 0.037375,
+    "recall_latency_mean_ms": 0.03031867500000001
+  },
+  "q1": {
+    "data_pipeline": {
+      "baseline": {
+        "average_overall_score": 0.48755485871363696,
+        "best_architecture_score": 0.487554858713637,
+        "candidate_count": 28,
+        "evaluation_count": 31,
+        "pareto_frontier_size": 8,
+        "search_depth": 6
+      },
+      "with_memory": {
+        "average_overall_score": 0.48755485871363696,
+        "best_architecture_score": 0.487554858713637,
+        "candidate_count": 28,
+        "evaluation_count": 31,
+        "pareto_frontier_size": 8,
+        "search_depth": 6
+      }
+    },
+    "event_stream_processing": {
+      "baseline": {
+        "average_overall_score": 0.42005141871111484,
+        "best_architecture_score": 0.42005141871111484,
+        "candidate_count": 1,
+        "evaluation_count": 3,
+        "pareto_frontier_size": 1,
+        "search_depth": 1
+      },
+      "with_memory": {
+        "average_overall_score": 0.42005141871111484,
+        "best_architecture_score": 0.42005141871111484,
+        "candidate_count": 1,
+        "evaluation_count": 3,
+        "pareto_frontier_size": 1,
+        "search_depth": 1
+      }
+    },
+    "microservice_system": {
+      "baseline": {
+        "average_overall_score": 0.5033847520444482,
+        "best_architecture_score": 0.5033847520444482,
+        "candidate_count": 1,
+        "evaluation_count": 2,
+        "pareto_frontier_size": 1,
+        "search_depth": 1
+      },
+      "with_memory": {
+        "average_overall_score": 0.5033847520444482,
+        "best_architecture_score": 0.5033847520444482,
+        "candidate_count": 1,
+        "evaluation_count": 2,
+        "pareto_frontier_size": 1,
+        "search_depth": 1
+      }
+    },
+    "web_api": {
+      "baseline": {
+        "average_overall_score": 0.5778041643483113,
+        "best_architecture_score": 0.5778041643483113,
+        "candidate_count": 13,
+        "evaluation_count": 50,
+        "pareto_frontier_size": 4,
+        "search_depth": 6
+      },
+      "with_memory": {
+        "average_overall_score": 0.5778041643483113,
+        "best_architecture_score": 0.5778041643483113,
+        "candidate_count": 13,
+        "evaluation_count": 50,
+        "pareto_frontier_size": 4,
+        "search_depth": 6
+      }
+    }
+  },
+  "q2": {
+    "candidate_reduction": 0.3076923076923077,
+    "evaluation_reduction": 0.36,
+    "mean_search_depth_baseline": 6.0,
+    "mean_search_depth_memory": 5.0
+  },
+  "q3": {
+    "domain_mismatch_rate": 0.0,
+    "recall_accuracy": 1.0
+  },
+  "q5": {
+    "dominance_ratio_baseline": 1.0,
+    "dominance_ratio_memory": 1.0,
+    "frontier_diversity_baseline": 0.0,
+    "frontier_diversity_memory": 0.0,
+    "mean_frontier_score_baseline": 0.49719879845437787,
+    "mean_frontier_score_memory": 0.49719879845437787
+  }
+}
