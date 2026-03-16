@@ -23,8 +23,28 @@ fn arch_gen(args: &[&str]) -> (String, bool) {
         .current_dir(repo_root());
 
     let output = cmd.output().expect("failed to run arch_gen via cargo");
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
+    let stdout = strip_ansi(&String::from_utf8_lossy(&output.stdout));
     (stdout, output.status.success())
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut result = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\u{1b}' && chars.peek() == Some(&'[') {
+            chars.next();
+            for c in chars.by_ref() {
+                if ('@'..='~').contains(&c) {
+                    break;
+                }
+            }
+            continue;
+        }
+        result.push(ch);
+    }
+
+    result
 }
 
 /// ワークスペースルートを取得する。
@@ -69,7 +89,7 @@ fn test_generate_without_requirement_starts_conversation() {
         "arch_gen /generate without requirement should start conversation"
     );
     assert!(
-        stdout.contains("interactive mode") || stdout.contains("arch_gen interactive mode"),
+        stdout.contains("Architecture Generative AI") || stdout.contains("Mode      : interactive"),
         "stdout should contain conversation banner\n{stdout}"
     );
 }

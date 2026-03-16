@@ -205,6 +205,45 @@ pub const TEMPLATE_GENERIC: DesignTemplate = DesignTemplate {
     max_depth_bonus: 1,
 };
 
+// ─── 推論エンジンが動的に生成するテンプレート型 ──────────────────────────────
+
+/// 推論で動的生成されるテンプレートフィールド（所有型）
+#[derive(Debug, Clone)]
+pub struct DynamicTemplateField {
+    pub key: String,
+    pub prompt: String,
+    pub required: bool,
+    pub default: Option<String>,
+}
+
+/// 推論エンジンが動的に生成するテンプレート（所有型）
+#[derive(Debug, Clone)]
+pub struct DynamicTemplate {
+    pub name: String,
+    pub description: String,
+    pub fields: Vec<DynamicTemplateField>,
+    pub beam_width_bonus: usize,
+    pub max_depth_bonus: usize,
+}
+
+impl DynamicTemplate {
+    /// 静的 DesignTemplate を動的テンプレートに変換する
+    pub fn from_static(base: &'static DesignTemplate) -> Self {
+        Self {
+            name: base.name.to_string(),
+            description: base.description.to_string(),
+            fields: base.fields.iter().map(|f| DynamicTemplateField {
+                key: f.key.to_string(),
+                prompt: f.prompt.to_string(),
+                required: f.required,
+                default: f.default.map(|d| d.to_string()),
+            }).collect(),
+            beam_width_bonus: base.beam_width_bonus,
+            max_depth_bonus: base.max_depth_bonus,
+        }
+    }
+}
+
 /// 全テンプレートのスライス（拡張時の列挙用）
 #[allow(dead_code)]
 pub const ALL_TEMPLATES: &[&DesignTemplate] = &[

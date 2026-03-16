@@ -9,12 +9,12 @@ mod template;
 #[derive(Parser, Debug)]
 #[command(
     name = "arch_gen",
-    about = "Architecture Generative AI — Design_BrainModel Core frontend",
+    about = "Architecture Generative AI\nDesign_BrainModel Core — アーキテクチャ生成 AI ツール\n\nコマンド例:\n  arch_gen /generate \"要件テキスト\"\n  arch_gen /interactive\n  arch_gen /scan ./src",
     disable_version_flag = true
 )]
 struct Cli {
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -208,7 +208,11 @@ enum Commands {
 
 fn main() {
     let cli = Cli::parse();
-    let result = dispatch(cli.command);
+    // サブコマンドなし → インタラクティブモードへ
+    let result = match cli.command {
+        Some(cmd) => dispatch(cmd),
+        None => commands::interactive::run(commands::interactive::InteractiveArgs { from: None }),
+    };
 
     if let Err(e) = result {
         eprintln!("error: {e}");

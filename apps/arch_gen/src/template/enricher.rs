@@ -1,6 +1,6 @@
 use std::io::{BufRead, Write};
 
-use super::templates::{DesignTemplate, TemplateField};
+use super::templates::{DesignTemplate, DynamicTemplate, TemplateField};
 
 /// テンプレートへの記入結果
 #[derive(Debug, Clone)]
@@ -138,12 +138,97 @@ fn strip_prompt_prefix(prompt: &str) -> &str {
     let s = prompt
         .trim_start_matches("[必須]")
         .trim_start_matches("[任意]")
+        .trim_start_matches("[要明確化]")
+        .trim_start_matches("[補強推奨]")
         .trim();
-    // "(例: ...)" の手前まで
     if let Some(pos) = s.find('(') {
         s[..pos].trim()
     } else {
         s
+    }
+}
+
+fn strip_dynamic_prompt_prefix(prompt: &str) -> String {
+    strip_prompt_prefix(prompt).to_string()
+}
+
+// ─── 動的テンプレート対応 ─────────────────────────────────────────────────────
+
+/// 動的テンプレートをターミナルに表示してユーザー入力を収集する。
+pub fn prompt_and_fill_dynamic(
+    template: &DynamicTemplate,
+    stdin: &mut impl BufRead,
+    stdout: &mut impl Write,
+) -> Result<FilledTemplate, String> {
+    writeln!(stdout).ok();
+    writeln!(stdout, "┌─ 設計テンプレート: {} ─────────────────────────", template.name).ok();
+    writeln!(stdout, "│ {}", template.description.lines().next().unwrap_or("")).ok();
+    writeln!(stdout, "│ ※ 空Enter でデフォルト値を使用します").ok();
+    writeln!(stdout, "└───────────────────────────────────────────────────").ok();
+    writeln!(stdout).ok();
+    stdout.flush().ok();
+
+    let mut answers = Vec::new();
+    for field in &template.fields {
+        if let Some(ref default) = field.default {
+            write!(stdout, "  {} [{}]: ", field.prompt, default).ok();
+        } else {
+            write!(stdout, "  {}: ", field.prompt).ok();
+        }
+        stdout.flush().ok();
+
+        let mut line = String::new();
+        stdin
+            .read_line(&mut line)
+            .map_err(|e| format!("failed to read input: {e}"))?;
+        let trimmed = line.trim().to_string();
+        let answer = if trimmed.is_empty() {
+            field.default.clone().unwrap_or_default()
+        } else {
+            trimmed
+        };
+        if !answer.is_empty() {
+            answers.push((field.key.clone(), answer));
+        }
+    }
+
+    writeln!(stdout).ok();
+    writeln!(stdout, "テンプレート記入完了。探索を開始します...").ok();
+    writeln!(stdout).ok();
+    stdout.flush().ok();
+
+    Ok(FilledTemplate { answers })
+}
+
+/// 動的テンプレートの記入結果から `EnrichedParams` を構築する。
+pub fn enrich_dynamic(
+    raw_text: &str,
+    filled: &FilledTemplate,
+    template: &DynamicTemplate,
+) -> EnrichedParams {
+    if filled.answers.is_empty() {
+        return EnrichedParams::passthrough(raw_text);
+    }
+
+    let mut parts = vec![raw_text.to_string()];
+    parts.push(format!("設計ドメイン: {}", template.name));
+
+    for (key, value) in &filled.answers {
+        if !value.is_empty() && value != "なし" {
+            let label = template
+                .fields
+                .iter()
+                .find(|f| f.key == *key)
+                .map(|f| strip_dynamic_prompt_prefix(&f.prompt))
+                .unwrap_or_else(|| key.clone());
+            parts.push(format!("{label}: {value}"));
+        }
+    }
+
+    EnrichedParams {
+        enriched_text: parts.join("\n"),
+        beam_width_bonus: template.beam_width_bonus,
+        max_depth_bonus: template.max_depth_bonus,
     }
 }
 
