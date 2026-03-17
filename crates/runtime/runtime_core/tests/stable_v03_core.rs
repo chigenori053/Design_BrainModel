@@ -14,6 +14,10 @@ use design_search_engine::stable_v03::{
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::stable_v03::{CoreError, RuntimeResult};
 use runtime_core::CoreRuntime;
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
+use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
 fn seeded_memory() -> Arc<dyn MemoryEngine> {
@@ -48,6 +52,18 @@ fn evaluator() -> Arc<dyn ArchitectureEvaluator> {
     Arc::new(WeightedArchitectureEvaluator::default())
 }
 
+fn mapper() -> Arc<dyn ArchitectureMapper> {
+    Arc::new(DefaultArchitectureMapper)
+}
+
+fn code_ir_builder() -> Arc<dyn CodeIRBuilder> {
+    Arc::new(DefaultCodeIRBuilder)
+}
+
+fn generator() -> Arc<dyn CodeGenerator> {
+    Arc::new(RustGenerator)
+}
+
 #[test]
 fn invalid_input_is_rejected() {
     let runtime = CoreRuntime::new(
@@ -55,6 +71,9 @@ fn invalid_input_is_rejected() {
         Arc::new(DeterministicBeamSearchEngine::default()),
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     );
     let result = runtime.executor.execute(IntentInput::new("   "));
 
@@ -69,6 +88,9 @@ fn runtime_trace_is_deterministic_for_same_input() {
         Arc::new(DeterministicBeamSearchEngine::default()),
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     )
     .executor
     .execute(input.clone())
@@ -80,6 +102,9 @@ fn runtime_trace_is_deterministic_for_same_input() {
             Arc::new(DeterministicBeamSearchEngine::default()),
             constraint_engine(),
             evaluator(),
+            mapper(),
+            code_ir_builder(),
+            generator(),
         )
         .executor
         .execute(input.clone())
@@ -150,6 +175,9 @@ fn selector_picks_highest_scored_candidate() {
         }),
         Arc::new(CompositeConstraintEngine::default()),
         Arc::new(ScoreByNodeCountEvaluator),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     );
 
     let result = runtime
@@ -158,4 +186,6 @@ fn selector_picks_highest_scored_candidate() {
         .expect("runtime should succeed");
 
     assert_eq!(result.architecture, simple);
+    assert_eq!(result.design.nodes().len(), 2);
+    assert!(!result.files.is_empty());
 }

@@ -11,6 +11,10 @@ use constraint_engine::stable_v03::{
 use design_search_engine::stable_v03::{DesignSearchEngine, DeterministicBeamSearchEngine};
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
+use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
 fn memory_with_pattern() -> Arc<dyn MemoryEngine> {
@@ -43,6 +47,18 @@ fn evaluator() -> Arc<dyn ArchitectureEvaluator> {
     Arc::new(WeightedArchitectureEvaluator::default())
 }
 
+fn mapper() -> Arc<dyn ArchitectureMapper> {
+    Arc::new(DefaultArchitectureMapper)
+}
+
+fn code_ir_builder() -> Arc<dyn CodeIRBuilder> {
+    Arc::new(DefaultCodeIRBuilder)
+}
+
+fn generator() -> Arc<dyn CodeGenerator> {
+    Arc::new(RustGenerator)
+}
+
 #[test]
 fn memory_changes_search_result() {
     let input = IntentInput::new("api service db");
@@ -54,6 +70,9 @@ fn memory_changes_search_result() {
         }) as Arc<dyn DesignSearchEngine>,
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     )
     .executor
     .execute(input.clone())
@@ -66,6 +85,9 @@ fn memory_changes_search_result() {
         }) as Arc<dyn DesignSearchEngine>,
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     )
     .executor
     .execute(input)

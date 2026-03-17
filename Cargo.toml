@@ -12,6 +12,7 @@ members = [
     "crates/architecture_knowledge",
     "crates/architecture_memory",
     "crates/code_language_core",
+    "crates/implementation_core",
     "crates/execution_graph",
     "crates/execution_simulator",
     "crates/system_model",
@@ -68,6 +69,7 @@ members = [
     "crates/meaning_extractor",
     "crates/semantic_dhm",
     "crates/recomposer",
+    "crates/unified_design_ir",
     "crates/design_reasoning",
     "crates/code_generation_core",
     "crates/reasoning_agent",
@@ -95,6 +97,7 @@ architecture_rules = { path = "crates/architecture_rules" }
 architecture_knowledge = { path = "crates/architecture_knowledge" }
 architecture_memory = { path = "crates/architecture_memory" }
 code_language_core = { path = "crates/code_language_core" }
+implementation_core = { path = "crates/implementation_core" }
 execution_graph = { path = "crates/execution_graph" }
 execution_simulator = { path = "crates/execution_simulator" }
 system_model = { path = "crates/system_model" }
@@ -132,6 +135,7 @@ knowledge_lifecycle = { path = "crates/knowledge_lifecycle" }
 meaning_extractor = { path = "crates/meaning_extractor" }
 semantic_dhm = { path = "crates/semantic_dhm" }
 recomposer = { path = "crates/recomposer" }
+unified_design_ir = { path = "crates/unified_design_ir" }
 design_reasoning = { path = "crates/design_reasoning" }
 reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }

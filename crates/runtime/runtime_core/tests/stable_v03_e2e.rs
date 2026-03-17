@@ -13,6 +13,10 @@ use design_search_engine::stable_v03::{
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
+use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
 fn seeded_memory() -> Arc<dyn MemoryEngine> {
@@ -47,6 +51,18 @@ fn evaluator() -> Arc<dyn ArchitectureEvaluator> {
     Arc::new(WeightedArchitectureEvaluator::default())
 }
 
+fn mapper() -> Arc<dyn ArchitectureMapper> {
+    Arc::new(DefaultArchitectureMapper)
+}
+
+fn code_ir_builder() -> Arc<dyn CodeIRBuilder> {
+    Arc::new(DefaultCodeIRBuilder)
+}
+
+fn generator() -> Arc<dyn CodeGenerator> {
+    Arc::new(RustGenerator)
+}
+
 #[test]
 fn runtime_execute_produces_architecture_without_panic() {
     let runtime = CoreRuntime::new(
@@ -54,6 +70,9 @@ fn runtime_execute_produces_architecture_without_panic() {
         Arc::new(DeterministicBeamSearchEngine::default()) as Arc<dyn DesignSearchEngine>,
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     );
     let result = runtime
         .executor
@@ -61,6 +80,11 @@ fn runtime_execute_produces_architecture_without_panic() {
         .expect("runtime should succeed");
 
     assert!(!result.architecture.nodes().is_empty());
+    assert!(!result.design.nodes().is_empty());
+    assert!(!result.files.is_empty());
+    assert!(!result.generation_contexts.is_empty());
+    assert!(!result.project_layout.files.is_empty());
+    assert!(!result.execution_plan.steps.is_empty());
     assert!(result.trace.candidate_count > 0);
 }
 
@@ -106,6 +130,9 @@ fn invalid_structure_is_removed_before_selection() {
         Arc::new(InvalidFirstSearchEngine),
         constraint_engine(),
         evaluator(),
+        mapper(),
+        code_ir_builder(),
+        generator(),
     );
     let result = runtime
         .executor
@@ -114,4 +141,8 @@ fn invalid_structure_is_removed_before_selection() {
 
     assert_eq!(result.architecture.nodes().len(), 3);
     assert!(result.architecture.node(&"db".into()).is_some());
+    assert_eq!(result.design.nodes().len(), 3);
+    assert!(!result.files.is_empty());
+    assert!(!result.generation_contexts.is_empty());
+    assert!(result.project_layout.manifest_path.ends_with("toml"));
 }

@@ -5,6 +5,8 @@ use design_domain::{
 };
 use std::collections::BTreeSet;
 
+pub mod stable_v03;
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ParsedSourceFile {
     pub path: String,

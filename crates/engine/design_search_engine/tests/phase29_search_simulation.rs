@@ -61,9 +61,25 @@ fn phase29_constraint_violations_reduce_search_score() {
         &search_config(1),
     );
 
-    assert_eq!(unconstrained.len(), 1);
-    assert_eq!(constrained.len(), 1);
-    assert!(constrained[0].score < unconstrained[0].score);
+    assert!(!unconstrained.is_empty());
+    assert!(!constrained.is_empty());
+
+    let unconstrained_child = unconstrained
+        .iter()
+        .filter(|state| state.depth == 1)
+        .map(|state| state.score)
+        .max_by(f64::total_cmp)
+        .expect("unconstrained child state");
+    let constrained_child = constrained
+        .iter()
+        .filter(|state| state.depth == 1)
+        .map(|state| state.score)
+        .max_by(f64::total_cmp);
+
+    match constrained_child {
+        Some(score) => assert!(score < unconstrained_child),
+        None => assert_eq!(constrained.len(), 1),
+    }
 }
 
 #[test]

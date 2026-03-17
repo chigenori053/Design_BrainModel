@@ -1,7 +1,7 @@
 {
   "latency": {
-    "recall_latency_max_ms": 0.040083,
-    "recall_latency_mean_ms": 0.030096875
+    "recall_latency_max_ms": 0.036416,
+    "recall_latency_mean_ms": 0.029495841666666665
   },
   "q1": {
     "data_pipeline": {
