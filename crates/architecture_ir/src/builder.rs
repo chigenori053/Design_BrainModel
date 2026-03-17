@@ -95,12 +95,7 @@ impl ArchitectureIRBuilder {
         self
     }
 
-    pub fn add_interface(
-        mut self,
-        id: u64,
-        name: impl Into<String>,
-        owner_component: u64,
-    ) -> Self {
+    pub fn add_interface(mut self, id: u64, name: impl Into<String>, owner_component: u64) -> Self {
         self.ir.interfaces.push(InterfaceUnit {
             id,
             name: name.into(),

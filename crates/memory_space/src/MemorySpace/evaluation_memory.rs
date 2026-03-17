@@ -42,7 +42,8 @@ pub struct EvaluationMemoryDomain {
 
 impl EvaluationMemoryDomain {
     pub fn upsert(&mut self, record: EvaluationRecord) {
-        self.records.insert(record.architecture_hash.clone(), record);
+        self.records
+            .insert(record.architecture_hash.clone(), record);
     }
 
     pub fn get(&self, architecture_hash: &str) -> Option<&EvaluationRecord> {

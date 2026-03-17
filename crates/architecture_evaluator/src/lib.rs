@@ -2,19 +2,21 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+pub mod stable_v03;
+
 use architecture_behavior::{BehaviorAnalysis, BehaviorAnalyzer};
-use architecture_ir::{ArchitectureIR, NodeId, architecture_hash};
+use architecture_ir::{architecture_hash, ArchitectureIR, NodeId};
 use architecture_knowledge::{KnowledgeAnalyzer, PatternDetection};
-use architecture_memory::{ArchitectureMemory, recall_similar_architecture};
+use architecture_memory::{recall_similar_architecture, ArchitectureMemory};
 use architecture_metrics::{ArchitectureMetrics, MetricsCalculator};
 use architecture_rules::{RuleValidator, RuleViolation};
 use architecture_state_v2::{ArchitectureEvaluation, ArchitectureState};
 use execution_graph::ExecutionGraphBuilder;
 use geometry_engine::GeometryEngine;
 use memory_space_phase14::{
-    DesignMemorySpace, EvaluationDiagnostics as MemoryEvaluationDiagnostics,
+    embed_evaluation, DesignMemorySpace, EvaluationDiagnostics as MemoryEvaluationDiagnostics,
     EvaluationMetricsV2 as MemoryEvaluationMetricsV2, EvaluationRecord as MemoryEvaluationRecord,
-    EvaluationScores as MemoryEvaluationScores, embed_evaluation,
+    EvaluationScores as MemoryEvaluationScores,
 };
 use workload_model::WorkloadModel;
 
@@ -449,14 +451,12 @@ fn weighted_overall_score(
     complexity_score: f64,
     modularity_score: f64,
 ) -> f64 {
-    (
-        0.25 * layering_score
-            + 0.20 * coupling_score
-            + 0.20 * cohesion_score
-            + 0.15 * complexity_score
-            + 0.20 * modularity_score
-    )
-    .clamp(0.0, 1.0)
+    (0.25 * layering_score
+        + 0.20 * coupling_score
+        + 0.20 * cohesion_score
+        + 0.15 * complexity_score
+        + 0.20 * modularity_score)
+        .clamp(0.0, 1.0)
 }
 
 fn compute_cohesion_score(architecture: &ArchitectureIR) -> f64 {
@@ -514,7 +514,11 @@ fn detect_ir_layer_violations(architecture: &ArchitectureIR) -> Vec<String> {
                 let source_layer = component_layer_level(architecture, source)?;
                 let target_layer = component_layer_level(architecture, target)?;
                 if source_layer < target_layer {
-                    Some(format!("{} -> {}", component_name(architecture, source)?, component_name(architecture, target)?))
+                    Some(format!(
+                        "{} -> {}",
+                        component_name(architecture, source)?,
+                        component_name(architecture, target)?
+                    ))
                 } else {
                     None
                 }
@@ -549,7 +553,12 @@ fn detect_interface_mismatch(architecture: &ArchitectureIR) -> Vec<String> {
             architecture
                 .component_by_id(interface.owner_component)
                 .is_none()
-                .then(|| format!("interface {} has missing owner {}", interface.name, interface.owner_component))
+                .then(|| {
+                    format!(
+                        "interface {} has missing owner {}",
+                        interface.name, interface.owner_component
+                    )
+                })
         }))
         .collect()
 }
@@ -562,11 +571,14 @@ fn tarjan_component_cycles(architecture: &ArchitectureIR) -> Vec<Vec<String>> {
             (NodeId::Component(source), NodeId::Component(target)) => Some((source, target)),
             _ => None,
         })
-        .fold(BTreeMap::<u64, Vec<u64>>::new(), |mut map, (source, target)| {
-            map.entry(source).or_default().push(target);
-            map.entry(target).or_default();
-            map
-        });
+        .fold(
+            BTreeMap::<u64, Vec<u64>>::new(),
+            |mut map, (source, target)| {
+                map.entry(source).or_default().push(target);
+                map.entry(target).or_default();
+                map
+            },
+        );
 
     struct TarjanState {
         index: usize,
@@ -661,12 +673,16 @@ fn component_layer_level(architecture: &ArchitectureIR, component_id: u64) -> Op
 }
 
 fn component_name(architecture: &ArchitectureIR, component_id: u64) -> Option<&str> {
-    architecture.component_by_id(component_id).map(|component| component.name.as_str())
+    architecture
+        .component_by_id(component_id)
+        .map(|component| component.name.as_str())
 }
 
 fn display_node(architecture: &ArchitectureIR, node: NodeId) -> String {
     match node {
-        NodeId::Component(id) => component_name(architecture, id).unwrap_or("unknown").to_string(),
+        NodeId::Component(id) => component_name(architecture, id)
+            .unwrap_or("unknown")
+            .to_string(),
         NodeId::Domain(id) => format!("domain:{id}"),
         NodeId::Structure(id) => format!("structure:{id}"),
     }

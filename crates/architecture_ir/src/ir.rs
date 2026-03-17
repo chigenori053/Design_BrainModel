@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    ArchitectureConstraint, ArchitectureGraph, ArchitectureMetadata, ComponentUnit,
+    validate_ir, ArchitectureConstraint, ArchitectureGraph, ArchitectureMetadata, ComponentUnit,
     ComponentUnitId, DependencyEdge, DependencyType, DesignUnit, DomainUnit, InterfaceUnit,
-    LayerId, NodeId, StructureUnit, ValidationError, validate_ir,
+    LayerId, NodeId, StructureUnit, ValidationError,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]
@@ -81,11 +81,13 @@ impl ArchitectureIR {
     }
 
     pub fn remove_component(&mut self, component_id: ComponentUnitId) {
-        self.components.retain(|component| component.id != component_id);
+        self.components
+            .retain(|component| component.id != component_id);
         self.interfaces
             .retain(|interface| interface.owner_component != component_id);
         self.dependencies.retain(|edge| {
-            edge.source != NodeId::Component(component_id) && edge.target != NodeId::Component(component_id)
+            edge.source != NodeId::Component(component_id)
+                && edge.target != NodeId::Component(component_id)
         });
         for layer in &mut self.layers {
             layer.components.retain(|id| *id != component_id);
@@ -157,7 +159,9 @@ impl ArchitectureIR {
         self.remove_component(component_id);
         for split in &splits {
             self.add_component(split.clone());
-            if let Some(layer_id) = original.layer.or_else(|| self.layer_for_component_id(component_id))
+            if let Some(layer_id) = original
+                .layer
+                .or_else(|| self.layer_for_component_id(component_id))
             {
                 self.move_layer(split.id, layer_id);
             }
@@ -187,7 +191,10 @@ impl ArchitectureIR {
         if component_ids.is_empty() {
             return Err("component_ids must not be empty".to_string());
         }
-        let target_ids = component_ids.iter().copied().collect::<std::collections::BTreeSet<_>>();
+        let target_ids = component_ids
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
         let layer_id = component_ids
             .iter()
             .find_map(|id| self.layer_for_component_id(*id));

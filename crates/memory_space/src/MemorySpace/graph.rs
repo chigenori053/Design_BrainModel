@@ -82,7 +82,10 @@ impl MemoryGraph {
             activation.insert(*node_id, (*score).clamp(0.0, 1.0));
         }
 
-        let mut frontier = initial.iter().map(|(node_id, _)| *node_id).collect::<BTreeSet<_>>();
+        let mut frontier = initial
+            .iter()
+            .map(|(node_id, _)| *node_id)
+            .collect::<BTreeSet<_>>();
         for _ in 0..max_hops {
             let mut next_frontier = BTreeSet::new();
             let mut pending = Vec::new();

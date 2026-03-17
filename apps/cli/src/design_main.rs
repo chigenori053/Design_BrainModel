@@ -758,6 +758,7 @@ fn run_phase9(input: String) -> Result<(), String> {
             RuntimeStage::Recall => "recall",
             RuntimeStage::HypothesisGeneration => "hypothesis_generation",
             RuntimeStage::Search => "search",
+            RuntimeStage::Simulation => "simulation",
             RuntimeStage::Evaluation => "evaluation",
             RuntimeStage::Ranking => "ranking",
             RuntimeStage::TransitionEvaluation => "transition_evaluation",

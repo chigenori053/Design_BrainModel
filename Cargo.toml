@@ -18,6 +18,7 @@ members = [
     "crates/workload_model",
     "crates/performance_model",
     "crates/architecture_behavior",
+    "crates/constraint_engine",
     "crates/concept_engine",
     "crates/concept_field",
     "crates/domain/causal_domain",
@@ -100,6 +101,7 @@ system_model = { path = "crates/system_model" }
 workload_model = { path = "crates/workload_model" }
 performance_model = { path = "crates/performance_model" }
 architecture_behavior = { path = "crates/architecture_behavior" }
+constraint_engine = { path = "crates/constraint_engine" }
 concept_engine = { path = "crates/concept_engine" }
 concept_field = { path = "crates/concept_field" }
 design_search_engine = { path = "crates/engine/design_search_engine" }

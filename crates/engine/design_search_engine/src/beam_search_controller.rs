@@ -9,18 +9,20 @@ use math_reasoning_engine::{
 };
 use memory_graph::DesignExperienceGraph;
 use memory_space_core::RecallResult;
-use memory_space_phase14::{InMemoryMemorySpace, MemorySpace, SearchPrior, store_state_experience};
-use policy_engine::{PolicyStore, evaluate_policy, policy_weight_for_action};
+use memory_space_phase14::{store_state_experience, InMemoryMemorySpace, MemorySpace, SearchPrior};
+use policy_engine::{evaluate_policy, policy_weight_for_action, PolicyStore};
 use simulation_scheduler::{
-    DefaultSimulationScheduler, LightSimulationTrace, SimulationSchedulerConfig,
-    SimulationSchedulerTrace, architecture_hash,
+    architecture_hash, DefaultSimulationScheduler, LightSimulationTrace, SimulationSchedulerConfig,
+    SimulationSchedulerTrace,
 };
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{Action, WorldState};
 
 use crate::architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
 use crate::audit::{AuditCore, AuditDecision, AuditTelemetryEvent};
-use crate::pruning::{SearchNodeDiversityPruned, prune_candidates_with_telemetry};
+use crate::pruning::{
+    prune_candidates, prune_candidates_with_telemetry, SearchNodeDiversityPruned,
+};
 use crate::search_config::SearchConfig;
 use crate::search_context::SearchContext;
 use crate::search_controller::SearchController;
@@ -188,6 +190,7 @@ impl BeamSearchController {
         }
 
         let mut beam = vec![root];
+        let mut elite_archive = beam.clone();
         let mut explored_state_count = beam.len();
         let mut depth_best_scores = vec![beam[0].score];
         let mut diversity_pruned = Vec::new();
@@ -296,6 +299,7 @@ impl BeamSearchController {
             );
             diversity_pruned.extend(prune_outcome.diversity_pruned);
             beam = prune_outcome.selected;
+            elite_archive.extend(beam.iter().cloned());
             let best_score = beam.iter().map(|state| state.score).fold(0.0_f64, f64::max);
             let running_best = depth_best_scores
                 .last()
@@ -326,8 +330,14 @@ impl BeamSearchController {
             }
         }
 
+        let final_beam = prune_candidates(
+            elite_archive,
+            ctx.constrained_beam_width(&effective_config),
+            effective_config.diversity_threshold,
+        );
+
         SearchTrace {
-            final_beam: beam,
+            final_beam,
             explored_state_count,
             depth_best_scores,
             diversity_pruned,

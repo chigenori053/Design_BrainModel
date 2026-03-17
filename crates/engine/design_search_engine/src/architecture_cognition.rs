@@ -2,7 +2,7 @@ use architecture_evaluator_core::{ArchitectureEvaluator, DefaultArchitectureEval
 use architecture_reasoner::ReverseArchitectureReasoner;
 use architecture_state_v2::ArchitectureState;
 use code_ir::CodeIr;
-use knowledge_engine::{KnowledgeEngine, KnowledgeQuery, knowledge_graph_to_constraints};
+use knowledge_engine::{knowledge_graph_to_constraints, KnowledgeEngine, KnowledgeQuery};
 
 use crate::{SearchConfig, SearchState};
 

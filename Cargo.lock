@@ -1047,6 +1047,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "constraint_engine"
+version = "0.1.0"
+dependencies = [
+ "architecture_ir",
+ "design_search_engine",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3878,7 +3886,9 @@ name = "runtime_core"
 version = "0.1.0"
 dependencies = [
  "ai_context",
+ "architecture_evaluator",
  "architecture_ir",
+ "constraint_engine",
  "design_search_engine",
  "memory_space_core",
  "memory_space_phase14",

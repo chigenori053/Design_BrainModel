@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use architecture_ir::{ArchitectureIR, ComponentType, architecture_hash};
+use architecture_ir::{architecture_hash, ArchitectureIR, ComponentType};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArchitectureMetadata {
@@ -36,21 +36,37 @@ impl ArchitectureMemoryDomain {
         self.records.values().collect()
     }
 
-    pub fn find_similar(&self, architecture: &ArchitectureIR, top_k: usize) -> Vec<ArchitectureRecord> {
+    pub fn find_similar(
+        &self,
+        architecture: &ArchitectureIR,
+        top_k: usize,
+    ) -> Vec<ArchitectureRecord> {
         let mut scored = self
             .records
             .values()
             .cloned()
-            .map(|record| (similarity_score(architecture, &record.architecture_ir), record))
+            .map(|record| {
+                (
+                    similarity_score(architecture, &record.architecture_ir),
+                    record,
+                )
+            })
             .collect::<Vec<_>>();
         scored.sort_by(|(ls, la), (rs, ra)| {
             rs.total_cmp(ls)
                 .then_with(|| la.architecture_id.cmp(&ra.architecture_id))
         });
-        scored.into_iter().take(top_k.max(1)).map(|(_, record)| record).collect()
+        scored
+            .into_iter()
+            .take(top_k.max(1))
+            .map(|(_, record)| record)
+            .collect()
     }
 
-    pub fn find_by_structural_hash(&self, architecture: &ArchitectureIR) -> Option<&ArchitectureRecord> {
+    pub fn find_by_structural_hash(
+        &self,
+        architecture: &ArchitectureIR,
+    ) -> Option<&ArchitectureRecord> {
         let hash = architecture_hash_string(architecture);
         self.records
             .values()
@@ -99,7 +115,10 @@ fn overlap_component_types(lhs: &ArchitectureIR, rhs: &ArchitectureIR) -> f32 {
     rhs_types.sort_by_key(|kind| format!("{kind:?}"));
     rhs_types.dedup();
 
-    let overlap = lhs_types.iter().filter(|kind| rhs_types.contains(kind)).count() as f32;
+    let overlap = lhs_types
+        .iter()
+        .filter(|kind| rhs_types.contains(kind))
+        .count() as f32;
     let total = lhs_types.len().max(rhs_types.len()) as f32;
     if total == 0.0 {
         1.0

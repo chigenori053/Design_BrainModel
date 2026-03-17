@@ -27,7 +27,10 @@ impl MemoryIndex {
     }
 
     pub fn neighbors(&self, node_id: MemoryId) -> &[MemoryId] {
-        self.graph_index.get(&node_id).map(Vec::as_slice).unwrap_or(&[])
+        self.graph_index
+            .get(&node_id)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
     }
 
     pub fn resolve_hash(&self, hash: &str) -> Option<MemoryId> {

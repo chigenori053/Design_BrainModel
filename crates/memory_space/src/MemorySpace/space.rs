@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use architecture_ir::{ArchitectureConstraint, ArchitectureIR, ComponentType, Layer};
 
 use super::architecture_memory::{
-    ArchitectureMemoryDomain, ArchitectureMetadata, ArchitectureRecord, architecture_hash_string,
+    architecture_hash_string, ArchitectureMemoryDomain, ArchitectureMetadata, ArchitectureRecord,
 };
 use super::evaluation_memory::{
     EvaluationDiagnostics, EvaluationMemoryDomain, EvaluationMetricsV2, EvaluationRecord,
@@ -76,13 +76,18 @@ impl DesignMemorySpace {
         self.template_memory.upsert(record.clone());
         for (target_key, relation, weight) in relations {
             if let Some(target) = self.node_by_key.get(target_key).copied() {
-                self.graph.add_edge(node_id, target, relation.clone(), *weight);
+                self.graph
+                    .add_edge(node_id, target, relation.clone(), *weight);
             }
         }
         node_id
     }
 
-    pub fn store_architecture(&mut self, record: ArchitectureRecord, embedding: Vec<f32>) -> MemoryId {
+    pub fn store_architecture(
+        &mut self,
+        record: ArchitectureRecord,
+        embedding: Vec<f32>,
+    ) -> MemoryId {
         let key = format!("architecture:{}", record.architecture_id);
         let hash = architecture_hash_string(&record.architecture_ir);
         let node_id = self.upsert_node(
@@ -91,15 +96,24 @@ impl DesignMemorySpace {
             embedding.clone(),
             record.architecture_id.clone(),
             BTreeMap::from([
-                ("template_origin".to_string(), record.template_origin.clone()),
+                (
+                    "template_origin".to_string(),
+                    record.template_origin.clone(),
+                ),
                 ("architecture_hash".to_string(), hash.clone()),
             ]),
         );
         self.index.index_embedding(node_id, embedding);
         self.index.index_hash(hash.clone(), node_id);
-        if let Some(template_id) = self.node_by_key.get(&format!("template:{}", record.template_origin)).copied() {
-            self.graph.add_edge(node_id, template_id, RelationType::DerivedFrom, 0.9);
-            self.graph.add_edge(template_id, node_id, RelationType::Implements, 0.9);
+        if let Some(template_id) = self
+            .node_by_key
+            .get(&format!("template:{}", record.template_origin))
+            .copied()
+        {
+            self.graph
+                .add_edge(node_id, template_id, RelationType::DerivedFrom, 0.9);
+            self.graph
+                .add_edge(template_id, node_id, RelationType::Implements, 0.9);
         }
         self.architecture_memory.upsert(record);
         node_id
@@ -112,10 +126,14 @@ impl DesignMemorySpace {
             MemoryType::Evaluation,
             embedding.clone(),
             record.architecture_hash.clone(),
-            BTreeMap::from([("architecture_hash".to_string(), record.architecture_hash.clone())]),
+            BTreeMap::from([(
+                "architecture_hash".to_string(),
+                record.architecture_hash.clone(),
+            )]),
         );
         self.index.index_embedding(node_id, embedding);
-        self.index.index_hash(record.architecture_hash.clone(), node_id);
+        self.index
+            .index_hash(record.architecture_hash.clone(), node_id);
         self.evaluation_memory.upsert(record.clone());
         if let Some(architecture_node) = self.index.resolve_hash(&record.architecture_hash) {
             self.graph
@@ -141,15 +159,21 @@ impl DesignMemorySpace {
         );
         self.index.index_embedding(node_id, embedding);
         self.reasoning_trace_memory.upsert(record);
-        if let Some(template_node) = self.node_by_key.get(&format!("template:{selected_template}")).copied() {
-            self.graph.add_edge(node_id, template_node, RelationType::DependsOn, 0.8);
+        if let Some(template_node) = self
+            .node_by_key
+            .get(&format!("template:{selected_template}"))
+            .copied()
+        {
+            self.graph
+                .add_edge(node_id, template_node, RelationType::DependsOn, 0.8);
         }
         if let Some(architecture_node) = self
             .node_by_key
             .get(&format!("architecture:{final_architecture}"))
             .copied()
         {
-            self.graph.add_edge(node_id, architecture_node, RelationType::DerivedFrom, 0.8);
+            self.graph
+                .add_edge(node_id, architecture_node, RelationType::DerivedFrom, 0.8);
         }
         node_id
     }
@@ -209,7 +233,8 @@ impl DesignMemorySpace {
                 created_from_architecture: Some(architecture.architecture_id.clone()),
             },
         };
-        let embedding = embed_architecture(&architecture.architecture_ir, architecture.evaluation_score);
+        let embedding =
+            embed_architecture(&architecture.architecture_ir, architecture.evaluation_score);
         self.store_template(
             record,
             embedding,
@@ -287,7 +312,12 @@ pub fn embed_intent(intent: &DesignIntentRecord) -> Vec<f32> {
     let requirement_signal = intent.requirements.len() as f32;
     let constraint_signal = intent.constraints.len() as f32;
     let system_signal = normalized_keyword_score(&intent.system_type);
-    vec![system_signal, requirement_signal, constraint_signal, requirement_signal + constraint_signal]
+    vec![
+        system_signal,
+        requirement_signal,
+        constraint_signal,
+        requirement_signal + constraint_signal,
+    ]
 }
 
 pub fn embed_template(record: &TemplateRecord) -> Vec<f32> {

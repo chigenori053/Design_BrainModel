@@ -2,7 +2,7 @@
   "integrity_errors": 0,
   "memory_edges": 39,
   "memory_nodes": 29,
-  "recall_latency_ms": 0.01919271,
-  "search_latency_ms": 0.660908246,
+  "recall_latency_ms": 0.01862416,
+  "search_latency_ms": 0.640140288,
   "template_count": 14
 }

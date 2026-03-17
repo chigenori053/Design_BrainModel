@@ -1,10 +1,10 @@
-use causal_domain::CausalGraph;
-use design_domain::{Architecture, Layer};
-use semantic_domain::MeaningGraph;
 use architecture_ir::{
     ArchitectureIR, ComponentMetrics, ComponentType, ComponentUnit, DependencyEdge, DependencyType,
     NodeId, Visibility,
 };
+use causal_domain::CausalGraph;
+use design_domain::{Architecture, Layer};
+use semantic_domain::MeaningGraph;
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct DesignExperience {

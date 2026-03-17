@@ -1,26 +1,24 @@
 {
   "version": "1.0",
-  "generated_at": "1773669155",
+  "generated_at": "1773752960",
   "input": "ECサイトを設計する",
   "search_states": 10,
   "candidates": [
     {
       "id": 1,
-      "score": 0.8455188894483778,
+      "score": 0.9080575734167387,
       "pareto_rank": 0,
       "evaluation": {
         "structural_quality": 1.0,
         "dependency_quality": 0.0,
-        "constraint_satisfaction": 0.9845625013113022,
-        "complexity": 0.3333333333333333,
-        "simulation_quality": 0.9166666666666666,
-        "total": 0.7135791669289271
+        "constraint_satisfaction": 0.989999994635582,
+        "complexity": 0.16666666666666666,
+        "simulation_quality": 0.9375,
+        "total": 0.7521666655937831
       },
       "components": [
         "service_1",
-        "repository_2",
-        "database_3",
-        "controller_4"
+        "controller_2"
       ],
       "dependencies": [],
       "code_metrics": {

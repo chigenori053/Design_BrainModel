@@ -212,6 +212,7 @@ pub const TEMPLATE_GENERIC: DesignTemplate = DesignTemplate {
 pub struct DynamicTemplateField {
     pub key: String,
     pub prompt: String,
+    #[allow(dead_code)]
     pub required: bool,
     pub default: Option<String>,
 }
@@ -228,6 +229,7 @@ pub struct DynamicTemplate {
 
 impl DynamicTemplate {
     /// 静的 DesignTemplate を動的テンプレートに変換する
+    #[allow(dead_code)]
     pub fn from_static(base: &'static DesignTemplate) -> Self {
         Self {
             name: base.name.to_string(),

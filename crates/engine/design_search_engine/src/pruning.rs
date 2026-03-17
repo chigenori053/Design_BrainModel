@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use architecture_domain::{ArchitectureState, ComponentRole};
+use world_model_core::Action;
 
 use crate::{
-    ranking::{RankedCandidate, rank_candidates},
+    ranking::{rank_candidates, RankedCandidate},
     search_state::SearchState,
 };
 
@@ -46,7 +47,9 @@ pub fn select_diverse_nodes(
     let threshold = threshold.clamp(0.0, 1.0);
     let target = k.max(1);
     let mut selected: Vec<SearchState> = Vec::with_capacity(target);
-    let mut deferred = Vec::new();
+    let mut deferred_for_similarity = Vec::new();
+    let mut deferred_for_action = Vec::new();
+    let mut selected_actions = BTreeSet::new();
 
     for candidate in ranked {
         let mut similar = None;
@@ -64,7 +67,7 @@ pub fn select_diverse_nodes(
         if let Some((pruned_by, similarity)) = similar {
             let state = candidate.state;
             let node_id = state.state_id;
-            deferred.push((
+            deferred_for_similarity.push((
                 state,
                 SearchNodeDiversityPruned {
                     node_id,
@@ -75,18 +78,35 @@ pub fn select_diverse_nodes(
             continue;
         }
 
+        let action_signature = action_signature(candidate.state.source_action.as_ref());
+        if selected.len() < target
+            && !action_signature.is_empty()
+            && selected_actions.contains(&action_signature)
+        {
+            deferred_for_action.push(candidate.state);
+            continue;
+        }
+
+        if !action_signature.is_empty() {
+            selected_actions.insert(action_signature);
+        }
         selected.push(candidate.state);
         if selected.len() == target {
             break;
         }
     }
 
-    while selected.len() < target && !deferred.is_empty() {
-        let (state, _) = deferred.remove(0);
+    while selected.len() < target && !deferred_for_action.is_empty() {
+        let state = deferred_for_action.remove(0);
         selected.push(state);
     }
 
-    let diversity_pruned = deferred
+    while selected.len() < target && !deferred_for_similarity.is_empty() {
+        let (state, _) = deferred_for_similarity.remove(0);
+        selected.push(state);
+    }
+
+    let diversity_pruned = deferred_for_similarity
         .into_iter()
         .map(|(_, event)| SearchNodeDiversityPruned {
             node_id: event.node_id,
@@ -98,6 +118,17 @@ pub fn select_diverse_nodes(
     PruneCandidatesOutcome {
         selected,
         diversity_pruned,
+    }
+}
+
+fn action_signature(action: Option<&Action>) -> String {
+    match action {
+        Some(Action::AddDesignUnit { layer, .. }) => format!("add:{layer:?}"),
+        Some(Action::RemoveDesignUnit) => "remove".to_string(),
+        Some(Action::ConnectDependency { .. }) => "connect_dependency".to_string(),
+        Some(Action::SplitStructure) => "split_structure".to_string(),
+        Some(Action::MergeStructure) => "merge_structure".to_string(),
+        None => String::new(),
     }
 }
 

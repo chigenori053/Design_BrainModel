@@ -2,10 +2,17 @@ use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use architecture_evaluator_core::stable_v03::{
+    ArchitectureEvaluator, EvaluationResult, WeightedArchitectureEvaluator,
+};
 use architecture_ir::stable_v03::ArchitectureGraph;
+use constraint_engine::stable_v03::{
+    CompositeConstraintEngine, Constraint as GraphConstraint, ConstraintEngine,
+    LayerOrderConstraint, MaxNodeConstraint, NoCycleConstraint, NoIsolatedNodesConstraint,
+};
 use design_search_engine::stable_v03::{
-    ArchitectureCandidate, Constraint, DesignSearchEngine, RecallContext, RecalledPattern,
-    SearchInput,
+    ArchitectureCandidate, Constraint as RecallConstraint, DesignSearchEngine, RecallContext,
+    RecalledPattern, SearchInput,
 };
 use memory_space_phase14::stable_v03::{MemoryEngine, MemoryRecord, RecallInput};
 use world_model::stable_v03::{IntentInput, IntentState};
@@ -37,16 +44,46 @@ pub struct CoreRuntime {
 }
 
 impl CoreRuntime {
-    pub fn new(memory: Arc<dyn MemoryEngine>, search: Arc<dyn DesignSearchEngine>) -> Self {
+    pub fn new(
+        memory: Arc<dyn MemoryEngine>,
+        search: Arc<dyn DesignSearchEngine>,
+        constraint: Arc<dyn ConstraintEngine>,
+        evaluator: Arc<dyn ArchitectureEvaluator>,
+    ) -> Self {
         Self {
-            executor: RuntimeExecutor { memory, search },
+            executor: RuntimeExecutor {
+                memory,
+                search,
+                constraint,
+                evaluator,
+            },
         }
+    }
+
+    pub fn new_with_defaults(
+        memory: Arc<dyn MemoryEngine>,
+        search: Arc<dyn DesignSearchEngine>,
+    ) -> Self {
+        let constraints: Vec<Arc<dyn GraphConstraint>> = vec![
+            Arc::new(NoIsolatedNodesConstraint),
+            Arc::new(LayerOrderConstraint),
+            Arc::new(NoCycleConstraint),
+            Arc::new(MaxNodeConstraint { max_nodes: 12 }),
+        ];
+        Self::new(
+            memory,
+            search,
+            Arc::new(CompositeConstraintEngine::new(constraints)),
+            Arc::new(WeightedArchitectureEvaluator::default()),
+        )
     }
 }
 
 pub struct RuntimeExecutor {
     memory: Arc<dyn MemoryEngine>,
     search: Arc<dyn DesignSearchEngine>,
+    constraint: Arc<dyn ConstraintEngine>,
+    evaluator: Arc<dyn ArchitectureEvaluator>,
 }
 
 impl RuntimeExecutor {
@@ -61,8 +98,16 @@ impl RuntimeExecutor {
             intent: intent.clone(),
             recall: recall.clone(),
         });
-        let candidate_count = candidates.len();
-        let selected = select_best(candidates).ok_or(CoreError::SearchFailed)?;
+        let filtered = self.constraint.filter(candidates);
+        let candidate_count = filtered.len();
+        let scored = filtered
+            .into_iter()
+            .map(|candidate| {
+                let evaluation = self.evaluator.evaluate(&candidate.architecture);
+                (candidate, evaluation)
+            })
+            .collect::<Vec<_>>();
+        let (selected, evaluation) = select_best(scored).ok_or(CoreError::SearchFailed)?;
 
         self.memory.store(MemoryRecord {
             id: stable_id(&format!("{}:{}", intent.raw, selected.id)),
@@ -78,7 +123,7 @@ impl RuntimeExecutor {
             trace: ExecutionTrace {
                 recall_used: recall.is_some(),
                 candidate_count,
-                selected_score: selected.score,
+                selected_score: evaluation.score,
             },
         })
     }
@@ -128,7 +173,7 @@ fn to_recall_context(
             .tokens
             .iter()
             .filter(|token| token.contains("must") || token.contains("only"))
-            .map(|token| Constraint {
+            .map(|token| RecallConstraint {
                 key: "intent".to_string(),
                 value: token.clone(),
             })
@@ -137,8 +182,16 @@ fn to_recall_context(
     })
 }
 
-fn select_best(candidates: Vec<ArchitectureCandidate>) -> Option<ArchitectureCandidate> {
-    candidates.into_iter().next()
+fn select_best(
+    candidates: Vec<(ArchitectureCandidate, EvaluationResult)>,
+) -> Option<(ArchitectureCandidate, EvaluationResult)> {
+    candidates.into_iter().max_by(|lhs, rhs| {
+        lhs.1
+            .score
+            .partial_cmp(&rhs.1.score)
+            .expect("evaluation score should be finite")
+            .then_with(|| lhs.0.id.cmp(&rhs.0.id))
+    })
 }
 
 fn stable_id(value: &str) -> String {

@@ -6,12 +6,12 @@ use world_model_core::WorldState;
 
 use crate::experience_store::{DesignExperience, ExperienceStore};
 use crate::memory_space::space::{embed_architecture, embed_evaluation};
+use crate::pattern_extractor::{architecture_hash, extract_pattern};
+use crate::pattern_matcher::match_patterns;
 use crate::{
     ArchitectureMetadata, DesignIntentRecord, DesignMemorySpace, EvaluationDiagnostics,
     EvaluationMetricsV2, EvaluationRecord, EvaluationScores, ReasoningTrace, SearchStep,
 };
-use crate::pattern_extractor::{architecture_hash, extract_pattern};
-use crate::pattern_matcher::match_patterns;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct PatternId(pub u64);
@@ -138,8 +138,10 @@ impl MemorySpace for InMemoryMemorySpace {
                 search_iteration: self.experience_store.experiences().len(),
             },
         );
-        let architecture_embedding =
-            embed_architecture(&architecture_record.architecture_ir, architecture_record.evaluation_score);
+        let architecture_embedding = embed_architecture(
+            &architecture_record.architecture_ir,
+            architecture_record.evaluation_score,
+        );
         self.memory_space
             .store_architecture(architecture_record.clone(), architecture_embedding);
         let evaluation_record = EvaluationRecord {
@@ -162,8 +164,10 @@ impl MemorySpace for InMemoryMemorySpace {
             },
             diagnostics: EvaluationDiagnostics::default(),
         };
-        self.memory_space
-            .store_evaluation(evaluation_record.clone(), embed_evaluation(&evaluation_record));
+        self.memory_space.store_evaluation(
+            evaluation_record.clone(),
+            embed_evaluation(&evaluation_record),
+        );
         self.memory_space.store_reasoning_trace(
             ReasoningTrace {
                 trace_id: format!("trace-{architecture_id}"),
@@ -186,7 +190,11 @@ impl MemorySpace for InMemoryMemorySpace {
                 candidate_architectures: vec![architecture_id.clone()],
                 final_architecture: architecture_id,
             },
-            vec![exp.score as f32, exp.search_depth as f32, exp.layer_sequence.len() as f32],
+            vec![
+                exp.score as f32,
+                exp.search_depth as f32,
+                exp.layer_sequence.len() as f32,
+            ],
         );
     }
 }

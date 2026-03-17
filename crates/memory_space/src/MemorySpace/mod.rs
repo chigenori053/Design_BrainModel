@@ -20,6 +20,5 @@ pub use template_memory::{
     DependencyRuleRecord, TemplateMemoryDomain, TemplateMetadata, TemplateRecord, TopologyType,
 };
 pub use types::{
-    DesignIntentRecord, MemoryEdge, MemoryId, MemoryMetadata, MemoryNode, MemoryType,
-    RelationType,
+    DesignIntentRecord, MemoryEdge, MemoryId, MemoryMetadata, MemoryNode, MemoryType, RelationType,
 };

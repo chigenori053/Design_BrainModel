@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{LayerId, metrics::ComponentMetrics};
+use crate::{metrics::ComponentMetrics, LayerId};
 
 pub type ComponentId = u64;
 pub type ComponentUnitId = u64;

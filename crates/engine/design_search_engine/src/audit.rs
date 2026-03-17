@@ -579,13 +579,11 @@ mod tests {
         );
 
         assert_eq!(result.decision, AuditDecision::Block);
-        assert!(
-            result
-                .telemetry
-                .events
-                .iter()
-                .any(|event| event.name == "AuditPolicyViolation")
-        );
+        assert!(result
+            .telemetry
+            .events
+            .iter()
+            .any(|event| event.name == "AuditPolicyViolation"));
     }
 
     #[test]
