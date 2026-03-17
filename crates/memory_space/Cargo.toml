@@ -8,4 +8,5 @@ architecture_ir = { workspace = true }
 causal_domain = { workspace = true }
 design_domain = { workspace = true }
 semantic_domain = { workspace = true }
+world_model = { workspace = true }
 world_model_core = { workspace = true }

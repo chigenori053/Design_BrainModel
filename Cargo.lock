@@ -1269,6 +1269,7 @@ version = "0.1.0"
 dependencies = [
  "architecture_domain",
  "architecture_evaluator",
+ "architecture_ir",
  "architecture_knowledge",
  "architecture_memory",
  "architecture_reasoner",
@@ -2759,6 +2760,7 @@ dependencies = [
  "causal_domain",
  "design_domain",
  "semantic_domain",
+ "world_model",
  "world_model_core",
 ]
 
@@ -3876,9 +3878,13 @@ name = "runtime_core"
 version = "0.1.0"
 dependencies = [
  "ai_context",
+ "architecture_ir",
+ "design_search_engine",
  "memory_space_core",
+ "memory_space_phase14",
  "num-complex",
  "serde_json",
+ "world_model",
  "world_model_core",
 ]
 
@@ -5835,6 +5841,7 @@ version = "0.1.0"
 name = "world_model"
 version = "0.1.0"
 dependencies = [
+ "architecture_ir",
  "design_domain",
  "memory_space_core",
  "world_model_core",

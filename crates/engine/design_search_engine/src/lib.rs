@@ -18,6 +18,7 @@ pub mod ranking;
 pub mod reasoning;
 pub mod search_controller;
 pub mod search_state;
+pub mod stable_v03;
 
 pub use architecture_cognition::{
     ArchitectureCognitionSearchIntegration, ArchitectureCognitionSnapshot,
@@ -49,15 +50,15 @@ pub use math_reasoning_engine::{
     MathematicalReasoningEngine, MathematicalResult,
 };
 pub use pruning::{
-    PruneCandidatesOutcome, SearchNodeDiversityPruned, architecture_similarity, prune_candidates,
-    prune_candidates_with_telemetry, select_diverse_nodes,
+    architecture_similarity, prune_candidates, prune_candidates_with_telemetry,
+    select_diverse_nodes, PruneCandidatesOutcome, SearchNodeDiversityPruned,
 };
-pub use ranking::{RankedCandidate, rank_candidates};
+pub use ranking::{rank_candidates, RankedCandidate};
 pub use reasoning::{
-    ArchitectureHypothesis, HypothesisGenerator, HypothesisValidation, IntentGraph, IntentParser,
+    runtime_hypotheses_from_reasoning, ArchitectureHypothesis, HypothesisGenerator,
+    HypothesisValidation, IntentGraph, IntentParser,
     KnowledgeRetriever as ReasoningKnowledgeRetriever, ReasoningConfig, ReasoningEngine,
     ReasoningResult, ReasoningTelemetry, ReasoningTelemetryEvent, ReasoningValidator,
-    runtime_hypotheses_from_reasoning,
 };
 pub use search_context::SearchContext;
 pub use search_controller::SearchController;

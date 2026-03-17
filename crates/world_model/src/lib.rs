@@ -2,6 +2,7 @@ pub mod execution_model;
 pub mod geometry_model;
 pub mod math_model;
 pub mod simulation_engine;
+pub mod stable_v03;
 pub mod system_model;
 pub mod world_model_v1;
 

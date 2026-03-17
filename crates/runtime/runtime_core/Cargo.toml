@@ -5,7 +5,11 @@ edition = "2024"
 
 [dependencies]
 ai_context = { workspace = true }
+architecture_ir = { workspace = true }
+design_search_engine = { workspace = true }
+memory_space_phase14 = { workspace = true }
 memory_space_core = { workspace = true }
 num-complex = { workspace = true }
 serde_json = { workspace = true }
+world_model = { workspace = true }
 world_model_core = { workspace = true }
