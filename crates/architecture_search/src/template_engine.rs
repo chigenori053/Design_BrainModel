@@ -38,13 +38,14 @@ impl ArchitectureTemplateEngine {
         memory: Option<&DesignMemorySpace>,
     ) -> TemplateSelection {
         let recalled = memory
-            .map(|memory| {
-                memory.recall_templates_for_intent(&intent_record(intent), 3)
-            })
+            .map(|memory| memory.recall_templates_for_intent(&intent_record(intent), 3))
             .unwrap_or_default();
         let mut templates = self.templates.clone();
         for record in recalled {
-            if !templates.iter().any(|template| template.template_id == record.template_id) {
+            if !templates
+                .iter()
+                .any(|template| template.template_id == record.template_id)
+            {
                 templates.push(template_from_record(&record));
             }
         }
@@ -58,13 +59,20 @@ impl ArchitectureTemplateEngine {
                 (score, template)
             })
             .collect::<Vec<_>>();
-        scored.sort_by(|(ls, lt), (rs, rt)| rs.cmp(ls).then_with(|| lt.template_id.cmp(&rt.template_id)));
+        scored.sort_by(|(ls, lt), (rs, rt)| {
+            rs.cmp(ls).then_with(|| lt.template_id.cmp(&rt.template_id))
+        });
 
-        let mut ordered = scored.into_iter().map(|(_, template)| template).collect::<Vec<_>>();
-        let selected = ordered
-            .first()
-            .cloned()
-            .unwrap_or_else(|| builtin_templates().into_iter().next().expect("template library"));
+        let mut ordered = scored
+            .into_iter()
+            .map(|(_, template)| template)
+            .collect::<Vec<_>>();
+        let selected = ordered.first().cloned().unwrap_or_else(|| {
+            builtin_templates()
+                .into_iter()
+                .next()
+                .expect("template library")
+        });
         let alternatives = ordered.drain(1..ordered.len().min(3)).collect::<Vec<_>>();
         TemplateSelection {
             selected,
@@ -72,11 +80,18 @@ impl ArchitectureTemplateEngine {
         }
     }
 
-    fn templates_for_scoring(&self, templates: Vec<ArchitectureTemplate>) -> Vec<ArchitectureTemplate> {
+    fn templates_for_scoring(
+        &self,
+        templates: Vec<ArchitectureTemplate>,
+    ) -> Vec<ArchitectureTemplate> {
         templates
     }
 
-    pub fn expand_template(&self, template: &ArchitectureTemplate, space: &SearchSpace) -> SearchState {
+    pub fn expand_template(
+        &self,
+        template: &ArchitectureTemplate,
+        space: &SearchSpace,
+    ) -> SearchState {
         let mut state = SearchState::default();
         let mut ir = ArchitectureIR::default();
         ir.constraints.extend(template.constraints.clone());
@@ -154,34 +169,48 @@ impl ArchitectureTemplateEngine {
         state
     }
 
-    pub fn mutate_template(&self, template: &ArchitectureTemplate, intent: &IntentModel) -> ArchitectureTemplate {
+    pub fn mutate_template(
+        &self,
+        template: &ArchitectureTemplate,
+        intent: &IntentModel,
+    ) -> ArchitectureTemplate {
         let mut mutated = template.clone();
         if intent
             .requirements
             .iter()
             .any(|req| normalize_key(req).contains("cache"))
-            && !mutated.component_slots.iter().any(|slot| slot.slot_name == "CacheAdapter")
+            && !mutated
+                .component_slots
+                .iter()
+                .any(|slot| slot.slot_name == "CacheAdapter")
         {
-            mutated.component_slots.push(crate::template::ComponentSlot {
-                layer: "Infrastructure".to_string(),
-                slot_name: "CacheAdapter".to_string(),
-                slot_type: ComponentType::Adapter,
-                optional: true,
-            });
+            mutated
+                .component_slots
+                .push(crate::template::ComponentSlot {
+                    layer: "Infrastructure".to_string(),
+                    slot_name: "CacheAdapter".to_string(),
+                    slot_type: ComponentType::Adapter,
+                    optional: true,
+                });
         }
         if intent
             .requirements
             .iter()
             .any(|req| normalize_key(req).contains("auth"))
             && mutated.topology == Topology::Layered
-            && !mutated.component_slots.iter().any(|slot| slot.slot_name == "AuthService")
+            && !mutated
+                .component_slots
+                .iter()
+                .any(|slot| slot.slot_name == "AuthService")
         {
-            mutated.component_slots.push(crate::template::ComponentSlot {
-                layer: "Application".to_string(),
-                slot_name: "AuthService".to_string(),
-                slot_type: ComponentType::Service,
-                optional: true,
-            });
+            mutated
+                .component_slots
+                .push(crate::template::ComponentSlot {
+                    layer: "Application".to_string(),
+                    slot_name: "AuthService".to_string(),
+                    slot_type: ComponentType::Service,
+                    optional: true,
+                });
         }
         mutated
     }
@@ -196,14 +225,20 @@ fn template_match_score(intent: &IntentModel, template: &ArchitectureTemplate) -
         Topology::Layered if system.contains("api") || system.contains("web") => score += 10,
         Topology::Hexagonal if system.contains("api") || system.contains("domain") => score += 8,
         Topology::Pipeline if system.contains("pipeline") || system.contains("data") => score += 10,
-        Topology::EventDriven if system.contains("event") || system.contains("stream") => score += 9,
-        Topology::Microservice if system.contains("microservice") || system.contains("saas") => score += 8,
+        Topology::EventDriven if system.contains("event") || system.contains("stream") => {
+            score += 9
+        }
+        Topology::Microservice if system.contains("microservice") || system.contains("saas") => {
+            score += 8
+        }
         _ => {}
     }
 
     for req in &intent.requirements {
         let req = normalize_key(req);
-        if req.contains("cache") && matches!(template.topology, Topology::Layered | Topology::Hexagonal) {
+        if req.contains("cache")
+            && matches!(template.topology, Topology::Layered | Topology::Hexagonal)
+        {
             score += 2;
         }
         if req.contains("event") && template.topology == Topology::EventDriven {
@@ -229,7 +264,8 @@ fn intent_record(intent: &IntentModel) -> DesignIntentRecord {
         intent_id: format!(
             "{}:{}",
             normalize_key(&intent.system_type),
-            intent.requirements
+            intent
+                .requirements
                 .iter()
                 .map(|req| normalize_key(req))
                 .collect::<Vec<_>>()
@@ -237,12 +273,7 @@ fn intent_record(intent: &IntentModel) -> DesignIntentRecord {
         ),
         system_type: intent.system_type.clone(),
         requirements: intent.requirements.clone(),
-        constraints: intent
-            .constraints
-            .architecture
-            .iter()
-            .cloned()
-            .collect(),
+        constraints: intent.constraints.architecture.iter().cloned().collect(),
     }
 }
 

@@ -15,13 +15,7 @@ pub struct BeamSearchController<G, F, E, P> {
 }
 
 impl<G, F, E, P> BeamSearchController<G, F, E, P> {
-    pub fn new(
-        config: SearchConfig,
-        generator: G,
-        filter: F,
-        evaluator: E,
-        pareto: P,
-    ) -> Self {
+    pub fn new(config: SearchConfig, generator: G, filter: F, evaluator: E, pareto: P) -> Self {
         Self {
             config,
             generator,

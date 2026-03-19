@@ -14,7 +14,11 @@ pub struct GrammarValidation {
 }
 
 impl ArchitectureGrammarEngine {
-    pub fn validate(&self, ir: &ArchitectureIR, grammar: &ArchitectureGrammar) -> GrammarValidation {
+    pub fn validate(
+        &self,
+        ir: &ArchitectureIR,
+        grammar: &ArchitectureGrammar,
+    ) -> GrammarValidation {
         let mut issues = Vec::new();
 
         issues.extend(self.validate_components(ir, grammar));
@@ -29,7 +33,11 @@ impl ArchitectureGrammarEngine {
         }
     }
 
-    fn validate_components(&self, ir: &ArchitectureIR, grammar: &ArchitectureGrammar) -> Vec<String> {
+    fn validate_components(
+        &self,
+        ir: &ArchitectureIR,
+        grammar: &ArchitectureGrammar,
+    ) -> Vec<String> {
         let allowed = grammar
             .component_rules
             .iter()
@@ -73,9 +81,10 @@ impl ArchitectureGrammarEngine {
                 continue;
             };
 
-            let allowed = grammar.dependency_rules.iter().any(|rule| {
-                rule.from == from.component_type && rule.to == to.component_type
-            });
+            let allowed = grammar
+                .dependency_rules
+                .iter()
+                .any(|rule| rule.from == from.component_type && rule.to == to.component_type);
             if !allowed {
                 issues.push(format!(
                     "forbidden dependency: {:?} -> {:?}",
@@ -165,7 +174,11 @@ impl ArchitectureGrammarEngine {
             if !present_types.contains(&rule.exposer) {
                 continue;
             }
-            if !rule.implementors.iter().all(|ty| present_types.contains(ty)) {
+            if !rule
+                .implementors
+                .iter()
+                .all(|ty| present_types.contains(ty))
+            {
                 continue;
             }
             if !present_types.contains(&rule.interface_type) {
@@ -186,12 +199,15 @@ impl ArchitectureGrammarEngine {
     ) -> Vec<String> {
         let mut issues = Vec::new();
 
-        let dependency_counts = ir.dependencies.iter().fold(BTreeMap::new(), |mut acc, edge| {
-            if let NodeId::Component(from) = edge.source {
-                *acc.entry(from).or_insert(0usize) += 1;
-            }
-            acc
-        });
+        let dependency_counts = ir
+            .dependencies
+            .iter()
+            .fold(BTreeMap::new(), |mut acc, edge| {
+                if let NodeId::Component(from) = edge.source {
+                    *acc.entry(from).or_insert(0usize) += 1;
+                }
+                acc
+            });
         if dependency_counts
             .values()
             .any(|count| *count > grammar.constraint_rule.max_dependencies_per_component)
@@ -225,7 +241,8 @@ impl ArchitectureGrammarEngine {
 fn has_cycle(ir: &ArchitectureIR) -> bool {
     let mut adjacency = BTreeMap::<u64, Vec<u64>>::new();
     for dependency in &ir.dependencies {
-        if let (NodeId::Component(from), NodeId::Component(to)) = (dependency.source, dependency.target)
+        if let (NodeId::Component(from), NodeId::Component(to)) =
+            (dependency.source, dependency.target)
         {
             adjacency.entry(from).or_default().push(to);
             adjacency.entry(to).or_default();

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use architecture_ir::{architecture_hash, ArchitectureIR, ComponentType};
+use architecture_ir::{ArchitectureIR, ComponentType, architecture_hash};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct ArchitectureMetadata {
@@ -120,11 +120,7 @@ fn overlap_component_types(lhs: &ArchitectureIR, rhs: &ArchitectureIR) -> f32 {
         .filter(|kind| rhs_types.contains(kind))
         .count() as f32;
     let total = lhs_types.len().max(rhs_types.len()) as f32;
-    if total == 0.0 {
-        1.0
-    } else {
-        overlap / total
-    }
+    if total == 0.0 { 1.0 } else { overlap / total }
 }
 
 fn inverse_delta(delta: f32) -> f32 {

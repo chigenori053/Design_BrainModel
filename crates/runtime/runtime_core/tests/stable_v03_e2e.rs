@@ -4,6 +4,9 @@ use architecture_evaluator_core::stable_v03::{
     ArchitectureEvaluator, WeightedArchitectureEvaluator,
 };
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
 use constraint_engine::stable_v03::{
     CompositeConstraintEngine, Constraint, ConstraintEngine, LayerOrderConstraint,
     NoCycleConstraint,
@@ -13,9 +16,6 @@ use design_search_engine::stable_v03::{
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
-use code_language_core::stable_v03::{
-    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
-};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
@@ -84,7 +84,7 @@ fn runtime_execute_produces_architecture_without_panic() {
     assert!(!result.files.is_empty());
     assert!(!result.generation_contexts.is_empty());
     assert!(!result.project_layout.files.is_empty());
-    assert!(!result.execution_plan.steps.is_empty());
+    assert!(!result.execution_plan.test_plan.test_commands.is_empty());
     assert!(result.trace.candidate_count > 0);
 }
 

@@ -167,14 +167,24 @@ fn upsert_layer(ir: &mut ArchitectureIR, component_type: ComponentType, componen
     if let Some(layer) = ir.layers.iter_mut().find(|layer| layer.name == name) {
         layer.components.push(component_id);
         layer.components.sort_unstable();
-        if let Some(component) = ir.components.iter_mut().find(|component| component.id == component_id) {
+        if let Some(component) = ir
+            .components
+            .iter_mut()
+            .find(|component| component.id == component_id)
+        {
             component.layer = Some(layer.id);
         }
         return;
     }
 
     ir.layers.push(Layer {
-        id: ir.layers.iter().map(|layer| layer.id).max().unwrap_or(0).saturating_add(1),
+        id: ir
+            .layers
+            .iter()
+            .map(|layer| layer.id)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1),
         name: name.to_string(),
         level,
         components: vec![component_id],
@@ -183,10 +193,18 @@ fn upsert_layer(ir: &mut ArchitectureIR, component_type: ComponentType, componen
     ir.layers.sort_by(|lhs, rhs| {
         rhs.level
             .cmp(&lhs.level)
-        .then_with(|| lhs.name.cmp(&rhs.name))
+            .then_with(|| lhs.name.cmp(&rhs.name))
     });
-    if let Some(component) = ir.components.iter_mut().find(|component| component.id == component_id) {
-        component.layer = ir.layers.iter().find(|layer| layer.name == name).map(|layer| layer.id);
+    if let Some(component) = ir
+        .components
+        .iter_mut()
+        .find(|component| component.id == component_id)
+    {
+        component.layer = ir
+            .layers
+            .iter()
+            .find(|layer| layer.name == name)
+            .map(|layer| layer.id);
     }
 }
 
@@ -200,9 +218,7 @@ fn component_type_count(ir: &ArchitectureIR, component_type: &ComponentType) -> 
 fn default_layer(component_type: &ComponentType) -> (&'static str, u32) {
     match component_type {
         ComponentType::Controller => ("Presentation", 3),
-        ComponentType::Service | ComponentType::UseCase => {
-            ("Application", 2)
-        }
+        ComponentType::Service | ComponentType::UseCase => ("Application", 2),
         ComponentType::DomainModel | ComponentType::Interface => ("Domain", 2),
         ComponentType::Repository | ComponentType::Adapter | ComponentType::DataModel => {
             ("Infrastructure", 1)

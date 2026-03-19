@@ -1,15 +1,22 @@
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 use code_language_core::stable_v03::{
-    default_generation_context, ContextualCodeIRBuilder, DefaultContextualCodeIRBuilder,
-    DefaultGeneratorRegistry, GeneratorRegistry, TargetLanguage,
+    ContextualCodeIRBuilder, DefaultContextualCodeIRBuilder, DefaultGeneratorRegistry,
+    GeneratorRegistry, TargetLanguage, default_generation_context,
 };
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 
-fn fixed_module() -> (Vec<code_language_core::stable_v03::SpecializedCodeModule>, code_language_core::stable_v03::GenerationContext) {
+fn fixed_module() -> (
+    Vec<code_language_core::stable_v03::SpecializedCodeModule>,
+    code_language_core::stable_v03::GenerationContext,
+) {
     let architecture = ArchitectureGraphBuilder::new()
         .add_node(Node::new("billing_api", NodeType::Interface))
         .add_node(Node::new("billing_service", NodeType::Service))
-        .add_edge(Edge::new("billing_api", "billing_service", RelationType::Calls))
+        .add_edge(Edge::new(
+            "billing_api",
+            "billing_service",
+            RelationType::Calls,
+        ))
         .build()
         .expect("valid graph");
     let unit = DefaultArchitectureMapper

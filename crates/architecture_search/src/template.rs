@@ -1,4 +1,4 @@
-use architecture_ir::{ArchitectureConstraint, ComponentType, ConstraintValue, ConstraintType};
+use architecture_ir::{ArchitectureConstraint, ComponentType, ConstraintType, ConstraintValue};
 
 use crate::DependencyRule;
 
@@ -64,17 +64,44 @@ fn layered_template() -> ArchitectureTemplate {
         template_id: "layered".to_string(),
         topology: Topology::Layered,
         layer_structure: vec![
-            TemplateLayer { name: "Presentation".to_string(), level: 4 },
-            TemplateLayer { name: "Application".to_string(), level: 3 },
-            TemplateLayer { name: "Domain".to_string(), level: 2 },
-            TemplateLayer { name: "Infrastructure".to_string(), level: 1 },
+            TemplateLayer {
+                name: "Presentation".to_string(),
+                level: 4,
+            },
+            TemplateLayer {
+                name: "Application".to_string(),
+                level: 3,
+            },
+            TemplateLayer {
+                name: "Domain".to_string(),
+                level: 2,
+            },
+            TemplateLayer {
+                name: "Infrastructure".to_string(),
+                level: 1,
+            },
         ],
         component_slots: vec![
-            slot("Presentation", "ApiController", ComponentType::Controller, false),
+            slot(
+                "Presentation",
+                "ApiController",
+                ComponentType::Controller,
+                false,
+            ),
             slot("Application", "Service", ComponentType::Service, false),
             slot("Domain", "DomainModel", ComponentType::DomainModel, true),
-            slot("Infrastructure", "Repository", ComponentType::Repository, false),
-            slot("Infrastructure", "CacheAdapter", ComponentType::Adapter, true),
+            slot(
+                "Infrastructure",
+                "Repository",
+                ComponentType::Repository,
+                false,
+            ),
+            slot(
+                "Infrastructure",
+                "CacheAdapter",
+                ComponentType::Adapter,
+                true,
+            ),
         ],
         dependency_rules: vec![
             dep(ComponentType::Controller, ComponentType::Service),
@@ -108,15 +135,29 @@ fn hexagonal_template() -> ArchitectureTemplate {
         template_id: "hexagonal".to_string(),
         topology: Topology::Hexagonal,
         layer_structure: vec![
-            TemplateLayer { name: "Adapters".to_string(), level: 3 },
-            TemplateLayer { name: "Ports".to_string(), level: 2 },
-            TemplateLayer { name: "Domain".to_string(), level: 1 },
+            TemplateLayer {
+                name: "Adapters".to_string(),
+                level: 3,
+            },
+            TemplateLayer {
+                name: "Ports".to_string(),
+                level: 2,
+            },
+            TemplateLayer {
+                name: "Domain".to_string(),
+                level: 1,
+            },
         ],
         component_slots: vec![
             slot("Adapters", "InboundAdapter", ComponentType::Adapter, false),
             slot("Ports", "Port", ComponentType::Interface, false),
             slot("Domain", "DomainService", ComponentType::Service, false),
-            slot("Adapters", "OutboundAdapter", ComponentType::Repository, true),
+            slot(
+                "Adapters",
+                "OutboundAdapter",
+                ComponentType::Repository,
+                true,
+            ),
         ],
         dependency_rules: vec![
             dep(ComponentType::Adapter, ComponentType::Interface),
@@ -141,9 +182,18 @@ fn pipeline_template() -> ArchitectureTemplate {
         template_id: "pipeline".to_string(),
         topology: Topology::Pipeline,
         layer_structure: vec![
-            TemplateLayer { name: "Ingest".to_string(), level: 3 },
-            TemplateLayer { name: "Process".to_string(), level: 2 },
-            TemplateLayer { name: "Store".to_string(), level: 1 },
+            TemplateLayer {
+                name: "Ingest".to_string(),
+                level: 3,
+            },
+            TemplateLayer {
+                name: "Process".to_string(),
+                level: 2,
+            },
+            TemplateLayer {
+                name: "Store".to_string(),
+                level: 1,
+            },
         ],
         component_slots: vec![
             slot("Ingest", "Gateway", ComponentType::Controller, false),
@@ -172,14 +222,28 @@ fn event_driven_template() -> ArchitectureTemplate {
         template_id: "event_driven".to_string(),
         topology: Topology::EventDriven,
         layer_structure: vec![
-            TemplateLayer { name: "Ingress".to_string(), level: 3 },
-            TemplateLayer { name: "Handlers".to_string(), level: 2 },
-            TemplateLayer { name: "Persistence".to_string(), level: 1 },
+            TemplateLayer {
+                name: "Ingress".to_string(),
+                level: 3,
+            },
+            TemplateLayer {
+                name: "Handlers".to_string(),
+                level: 2,
+            },
+            TemplateLayer {
+                name: "Persistence".to_string(),
+                level: 1,
+            },
         ],
         component_slots: vec![
             slot("Ingress", "EventGateway", ComponentType::Controller, false),
             slot("Handlers", "Handler", ComponentType::Service, false),
-            slot("Persistence", "EventStore", ComponentType::Repository, false),
+            slot(
+                "Persistence",
+                "EventStore",
+                ComponentType::Repository,
+                false,
+            ),
             slot("Persistence", "Queue", ComponentType::Adapter, true),
         ],
         dependency_rules: vec![
@@ -205,15 +269,29 @@ fn microservice_template() -> ArchitectureTemplate {
         template_id: "microservice".to_string(),
         topology: Topology::Microservice,
         layer_structure: vec![
-            TemplateLayer { name: "Gateway".to_string(), level: 3 },
-            TemplateLayer { name: "Services".to_string(), level: 2 },
-            TemplateLayer { name: "Data".to_string(), level: 1 },
+            TemplateLayer {
+                name: "Gateway".to_string(),
+                level: 3,
+            },
+            TemplateLayer {
+                name: "Services".to_string(),
+                level: 2,
+            },
+            TemplateLayer {
+                name: "Data".to_string(),
+                level: 1,
+            },
         ],
         component_slots: vec![
             slot("Gateway", "ApiGateway", ComponentType::Controller, false),
             slot("Services", "ServiceA", ComponentType::Service, false),
             slot("Services", "ServiceB", ComponentType::Service, true),
-            slot("Data", "ServiceRepository", ComponentType::Repository, false),
+            slot(
+                "Data",
+                "ServiceRepository",
+                ComponentType::Repository,
+                false,
+            ),
         ],
         dependency_rules: vec![
             dep(ComponentType::Controller, ComponentType::Service),

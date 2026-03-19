@@ -1,7 +1,7 @@
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 use code_language_core::stable_v03::{
-    default_generation_context, ContextualCodeIRBuilder, DefaultContextualCodeIRBuilder,
-    TargetLanguage,
+    ContextualCodeIRBuilder, DefaultContextualCodeIRBuilder, TargetLanguage,
+    default_generation_context,
 };
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 
@@ -37,10 +37,8 @@ fn normalize(name: &str) -> String {
 
 fn structure_for(language: TargetLanguage) -> StructureModel {
     let unit = sample_unit();
-    let modules = DefaultContextualCodeIRBuilder.build_with_context(vec![(
-        unit,
-        default_generation_context(language, None),
-    )]);
+    let modules = DefaultContextualCodeIRBuilder
+        .build_with_context(vec![(unit, default_generation_context(language, None))]);
     let module = &modules[0];
     let mut interface_names = module
         .interfaces

@@ -38,5 +38,7 @@ pub use pareto::{ParetoOptimizer, ParetoSetOptimizer};
 pub use search_space::{DependencyRule, DesignIntent, SearchSpace};
 pub use search_state::{SearchState, create_initial_state};
 pub use telemetry::{SearchOutcome, SearchTelemetry};
-pub use template::{ArchitectureTemplate, ComponentSlot, TemplateLayer, TemplateSelection, Topology};
+pub use template::{
+    ArchitectureTemplate, ComponentSlot, TemplateLayer, TemplateSelection, Topology,
+};
 pub use template_engine::ArchitectureTemplateEngine;

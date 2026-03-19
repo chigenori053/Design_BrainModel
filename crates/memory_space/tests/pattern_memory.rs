@@ -42,5 +42,8 @@ fn pattern_memory_aggregates_and_recalls_consistently() {
     let patterns = memory.recall_patterns(&state);
 
     assert_eq!(patterns.len(), 1);
-    assert_eq!(patterns[0].layer_sequence, vec![Layer::Ui, Layer::Service, Layer::Repository]);
+    assert_eq!(
+        patterns[0].layer_sequence,
+        vec![Layer::Ui, Layer::Service, Layer::Repository]
+    );
 }

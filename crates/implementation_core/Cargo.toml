@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 code_language_core = { workspace = true }
+execution_core = { workspace = true }

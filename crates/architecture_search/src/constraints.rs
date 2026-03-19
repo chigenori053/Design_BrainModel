@@ -1,8 +1,6 @@
 use architecture_ir::{ArchitectureIR, validate_ir};
 
-use crate::{
-    ArchitectureGrammar, ArchitectureGrammarEngine, SearchSpace, SearchState,
-};
+use crate::{ArchitectureGrammar, ArchitectureGrammarEngine, SearchSpace, SearchState};
 
 pub trait ConstraintFilter {
     fn filter(&self, candidates: Vec<SearchState>) -> Vec<SearchState>;
@@ -37,11 +35,11 @@ impl ConstraintFilter for BasicConstraintFilter {
 }
 
 fn allowed_by_rules(ir: &ArchitectureIR, search_space: &SearchSpace) -> bool {
-    if ir
-        .components
-        .iter()
-        .any(|component| search_space.forbidden_components.contains(&component.component_type))
-    {
+    if ir.components.iter().any(|component| {
+        search_space
+            .forbidden_components
+            .contains(&component.component_type)
+    }) {
         return false;
     }
 

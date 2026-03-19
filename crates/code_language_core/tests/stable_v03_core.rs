@@ -1,8 +1,8 @@
+use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 use code_language_core::stable_v03::{
     CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, PythonGenerator, RustGenerator,
     TypeScriptGenerator,
 };
-use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper, DesignGraph};
 
 fn design_graph() -> DesignGraph {

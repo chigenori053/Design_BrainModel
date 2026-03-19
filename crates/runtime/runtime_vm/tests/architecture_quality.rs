@@ -6,10 +6,10 @@ use std::time::{Duration, Instant};
 use architecture_evaluator::{ArchitectureEvaluatorEngine, ArchitectureIrEvaluator};
 use architecture_search::template::builtin_templates;
 use architecture_search::template_engine::template_record_from_template;
-use architecture_search::{ArchitectureSearchEngine, ArchitectureTemplateEngine, IntentModel, SearchConfig};
-use memory_space_phase14::{
-    DesignIntentRecord, DesignMemorySpace, embed_template,
+use architecture_search::{
+    ArchitectureSearchEngine, ArchitectureTemplateEngine, IntentModel, SearchConfig,
 };
+use memory_space_phase14::{DesignIntentRecord, DesignMemorySpace, embed_template};
 use serde_json::json;
 
 #[derive(Clone, Debug)]
@@ -190,7 +190,12 @@ fn evaluate_search_result(
     let mut scores = result
         .pareto_frontier
         .iter()
-        .map(|candidate| evaluator.evaluate_ir(&candidate.architecture_ir).scores.overall_score)
+        .map(|candidate| {
+            evaluator
+                .evaluate_ir(&candidate.architecture_ir)
+                .scores
+                .overall_score
+        })
         .collect::<Vec<_>>();
     scores.sort_by(|lhs, rhs| rhs.total_cmp(lhs));
     let sum = scores.iter().sum::<f64>();
@@ -316,10 +321,9 @@ fn run_quality_suite() -> QualitySuiteResult {
         memory_diversity.push(memory_metrics.frontier_diversity);
         baseline_dominance.push(baseline_metrics.dominance_ratio);
         memory_dominance.push(memory_metrics.dominance_ratio);
-        suite.q1_cases.insert(
-            case.name.to_string(),
-            (baseline_metrics, memory_metrics),
-        );
+        suite
+            .q1_cases
+            .insert(case.name.to_string(), (baseline_metrics, memory_metrics));
     }
 
     let convergence_case = &cases[0];
@@ -553,7 +557,10 @@ fn architecture_quality_suite() {
         "Q4 template count unbounded: {}",
         result.q4_template_count
     );
-    assert_eq!(result.integrity_errors, 0, "memory integrity errors detected");
+    assert_eq!(
+        result.integrity_errors, 0,
+        "memory integrity errors detected"
+    );
     assert!(
         result.q5_mean_frontier_score_memory + 1e-9 >= result.q5_mean_frontier_score_baseline,
         "Q5 frontier quality regressed"

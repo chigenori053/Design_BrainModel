@@ -1,3 +1,4 @@
+use std::collections::BTreeSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -19,10 +20,21 @@ use design_search_engine::stable_v03::{
     ArchitectureCandidate, Constraint as RecallConstraint, DesignSearchEngine, RecallContext,
     RecalledPattern, SearchInput,
 };
-use implementation_core::stable_v03::{DefaultProjectGenerator, ExecutionPlan, ProjectGenerator, ProjectLayout};
+use implementation_core::stable_v03::{
+    DefaultProjectGenerator, ExecutionPlan, ProjectGenerator, ProjectLayout,
+};
 use memory_space_phase14::stable_v03::{MemoryEngine, MemoryRecord, RecallInput};
+use test_generation_core::stable_v03::{
+    DefaultStructuralTestGenerator, TestGenerator, TestSuite, render_test_file, validate_test_suite,
+};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper, DesignGraph};
 use world_model::stable_v03::{IntentInput, IntentState};
+
+use crate::explanation::{DefaultExplanationBuilder, Explanation, ExplanationBuilder};
+use crate::intent_refiner::{
+    ChatContext, Clarification, DefaultIntentRefiner, IntentExecution, IntentRefiner, IntentTrace,
+    StructuredIntent,
+};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CoreError {
@@ -45,14 +57,24 @@ pub struct RuntimeResult {
     pub architecture: ArchitectureGraph,
     pub design: DesignGraph,
     pub files: Vec<GeneratedFile>,
+    pub test_suites: Vec<TestSuite>,
     pub project_layout: ProjectLayout,
     pub execution_plan: ExecutionPlan,
     pub generation_contexts: Vec<GenerationContext>,
     pub trace: ExecutionTrace,
+    pub intent_trace: Option<IntentTrace>,
+    pub explanation: Option<Explanation>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum RuntimeExecutionResult {
+    Executed(RuntimeResult),
+    Clarification(Clarification),
 }
 
 pub struct CoreRuntime {
     pub executor: RuntimeExecutor,
+    refiner: Arc<dyn IntentRefiner>,
 }
 
 impl CoreRuntime {
@@ -65,6 +87,7 @@ impl CoreRuntime {
         code_ir_builder: Arc<dyn CodeIRBuilder>,
         generator: Arc<dyn CodeGenerator>,
     ) -> Self {
+        let refiner: Arc<dyn IntentRefiner> = Arc::new(DefaultIntentRefiner::new(memory.clone()));
         Self {
             executor: RuntimeExecutor {
                 memory,
@@ -78,7 +101,10 @@ impl CoreRuntime {
                 contextual_code_ir_builder: Arc::new(DefaultContextualCodeIRBuilder),
                 generator_registry: Arc::new(DefaultGeneratorRegistry),
                 project_generator: Arc::new(DefaultProjectGenerator),
+                test_generator: Arc::new(DefaultStructuralTestGenerator),
+                explanation_builder: Arc::new(DefaultExplanationBuilder),
             },
+            refiner,
         }
     }
 
@@ -102,6 +128,23 @@ impl CoreRuntime {
             Arc::new(RustGenerator),
         )
     }
+
+    pub fn execute_from_text(
+        &self,
+        input: &str,
+        context: &ChatContext,
+    ) -> CoreResult<RuntimeExecutionResult> {
+        let (execution, trace) = self.refiner.refine_with_trace(input, context)?;
+        match execution {
+            IntentExecution::Ready(intent) => {
+                let result = self.executor.execute_structured(intent, Some(trace))?;
+                Ok(RuntimeExecutionResult::Executed(result))
+            }
+            IntentExecution::NeedClarification(clarification) => {
+                Ok(RuntimeExecutionResult::Clarification(clarification))
+            }
+        }
+    }
 }
 
 pub struct RuntimeExecutor {
@@ -116,11 +159,29 @@ pub struct RuntimeExecutor {
     contextual_code_ir_builder: Arc<dyn ContextualCodeIRBuilder>,
     generator_registry: Arc<dyn GeneratorRegistry>,
     project_generator: Arc<dyn ProjectGenerator>,
+    test_generator: Arc<dyn TestGenerator>,
+    explanation_builder: Arc<dyn ExplanationBuilder>,
 }
 
 impl RuntimeExecutor {
     pub fn execute(&self, input: IntentInput) -> CoreResult<RuntimeResult> {
         let intent = parse(input)?;
+        self.execute_intent_state(intent, None)
+    }
+
+    pub fn execute_structured(
+        &self,
+        intent: StructuredIntent,
+        intent_trace: Option<IntentTrace>,
+    ) -> CoreResult<RuntimeResult> {
+        self.execute_intent_state(intent_state_from_structured(&intent), intent_trace)
+    }
+
+    fn execute_intent_state(
+        &self,
+        intent: IntentState,
+        intent_trace: Option<IntentTrace>,
+    ) -> CoreResult<RuntimeResult> {
         let recall_result = self.memory.recall(RecallInput {
             intent: intent.clone(),
             limit: 5,
@@ -146,6 +207,16 @@ impl RuntimeExecutor {
             .iter()
             .map(|unit| self.profile_resolver.resolve(unit, self.memory.as_ref()))
             .collect::<Vec<_>>();
+        let test_suites = units
+            .iter()
+            .zip(generation_contexts.iter())
+            .map(|(unit, ctx)| {
+                let suite = self.test_generator.generate(unit, ctx);
+                validate_test_suite(&suite, unit, ctx)
+                    .expect("generated test suite should be valid");
+                suite
+            })
+            .collect::<Vec<_>>();
         let modules = self.code_ir_builder.build(units.clone());
         let legacy_files = self.generator.generate(modules);
         let specialized_modules = self
@@ -159,11 +230,21 @@ impl RuntimeExecutor {
                     .generate(vec![module])
             })
             .collect::<Vec<_>>();
-        let final_files = if files.is_empty() { legacy_files } else { files };
+        let final_files = if files.is_empty() {
+            legacy_files
+        } else {
+            files
+        };
+        let generated_test_files = test_suites
+            .iter()
+            .zip(generation_contexts.iter())
+            .map(|(suite, ctx)| render_test_file(suite, ctx))
+            .collect::<Vec<_>>();
         let (project_layout, execution_plan) = self.project_generator.generate(
             "generated_project",
             final_files.clone(),
             generation_contexts.clone(),
+            generated_test_files,
         );
 
         self.memory.store(MemoryRecord {
@@ -175,10 +256,11 @@ impl RuntimeExecutor {
             relations: vec!["selected".to_string()],
         });
 
-        Ok(RuntimeResult {
+        let mut runtime_result = RuntimeResult {
             architecture: selected.architecture,
             design,
             files: final_files,
+            test_suites,
             project_layout,
             execution_plan,
             generation_contexts,
@@ -187,7 +269,16 @@ impl RuntimeExecutor {
                 candidate_count,
                 selected_score: evaluation.score,
             },
-        })
+            intent_trace,
+            explanation: None,
+        };
+
+        if let Some(trace) = runtime_result.intent_trace.clone() {
+            let explanation = self.explanation_builder.build(&trace, &runtime_result);
+            runtime_result.explanation = Some(explanation);
+        }
+
+        Ok(runtime_result)
     }
 }
 
@@ -260,4 +351,54 @@ fn stable_id(value: &str) -> String {
     let mut hasher = DefaultHasher::new();
     value.hash(&mut hasher);
     format!("intent-{:016x}", hasher.finish())
+}
+
+fn intent_state_from_structured(intent: &StructuredIntent) -> IntentState {
+    let mut tokens = intent
+        .goal
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<BTreeSet<_>>();
+
+    for value in intent.slots.core.values() {
+        for token in slot_tokens(&value.value) {
+            tokens.insert(token);
+        }
+    }
+    for value in intent.slots.system.values() {
+        for token in slot_tokens(&value.value) {
+            tokens.insert(token);
+        }
+    }
+    for value in intent.slots.quality.values() {
+        for token in slot_tokens(&value.value) {
+            tokens.insert(token);
+        }
+    }
+    for value in intent.slots.optional.values() {
+        for token in slot_tokens(&value.value) {
+            tokens.insert(token);
+        }
+    }
+
+    IntentState {
+        raw: intent.goal.clone(),
+        tokens: tokens.into_iter().collect(),
+    }
+}
+
+fn slot_tokens(value: &str) -> Vec<String> {
+    let mut tokens = value
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect::<Vec<_>>();
+    match value {
+        "postgres" | "mysql" | "sqlite" | "redis" => tokens.push("db".to_string()),
+        _ => {}
+    }
+    tokens.sort();
+    tokens.dedup();
+    tokens
 }

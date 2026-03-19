@@ -1,7 +1,12 @@
 use std::sync::Arc;
 
-use architecture_evaluator_core::stable_v03::{ArchitectureEvaluator, WeightedArchitectureEvaluator};
+use architecture_evaluator_core::stable_v03::{
+    ArchitectureEvaluator, WeightedArchitectureEvaluator,
+};
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator, TargetLanguage,
+};
 use constraint_engine::stable_v03::{
     CompositeConstraintEngine, Constraint, ConstraintEngine, LayerOrderConstraint,
     NoCycleConstraint,
@@ -9,9 +14,6 @@ use constraint_engine::stable_v03::{
 use design_search_engine::stable_v03::{ArchitectureCandidate, DesignSearchEngine, SearchInput};
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
-use code_language_core::stable_v03::{
-    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator, TargetLanguage,
-};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
@@ -100,10 +102,18 @@ fn memory_changes_generation_context() {
 
     assert!(!without_memory.generation_contexts.is_empty());
     assert!(!with_memory.generation_contexts.is_empty());
-    assert_ne!(without_memory.generation_contexts, with_memory.generation_contexts);
+    assert_ne!(
+        without_memory.generation_contexts,
+        with_memory.generation_contexts
+    );
     assert_eq!(
         with_memory.generation_contexts[0].language_profile.language,
         TargetLanguage::Python
     );
-    assert!(with_memory.files.iter().any(|file| file.path.ends_with(".py")));
+    assert!(
+        with_memory
+            .files
+            .iter()
+            .any(|file| file.path.ends_with(".py"))
+    );
 }

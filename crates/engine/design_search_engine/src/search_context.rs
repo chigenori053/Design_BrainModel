@@ -2,8 +2,8 @@ use architecture_knowledge::ArchitectureKnowledge;
 use architecture_memory::ArchitectureMemory;
 
 use crate::{
-    audit::{AuditContext, FeatureAccess},
     SearchConfig, SearchState,
+    audit::{AuditContext, FeatureAccess},
 };
 
 #[derive(Clone, Debug, Default, PartialEq)]

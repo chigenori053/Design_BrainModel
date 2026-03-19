@@ -1,11 +1,16 @@
 use code_language_core::stable_v03::{
-    default_generation_context, default_language_profile, DependencyPolicy, DependencySpec,
-    GeneratedFile, TemplatePolicy, TestPolicy, TestStyle, FrameworkProfile, InterfaceConvention,
-    ProjectLayoutPolicy, TargetLanguage, TestConvention,
+    DependencyPolicy, DependencySpec, FrameworkProfile, GeneratedFile, InterfaceConvention,
+    ProjectLayoutPolicy, TargetLanguage, TemplatePolicy, TestConvention, TestPolicy, TestStyle,
+    default_generation_context, default_language_profile,
 };
 use implementation_core::stable_v03::{DefaultProjectGenerator, ProjectGenerator};
 
-fn context_with_framework(language: TargetLanguage, framework: &str, layout: ProjectLayoutPolicy, dependency: &str) -> code_language_core::stable_v03::GenerationContext {
+fn context_with_framework(
+    language: TargetLanguage,
+    framework: &str,
+    layout: ProjectLayoutPolicy,
+    dependency: &str,
+) -> code_language_core::stable_v03::GenerationContext {
     code_language_core::stable_v03::GenerationContext {
         language_profile: default_language_profile(language),
         framework_profile: Some(FrameworkProfile {
@@ -78,6 +83,7 @@ fn framework_switch_changes_project_layout() {
             ProjectLayoutPolicy::CargoBinaryLib,
             "axum",
         )],
+        Vec::new(),
     );
     let (fastapi_layout, fastapi_plan) = DefaultProjectGenerator.generate(
         "demo_fastapi",
@@ -91,12 +97,23 @@ fn framework_switch_changes_project_layout() {
             ProjectLayoutPolicy::PythonPackage,
             "fastapi",
         )],
+        Vec::new(),
     );
 
     assert_ne!(axum_layout, fastapi_layout);
     assert_ne!(axum_plan, fastapi_plan);
-    assert!(axum_layout.files.iter().any(|file| file.path.ends_with("Cargo.toml")));
-    assert!(fastapi_layout.files.iter().any(|file| file.path.ends_with("pyproject.toml")));
+    assert!(
+        axum_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("Cargo.toml"))
+    );
+    assert!(
+        fastapi_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("pyproject.toml"))
+    );
 }
 
 #[test]
@@ -108,6 +125,7 @@ fn policy_consistency_matches_language_manifest_rules() {
             content: "def run():\n    pass\n".to_string(),
         }],
         vec![default_generation_context(TargetLanguage::Python, None)],
+        Vec::new(),
     );
     let (rust_layout, _) = DefaultProjectGenerator.generate(
         "demo_rust",
@@ -116,12 +134,33 @@ fn policy_consistency_matches_language_manifest_rules() {
             content: "pub fn run() {}\n".to_string(),
         }],
         vec![default_generation_context(TargetLanguage::Rust, None)],
+        Vec::new(),
     );
 
     assert!(python_layout.is_valid());
     assert!(rust_layout.is_valid());
-    assert!(python_layout.files.iter().any(|file| file.path.ends_with("pyproject.toml")));
-    assert!(!python_layout.files.iter().any(|file| file.path.ends_with("Cargo.toml")));
-    assert!(rust_layout.files.iter().any(|file| file.path.ends_with("Cargo.toml")));
-    assert!(!rust_layout.files.iter().any(|file| file.path.ends_with("requirements.txt")));
+    assert!(
+        python_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("pyproject.toml"))
+    );
+    assert!(
+        !python_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("Cargo.toml"))
+    );
+    assert!(
+        rust_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("Cargo.toml"))
+    );
+    assert!(
+        !rust_layout
+            .files
+            .iter()
+            .any(|file| file.path.ends_with("requirements.txt"))
+    );
 }

@@ -8,7 +8,9 @@ use architecture_ir::{
 };
 use architecture_search::template::builtin_templates;
 use architecture_search::template_engine::template_record_from_template;
-use architecture_search::{ArchitectureSearchEngine, ArchitectureTemplateEngine, IntentModel, SearchConfig};
+use architecture_search::{
+    ArchitectureSearchEngine, ArchitectureTemplateEngine, IntentModel, SearchConfig,
+};
 use memory_space_phase14::{
     ArchitectureMetadata, DesignMemorySpace, EvaluationDiagnostics, EvaluationMetricsV2,
     EvaluationScores, ReasoningTrace, SearchStep, embed_architecture, embed_evaluation,
@@ -19,7 +21,11 @@ use runtime_vm::{ExecutionMode, HybridVm};
 fn seed_template_memory(memory: &mut DesignMemorySpace) {
     for template in builtin_templates().into_iter().take(5) {
         let mut record = template_record_from_template(&template);
-        record.metadata.usage_count = if record.template_id == "microservice" { 32 } else { 16 };
+        record.metadata.usage_count = if record.template_id == "microservice" {
+            32
+        } else {
+            16
+        };
         record.metadata.average_score = if record.template_id == "microservice" {
             1.0
         } else {
@@ -192,8 +198,14 @@ fn t2_template_explosion_and_t6_learning_validation() {
         .map(|record| record.template_id.as_str())
         .collect::<std::collections::BTreeSet<_>>()
         .len();
-    assert!(template_count < 200, "template count grew to {template_count}");
-    assert_eq!(template_count, duplicate_free, "duplicate templates detected");
+    assert!(
+        template_count < 200,
+        "template count grew to {template_count}"
+    );
+    assert_eq!(
+        template_count, duplicate_free,
+        "duplicate templates detected"
+    );
     assert!(template_count >= seed_count);
     println!(
         "T2 template_count={} growth_rate={:.2}",
@@ -311,9 +323,11 @@ fn t5_search_performance_improves_with_memory() {
     let memory_time = memory_started.elapsed();
 
     let candidate_reduction = 1.0
-        - guided.telemetry.candidate_count as f64 / baseline.telemetry.candidate_count.max(1) as f64;
+        - guided.telemetry.candidate_count as f64
+            / baseline.telemetry.candidate_count.max(1) as f64;
     let evaluation_reduction = 1.0
-        - guided.telemetry.generated_states as f64 / baseline.telemetry.generated_states.max(1) as f64;
+        - guided.telemetry.generated_states as f64
+            / baseline.telemetry.generated_states.max(1) as f64;
 
     assert!(
         candidate_reduction > 0.3,

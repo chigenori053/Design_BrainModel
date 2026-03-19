@@ -72,9 +72,15 @@ fn framework_profile_is_selected_from_memory() {
 
     let context = DefaultProfileResolver.resolve(&unit, memory.as_ref());
 
-    assert_eq!(context.language_profile.language, TargetLanguage::TypeScript);
     assert_eq!(
-        context.framework_profile.as_ref().map(|profile| profile.name.as_str()),
+        context.language_profile.language,
+        TargetLanguage::TypeScript
+    );
+    assert_eq!(
+        context
+            .framework_profile
+            .as_ref()
+            .map(|profile| profile.name.as_str()),
         Some("express")
     );
 }

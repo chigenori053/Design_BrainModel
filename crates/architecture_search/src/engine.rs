@@ -1,10 +1,9 @@
-use crate::{
-    ArchitectureCandidate, ArchitectureGrammar, BasicArchitectureEvaluator,
-    BasicConstraintFilter, BeamSearchController, DesignSpaceBuilder, IntentModel,
-    IntentProcessor, ParetoSetOptimizer, SearchConfig, SearchSpace, TemplateSelection,
-    ArchitectureTemplateEngine,
-};
 use crate::DeterministicCandidateGenerator;
+use crate::{
+    ArchitectureCandidate, ArchitectureGrammar, ArchitectureTemplateEngine,
+    BasicArchitectureEvaluator, BasicConstraintFilter, BeamSearchController, DesignSpaceBuilder,
+    IntentModel, IntentProcessor, ParetoSetOptimizer, SearchConfig, SearchSpace, TemplateSelection,
+};
 use memory_space_phase14::{
     ArchitectureMetadata, DesignIntentRecord, DesignMemorySpace, ReasoningTrace, SearchStep,
     embed_architecture,
@@ -96,10 +95,7 @@ impl ArchitectureSearchEngine {
             self.config.clone()
         };
 
-        let generator = DeterministicCandidateGenerator::new(
-            design_space.clone(),
-            design_intent,
-        );
+        let generator = DeterministicCandidateGenerator::new(design_space.clone(), design_intent);
         let filter = BasicConstraintFilter::new(design_space.clone());
         let controller = BeamSearchController::new(
             effective_config,
@@ -181,12 +177,7 @@ impl ArchitectureSearchEngine {
                         intent_id: intent.system_type.to_ascii_lowercase(),
                         system_type: intent.system_type.clone(),
                         requirements: intent.requirements.clone(),
-                        constraints: intent
-                            .constraints
-                            .architecture
-                            .iter()
-                            .cloned()
-                            .collect(),
+                        constraints: intent.constraints.architecture.iter().cloned().collect(),
                     },
                     selected_template: seed_template.template_id.clone(),
                     search_steps: outcome

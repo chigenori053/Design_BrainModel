@@ -329,15 +329,12 @@ impl ProfileResolver for DefaultProfileResolver {
             annotations: unit.annotations.clone(),
         };
         let recalled = recall_generation_profiles(memory, &query);
-        let selected = recalled
-            .candidate_profiles
-            .into_iter()
-            .max_by(|lhs, rhs| {
-                lhs.score
-                    .total_cmp(&rhs.score)
-                    .then_with(|| lhs.language.cmp(&rhs.language))
-                    .then_with(|| lhs.framework.cmp(&rhs.framework))
-            });
+        let selected = recalled.candidate_profiles.into_iter().max_by(|lhs, rhs| {
+            lhs.score
+                .total_cmp(&rhs.score)
+                .then_with(|| lhs.language.cmp(&rhs.language))
+                .then_with(|| lhs.framework.cmp(&rhs.framework))
+        });
         generation_context_for(selected, query.language_hint)
     }
 }
@@ -487,7 +484,11 @@ pub fn recall_generation_profiles(
     let confidence = if candidates.is_empty() {
         0.0
     } else {
-        candidates.iter().map(|candidate| candidate.score).sum::<f64>() / candidates.len() as f64
+        candidates
+            .iter()
+            .map(|candidate| candidate.score)
+            .sum::<f64>()
+            / candidates.len() as f64
     };
     GenerationMemoryResult {
         candidate_profiles: candidates,
@@ -532,7 +533,11 @@ fn build_module(unit: ImplementationUnit) -> CodeModule {
         name: unit.module_name,
         imports: unit.dependencies,
         interfaces,
-        structs: unit.internal_structs.into_iter().map(build_struct).collect(),
+        structs: unit
+            .internal_structs
+            .into_iter()
+            .map(build_struct)
+            .collect(),
         functions,
     }
 }
@@ -548,7 +553,10 @@ fn build_specialized_module(
             format!(
                 "{}{}",
                 context.language_profile.import_rules.module_prefix,
-                apply_case_style(dependency, context.language_profile.naming_rules.module_case)
+                apply_case_style(
+                    dependency,
+                    context.language_profile.naming_rules.module_case
+                )
             )
         })
         .collect::<Vec<_>>();
@@ -584,7 +592,11 @@ fn build_specialized_module(
         context.language_profile.file_layout_rules.source_dir, file_name
     );
     let mut dependencies = ctx_dependencies(&context);
-    dependencies.sort_by(|lhs, rhs| lhs.name.cmp(&rhs.name).then_with(|| lhs.version.cmp(&rhs.version)));
+    dependencies.sort_by(|lhs, rhs| {
+        lhs.name
+            .cmp(&rhs.name)
+            .then_with(|| lhs.version.cmp(&rhs.version))
+    });
     dependencies.dedup_by(|lhs, rhs| lhs.name == rhs.name);
 
     SpecializedCodeModule {
@@ -960,7 +972,12 @@ fn parse_language_record(record: &MemoryRecord) -> Option<TargetLanguage> {
         .tags
         .iter()
         .find_map(|tag| parse_language_token(tag))
-        .or_else(|| record.relations.iter().find_map(|relation| parse_language_token(relation)))
+        .or_else(|| {
+            record
+                .relations
+                .iter()
+                .find_map(|relation| parse_language_token(relation))
+        })
         .or_else(|| parse_language_token(&record.text))
 }
 
@@ -1002,7 +1019,8 @@ fn parse_language_token(value: &str) -> Option<TargetLanguage> {
 fn parse_framework_token(value: &str) -> Option<String> {
     let normalized = value.to_ascii_lowercase();
     for candidate in ["axum", "fastapi", "express"] {
-        if normalized.contains(&format!("framework:{candidate}")) || normalized.contains(candidate) {
+        if normalized.contains(&format!("framework:{candidate}")) || normalized.contains(candidate)
+        {
             return Some(candidate.to_string());
         }
     }
@@ -1206,7 +1224,13 @@ fn render_specialized_python(module: &SpecializedCodeModule) -> String {
                 .as_ref()
                 .map(|output| format!(" -> {output}"))
                 .unwrap_or_default();
-            format!("def {}({}){}:\n    {}", function.name, args, output, function.body.join("\n    "))
+            format!(
+                "def {}({}){}:\n    {}",
+                function.name,
+                args,
+                output,
+                function.body.join("\n    ")
+            )
         })
         .collect::<Vec<_>>()
         .join("\n\n");
@@ -1330,7 +1354,8 @@ fn apply_case_style(value: &str, style: CaseStyle) -> String {
                 let mut chars = part.chars();
                 match chars.next() {
                     Some(first) => {
-                        first.to_ascii_uppercase().to_string() + &chars.as_str().to_ascii_lowercase()
+                        first.to_ascii_uppercase().to_string()
+                            + &chars.as_str().to_ascii_lowercase()
                     }
                     None => String::new(),
                 }

@@ -351,7 +351,10 @@ fn validation_reports_domain_and_layer_issues() {
 fn mutation_api_supports_move_split_merge() {
     let mut ir = sample_ir();
     ir.move_layer(1, 2);
-    assert_eq!(ir.component_by_id(1).and_then(|component| component.layer), Some(2));
+    assert_eq!(
+        ir.component_by_id(1).and_then(|component| component.layer),
+        Some(2)
+    );
 
     ir.split_component(
         2,

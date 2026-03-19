@@ -565,7 +565,7 @@ impl WorldModel {
         self.design_state
             .exploration_metadata
             .labels
-            .insert(format!("code_action_{}", target.0 .0), target.1.to_string());
+            .insert(format!("code_action_{}", target.0.0), target.1.to_string());
     }
 
     fn apply_geometry_action(&mut self, action: &GeometryAction) {
@@ -768,12 +768,14 @@ mod tests {
 
         assert_eq!(restored.current_state_id(), SnapshotStateId(0));
         assert_eq!(restored.architecture_graph.nodes.len(), 2);
-        assert!(restored
-            .geometry_world
-            .as_ref()
-            .expect("geometry world")
-            .positions
-            .is_empty());
+        assert!(
+            restored
+                .geometry_world
+                .as_ref()
+                .expect("geometry world")
+                .positions
+                .is_empty()
+        );
     }
 
     #[test]
@@ -787,11 +789,15 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert_eq!(next_states.len(), actions.len());
-        assert!(next_states
-            .iter()
-            .all(|state| state.current_state_id() == SnapshotStateId(1)));
-        assert!(next_states
-            .iter()
-            .all(|state| state.evaluation_state.confidence >= 0.0));
+        assert!(
+            next_states
+                .iter()
+                .all(|state| state.current_state_id() == SnapshotStateId(1))
+        );
+        assert!(
+            next_states
+                .iter()
+                .all(|state| state.evaluation_state.confidence >= 0.0)
+        );
     }
 }

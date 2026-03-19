@@ -474,7 +474,7 @@ pub fn runtime_hypotheses_from_reasoning(
             pairs.push((window[0], window[1]));
         }
     }
-    pairs.sort_by_key(|pair| (pair.0 .0, pair.1 .0));
+    pairs.sort_by_key(|pair| (pair.0.0, pair.1.0));
     pairs.dedup();
     pairs
 }
@@ -501,10 +501,12 @@ mod tests {
         assert!(graph.intents.iter().any(|intent| intent == "WebServer"));
         assert!(graph.intents.iter().any(|intent| intent == "REST API"));
         assert!(graph.intents.iter().any(|intent| intent == "Database"));
-        assert!(graph
-            .intents
-            .iter()
-            .any(|intent| intent == "Authentication"));
+        assert!(
+            graph
+                .intents
+                .iter()
+                .any(|intent| intent == "Authentication")
+        );
         assert!(!graph.edges.is_empty());
     }
 
@@ -516,26 +518,34 @@ mod tests {
         assert!(!result.inferred_knowledge.is_empty());
         assert!(!result.architecture_hypotheses.is_empty());
         assert!(result.reasoning_confidence > 0.0);
-        assert!(result
-            .telemetry
-            .events
-            .iter()
-            .any(|event| event.name == "ReasoningStarted"));
-        assert!(result
-            .telemetry
-            .events
-            .iter()
-            .any(|event| event.name == "KnowledgeRetrieved"));
-        assert!(result
-            .telemetry
-            .events
-            .iter()
-            .any(|event| event.name == "HypothesisGenerated"));
-        assert!(result
-            .telemetry
-            .events
-            .iter()
-            .any(|event| event.name == "HypothesisValidated"));
+        assert!(
+            result
+                .telemetry
+                .events
+                .iter()
+                .any(|event| event.name == "ReasoningStarted")
+        );
+        assert!(
+            result
+                .telemetry
+                .events
+                .iter()
+                .any(|event| event.name == "KnowledgeRetrieved")
+        );
+        assert!(
+            result
+                .telemetry
+                .events
+                .iter()
+                .any(|event| event.name == "HypothesisGenerated")
+        );
+        assert!(
+            result
+                .telemetry
+                .events
+                .iter()
+                .any(|event| event.name == "HypothesisValidated")
+        );
     }
 
     #[test]

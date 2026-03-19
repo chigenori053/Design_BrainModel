@@ -126,7 +126,9 @@ impl ArchitectureGrammar {
                 let Some(index) = current_layer else {
                     return Err("contains must appear after layer".to_string());
                 };
-                layer_rules[index].contained_components.push(component_type.clone());
+                layer_rules[index]
+                    .contained_components
+                    .push(component_type.clone());
                 if let Some(component) = component_rules
                     .iter_mut()
                     .find(|rule| rule.component_type == component_type)
@@ -139,7 +141,9 @@ impl ArchitectureGrammar {
                 let Some(index) = current_layer else {
                     return Err("allows must appear after layer".to_string());
                 };
-                layer_rules[index].allowed_targets.push(name.trim().to_string());
+                layer_rules[index]
+                    .allowed_targets
+                    .push(name.trim().to_string());
                 continue;
             }
             return Err(format!("unrecognized grammar dsl line: {line}"));
@@ -204,12 +208,7 @@ impl ArchitectureGrammar {
                     ComponentType::Interface,
                 ],
             ),
-            default_component_rule(
-                "DomainModel",
-                ComponentType::DomainModel,
-                "Domain",
-                vec![],
-            ),
+            default_component_rule("DomainModel", ComponentType::DomainModel, "Domain", vec![]),
             default_component_rule(
                 "Repository",
                 ComponentType::Repository,
@@ -222,12 +221,7 @@ impl ArchitectureGrammar {
                 "Infrastructure",
                 vec![ComponentType::Repository, ComponentType::DataModel],
             ),
-            default_component_rule(
-                "Interface",
-                ComponentType::Interface,
-                "Domain",
-                vec![],
-            ),
+            default_component_rule("Interface", ComponentType::Interface, "Domain", vec![]),
             default_component_rule(
                 "Database",
                 ComponentType::DataModel,

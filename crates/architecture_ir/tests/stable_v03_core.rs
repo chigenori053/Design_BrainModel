@@ -62,7 +62,9 @@ fn validation_rejects_missing_edge_endpoint() {
         .build()
         .expect_err("graph should be invalid");
 
-    assert!(validation
-        .errors
-        .contains(&ValidationError::MissingNode("missing".into())));
+    assert!(
+        validation
+            .errors
+            .contains(&ValidationError::MissingNode("missing".into()))
+    );
 }

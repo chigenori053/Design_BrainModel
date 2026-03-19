@@ -4,7 +4,7 @@ use architecture_domain::{ArchitectureState, ComponentRole};
 use world_model_core::Action;
 
 use crate::{
-    ranking::{rank_candidates, RankedCandidate},
+    ranking::{RankedCandidate, rank_candidates},
     search_state::SearchState,
 };
 

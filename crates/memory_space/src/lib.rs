@@ -18,9 +18,9 @@ pub use memory_space::{
     TemplateMemoryDomain, TemplateMetadata, TemplateRecord, TopologyType,
 };
 pub use pattern_extractor::{architecture_hash, extract_pattern, layer_sequence_from_state};
-pub use pattern_matcher::{match_patterns, PatternMatch};
+pub use pattern_matcher::{PatternMatch, match_patterns};
 pub use pattern_store::{
-    store_state_experience, DesignPattern, InMemoryMemorySpace, MemorySpace, PatternId,
-    PatternStore,
+    DesignPattern, InMemoryMemorySpace, MemorySpace, PatternId, PatternStore,
+    store_state_experience,
 };
 pub use search_prior::SearchPrior;

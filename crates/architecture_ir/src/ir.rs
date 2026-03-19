@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    validate_ir, ArchitectureConstraint, ArchitectureGraph, ArchitectureMetadata, ComponentUnit,
+    ArchitectureConstraint, ArchitectureGraph, ArchitectureMetadata, ComponentUnit,
     ComponentUnitId, DependencyEdge, DependencyType, DesignUnit, DomainUnit, InterfaceUnit,
-    LayerId, NodeId, StructureUnit, ValidationError,
+    LayerId, NodeId, StructureUnit, ValidationError, validate_ir,
 };
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, Hash)]

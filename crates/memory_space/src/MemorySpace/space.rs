@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use architecture_ir::{ArchitectureConstraint, ArchitectureIR, ComponentType, Layer};
 
 use super::architecture_memory::{
-    architecture_hash_string, ArchitectureMemoryDomain, ArchitectureMetadata, ArchitectureRecord,
+    ArchitectureMemoryDomain, ArchitectureMetadata, ArchitectureRecord, architecture_hash_string,
 };
 use super::evaluation_memory::{
     EvaluationDiagnostics, EvaluationMemoryDomain, EvaluationMetricsV2, EvaluationRecord,

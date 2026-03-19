@@ -5,18 +5,18 @@ use std::time::Instant;
 pub mod stable_v03;
 
 use architecture_behavior::{BehaviorAnalysis, BehaviorAnalyzer};
-use architecture_ir::{architecture_hash, ArchitectureIR, NodeId};
+use architecture_ir::{ArchitectureIR, NodeId, architecture_hash};
 use architecture_knowledge::{KnowledgeAnalyzer, PatternDetection};
-use architecture_memory::{recall_similar_architecture, ArchitectureMemory};
+use architecture_memory::{ArchitectureMemory, recall_similar_architecture};
 use architecture_metrics::{ArchitectureMetrics, MetricsCalculator};
 use architecture_rules::{RuleValidator, RuleViolation};
 use architecture_state_v2::{ArchitectureEvaluation, ArchitectureState};
 use execution_graph::ExecutionGraphBuilder;
 use geometry_engine::GeometryEngine;
 use memory_space_phase14::{
-    embed_evaluation, DesignMemorySpace, EvaluationDiagnostics as MemoryEvaluationDiagnostics,
+    DesignMemorySpace, EvaluationDiagnostics as MemoryEvaluationDiagnostics,
     EvaluationMetricsV2 as MemoryEvaluationMetricsV2, EvaluationRecord as MemoryEvaluationRecord,
-    EvaluationScores as MemoryEvaluationScores,
+    EvaluationScores as MemoryEvaluationScores, embed_evaluation,
 };
 use workload_model::WorkloadModel;
 

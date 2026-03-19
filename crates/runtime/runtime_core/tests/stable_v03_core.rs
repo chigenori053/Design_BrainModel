@@ -4,6 +4,9 @@ use architecture_evaluator_core::stable_v03::{
     ArchitectureEvaluator, EvaluationMetrics, EvaluationResult, WeightedArchitectureEvaluator,
 };
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
 use constraint_engine::stable_v03::{
     CompositeConstraintEngine, Constraint, ConstraintEngine, LayerOrderConstraint,
     NoCycleConstraint,
@@ -12,11 +15,8 @@ use design_search_engine::stable_v03::{
     ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, SearchInput,
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
-use runtime_core::stable_v03::{CoreError, RuntimeResult};
 use runtime_core::CoreRuntime;
-use code_language_core::stable_v03::{
-    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
-};
+use runtime_core::stable_v03::{CoreError, RuntimeResult};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
@@ -188,4 +188,13 @@ fn selector_picks_highest_scored_candidate() {
     assert_eq!(result.architecture, simple);
     assert_eq!(result.design.nodes().len(), 2);
     assert!(!result.files.is_empty());
+    assert!(!result.test_suites.is_empty());
+    assert!(
+        result
+            .project_layout
+            .files
+            .iter()
+            .any(|file| file.path.contains("/tests/test_"))
+    );
+    assert!(!result.execution_plan.test_plan.test_files.is_empty());
 }

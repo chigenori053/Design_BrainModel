@@ -284,36 +284,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "arch_gen"
-version = "0.1.0"
-dependencies = [
- "agent_core",
- "architecture_domain",
- "architecture_evaluator",
- "architecture_ir",
- "architecture_reasoner",
- "architecture_search",
- "clap",
- "code_ir",
- "code_language_core",
- "design_domain",
- "design_reasoning",
- "design_search_engine",
- "glob",
- "knowledge_store",
- "memory_space_phase14",
- "reqwest",
- "runtime_core",
- "runtime_vm",
- "scraper",
- "serde",
- "serde_json",
- "serde_yaml",
- "tempfile",
- "world_model_core",
-]
-
-[[package]]
 name = "architecture_behavior"
 version = "0.1.0"
 dependencies = [
@@ -946,6 +916,7 @@ name = "code_generation_core"
 version = "0.1.0"
 dependencies = [
  "architecture_domain",
+ "execution_core",
 ]
 
 [[package]]
@@ -1205,6 +1176,7 @@ dependencies = [
  "design_reasoning",
  "design_search_engine",
  "hybrid_vm",
+ "memory_space_phase14",
  "runtime_core",
  "runtime_vm",
  "semantic_dhm",
@@ -1634,6 +1606,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_core"
+version = "0.1.0"
+
+[[package]]
 name = "execution_graph"
 version = "0.1.0"
 dependencies = [
@@ -1649,6 +1625,13 @@ dependencies = [
  "execution_graph",
  "performance_model",
  "workload_model",
+]
+
+[[package]]
+name = "execution_stability_core"
+version = "0.1.0"
+dependencies = [
+ "execution_core",
 ]
 
 [[package]]
@@ -1926,12 +1909,6 @@ dependencies = [
  "log",
  "xml-rs",
 ]
-
-[[package]]
-name = "glob"
-version = "0.3.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0cc23270f6e1808e30a928bdc84dea0b9b4136a8bc82338574f23baf47bbd280"
 
 [[package]]
 name = "glow"
@@ -2396,6 +2373,7 @@ name = "implementation_core"
 version = "0.1.0"
 dependencies = [
  "code_language_core",
+ "execution_core",
 ]
 
 [[package]]
@@ -3906,6 +3884,7 @@ dependencies = [
  "memory_space_phase14",
  "num-complex",
  "serde_json",
+ "test_generation_core",
  "unified_design_ir",
  "world_model",
  "world_model_core",
@@ -4228,19 +4207,6 @@ dependencies = [
  "itoa",
  "ryu",
  "serde",
-]
-
-[[package]]
-name = "serde_yaml"
-version = "0.9.34+deprecated"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6a8b1a1a2ebf674015cc02edccce75287f1a0130d394307b36743c2f5d504b47"
-dependencies = [
- "indexmap",
- "itoa",
- "ryu",
- "serde",
- "unsafe-libyaml",
 ]
 
 [[package]]
@@ -4570,6 +4536,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "test_generation_core"
+version = "0.1.0"
+dependencies = [
+ "code_language_core",
+ "unified_design_ir",
+]
+
+[[package]]
 name = "thiserror"
 version = "1.0.69"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4870,12 +4844,6 @@ version = "0.1.0"
 dependencies = [
  "architecture_ir",
 ]
-
-[[package]]
-name = "unsafe-libyaml"
-version = "0.2.11"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "673aac59facbab8a9007c7f6108d11f63b603f7cabff99fabf650fea5c32b861"
 
 [[package]]
 name = "untrusted"

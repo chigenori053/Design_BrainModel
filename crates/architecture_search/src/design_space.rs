@@ -18,7 +18,8 @@ impl DesignSpaceBuilder {
                 component_catalog.push(component);
             }
         }
-        component_catalog.retain(|component| !intent.constraints.forbidden_components.contains(component));
+        component_catalog
+            .retain(|component| !intent.constraints.forbidden_components.contains(component));
 
         let allowed_dependencies = self
             .grammar

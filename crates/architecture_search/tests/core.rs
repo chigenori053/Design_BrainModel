@@ -1,11 +1,11 @@
 use architecture_ir::{ArchitectureConstraint, ComponentType, ConstraintType};
 use architecture_search::{
     ArchitectureEvaluator, ArchitectureGrammar, ArchitectureSearchEngine,
-    ArchitectureTemplateEngine,
-    BasicArchitectureEvaluator, BasicConstraintFilter, BeamSearchController, ConstraintFilter,
-    ComponentRule, ConstraintRule, DependencyRule, DesignIntent,
-    DeterministicCandidateGenerator, IntentConstraints, IntentModel, InterfaceRule, LayerRule,
-    ParetoSetOptimizer, SearchConfig, SearchController, SearchSpace, create_initial_state,
+    ArchitectureTemplateEngine, BasicArchitectureEvaluator, BasicConstraintFilter,
+    BeamSearchController, ComponentRule, ConstraintFilter, ConstraintRule, DependencyRule,
+    DesignIntent, DeterministicCandidateGenerator, IntentConstraints, IntentModel, InterfaceRule,
+    LayerRule, ParetoSetOptimizer, SearchConfig, SearchController, SearchSpace,
+    create_initial_state,
 };
 use memory_space_phase14::DesignMemorySpace;
 
@@ -315,18 +315,22 @@ contains Repository
     )
     .expect("dsl should parse");
 
-    assert!(grammar
-        .component_rules
-        .iter()
-        .any(|rule| rule.component_type == ComponentType::Service));
+    assert!(
+        grammar
+            .component_rules
+            .iter()
+            .any(|rule| rule.component_type == ComponentType::Service)
+    );
     assert!(grammar
         .dependency_rules
         .iter()
         .any(|rule| rule.from == ComponentType::Service && rule.to == ComponentType::Repository));
-    assert!(grammar
-        .layer_rules
-        .iter()
-        .any(|rule| rule.name == "Application"));
+    assert!(
+        grammar
+            .layer_rules
+            .iter()
+            .any(|rule| rule.name == "Application")
+    );
 }
 
 #[test]
@@ -341,45 +345,54 @@ fn grammar_engine_rejects_direct_controller_to_repository() {
     });
 
     let mut state = create_initial_state();
-    state.architecture.components.push(architecture_ir::ComponentUnit {
-        id: 1,
-        name: "Controller1".to_string(),
-        component_type: ComponentType::Controller,
-        layer: Some(1),
-        interfaces: vec![],
-        properties: vec![],
-        structures: vec![],
-        visibility: architecture_ir::Visibility::Public,
-        metrics: architecture_ir::ComponentMetrics::default(),
-    });
-    state.architecture.components.push(architecture_ir::ComponentUnit {
-        id: 2,
-        name: "Repository1".to_string(),
-        component_type: ComponentType::Repository,
-        layer: Some(3),
-        interfaces: vec![],
-        properties: vec![],
-        structures: vec![],
-        visibility: architecture_ir::Visibility::Public,
-        metrics: architecture_ir::ComponentMetrics::default(),
-    });
-    state.architecture.dependencies.push(architecture_ir::DependencyEdge {
-        source: architecture_ir::NodeId::Component(1),
-        target: architecture_ir::NodeId::Component(2),
-        dependency_type: architecture_ir::DependencyType::Use,
-        interface: None,
-    });
+    state
+        .architecture
+        .components
+        .push(architecture_ir::ComponentUnit {
+            id: 1,
+            name: "Controller1".to_string(),
+            component_type: ComponentType::Controller,
+            layer: Some(1),
+            interfaces: vec![],
+            properties: vec![],
+            structures: vec![],
+            visibility: architecture_ir::Visibility::Public,
+            metrics: architecture_ir::ComponentMetrics::default(),
+        });
+    state
+        .architecture
+        .components
+        .push(architecture_ir::ComponentUnit {
+            id: 2,
+            name: "Repository1".to_string(),
+            component_type: ComponentType::Repository,
+            layer: Some(3),
+            interfaces: vec![],
+            properties: vec![],
+            structures: vec![],
+            visibility: architecture_ir::Visibility::Public,
+            metrics: architecture_ir::ComponentMetrics::default(),
+        });
+    state
+        .architecture
+        .dependencies
+        .push(architecture_ir::DependencyEdge {
+            source: architecture_ir::NodeId::Component(1),
+            target: architecture_ir::NodeId::Component(2),
+            dependency_type: architecture_ir::DependencyType::Use,
+            interface: None,
+        });
 
-    let validation = architecture_search::ArchitectureGrammarEngine.validate(
-        &state.architecture,
-        &grammar,
-    );
+    let validation =
+        architecture_search::ArchitectureGrammarEngine.validate(&state.architecture, &grammar);
 
     assert!(!validation.valid);
-    assert!(validation
-        .issues
-        .iter()
-        .any(|issue| issue.contains("forbidden dependency")));
+    assert!(
+        validation
+            .issues
+            .iter()
+            .any(|issue| issue.contains("forbidden dependency"))
+    );
 }
 
 #[test]
@@ -417,7 +430,12 @@ fn engine_returns_pareto_architectures_for_web_api_intent() {
             .architecture_ir
             .components
             .iter()
-            .all(|component| !intent.constraints.forbidden_components.contains(&component.component_type))
+            .all(|component| {
+                !intent
+                    .constraints
+                    .forbidden_components
+                    .contains(&component.component_type)
+            })
     }));
     assert!(result.pareto_frontier.iter().any(|candidate| {
         let component_types = candidate
@@ -494,14 +512,18 @@ fn template_engine_mutates_layered_template_for_cache_and_auth() {
         },
     );
 
-    assert!(mutated
-        .component_slots
-        .iter()
-        .any(|slot| slot.slot_name == "AuthService"));
-    assert!(mutated
-        .component_slots
-        .iter()
-        .any(|slot| slot.slot_name == "CacheAdapter"));
+    assert!(
+        mutated
+            .component_slots
+            .iter()
+            .any(|slot| slot.slot_name == "AuthService")
+    );
+    assert!(
+        mutated
+            .component_slots
+            .iter()
+            .any(|slot| slot.slot_name == "CacheAdapter")
+    );
 }
 
 #[test]
@@ -515,11 +537,12 @@ fn template_expansion_creates_partial_architecture_seed() {
 
     assert!(!seed.architecture.layers.is_empty());
     assert!(!seed.architecture.components.is_empty());
-    assert!(seed
-        .architecture
-        .components
-        .iter()
-        .any(|component| component.name.contains("Service")));
+    assert!(
+        seed.architecture
+            .components
+            .iter()
+            .any(|component| component.name.contains("Service"))
+    );
 }
 
 #[test]

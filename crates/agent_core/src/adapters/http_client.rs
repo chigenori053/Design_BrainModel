@@ -1,5 +1,5 @@
-use serde::Deserialize;
 use scraper::{Html, Selector};
+use serde::Deserialize;
 
 use crate::capability::SearchHit;
 use crate::domain::DomainError;
@@ -69,7 +69,9 @@ impl SearchPort for HttpClient {
                 } else {
                     payload.heading.clone()
                 },
-                snippet: format!("{} {}", payload.abstract_text, payload.abstract_url).trim().to_string(),
+                snippet: format!("{} {}", payload.abstract_text, payload.abstract_url)
+                    .trim()
+                    .to_string(),
             });
         }
         flatten_topics(&payload.related_topics, &mut hits);

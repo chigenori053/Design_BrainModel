@@ -1,4 +1,4 @@
-use world_model_core::{evaluate_architecture, EvaluationVector};
+use world_model_core::{EvaluationVector, evaluate_architecture};
 
 use crate::search_state::SearchState;
 

@@ -9,11 +9,11 @@ use math_reasoning_engine::{
 };
 use memory_graph::DesignExperienceGraph;
 use memory_space_core::RecallResult;
-use memory_space_phase14::{store_state_experience, InMemoryMemorySpace, MemorySpace, SearchPrior};
-use policy_engine::{evaluate_policy, policy_weight_for_action, PolicyStore};
+use memory_space_phase14::{InMemoryMemorySpace, MemorySpace, SearchPrior, store_state_experience};
+use policy_engine::{PolicyStore, evaluate_policy, policy_weight_for_action};
 use simulation_scheduler::{
-    architecture_hash, DefaultSimulationScheduler, LightSimulationTrace, SimulationSchedulerConfig,
-    SimulationSchedulerTrace,
+    DefaultSimulationScheduler, LightSimulationTrace, SimulationSchedulerConfig,
+    SimulationSchedulerTrace, architecture_hash,
 };
 use world_model::{DefaultSimulationEngine, SimulationEngine};
 use world_model_core::{Action, WorldState};
@@ -21,7 +21,7 @@ use world_model_core::{Action, WorldState};
 use crate::architecture_evaluator::{ArchitectureEvaluator, DefaultArchitectureEvaluator};
 use crate::audit::{AuditCore, AuditDecision, AuditTelemetryEvent};
 use crate::pruning::{
-    prune_candidates, prune_candidates_with_telemetry, SearchNodeDiversityPruned,
+    SearchNodeDiversityPruned, prune_candidates, prune_candidates_with_telemetry,
 };
 use crate::search_config::SearchConfig;
 use crate::search_context::SearchContext;

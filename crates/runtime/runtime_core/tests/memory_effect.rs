@@ -4,6 +4,9 @@ use architecture_evaluator_core::stable_v03::{
     ArchitectureEvaluator, WeightedArchitectureEvaluator,
 };
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Node, NodeType};
+use code_language_core::stable_v03::{
+    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
+};
 use constraint_engine::stable_v03::{
     CompositeConstraintEngine, Constraint, ConstraintEngine, LayerOrderConstraint,
     NoCycleConstraint,
@@ -11,9 +14,6 @@ use constraint_engine::stable_v03::{
 use design_search_engine::stable_v03::{DesignSearchEngine, DeterministicBeamSearchEngine};
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
-use code_language_core::stable_v03::{
-    CodeGenerator, CodeIRBuilder, DefaultCodeIRBuilder, RustGenerator,
-};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;
 
