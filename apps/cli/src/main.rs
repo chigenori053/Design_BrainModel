@@ -1,3 +1,6 @@
 fn main() {
-    eprintln!("This legacy binary is deprecated. Use `design`.");
+    if let Err(err) = design_cli::app::run() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
 }
