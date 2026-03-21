@@ -165,6 +165,10 @@ fn runtime_execute_from_text_returns_executed_with_trace() {
         RuntimeExecutionResult::Executed(runtime_result) => {
             assert!(runtime_result.intent_trace.is_some());
             assert!(runtime_result.explanation.is_some());
+            assert!(runtime_result.reasoning_trace.is_some());
+            assert!(runtime_result.trace.generated_hypotheses > 0);
+            assert!(runtime_result.trace.search_depth <= 2);
+            assert!(runtime_result.reasoning_trace.as_ref().unwrap().stats.total_nodes > 0);
             let trace = runtime_result.intent_trace.unwrap();
             assert_eq!(
                 trace

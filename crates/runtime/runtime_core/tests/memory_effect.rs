@@ -67,6 +67,7 @@ fn memory_changes_search_result() {
         Arc::new(DeterministicBeamSearchEngine {
             beam_width: 4,
             max_depth: 2,
+            ..DeterministicBeamSearchEngine::default()
         }) as Arc<dyn DesignSearchEngine>,
         constraint_engine(),
         evaluator(),
@@ -82,6 +83,7 @@ fn memory_changes_search_result() {
         Arc::new(DeterministicBeamSearchEngine {
             beam_width: 4,
             max_depth: 2,
+            ..DeterministicBeamSearchEngine::default()
         }) as Arc<dyn DesignSearchEngine>,
         constraint_engine(),
         evaluator(),

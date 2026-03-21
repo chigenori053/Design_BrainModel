@@ -18,7 +18,7 @@ use constraint_engine::stable_v03::{
 };
 use design_search_engine::stable_v03::{
     ArchitectureCandidate, Constraint as RecallConstraint, DesignSearchEngine, RecallContext,
-    RecalledPattern, SearchInput,
+    ReasoningTrace, RecalledPattern, SearchInput,
 };
 use implementation_core::stable_v03::{
     DefaultProjectGenerator, ExecutionPlan, ProjectGenerator, ProjectLayout,
@@ -50,6 +50,9 @@ pub struct ExecutionTrace {
     pub recall_used: bool,
     pub candidate_count: usize,
     pub selected_score: f64,
+    pub generated_hypotheses: usize,
+    pub search_depth: usize,
+    pub recall_hit_rate: f32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -62,6 +65,7 @@ pub struct RuntimeResult {
     pub execution_plan: ExecutionPlan,
     pub generation_contexts: Vec<GenerationContext>,
     pub trace: ExecutionTrace,
+    pub reasoning_trace: Option<ReasoningTrace>,
     pub intent_trace: Option<IntentTrace>,
     pub explanation: Option<Explanation>,
 }
@@ -187,11 +191,11 @@ impl RuntimeExecutor {
             limit: 5,
         });
         let recall = to_recall_context(&intent, &recall_result);
-        let candidates = self.search.search(SearchInput {
+        let search_result = self.search.search_with_trace(SearchInput {
             intent: intent.clone(),
             recall: recall.clone(),
         });
-        let filtered = self.constraint.filter(candidates);
+        let filtered = self.constraint.filter(search_result.candidates);
         let candidate_count = filtered.len();
         let scored = filtered
             .into_iter()
@@ -268,7 +272,11 @@ impl RuntimeExecutor {
                 recall_used: recall.is_some(),
                 candidate_count,
                 selected_score: evaluation.score,
+                generated_hypotheses: search_result.trace.generated_hypotheses,
+                search_depth: search_result.trace.search_depth,
+                recall_hit_rate: search_result.trace.recall_hit_rate,
             },
+            reasoning_trace: Some(search_result.trace),
             intent_trace,
             explanation: None,
         };
