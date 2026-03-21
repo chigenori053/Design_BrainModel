@@ -28,7 +28,13 @@ pub fn apply_memory(
         limit: 1,
     };
     let records = memory.retrieve(query);
-    if let Some(record) = records.first() {
+    // Skip knowledge-seed records: they are general reference patterns, not
+    // user-session memory, so they must not fill intent slots (Memory must
+    // not force a solution — spec §3.2).
+    if let Some(record) = records
+        .iter()
+        .find(|r| !r.tags.iter().any(|t| t == "knowledge_seed"))
+    {
         let engine = RuleEngine;
         let mut tokens = tokenizer.tokenize(&record.text);
         tokens.extend(record.tags.iter().map(|tag| tag.to_ascii_lowercase()));

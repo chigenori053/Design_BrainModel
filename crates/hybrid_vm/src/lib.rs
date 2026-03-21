@@ -37,10 +37,10 @@ pub use semantic::ranking::{
     ObjectiveCase as SemanticObjectiveCase, RankedCase, rank_frontier_by_human_coherence,
 };
 pub use semantic_dhm::{
-    ConceptId, ConceptUnitV2, DerivedRequirement, DesignProjection, L1Id, L2Config, L2Mode,
-    MeaningLayerSnapshot, RequirementKind, RequirementRole as L1RequirementRole, SemanticError,
-    SemanticUnitL1Framework, SemanticUnitL1Input, SemanticUnitL1V2, SemanticUnitL2Detail,
-    Snapshotable,
+    CausalEdge, ConceptId, ConceptUnitV2, DerivedRequirement, DesignProjection, L1Id, L2Config,
+    L2Mode, MeaningLayerSnapshot, RequirementKind, RequirementRole as L1RequirementRole,
+    SemanticError, SemanticUnitL1Framework, SemanticUnitL1Input, SemanticUnitL1V2,
+    SemanticUnitL2Detail, Snapshotable,
 };
 pub use shm::{DesignRule, EffectVector, RuleCategory, RuleId, Shm, Transformation};
 

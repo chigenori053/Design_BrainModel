@@ -6,6 +6,7 @@ default-run = "design"
 
 [features]
 ci-heavy = []
+contract_strict = []
 
 [[bin]]
 name = "cli"
@@ -22,10 +23,13 @@ path = "src/phase1_batch_main.rs"
 [dependencies]
 analysis_tools = { workspace = true }
 agent_core = { workspace = true }
+bridge = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }
 design_search_engine = { workspace = true }
 hybrid_vm = { workspace = true }
+integration_layer = { workspace = true }
+unified_design_ir = { workspace = true }
 runtime_vm = { workspace = true }
 runtime_core = { workspace = true }
 memory_space_phase14 = { workspace = true }
@@ -33,4 +37,9 @@ semantic_dhm = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"
+fs_extra = "1.3"
+uuid = { version = "1", features = ["v4"] }
+wait-timeout = "0.2"
 world_model_core = { workspace = true }
+crossterm = { workspace = true }
+ratatui = { workspace = true }

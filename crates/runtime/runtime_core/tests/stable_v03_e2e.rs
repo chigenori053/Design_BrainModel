@@ -12,7 +12,7 @@ use constraint_engine::stable_v03::{
     NoCycleConstraint,
 };
 use design_search_engine::stable_v03::{
-    ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, SearchInput,
+    ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, ReasoningInput,
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
@@ -91,7 +91,7 @@ fn runtime_execute_produces_architecture_without_panic() {
 struct InvalidFirstSearchEngine;
 
 impl DesignSearchEngine for InvalidFirstSearchEngine {
-    fn search(&self, _input: SearchInput) -> Vec<ArchitectureCandidate> {
+    fn search(&self, _input: ReasoningInput) -> Vec<ArchitectureCandidate> {
         let invalid = ArchitectureGraphBuilder::new()
             .add_node(Node::new("api", NodeType::Interface))
             .add_node(Node::new("service", NodeType::Service))

@@ -3,14 +3,19 @@ name = "runtime_core"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+contract_strict = []
+
 [dependencies]
 ai_context = { workspace = true }
 architecture_ir = { workspace = true }
 architecture_evaluator_core = { workspace = true }
+bridge = { workspace = true }
 code_language_core = { workspace = true }
 constraint_engine = { workspace = true }
 design_search_engine = { workspace = true }
 implementation_core = { workspace = true }
+integration_layer = { workspace = true }
 memory_space_phase14 = { workspace = true }
 memory_space_core = { workspace = true }
 num-complex = { workspace = true }

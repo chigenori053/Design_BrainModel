@@ -22,6 +22,8 @@ members = [
     "crates/constraint_engine",
     "crates/concept_engine",
     "crates/concept_field",
+    "crates/bridge",
+    "crates/integration_layer",
     "crates/domain/causal_domain",
     "crates/domain/architecture_domain",
     "crates/domain/design_domain",
@@ -35,6 +37,7 @@ members = [
     "crates/agent_core",
     "crates/brain_core",
     "crates/chm",
+    "crates/contracts",
     "crates/core_types",
     "crates/dhm",
     "crates/field_engine",
@@ -75,6 +78,7 @@ members = [
     "crates/execution_core",
     "crates/execution_stability_core",
     "crates/test_generation_core",
+    "crates/tensor_ir",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
     "apps/cli",
@@ -82,7 +86,9 @@ members = [
     "apps/desktop",
     "apps/server",
     "apps/lsp",
-    "crates/core/world_model_core"
+    "crates/core/world_model_core",
+    "tests/contract",
+    "tests/pipeline"
 ]
 resolver = "2"
 
@@ -109,12 +115,15 @@ architecture_behavior = { path = "crates/architecture_behavior" }
 constraint_engine = { path = "crates/constraint_engine" }
 concept_engine = { path = "crates/concept_engine" }
 concept_field = { path = "crates/concept_field" }
+bridge = { path = "crates/bridge" }
+integration_layer = { path = "crates/integration_layer" }
 design_search_engine = { path = "crates/engine/design_search_engine" }
 search_controller = { path = "crates/search_controller" }
 analysis_tools = { path = "crates/analysis_tools" }
 agent_core = { path = "crates/agent_core" }
 brain_core = { path = "crates/brain_core" }
 chm = { path = "crates/chm" }
+contracts = { path = "crates/contracts" }
 core_types = { path = "crates/core_types" }
 dhm = { path = "crates/dhm" }
 field_engine = { path = "crates/field_engine" }
@@ -141,6 +150,7 @@ unified_design_ir = { path = "crates/unified_design_ir" }
 design_reasoning = { path = "crates/design_reasoning" }
 reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }
+design_cli = { path = "apps/cli" }
 world_model_core = { path = "crates/core/world_model_core" }
 design_domain = { path = "crates/domain/design_domain" }
 design_grammar = { path = "crates/domain/design_grammar" }
@@ -164,6 +174,9 @@ code_generation_core = { path = "crates/code_generation_core" }
 execution_core = { path = "crates/execution_core" }
 execution_stability_core = { path = "crates/execution_stability_core" }
 test_generation_core = { path = "crates/test_generation_core" }
+tensor_ir = { path = "crates/tensor_ir" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 proptest = "1"
+ratatui = "0.29"
+crossterm = "0.28"

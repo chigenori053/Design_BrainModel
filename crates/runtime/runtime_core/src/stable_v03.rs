@@ -7,6 +7,7 @@ use architecture_evaluator_core::stable_v03::{
     ArchitectureEvaluator, EvaluationResult, WeightedArchitectureEvaluator,
 };
 use architecture_ir::stable_v03::ArchitectureGraph;
+use bridge::reasoning_input_from_intent;
 use code_language_core::stable_v03::{
     CodeGenerator, CodeIRBuilder, ContextualCodeIRBuilder, DefaultCodeIRBuilder,
     DefaultContextualCodeIRBuilder, DefaultGeneratorRegistry, DefaultProfileResolver,
@@ -17,13 +18,19 @@ use constraint_engine::stable_v03::{
     LayerOrderConstraint, MaxNodeConstraint, NoCycleConstraint, NoIsolatedNodesConstraint,
 };
 use design_search_engine::stable_v03::{
-    ArchitectureCandidate, Constraint as RecallConstraint, DesignSearchEngine, RecallContext,
-    ReasoningTrace, RecalledPattern, SearchInput,
+    ArchitectureCandidate, Constraint as RecallConstraint, Context, DesignSearchEngine,
+    RecallContext, ReasoningTrace, RecalledPattern,
 };
 use implementation_core::stable_v03::{
     DefaultProjectGenerator, ExecutionPlan, ProjectGenerator, ProjectLayout,
 };
-use memory_space_phase14::stable_v03::{MemoryEngine, MemoryRecord, RecallInput};
+use integration_layer::{
+    AnalysisInput, CanonicalRelation, SystemInput, SystemOutput, TraceLink, to_relations,
+    to_system_output, trace_links, validate_mapping,
+};
+use memory_space_phase14::stable_v03::{
+    MemoryCandidate, MemoryEngine, MemoryRecord, MemorySource, RecallInput, RecallResult,
+};
 use test_generation_core::stable_v03::{
     DefaultStructuralTestGenerator, TestGenerator, TestSuite, render_test_file, validate_test_suite,
 };
@@ -56,6 +63,12 @@ pub struct ExecutionTrace {
 }
 
 #[derive(Clone, Debug, PartialEq)]
+pub struct ScoredCandidate {
+    pub candidate: ArchitectureCandidate,
+    pub evaluation: EvaluationResult,
+}
+
+#[derive(Clone, Debug, PartialEq)]
 pub struct RuntimeResult {
     pub architecture: ArchitectureGraph,
     pub design: DesignGraph,
@@ -68,6 +81,12 @@ pub struct RuntimeResult {
     pub reasoning_trace: Option<ReasoningTrace>,
     pub intent_trace: Option<IntentTrace>,
     pub explanation: Option<Explanation>,
+    pub scored_candidates: Vec<ScoredCandidate>,
+    pub recall_records: Vec<memory_space_phase14::stable_v03::RecalledRecord>,
+    pub input_relations: Vec<CanonicalRelation>,
+    pub output_relations: Vec<CanonicalRelation>,
+    pub system_output: SystemOutput,
+    pub trace_links: Vec<TraceLink>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -186,15 +205,37 @@ impl RuntimeExecutor {
         intent: IntentState,
         intent_trace: Option<IntentTrace>,
     ) -> CoreResult<RuntimeResult> {
+        let input_relations = to_relations(SystemInput::Analyze(AnalysisInput {
+            system_id: intent.raw.clone(),
+            entities: intent.tokens.clone(),
+            has_cycle: false,
+        }));
         let recall_result = self.memory.recall(RecallInput {
             intent: intent.clone(),
             limit: 5,
         });
         let recall = to_recall_context(&intent, &recall_result);
-        let search_result = self.search.search_with_trace(SearchInput {
-            intent: intent.clone(),
-            recall: recall.clone(),
-        });
+        let extra_tokens = recall
+            .as_ref()
+            .map(|ctx| {
+                ctx.patterns
+                    .iter()
+                    .flat_map(|pattern| pattern.tags.iter().cloned())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let memory_candidates = recall_candidates_from_result(&recall_result);
+        let mut reasoning_input = reasoning_input_from_intent(
+            &intent,
+            &extra_tokens,
+            Context {
+                beam_width: 5,
+                max_depth: 3,
+                timeout_ms: 2_000,
+            },
+        );
+        reasoning_input.memory_candidates = memory_candidates;
+        let search_result = self.search.search_with_trace(reasoning_input);
         let filtered = self.constraint.filter(search_result.candidates);
         let candidate_count = filtered.len();
         let scored = filtered
@@ -204,8 +245,24 @@ impl RuntimeExecutor {
                 (candidate, evaluation)
             })
             .collect::<Vec<_>>();
+        let scored_candidates_for_ui: Vec<ScoredCandidate> = scored
+            .iter()
+            .map(|(candidate, evaluation)| ScoredCandidate {
+                candidate: candidate.clone(),
+                evaluation: evaluation.clone(),
+            })
+            .collect();
         let (selected, evaluation) = select_best(scored).ok_or(CoreError::SearchFailed)?;
         let design = self.mapper.map(&selected.architecture);
+        let output_relations =
+            to_relations(SystemInput::Architecture(selected.architecture.clone()));
+        let mapping_validation =
+            validate_mapping(&SystemInput::Architecture(selected.architecture.clone()), &output_relations);
+        if !mapping_validation.is_valid {
+            return Err(CoreError::SearchFailed);
+        }
+        let output_trace_links = trace_links(&output_relations);
+        let system_output = to_system_output(output_relations.clone());
         let units = design.to_implementation_units();
         let generation_contexts = units
             .iter()
@@ -272,13 +329,19 @@ impl RuntimeExecutor {
                 recall_used: recall.is_some(),
                 candidate_count,
                 selected_score: evaluation.score,
-                generated_hypotheses: search_result.trace.generated_hypotheses,
-                search_depth: search_result.trace.search_depth,
-                recall_hit_rate: search_result.trace.recall_hit_rate,
+                generated_hypotheses: search_result.trace.stats.total_nodes,
+                search_depth: search_result.trace.stats.max_depth,
+                recall_hit_rate: search_result.trace.stats.recall_hit_rate,
             },
             reasoning_trace: Some(search_result.trace),
             intent_trace,
             explanation: None,
+            scored_candidates: scored_candidates_for_ui,
+            recall_records: recall_result.records,
+            input_relations,
+            output_relations,
+            system_output,
+            trace_links: output_trace_links,
         };
 
         if let Some(trace) = runtime_result.intent_trace.clone() {
@@ -409,4 +472,30 @@ fn slot_tokens(value: &str) -> Vec<String> {
     tokens.sort();
     tokens.dedup();
     tokens
+}
+
+/// Convert a memory recall result to `MemoryCandidate` entries for scoring.
+/// Score is derived from the recall confidence; source reflects record reliability.
+fn recall_candidates_from_result(recall: &RecallResult) -> Vec<MemoryCandidate> {
+    recall
+        .records
+        .iter()
+        .enumerate()
+        .map(|(rank, recalled)| {
+            let score = (recalled.score as f32).clamp(0.0, 1.0);
+            let source = if score >= 0.90 {
+                MemorySource::Exact
+            } else if score >= 0.60 {
+                MemorySource::Cache
+            } else {
+                MemorySource::Index
+            };
+            MemoryCandidate {
+                id: recalled.record.id.clone(),
+                score,
+                source,
+                rank,
+            }
+        })
+        .collect()
 }

@@ -1,0 +1,25 @@
+[package]
+name = "pipeline_tests"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+contract_strict = [
+    "bridge/contract_strict",
+    "contracts/contract_strict",
+    "design_search_engine/contract_strict",
+    "memory_space_phase14/contract_strict",
+    "runtime_core/contract_strict",
+    "design_cli/contract_strict",
+]
+
+[dependencies]
+architecture_ir = { workspace = true }
+bridge = { workspace = true }
+contracts = { workspace = true }
+design_cli = { workspace = true }
+design_search_engine = { workspace = true }
+integration_layer = { workspace = true }
+memory_space_phase14 = { workspace = true }
+runtime_core = { workspace = true }
+world_model = { workspace = true }

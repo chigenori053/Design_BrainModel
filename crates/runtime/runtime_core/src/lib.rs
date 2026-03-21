@@ -12,8 +12,10 @@ pub use ai_context::AIContext;
 pub use context::{Phase9RuntimeContext, RequestId, RuntimeStage, SearchMetrics, SearchSummary};
 pub use event::{RuntimeEvent, RuntimeEventBus};
 pub use explanation::{
-    DecisionExplanation, DefaultExplanationBuilder, Explanation, ExplanationBuilder,
-    SlotExplanation, source_to_message,
+    CompressionConfig, DecisionExplanation, DefaultExplanationBuilder, Explanation,
+    ExplanationBuilder, ProofNode, ReasoningExplanation, SlotExplanation, TraceIndex, build_proof,
+    compress_proof, explain_reasoning_trace, explain_text, infer_with_explain,
+    infer_with_explain_full, source_to_message,
 };
 pub use intent_refiner::{
     ChatContext, Clarification, CoreSlot, DefaultIntentRefiner, InferenceEngine, IntentError,

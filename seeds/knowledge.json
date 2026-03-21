@@ -1,0 +1,394 @@
+[
+  {
+    "id": "web-rust-axum-01",
+    "intent": "build rust web application",
+    "pattern": "web backend rust",
+    "solution": "axum web framework with tokio async runtime, tower middleware, serde for JSON serialization",
+    "tags": ["web", "rust", "axum", "tokio", "http", "backend", "server", "rest", "api", "async"]
+  },
+  {
+    "id": "web-rust-actix-01",
+    "intent": "build rust http server",
+    "pattern": "web server rust actix",
+    "solution": "actix-web framework with actix runtime, middleware chain, JSON extractors",
+    "tags": ["web", "rust", "actix", "actix-web", "http", "server", "backend", "rest", "async"]
+  },
+  {
+    "id": "web-rust-warp-01",
+    "intent": "build rust rest api",
+    "pattern": "rest api rust lightweight",
+    "solution": "warp filter composition with hyper transport layer, tokio async executor",
+    "tags": ["web", "rust", "warp", "rest", "api", "hyper", "tokio", "filter", "backend"]
+  },
+  {
+    "id": "api-rust-openapi-01",
+    "intent": "build openapi rest service rust",
+    "pattern": "openapi swagger rust api",
+    "solution": "axum with utoipa for OpenAPI spec generation, validator crate for request validation",
+    "tags": ["api", "rust", "openapi", "swagger", "axum", "utoipa", "rest", "http", "endpoint"]
+  },
+  {
+    "id": "api-rest-json-01",
+    "intent": "build json api endpoint",
+    "pattern": "json rest endpoint rust",
+    "solution": "axum Router with Json extractor, serde Deserialize on request types, StatusCode responses",
+    "tags": ["api", "rest", "json", "endpoint", "rust", "axum", "serde", "http", "route"]
+  },
+  {
+    "id": "api-grpc-rust-01",
+    "intent": "build grpc service rust",
+    "pattern": "grpc microservice rust",
+    "solution": "tonic gRPC framework with prost protobuf codegen, tokio async runtime",
+    "tags": ["api", "grpc", "rust", "tonic", "prost", "protobuf", "microservice", "service", "rpc"]
+  },
+  {
+    "id": "cli-rust-clap-01",
+    "intent": "build command line tool rust",
+    "pattern": "cli tool rust clap",
+    "solution": "clap derive macros for argument parsing, structopt pattern, subcommand dispatch",
+    "tags": ["cli", "rust", "clap", "command", "terminal", "tool", "args", "subcommand", "derive"]
+  },
+  {
+    "id": "cli-rust-repl-01",
+    "intent": "build interactive repl rust",
+    "pattern": "interactive repl cli rust",
+    "solution": "rustyline for readline support, clap for command parsing, loop-based REPL with history",
+    "tags": ["cli", "rust", "repl", "interactive", "terminal", "readline", "rustyline", "command", "loop"]
+  },
+  {
+    "id": "cli-rust-tui-01",
+    "intent": "build terminal ui rust",
+    "pattern": "tui terminal interface rust",
+    "solution": "ratatui with crossterm backend, event loop with crossterm::event, widget composition",
+    "tags": ["cli", "rust", "tui", "terminal", "ratatui", "crossterm", "ui", "interface", "widget"]
+  },
+  {
+    "id": "cli-rust-output-01",
+    "intent": "build cli with structured output",
+    "pattern": "cli json output rust",
+    "solution": "clap arguments with --json flag, serde Serialize on output types, println! JSON or table",
+    "tags": ["cli", "rust", "output", "json", "serde", "clap", "terminal", "command", "format"]
+  },
+  {
+    "id": "service-rust-tokio-01",
+    "intent": "build async service rust",
+    "pattern": "async service rust tokio",
+    "solution": "tokio runtime with task::spawn, channels mpsc for communication, graceful shutdown",
+    "tags": ["service", "rust", "tokio", "async", "backend", "microservice", "spawn", "channel", "runtime"]
+  },
+  {
+    "id": "service-rust-daemon-01",
+    "intent": "build background daemon service rust",
+    "pattern": "daemon background service rust",
+    "solution": "tokio::main with signal handling (ctrl-c), systemd integration, pidfile management",
+    "tags": ["service", "rust", "daemon", "background", "backend", "systemd", "signal", "process", "microservice"]
+  },
+  {
+    "id": "service-rust-worker-01",
+    "intent": "build worker queue service rust",
+    "pattern": "queue worker rust",
+    "solution": "tokio with mpsc channel workers, bounded queue, retry logic with exponential backoff",
+    "tags": ["service", "rust", "worker", "queue", "backend", "tokio", "mpsc", "retry", "microservice", "task"]
+  },
+  {
+    "id": "db-postgres-rust-01",
+    "intent": "connect postgres database rust",
+    "pattern": "postgres sql rust",
+    "solution": "sqlx with postgres driver, connection pool, async queries, migration with sqlx-cli",
+    "tags": ["db", "database", "postgres", "sql", "rust", "sqlx", "storage", "query", "async", "pool"]
+  },
+  {
+    "id": "db-sqlite-rust-01",
+    "intent": "use sqlite database rust",
+    "pattern": "sqlite embedded database rust",
+    "solution": "sqlx sqlite driver or rusqlite, embedded file database, PRAGMA settings for performance",
+    "tags": ["db", "database", "sqlite", "sql", "rust", "sqlx", "rusqlite", "storage", "embedded", "file"]
+  },
+  {
+    "id": "db-redis-rust-01",
+    "intent": "connect redis cache rust",
+    "pattern": "redis cache rust",
+    "solution": "redis-rs crate with tokio-async feature, connection pool with deadpool-redis, pub/sub",
+    "tags": ["db", "cache", "redis", "rust", "storage", "async", "tokio", "pool", "pubsub", "key-value"]
+  },
+  {
+    "id": "db-orm-diesel-01",
+    "intent": "use orm with rust",
+    "pattern": "orm diesel rust sql",
+    "solution": "diesel ORM with schema DSL, diesel-cli for migrations, connection pool with r2d2",
+    "tags": ["db", "orm", "diesel", "rust", "sql", "schema", "migration", "storage", "database", "r2d2"]
+  },
+  {
+    "id": "web-frontend-yew-01",
+    "intent": "build rust frontend wasm",
+    "pattern": "frontend wasm rust yew",
+    "solution": "yew framework with wasm-bindgen, trunk bundler, component model with hooks",
+    "tags": ["web", "frontend", "wasm", "rust", "yew", "browser", "component", "ui", "webassembly"]
+  },
+  {
+    "id": "web-frontend-leptos-01",
+    "intent": "build reactive frontend rust",
+    "pattern": "reactive frontend rust leptos",
+    "solution": "leptos with signals reactivity, server functions for SSR, hydration support",
+    "tags": ["web", "frontend", "rust", "leptos", "reactive", "ssr", "signals", "wasm", "browser", "ui"]
+  },
+  {
+    "id": "web-frontend-dioxus-01",
+    "intent": "build cross platform app rust",
+    "pattern": "cross platform rust dioxus",
+    "solution": "dioxus for web/desktop/mobile, RSX template syntax, state management with hooks",
+    "tags": ["web", "frontend", "rust", "dioxus", "cross-platform", "desktop", "mobile", "wasm", "ui"]
+  },
+  {
+    "id": "web-fullstack-rust-01",
+    "intent": "build fullstack rust application",
+    "pattern": "fullstack rust axum leptos",
+    "solution": "axum backend + leptos SSR frontend, shared types with serde, cargo workspace",
+    "tags": ["web", "fullstack", "rust", "axum", "leptos", "ssr", "backend", "frontend", "workspace"]
+  },
+  {
+    "id": "api-auth-jwt-01",
+    "intent": "add jwt authentication rust api",
+    "pattern": "jwt auth rust api",
+    "solution": "jsonwebtoken crate, axum middleware for Bearer token extraction, Claims struct with serde",
+    "tags": ["api", "auth", "jwt", "rust", "axum", "authentication", "token", "middleware", "security"]
+  },
+  {
+    "id": "api-auth-oauth-01",
+    "intent": "add oauth authentication rust",
+    "pattern": "oauth2 rust api",
+    "solution": "oauth2 crate with PKCE flow, reqwest for token exchange, session management",
+    "tags": ["api", "auth", "oauth", "oauth2", "rust", "authentication", "security", "token", "session"]
+  },
+  {
+    "id": "service-event-sourcing-01",
+    "intent": "build event sourced service rust",
+    "pattern": "event sourcing cqrs rust",
+    "solution": "custom event store with append-only log, aggregate root pattern, event replay",
+    "tags": ["service", "event-sourcing", "cqrs", "rust", "backend", "event", "aggregate", "microservice"]
+  },
+  {
+    "id": "service-kafka-rust-01",
+    "intent": "consume kafka messages rust",
+    "pattern": "kafka consumer rust",
+    "solution": "rdkafka crate with tokio integration, consumer group, offset commit, error handling",
+    "tags": ["service", "kafka", "rust", "consumer", "backend", "streaming", "rdkafka", "async", "microservice"]
+  },
+  {
+    "id": "db-migration-01",
+    "intent": "manage database migrations rust",
+    "pattern": "database migration sql rust",
+    "solution": "sqlx migrate! macro, migration files in migrations/ directory, CI migration checks",
+    "tags": ["db", "migration", "sql", "rust", "sqlx", "database", "storage", "schema", "version"]
+  },
+  {
+    "id": "web-static-01",
+    "intent": "serve static files rust",
+    "pattern": "static file server rust",
+    "solution": "axum with tower-http ServeDir, StaticFile handler, caching headers middleware",
+    "tags": ["web", "static", "files", "rust", "axum", "tower-http", "server", "http", "cdn"]
+  },
+  {
+    "id": "web-websocket-01",
+    "intent": "build websocket server rust",
+    "pattern": "websocket rust server",
+    "solution": "axum WebSocket upgrade handler, tokio-tungstenite, broadcast channel for fan-out",
+    "tags": ["web", "websocket", "rust", "axum", "realtime", "server", "tokio", "async", "streaming"]
+  },
+  {
+    "id": "cli-config-01",
+    "intent": "manage config file cli rust",
+    "pattern": "config file cli rust",
+    "solution": "config crate with layered sources, toml/yaml serde deserialization, --config flag",
+    "tags": ["cli", "config", "rust", "toml", "yaml", "serde", "settings", "command", "tool"]
+  },
+  {
+    "id": "cli-logging-01",
+    "intent": "add logging to cli rust",
+    "pattern": "structured logging cli rust",
+    "solution": "tracing crate with EnvFilter, tracing-subscriber with JSON or pretty format, --verbose flag",
+    "tags": ["cli", "logging", "tracing", "rust", "structured", "terminal", "command", "debug", "tool"]
+  },
+  {
+    "id": "service-health-01",
+    "intent": "add health check endpoint service",
+    "pattern": "health check http rust",
+    "solution": "axum route /health returning 200 JSON, readiness vs liveness probes, dependency checks",
+    "tags": ["service", "health", "http", "rust", "axum", "backend", "probe", "kubernetes", "monitoring"]
+  },
+  {
+    "id": "service-metrics-01",
+    "intent": "add prometheus metrics rust service",
+    "pattern": "prometheus metrics rust",
+    "solution": "metrics crate with prometheus exporter, axum /metrics endpoint, counter/histogram/gauge",
+    "tags": ["service", "metrics", "prometheus", "rust", "backend", "monitoring", "observability", "axum"]
+  },
+  {
+    "id": "api-rate-limit-01",
+    "intent": "add rate limiting rust api",
+    "pattern": "rate limit rust api",
+    "solution": "tower-governor or governor crate, per-IP bucket, axum middleware layer, 429 response",
+    "tags": ["api", "rate-limit", "rust", "axum", "middleware", "backend", "security", "throttle"]
+  },
+  {
+    "id": "api-cors-01",
+    "intent": "add cors to rust api",
+    "pattern": "cors rust api",
+    "solution": "tower-http CorsLayer with AllowOrigin, AllowHeaders, AllowMethods configuration",
+    "tags": ["api", "cors", "rust", "axum", "tower-http", "middleware", "http", "security", "browser"]
+  },
+  {
+    "id": "db-connection-pool-01",
+    "intent": "configure database connection pool rust",
+    "pattern": "connection pool database rust",
+    "solution": "sqlx PgPool with max_connections, acquire_timeout, connect_lazy, pool options builder",
+    "tags": ["db", "pool", "connection", "rust", "sqlx", "postgres", "database", "async", "storage"]
+  },
+  {
+    "id": "service-config-env-01",
+    "intent": "load config from environment variables",
+    "pattern": "env config rust service",
+    "solution": "envy crate for serde from env, dotenv for local dev, structured Config struct validation",
+    "tags": ["service", "config", "env", "rust", "backend", "environment", "serde", "dotenv", "settings"]
+  },
+  {
+    "id": "web-middleware-01",
+    "intent": "add request middleware rust web",
+    "pattern": "middleware rust axum tower",
+    "solution": "tower Service trait, axum layer(), middleware::from_fn(), request/response transformation",
+    "tags": ["web", "middleware", "rust", "axum", "tower", "http", "backend", "layer", "request"]
+  },
+  {
+    "id": "cli-plugin-01",
+    "intent": "build pluggable cli rust",
+    "pattern": "plugin cli architecture rust",
+    "solution": "trait-based plugin system, dynamic dispatch with Box<dyn Plugin>, discover via directory scan",
+    "tags": ["cli", "plugin", "rust", "architecture", "trait", "dynamic", "command", "extensible", "tool"]
+  },
+  {
+    "id": "service-graceful-shutdown-01",
+    "intent": "implement graceful shutdown rust service",
+    "pattern": "graceful shutdown rust tokio",
+    "solution": "tokio signal::ctrl_c, select! macro for shutdown channel, drain active connections",
+    "tags": ["service", "shutdown", "rust", "tokio", "signal", "backend", "async", "lifecycle", "microservice"]
+  },
+  {
+    "id": "api-versioning-01",
+    "intent": "add api versioning rust",
+    "pattern": "api version rust rest",
+    "solution": "URL prefix /v1/ /v2/ routing, Accept-Version header extraction, feature flags per version",
+    "tags": ["api", "versioning", "rust", "rest", "axum", "http", "route", "backend", "endpoint"]
+  },
+  {
+    "id": "web-sse-01",
+    "intent": "build server sent events rust",
+    "pattern": "sse events stream rust",
+    "solution": "axum Sse handler, tokio channel as event source, Event struct with data/event/id fields",
+    "tags": ["web", "sse", "events", "stream", "rust", "axum", "realtime", "backend", "http", "async"]
+  },
+  {
+    "id": "cli-interactive-01",
+    "intent": "build interactive cli prompts rust",
+    "pattern": "interactive prompt cli rust",
+    "solution": "inquire crate for Select/Input/Confirm prompts, colored output with colored crate",
+    "tags": ["cli", "interactive", "prompt", "rust", "terminal", "inquire", "command", "tool", "ux"]
+  },
+  {
+    "id": "service-retry-01",
+    "intent": "add retry logic rust service",
+    "pattern": "retry backoff rust",
+    "solution": "tokio-retry with ExponentialBackoff strategy, max_retries, jitter, error classification",
+    "tags": ["service", "retry", "backoff", "rust", "backend", "resilience", "tokio", "microservice", "error"]
+  },
+  {
+    "id": "db-cache-layer-01",
+    "intent": "add caching layer over database rust",
+    "pattern": "cache db rust redis",
+    "solution": "read-through cache with Redis, TTL-based invalidation, Cache-Aside pattern with moka in-process",
+    "tags": ["db", "cache", "redis", "rust", "storage", "moka", "backend", "performance", "database"]
+  },
+  {
+    "id": "api-pagination-01",
+    "intent": "add pagination to rust api",
+    "pattern": "pagination api rust",
+    "solution": "cursor-based pagination with base64 opaque cursor, limit/offset fallback, total count header",
+    "tags": ["api", "pagination", "rust", "rest", "axum", "backend", "cursor", "limit", "endpoint"]
+  },
+  {
+    "id": "service-tracing-01",
+    "intent": "add distributed tracing rust service",
+    "pattern": "opentelemetry tracing rust",
+    "solution": "opentelemetry-rust with tracing-opentelemetry bridge, Jaeger/OTLP exporter, span propagation",
+    "tags": ["service", "tracing", "opentelemetry", "rust", "observability", "backend", "jaeger", "span"]
+  },
+  {
+    "id": "web-template-01",
+    "intent": "render html templates rust",
+    "pattern": "html template render rust",
+    "solution": "askama or tera template engine, axum Html response type, compile-time template validation",
+    "tags": ["web", "template", "html", "rust", "axum", "tera", "askama", "render", "ssr", "backend"]
+  },
+  {
+    "id": "cli-test-01",
+    "intent": "test cli command rust",
+    "pattern": "cli integration test rust",
+    "solution": "assert_cmd crate, Command::cargo_bin(), assert_stdout/stderr, predicates for flexible matching",
+    "tags": ["cli", "test", "rust", "assert-cmd", "integration", "command", "terminal", "tool", "testing"]
+  },
+  {
+    "id": "service-circuit-breaker-01",
+    "intent": "add circuit breaker rust service",
+    "pattern": "circuit breaker resilience rust",
+    "solution": "failsafe-rs or custom state machine with half-open/open/closed states, failure threshold",
+    "tags": ["service", "circuit-breaker", "rust", "resilience", "backend", "fault-tolerance", "microservice"]
+  },
+  {
+    "id": "api-file-upload-01",
+    "intent": "handle file upload rust api",
+    "pattern": "file upload multipart rust",
+    "solution": "axum Multipart extractor, stream to disk with tokio::io::copy, size limit middleware",
+    "tags": ["api", "upload", "file", "multipart", "rust", "axum", "backend", "stream", "http"]
+  },
+  {
+    "id": "db-transaction-01",
+    "intent": "use database transactions rust",
+    "pattern": "transaction database rust sqlx",
+    "solution": "sqlx Transaction type, pool.begin() / tx.commit() / tx.rollback(), savepoints for nesting",
+    "tags": ["db", "transaction", "rust", "sqlx", "postgres", "database", "storage", "acid", "rollback"]
+  },
+  {
+    "id": "service-load-balancer-01",
+    "intent": "build load balancer rust",
+    "pattern": "load balancer proxy rust",
+    "solution": "tower-http with reverse proxy, hyper client for upstream, health check based routing",
+    "tags": ["service", "load-balancer", "rust", "proxy", "backend", "tower", "hyper", "routing", "upstream"]
+  },
+  {
+    "id": "web-auth-session-01",
+    "intent": "add session management rust web",
+    "pattern": "session auth rust axum",
+    "solution": "axum-sessions or tower-sessions, cookie-based session store, Redis session backend",
+    "tags": ["web", "session", "auth", "rust", "axum", "cookie", "redis", "backend", "security"]
+  },
+  {
+    "id": "cli-watch-01",
+    "intent": "build file watcher cli rust",
+    "pattern": "file watch cli rust",
+    "solution": "notify crate for fs events, debounce with tokio::time::sleep, recursive directory watching",
+    "tags": ["cli", "watch", "file", "rust", "notify", "filesystem", "command", "tool", "terminal"]
+  },
+  {
+    "id": "api-webhook-01",
+    "intent": "build webhook receiver rust api",
+    "pattern": "webhook receiver rust",
+    "solution": "axum POST handler with HMAC signature verification, async processing with tokio::spawn",
+    "tags": ["api", "webhook", "rust", "axum", "hmac", "backend", "event", "http", "security"]
+  },
+  {
+    "id": "service-scheduler-01",
+    "intent": "build job scheduler rust service",
+    "pattern": "cron job scheduler rust",
+    "solution": "tokio-cron-scheduler with cron expressions, job registry, missed job handling",
+    "tags": ["service", "scheduler", "cron", "rust", "tokio", "backend", "job", "task", "periodic"]
+  }
+]

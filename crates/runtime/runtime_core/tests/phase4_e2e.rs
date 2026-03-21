@@ -11,7 +11,7 @@ use constraint_engine::stable_v03::{
     CompositeConstraintEngine, Constraint, ConstraintEngine, LayerOrderConstraint,
     NoCycleConstraint,
 };
-use design_search_engine::stable_v03::{ArchitectureCandidate, DesignSearchEngine, SearchInput};
+use design_search_engine::stable_v03::{ArchitectureCandidate, DesignSearchEngine, ReasoningInput};
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
@@ -33,7 +33,7 @@ fn seeded_memory() -> Arc<dyn MemoryEngine> {
 struct FixedSearchEngine;
 
 impl DesignSearchEngine for FixedSearchEngine {
-    fn search(&self, _input: SearchInput) -> Vec<ArchitectureCandidate> {
+    fn search(&self, _input: ReasoningInput) -> Vec<ArchitectureCandidate> {
         let architecture = ArchitectureGraphBuilder::new()
             .add_node(Node::new("api", NodeType::Interface))
             .add_node(Node::new("service", NodeType::Service))

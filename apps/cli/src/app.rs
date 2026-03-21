@@ -2,19 +2,31 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write, stdin, stdout};
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
+use integration_layer::{
+    AnalysisInput as IntegrationAnalysisInput, SystemInput, SystemOutput, to_relations,
+    to_system_output, trace_links, validate_mapping, validate_round_trip_design,
+};
 use memory_space_phase14::stable_v03::InMemoryEngine;
 use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::dbm::{DBMClient, ProjectAnalysisResult};
 use crate::r#loop::run_loop;
 use crate::renderer::{
-    render_analysis_report, render_design_report, render_run_report, render_validation_report,
+    render_analysis_report, render_design_report, render_result, render_run_report,
+    render_validation_report,
+};
+use crate::repl::run_repl;
+use crate::runner::{
+    ExecutionConfig, ExecutionResult as RunnerExecutionResult, ExecutionTarget, MemoryUsage,
+    OutputMeta, OutputMode, SandboxMode, SandboxPolicy, TimeoutConfig, build_command,
+    create_sandbox, detect_target, fixed_env, resolve_command, run as run_command,
 };
 
 #[derive(Parser, Debug)]
@@ -27,12 +39,37 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Generate(GenerateArgs),
-    Analyze(PathArgs),
+    Analyze(AnalyzeArgs),
     Design(PathArgs),
     Validate(PathArgs),
-    Run(PathArgs),
+    Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
+    /// Launch the interactive TUI viewer for a saved UI payload JSON.
+    Tui(TuiArgs),
+    /// Memory management commands.
+    Memory(MemoryArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct MemoryArgs {
+    #[command(subcommand)]
+    pub command: MemoryCommands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum MemoryCommands {
+    /// Import a seed knowledge JSON file into memory and verify recall stats.
+    Import(MemoryImportArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct MemoryImportArgs {
+    /// Path to the seed JSON file (e.g. seeds/knowledge.json).
+    pub path: PathBuf,
+    /// Print per-record details after import.
+    #[arg(long, default_value_t = false)]
+    pub verbose: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -45,11 +82,40 @@ pub struct GenerateArgs {
     pub framework: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
+    /// Export UI payload JSON to this path and open the TUI viewer.
+    #[arg(long)]
+    pub tui: Option<PathBuf>,
+    /// Save a structured operational log (JSON) to this path.
+    #[arg(long)]
+    pub out: Option<PathBuf>,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct AnalyzeArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+    /// Save a structured operational log (JSON) to this path.
+    #[arg(long)]
+    pub out: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct PathArgs {
     pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RunArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = 5000)]
+    pub timeout_ms: u64,
+    #[arg(long, default_value_t = false)]
+    pub allow_network: bool,
+    #[arg(long, default_value_t = true)]
+    pub allow_fs_write: bool,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -64,6 +130,12 @@ pub struct WizardArgs {
 pub struct ReplArgs {
     #[arg(long, default_value_t = false)]
     pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct TuiArgs {
+    /// Path to a UI payload JSON file. If omitted, runs a demo with synthetic data.
+    pub file: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
@@ -83,10 +155,26 @@ pub struct AnalysisReport {
     pub root: String,
     pub total_files: usize,
     pub source_files: usize,
+    pub avg_complexity: String,
     pub manifests: Vec<String>,
     pub languages: BTreeMap<String, usize>,
     pub top_level_entries: Vec<String>,
     pub architecture_hints: Vec<String>,
+    pub modules: Vec<AnalysisModule>,
+    pub dependencies: Vec<AnalysisDependency>,
+    pub todo_files: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisModule {
+    pub name: String,
+    pub file_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+pub struct AnalysisDependency {
+    pub from: String,
+    pub to: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -109,9 +197,38 @@ pub struct ValidationReport {
 #[derive(Debug, Serialize)]
 pub struct RunReport {
     pub root: String,
-    pub mode: &'static str,
-    pub selected_command: Option<String>,
-    pub reason: String,
+    pub status: String,
+    pub exit_code: i32,
+    pub duration_ms: u128,
+    pub stdout: String,
+    pub stderr: String,
+    pub command: String,
+    pub args: Vec<String>,
+    pub telemetry: RunTelemetry,
+    pub sandbox: RunSandbox,
+    pub output_meta: OutputMeta,
+    pub stderr_meta: OutputMeta,
+    pub sandbox_mode: SandboxMode,
+    pub deterministic: bool,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunTelemetry {
+    pub duration_ms: u128,
+    pub exit_code: i32,
+    pub stdout_size: usize,
+    pub stderr_size: usize,
+    pub memory_usage_kb: MemoryUsage,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RunSandbox {
+    pub max_execution_time_ms: u64,
+    pub allow_network: bool,
+    pub allow_fs_write: bool,
+    pub allowed_paths: Vec<String>,
+    pub working_dir: String,
+    pub timed_out: bool,
 }
 
 pub fn run() -> Result<(), String> {
@@ -128,8 +245,13 @@ where
 }
 
 pub fn build_runtime() -> CoreRuntime {
+    let memory = InMemoryEngine::default();
+    let loaded = crate::memory_seed::load_default_seeds(&memory);
+    if loaded > 0 {
+        eprintln!("info: loaded {loaded} seed records into memory engine");
+    }
     CoreRuntime::new_with_defaults(
-        Arc::new(InMemoryEngine::default()),
+        Arc::new(memory),
         Arc::new(DeterministicBeamSearchEngine::default()),
     )
 }
@@ -137,12 +259,14 @@ pub fn build_runtime() -> CoreRuntime {
 fn dispatch(cli: Cli) -> Result<(), String> {
     match cli.command {
         Some(Commands::Generate(args)) => execute_generate(&build_runtime(), args, "command"),
-        Some(Commands::Analyze(args)) => execute_analyze(args),
+        Some(Commands::Analyze(args)) => execute_analyze_with_log(args),
         Some(Commands::Design(args)) => execute_design(args),
         Some(Commands::Validate(args)) => execute_validate(args),
         Some(Commands::Run(args)) => execute_run(args),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
+        Some(Commands::Tui(args)) => execute_tui(args),
+        Some(Commands::Memory(args)) => execute_memory(args),
         None => {
             let mut cmd = Cli::command();
             cmd.print_long_help().map_err(|err| err.to_string())?;
@@ -157,50 +281,136 @@ fn execute_generate(
     args: GenerateArgs,
     mode: &'static str,
 ) -> Result<(), String> {
+    use std::time::Instant;
+
     let prompt = build_generate_prompt(&args);
     let context = runtime_core::ChatContext::default();
-    let result = runtime
-        .execute_from_text(&prompt, &context)
-        .map_err(|err| format!("generate failed: {err:?}"))?;
-    match result {
-        RuntimeExecutionResult::Executed(result) => {
-            let report = GenerateReport {
-                mode,
-                command: generate_command_string(&args),
-                interface_type: args.interface_type,
-                language: args.language,
-                framework: args.framework,
-                project_root: result.project_layout.root_dir.clone(),
-                manifest_path: result.project_layout.manifest_path.clone(),
-                files: result
-                    .project_layout
-                    .files
-                    .iter()
-                    .map(|file| file.path.clone())
-                    .collect(),
+    let started = Instant::now();
+    let exec_result = runtime.execute_from_text(&prompt, &context);
+    let latency_ms = started.elapsed().as_millis();
+
+    // Determine request_id (best-effort before match).
+    let request_id_hint = uuid::Uuid::new_v4().to_string();
+
+    let out_path = args.out.clone();
+    let tui_path = args.tui.clone();
+
+    match exec_result {
+        Ok(RuntimeExecutionResult::Executed(result)) => {
+            let _trace_links = trace_links(&result.output_relations);
+            let request_id = result
+                .reasoning_trace
+                .as_ref()
+                .map(|t| t.request_id.0.clone())
+                .unwrap_or(request_id_hint);
+
+            // Write operational log if --out was given.
+            if let Some(ref path) = out_path {
+                let log = crate::ops::RunLogBuilder {
+                    request_id: request_id.clone(),
+                    input: prompt.clone(),
+                    latency_ms,
+                }
+                .success(&result);
+                if let Err(e) = crate::ops::write_log(&log, path) {
+                    eprintln!("warn: could not write log: {e}");
+                }
+            }
+
+            let report = match &result.system_output {
+                SystemOutput::Design(_) | SystemOutput::Actions(_) | SystemOutput::Ui(_) => {
+                    GenerateReport {
+                        mode,
+                        command: generate_command_string(&args),
+                        interface_type: args.interface_type,
+                        language: args.language,
+                        framework: args.framework,
+                        project_root: result.project_layout.root_dir.clone(),
+                        manifest_path: result.project_layout.manifest_path.clone(),
+                        files: result
+                            .project_layout
+                            .files
+                            .iter()
+                            .map(|file| file.path.clone())
+                            .collect(),
+                    }
+                }
             };
             if report_json(args.json, &report)? {
                 return Ok(());
             }
-            println!("Generated project");
-            println!("Command: {}", report.command);
-            println!("Root: {}", report.project_root);
-            println!("Manifest: {}", report.manifest_path);
-            println!("Files:");
-            for file in &report.files {
-                println!(" - {file}");
+            if let Some(tui_path) = tui_path {
+                let payload = ui_payload_from_result(&result);
+                let json = serde_json::to_string_pretty(&payload)
+                    .map_err(|e| format!("ui payload serialization failed: {e}"))?;
+                fs::write(&tui_path, &json)
+                    .map_err(|e| format!("cannot write {}: {e}", tui_path.display()))?;
+                return crate::tui::run_tui(payload);
             }
-            Ok(())
+            render_result(&mut io::stdout().lock(), &result).map_err(|err| err.to_string())
         }
-        RuntimeExecutionResult::Clarification(clarification) => Err(format!(
-            "generate requires more input: {}",
-            clarification.message
-        )),
+        Ok(RuntimeExecutionResult::Clarification(clarification)) => {
+            if let Some(ref path) = out_path {
+                let log = crate::ops::RunLogBuilder {
+                    request_id: request_id_hint,
+                    input: prompt.clone(),
+                    latency_ms,
+                }
+                .failure(
+                    crate::ops::FailureType::SearchFailure,
+                    format!("clarification required: {}", clarification.message),
+                );
+                let _ = crate::ops::write_log(&log, path);
+            }
+            Err(format!(
+                "generate requires more input: {}",
+                clarification.message
+            ))
+        }
+        Err(err) => {
+            if let Some(ref path) = out_path {
+                let log = crate::ops::RunLogBuilder {
+                    request_id: request_id_hint,
+                    input: prompt.clone(),
+                    latency_ms,
+                }
+                .failure(crate::ops::FailureType::SystemError, format!("{err:?}"));
+                let _ = crate::ops::write_log(&log, path);
+            }
+            Err(format!("generate failed: {err:?}"))
+        }
     }
 }
 
-fn execute_analyze(args: PathArgs) -> Result<(), String> {
-    let report = analyze_path(&args.path)?;
+fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
+    use std::time::Instant;
+    let started = Instant::now();
+    let report = analyze_path(&args.path);
+    let latency_ms = started.elapsed().as_millis();
+
+    if let Some(ref out) = args.out {
+        let (success, actual) = match &report {
+            Ok(_) => (true, String::new()),
+            Err(e) => (false, e.clone()),
+        };
+        let log = crate::ops::AnalyzeLog {
+            path: args.path.display().to_string(),
+            latency_ms,
+            success,
+            actual: if success { None } else { Some(actual) },
+        };
+        if let Err(e) = crate::ops::write_analyze_log(&log, out) {
+            eprintln!("warn: could not write log: {e}");
+        }
+    }
+
+    let report = report?;
+    let canonical_input = analysis_to_system_input(&report);
+    let relations = to_relations(canonical_input.clone());
+    let validation = validate_mapping(&canonical_input, &relations);
+    if !validation.is_valid {
+        return Err("integration mapping failed for analysis report".to_string());
+    }
     if report_json(args.json, &report)? {
         return Ok(());
     }
@@ -209,7 +419,12 @@ fn execute_analyze(args: PathArgs) -> Result<(), String> {
 
 fn execute_design(args: PathArgs) -> Result<(), String> {
     let analysis = analyze_path(&args.path)?;
-    let report = design_from_analysis(&analysis);
+    let design_graph = design_graph_from_analysis(&analysis);
+    let relations = to_relations(SystemInput::Design(design_graph));
+    let report = match to_system_output(relations) {
+        SystemOutput::Design(graph) => design_report_from_graph(&analysis, &graph),
+        _ => design_from_analysis(&analysis),
+    };
     if report_json(args.json, &report)? {
         return Ok(());
     }
@@ -218,16 +433,23 @@ fn execute_design(args: PathArgs) -> Result<(), String> {
 
 fn execute_validate(args: PathArgs) -> Result<(), String> {
     let analysis = analyze_path(&args.path)?;
-    let report = validate_from_analysis(&analysis);
+    let design_graph = design_graph_from_analysis(&analysis);
+    let mut report = validate_from_analysis(&analysis);
+    let integration = validate_round_trip_design(&design_graph);
+    if !integration.is_valid {
+        report.valid = false;
+        report
+            .issues
+            .extend(integration.issues.into_iter().map(|issue| issue.message));
+    }
     if report_json(args.json, &report)? {
         return Ok(());
     }
     render_validation_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
-fn execute_run(args: PathArgs) -> Result<(), String> {
-    let analysis = analyze_path(&args.path)?;
-    let report = simulate_run(&analysis);
+fn execute_run(args: RunArgs) -> Result<(), String> {
+    let report = execute_run_command(&args)?;
     if report_json(args.json, &report)? {
         return Ok(());
     }
@@ -250,6 +472,8 @@ fn wizard_mode(args: WizardArgs) -> Result<(), String> {
         language,
         framework,
         json: args.json,
+        tui: None,
+        out: None,
     };
     writeln!(writer, "Executing: {}", generate_command_string(&generate))
         .map_err(|err| err.to_string())?;
@@ -257,62 +481,12 @@ fn wizard_mode(args: WizardArgs) -> Result<(), String> {
 }
 
 fn repl_mode(args: ReplArgs) -> Result<(), String> {
+    let _ = args;
     let stdin = stdin();
     let stdout = stdout();
     let mut reader = BufReader::new(stdin.lock());
     let mut writer = stdout.lock();
-    writeln!(writer, "REPL Mode").map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())?;
-
-    if args.json {
-        run_repl_commands(&mut reader, &mut writer, true)
-    } else {
-        run_repl_commands(&mut reader, &mut writer, false)
-    }
-}
-
-fn run_repl_commands<R, W>(reader: &mut R, writer: &mut W, json: bool) -> Result<(), String>
-where
-    R: BufRead,
-    W: Write,
-{
-    loop {
-        write!(writer, "> ").map_err(|err| err.to_string())?;
-        writer.flush().map_err(|err| err.to_string())?;
-
-        let mut line = String::new();
-        let bytes = reader.read_line(&mut line).map_err(|err| err.to_string())?;
-        if bytes == 0 {
-            break;
-        }
-
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        if matches!(trimmed, "exit" | "quit" | "/exit" | "/quit") {
-            break;
-        }
-        if trimmed == "wizard" {
-            return Err("wizard is not available from repl; use `cli wizard`".to_string());
-        }
-
-        let mut argv = vec!["cli".to_string()];
-        argv.extend(trimmed.split_whitespace().map(str::to_string));
-        if json && !argv.iter().any(|arg| arg == "--json") {
-            argv.push("--json".to_string());
-        }
-        let cli = Cli::try_parse_from(argv).map_err(|err| err.to_string())?;
-        match cli.command {
-            Some(Commands::Repl(_)) | Some(Commands::Wizard(_)) | None => {
-                return Err("unsupported repl command".to_string());
-            }
-            Some(command) => dispatch(Cli {
-                command: Some(command),
-            })?,
-        }
-    }
-    Ok(())
+    run_repl(&mut reader, &mut writer)
 }
 
 pub fn run_chat_loop() -> Result<(), String> {
@@ -402,57 +576,11 @@ fn analyze_path(path: &Path) -> Result<AnalysisReport, String> {
     if !path.is_dir() {
         return Err(format!("path is not a directory: {}", path.display()));
     }
-
-    let mut files = Vec::new();
-    collect_files(path, &mut files)?;
-    let mut manifests = Vec::new();
-    let mut languages = BTreeMap::new();
-    for file in &files {
-        if let Some(name) = file.file_name().and_then(|name| name.to_str()) {
-            if matches!(name, "Cargo.toml" | "pyproject.toml" | "package.json") {
-                manifests.push(relativize(path, file));
-            }
-        }
-        if let Some(language) = language_for_path(file) {
-            *languages.entry(language.to_string()).or_insert(0) += 1;
-        }
-    }
-
-    let top_level_entries = fs::read_dir(path)
-        .map_err(|err| format!("failed to read {}: {err}", path.display()))?
-        .filter_map(Result::ok)
-        .filter_map(|entry| entry.file_name().into_string().ok())
-        .collect::<Vec<_>>();
-
-    let mut architecture_hints = BTreeSet::new();
-    if manifests.iter().any(|path| path.ends_with("Cargo.toml")) {
-        architecture_hints.insert("rust-project".to_string());
-    }
-    if files
-        .iter()
-        .any(|path| path.to_string_lossy().contains("/src/"))
-    {
-        architecture_hints.insert("layered-source-layout".to_string());
-    }
-    if files
-        .iter()
-        .any(|path| path.to_string_lossy().contains("/tests/"))
-    {
-        architecture_hints.insert("has-tests".to_string());
-    }
-    if top_level_entries.iter().any(|name| name == "crates") {
-        architecture_hints.insert("workspace-layout".to_string());
-    }
-
-    Ok(AnalysisReport {
-        root: path.display().to_string(),
-        total_files: files.len(),
-        source_files: languages.values().sum(),
-        manifests,
-        languages,
-        top_level_entries,
-        architecture_hints: architecture_hints.into_iter().collect(),
-    })
+    let client = DBMClient::new();
+    let project = client
+        .analyze_project(&path.display().to_string())
+        .map_err(|err| format!("project analysis failed: {err}"))?;
+    build_analysis_report(path, &project)
 }
 
 fn design_from_analysis(analysis: &AnalysisReport) -> DesignReport {
@@ -462,9 +590,9 @@ fn design_from_analysis(analysis: &AnalysisReport) -> DesignReport {
         .any(|hint| hint == "workspace-layout")
     {
         "workspace"
-    } else if analysis.languages.contains_key("rust") {
+    } else if analysis.languages.contains_key("Rust") {
         "service"
-    } else if analysis.languages.contains_key("python") {
+    } else if analysis.languages.contains_key("Python") {
         "application"
     } else {
         "generic"
@@ -517,6 +645,25 @@ fn design_from_analysis(analysis: &AnalysisReport) -> DesignReport {
     }
 }
 
+fn design_report_from_graph(
+    analysis: &AnalysisReport,
+    graph: &unified_design_ir::DesignGraph,
+) -> DesignReport {
+    let mut report = design_from_analysis(analysis);
+    report.components = graph.nodes().iter().map(|node| node.name.clone()).collect();
+    report.components.sort();
+    report.components.dedup();
+    report.design_units = graph
+        .edges()
+        .iter()
+        .map(|edge| format!("{}->{:?}->{}", edge.source.0, edge.relation, edge.target.0))
+        .collect();
+    if report.design_units.is_empty() {
+        report.design_units.push("source-scan".to_string());
+    }
+    report
+}
+
 fn validate_from_analysis(analysis: &AnalysisReport) -> ValidationReport {
     let mut issues = Vec::new();
     let mut warnings = Vec::new();
@@ -543,53 +690,255 @@ fn validate_from_analysis(analysis: &AnalysisReport) -> ValidationReport {
     }
 }
 
-fn simulate_run(analysis: &AnalysisReport) -> RunReport {
-    if analysis
-        .manifests
+fn analysis_to_system_input(analysis: &AnalysisReport) -> SystemInput {
+    let mut entities = analysis
+        .modules
         .iter()
-        .any(|manifest| manifest.ends_with("Cargo.toml"))
-    {
-        return RunReport {
-            root: analysis.root.clone(),
-            mode: "simulation",
-            selected_command: Some("cargo run".to_string()),
-            reason: "Rust manifest detected".to_string(),
-        };
-    }
-    if analysis
-        .manifests
-        .iter()
-        .any(|manifest| manifest.ends_with("pyproject.toml"))
-    {
-        return RunReport {
-            root: analysis.root.clone(),
-            mode: "simulation",
-            selected_command: Some("python -m app".to_string()),
-            reason: "Python manifest detected".to_string(),
-        };
-    }
-    if analysis
-        .manifests
-        .iter()
-        .any(|manifest| manifest.ends_with("package.json"))
-    {
-        return RunReport {
-            root: analysis.root.clone(),
-            mode: "simulation",
-            selected_command: Some("npm run start".to_string()),
-            reason: "Node manifest detected".to_string(),
-        };
-    }
+        .map(|module| module.name.clone())
+        .collect::<Vec<_>>();
+    entities.push("architecture".to_string());
+    entities.push("change_impact".to_string());
+    entities.sort();
+    entities.dedup();
+    SystemInput::Analyze(IntegrationAnalysisInput {
+        system_id: analysis.root.clone(),
+        entities,
+        has_cycle: false,
+    })
+}
 
+fn design_graph_from_analysis(analysis: &AnalysisReport) -> unified_design_ir::DesignGraph {
+    let mut builder = unified_design_ir::DesignGraphBuilder::new();
+    let mut node_names = analysis
+        .modules
+        .iter()
+        .map(|module| module.name.clone())
+        .collect::<BTreeSet<_>>();
+    for dependency in &analysis.dependencies {
+        node_names.insert(dependency.from.clone());
+        node_names.insert(dependency.to.clone());
+    }
+    for node_name in node_names {
+        builder = builder.add_node(unified_design_ir::DesignNode {
+            id: unified_design_ir::DesignNodeId(node_name.clone()),
+            name: node_name.clone(),
+            kind: if node_name.contains("api") {
+                unified_design_ir::DesignNodeKind::API
+            } else if node_name.contains("db") {
+                unified_design_ir::DesignNodeKind::Database
+            } else {
+                unified_design_ir::DesignNodeKind::Module
+            },
+            metadata: unified_design_ir::DesignMetadata::default(),
+        });
+    }
+    for dependency in &analysis.dependencies {
+        builder = builder.add_edge(unified_design_ir::DesignEdge {
+            source: unified_design_ir::DesignNodeId(dependency.from.clone()),
+            target: unified_design_ir::DesignNodeId(dependency.to.clone()),
+            relation: unified_design_ir::DesignRelation::DependsOn,
+        });
+    }
+    builder.build()
+}
+
+fn execute_run_command(args: &RunArgs) -> Result<RunReport, String> {
+    if path_contains_parent_component(&args.path) {
+        return Err(
+            "ValidationError: working directory contains forbidden parent traversal".to_string(),
+        );
+    }
+    let canonical_path = args
+        .path
+        .canonicalize()
+        .map_err(|err| format!("failed to resolve run path {}: {err}", args.path.display()))?;
+    let sandbox = create_sandbox(&canonical_path).map_err(|err| err.to_string())?;
+    let sandbox_path = sandbox.guard.path();
+    let target = detect_run_target(sandbox_path)?;
+    let (command_name, command_args) = build_command(&target);
+    let resolved_command = resolve_command(&command_name).map_err(|err| err.to_string())?;
+    let config = ExecutionConfig {
+        command: resolved_command,
+        args: command_args.clone(),
+        working_dir: sandbox_path.display().to_string(),
+        timeout_ms: args.timeout_ms,
+        env: fixed_env(),
+        clean_env: true,
+        output_mode: OutputMode::Streaming,
+    };
+    let policy = SandboxPolicy {
+        allow_network: args.allow_network,
+        allow_fs_write: args.allow_fs_write,
+        allowed_paths: vec![sandbox_path.display().to_string()],
+    };
+    let timeout = TimeoutConfig {
+        timeout_ms: args.timeout_ms,
+        kill_signal: "kill".to_string(),
+    };
+    let sandbox_mode = sandbox.mode;
+    let result = run_command(&config, &timeout, &policy, sandbox_path, sandbox_mode)
+        .map_err(|err| err.to_string())?;
+    Ok(to_run_report(
+        sandbox_path,
+        &config,
+        &timeout,
+        &policy,
+        result,
+    ))
+}
+
+fn detect_run_target(path: &Path) -> Result<ExecutionTarget, String> {
+    detect_target(path).map_err(|err| err.to_string())
+}
+
+fn to_run_report(
+    path: &Path,
+    config: &ExecutionConfig,
+    timeout: &TimeoutConfig,
+    policy: &SandboxPolicy,
+    result: RunnerExecutionResult,
+) -> RunReport {
     RunReport {
-        root: analysis.root.clone(),
-        mode: "simulation",
-        selected_command: None,
-        reason: "No known runtime manifest detected".to_string(),
+        root: path.display().to_string(),
+        status: result.status.clone(),
+        exit_code: result.exit_code,
+        duration_ms: result.duration_ms,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        command: config.command.clone(),
+        args: config.args.clone(),
+        telemetry: RunTelemetry {
+            duration_ms: result.telemetry.duration_ms,
+            exit_code: result.telemetry.exit_code,
+            stdout_size: result.telemetry.stdout_size,
+            stderr_size: result.telemetry.stderr_size,
+            memory_usage_kb: result.telemetry.memory_usage_kb,
+        },
+        sandbox: RunSandbox {
+            max_execution_time_ms: timeout.timeout_ms,
+            allow_network: policy.allow_network,
+            allow_fs_write: policy.allow_fs_write,
+            allowed_paths: policy.allowed_paths.clone(),
+            working_dir: config.working_dir.clone(),
+            timed_out: result.status == "timeout",
+        },
+        output_meta: result.output_meta,
+        stderr_meta: result.stderr_meta,
+        sandbox_mode: result.sandbox_mode,
+        deterministic: true,
     }
 }
 
-fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn build_analysis_report(
+    root: &Path,
+    project: &ProjectAnalysisResult,
+) -> Result<AnalysisReport, String> {
+    let mut languages = BTreeMap::new();
+    let mut todo_files = 0usize;
+    for file in &project.files {
+        *languages
+            .entry(file.language.as_str().to_string())
+            .or_insert(0) += 1;
+        if !file.todos.is_empty() {
+            todo_files += 1;
+        }
+    }
+
+    let manifests = collect_manifests(root)?;
+    let top_level_entries = collect_top_level_entries(root)?;
+    let architecture_hints = infer_architecture_hints(project, &manifests, &top_level_entries);
+
+    Ok(AnalysisReport {
+        root: root.display().to_string(),
+        total_files: project.summary.total_files,
+        source_files: project.files.len(),
+        avg_complexity: project.summary.avg_complexity.as_str().to_string(),
+        manifests,
+        languages,
+        top_level_entries,
+        architecture_hints,
+        modules: project
+            .modules
+            .iter()
+            .map(|module| AnalysisModule {
+                name: module.name.clone(),
+                file_count: module.files.len(),
+            })
+            .collect(),
+        dependencies: project
+            .dependencies
+            .iter()
+            .map(|edge| AnalysisDependency {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+            })
+            .collect(),
+        todo_files,
+    })
+}
+
+fn collect_manifests(root: &Path) -> Result<Vec<String>, String> {
+    let mut files = Vec::new();
+    collect_paths(root, &mut files)?;
+    Ok(files
+        .iter()
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .map(|name| matches!(name, "Cargo.toml" | "pyproject.toml" | "package.json"))
+                .unwrap_or(false)
+        })
+        .map(|path| relativize(root, path))
+        .collect())
+}
+
+fn collect_top_level_entries(root: &Path) -> Result<Vec<String>, String> {
+    let mut entries = fs::read_dir(root)
+        .map_err(|err| format!("failed to read {}: {err}", root.display()))?
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .collect::<Vec<_>>();
+    entries.sort();
+    Ok(entries)
+}
+
+fn infer_architecture_hints(
+    project: &ProjectAnalysisResult,
+    manifests: &[String],
+    top_level_entries: &[String],
+) -> Vec<String> {
+    let mut architecture_hints = BTreeSet::new();
+    if manifests.iter().any(|path| path.ends_with("Cargo.toml")) {
+        architecture_hints.insert("rust-project".to_string());
+    }
+    if project
+        .files
+        .iter()
+        .any(|file| file.path.starts_with("src/") || file.path.contains("/src/"))
+    {
+        architecture_hints.insert("layered-source-layout".to_string());
+    }
+    if project
+        .files
+        .iter()
+        .any(|file| file.path.starts_with("tests/") || file.path.contains("/tests/"))
+        || top_level_entries.iter().any(|entry| entry == "tests")
+    {
+        architecture_hints.insert("has-tests".to_string());
+    }
+    if top_level_entries.iter().any(|entry| entry == "crates") {
+        architecture_hints.insert("workspace-layout".to_string());
+    }
+    if project.modules.len() > 1 {
+        architecture_hints.insert("multi-module".to_string());
+    }
+    if !project.dependencies.is_empty() {
+        architecture_hints.insert("dependency-graph-available".to_string());
+    }
+    architecture_hints.into_iter().collect()
+}
+
+fn collect_paths(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     for entry in
         fs::read_dir(root).map_err(|err| format!("failed to read {}: {err}", root.display()))?
     {
@@ -601,7 +950,7 @@ fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
             continue;
         }
         if path.is_dir() {
-            collect_files(&path, files)?;
+            collect_paths(&path, files)?;
         } else {
             files.push(path);
         }
@@ -609,21 +958,15 @@ fn collect_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     Ok(())
 }
 
-fn language_for_path(path: &Path) -> Option<&'static str> {
-    match path.extension().and_then(|ext| ext.to_str()) {
-        Some("rs") => Some("rust"),
-        Some("py") => Some("python"),
-        Some("ts" | "tsx" | "js" | "jsx") => Some("typescript"),
-        Some("go") => Some("go"),
-        _ => None,
-    }
+fn path_contains_parent_component(path: &Path) -> bool {
+    path.components()
+        .any(|component| matches!(component, Component::ParentDir))
 }
 
 fn relativize(root: &Path, path: &Path) -> String {
     path.strip_prefix(root)
-        .unwrap_or(path)
-        .display()
-        .to_string()
+        .map(|relative| relative.display().to_string())
+        .unwrap_or_else(|_| path.display().to_string())
 }
 
 fn report_json<T: Serialize>(enabled: bool, report: &T) -> Result<bool, String> {
@@ -636,4 +979,220 @@ fn report_json<T: Serialize>(enabled: bool, report: &T) -> Result<bool, String> 
         serde_json::to_string_pretty(&payload).map_err(|err| err.to_string())?
     );
     Ok(true)
+}
+
+// ── Memory command ────────────────────────────────────────────────────────────
+
+fn execute_memory(args: MemoryArgs) -> Result<(), String> {
+    match args.command {
+        MemoryCommands::Import(import_args) => execute_memory_import(import_args),
+    }
+}
+
+fn execute_memory_import(args: MemoryImportArgs) -> Result<(), String> {
+    use memory_space_phase14::stable_v03::{MemoryEngine, MemoryQuery};
+
+    let engine = InMemoryEngine::default();
+    let count = crate::memory_seed::load_seeds_into(&engine, &args.path);
+    if count == 0 {
+        return Err(format!(
+            "no records loaded from {}",
+            args.path.display()
+        ));
+    }
+
+    println!("Loaded {count} seed records from {}", args.path.display());
+
+    // Spot-check recall for common patterns.
+    let probes = [
+        ("web rust", vec!["web", "rust"]),
+        ("cli tool", vec!["cli"]),
+        ("service backend", vec!["service"]),
+        ("database postgres", vec!["db"]),
+    ];
+    println!("\nRecall spot-check:");
+    for (text, tags) in &probes {
+        let results = engine.retrieve(MemoryQuery {
+            text: text.to_string(),
+            tags: tags.iter().map(|s| s.to_string()).collect(),
+            limit: 3,
+        });
+        println!("  {:20} → {} result(s)", text, results.len());
+        if args.verbose {
+            for r in &results {
+                println!("    [{}] {:.60}", r.id, r.text);
+            }
+        }
+    }
+
+    Ok(())
+}
+
+// ── TUI command ──────────────────────────────────────────────────────────────
+
+fn execute_tui(args: TuiArgs) -> Result<(), String> {
+    use crate::tui::model::UiPayload;
+    use crate::tui::run_tui;
+
+    let payload = if let Some(path) = args.file {
+        let raw = fs::read_to_string(&path)
+            .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+        serde_json::from_str::<UiPayload>(&raw)
+            .map_err(|e| format!("invalid UI payload JSON: {e}"))?
+    } else {
+        demo_payload()
+    };
+
+    run_tui(payload)
+}
+
+/// Build a UiPayload from a completed RuntimeResult.
+/// Exported so other CLI commands can call it (e.g. `generate --tui`).
+pub fn ui_payload_from_result(result: &runtime_core::stable_v03::RuntimeResult) -> crate::tui::model::UiPayload {
+    use crate::tui::model::{
+        HypothesisViewModel, MemoryCandidateViewModel, ScorePartsViewModel, TraceStatsViewModel,
+        TraceStepViewModel, TraceViewModel, UiPayload,
+    };
+
+    let (request_id, steps, stats) = result
+        .reasoning_trace
+        .as_ref()
+        .map(|t| {
+            let steps = t
+                .steps
+                .iter()
+                .map(|s| TraceStepViewModel {
+                    depth: s.depth,
+                    beam_width: s.beam_width,
+                    candidates: s.candidates,
+                    pruned: s.pruned,
+                    recall_hits: s.recall_hits,
+                })
+                .collect::<Vec<_>>();
+            let stats = TraceStatsViewModel {
+                total_nodes: t.stats.total_nodes,
+                max_depth: t.stats.max_depth,
+                recall_hit_rate: t.stats.recall_hit_rate,
+                avg_branching: t.stats.avg_branching,
+            };
+            (t.request_id.0.clone(), steps, stats)
+        })
+        .unwrap_or_else(|| {
+            (
+                "unknown".to_string(),
+                vec![],
+                TraceStatsViewModel {
+                    total_nodes: 0,
+                    max_depth: 0,
+                    recall_hit_rate: 0.0,
+                    avg_branching: 0.0,
+                },
+            )
+        });
+
+    let hypotheses: Vec<HypothesisViewModel> = result
+        .scored_candidates
+        .iter()
+        .enumerate()
+        .map(|(idx, sc)| {
+            let m = &sc.evaluation.metrics;
+            HypothesisViewModel {
+                id: idx,
+                parent: if sc.candidate.depth > 0 {
+                    Some(idx.saturating_sub(1))
+                } else {
+                    None
+                },
+                depth: sc.candidate.depth,
+                score: sc.evaluation.score as f32,
+                score_parts: ScorePartsViewModel {
+                    relevance: m.modularity as f32,
+                    goal: m.cohesion as f32,
+                    constraint: (1.0 - m.coupling) as f32,
+                    memory: (1.0 - m.complexity) as f32,
+                },
+                relations: vec![],
+            }
+        })
+        .collect();
+
+    let memory: Vec<MemoryCandidateViewModel> = result
+        .recall_records
+        .iter()
+        .enumerate()
+        .map(|(rank, r)| {
+            let score = r.score as f32;
+            MemoryCandidateViewModel {
+                id: r.record.id.clone(),
+                score,
+                source: MemoryCandidateViewModel::source_from_score(score).to_string(),
+                rank,
+                tags: r.record.tags.iter().take(3).cloned().collect(),
+            }
+        })
+        .collect();
+
+    let selected = hypotheses.first().map(|h| h.id);
+
+    UiPayload {
+        trace: TraceViewModel {
+            request_id,
+            steps,
+            stats,
+        },
+        hypotheses,
+        memory,
+        selected,
+    }
+}
+
+/// Demo payload used when no JSON file is provided.
+fn demo_payload() -> crate::tui::model::UiPayload {
+    use crate::tui::model::{
+        HypothesisViewModel, HypothesisRelationViewModel, MemoryCandidateViewModel,
+        ScorePartsViewModel, TraceStatsViewModel, TraceStepViewModel, TraceViewModel, UiPayload,
+    };
+
+    let steps = vec![
+        TraceStepViewModel { depth: 0, beam_width: 5, candidates: 12, pruned: 7, recall_hits: 3 },
+        TraceStepViewModel { depth: 1, beam_width: 4, candidates: 9,  pruned: 5, recall_hits: 2 },
+        TraceStepViewModel { depth: 2, beam_width: 3, candidates: 6,  pruned: 3, recall_hits: 1 },
+    ];
+
+    let sp = |r: f32, g: f32, c: f32, m: f32| ScorePartsViewModel {
+        relevance: r, goal: g, constraint: c, memory: m,
+    };
+
+    let hypotheses = vec![
+        HypothesisViewModel { id: 0, parent: None,    depth: 0, score: 0.92, score_parts: sp(0.90, 0.88, 0.95, 0.85), relations: vec![] },
+        HypothesisViewModel { id: 1, parent: Some(0), depth: 1, score: 0.88, score_parts: sp(0.85, 0.82, 0.90, 0.80), relations: vec![] },
+        HypothesisViewModel { id: 2, parent: Some(0), depth: 1, score: 0.85, score_parts: sp(0.82, 0.80, 0.88, 0.78),
+            relations: vec![HypothesisRelationViewModel { to_id: 4, relation_type: "similar".to_string() }] },
+        HypothesisViewModel { id: 3, parent: Some(1), depth: 2, score: 0.81, score_parts: sp(0.78, 0.75, 0.85, 0.72), relations: vec![] },
+        HypothesisViewModel { id: 4, parent: Some(1), depth: 2, score: 0.79, score_parts: sp(0.76, 0.73, 0.83, 0.70), relations: vec![] },
+        HypothesisViewModel { id: 5, parent: Some(2), depth: 2, score: 0.80, score_parts: sp(0.77, 0.74, 0.84, 0.71), relations: vec![] },
+    ];
+
+    let memory = vec![
+        MemoryCandidateViewModel { id: "mem-a1b2".to_string(), score: 0.91, source: "exact".to_string(), rank: 0, tags: vec!["web".to_string(), "rust".to_string()] },
+        MemoryCandidateViewModel { id: "mem-c3d4".to_string(), score: 0.84, source: "cache".to_string(), rank: 1, tags: vec!["api".to_string()] },
+        MemoryCandidateViewModel { id: "mem-e5f6".to_string(), score: 0.80, source: "cache".to_string(), rank: 2, tags: vec!["service".to_string(), "grpc".to_string()] },
+        MemoryCandidateViewModel { id: "mem-g7h8".to_string(), score: 0.72, source: "index".to_string(), rank: 3, tags: vec![] },
+    ];
+
+    UiPayload {
+        trace: TraceViewModel {
+            request_id: "demo".to_string(),
+            steps,
+            stats: TraceStatsViewModel {
+                total_nodes: 15,
+                max_depth: 2,
+                recall_hit_rate: 0.43,
+                avg_branching: 2.5,
+            },
+        },
+        hypotheses,
+        memory,
+        selected: Some(0),
+    }
 }

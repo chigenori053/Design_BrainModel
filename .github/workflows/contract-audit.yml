@@ -1,0 +1,20 @@
+name: Contract Audit
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+
+jobs:
+  contract-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run contract audit
+        run: cargo test -p contract_audit_tests
+      - name: Run contract strict audit
+        run: cargo test -p contract_audit_tests --features contract_strict

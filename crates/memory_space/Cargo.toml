@@ -3,9 +3,13 @@ name = "memory_space_phase14"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+contract_strict = []
+
 [dependencies]
 architecture_ir = { workspace = true }
 causal_domain = { workspace = true }
+contracts = { workspace = true }
 design_domain = { workspace = true }
 semantic_domain = { workspace = true }
 world_model = { workspace = true }

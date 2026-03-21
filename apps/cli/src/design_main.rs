@@ -13,14 +13,13 @@ use design_search_engine::{
     rank_candidates,
 };
 use hybrid_vm::{
-    ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
-    rank_frontier_by_human_coherence,
+    CausalEdge, ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind,
+    SemanticObjectiveCase, rank_frontier_by_human_coherence,
 };
 use runtime_core::{ModalityInput, RuntimeStage};
 use runtime_vm::{
     ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter,
 };
-use semantic_dhm::CausalEdge;
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use world_model_core::{

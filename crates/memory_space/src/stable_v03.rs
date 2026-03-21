@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::RwLock;
 
 use architecture_ir::stable_v03::ArchitectureGraph;
+pub use contracts::{MemoryCandidate, MemoryId, MemorySource};
 use world_model::stable_v03::IntentState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -62,19 +63,6 @@ pub struct CacheStats {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Pattern {
-    pub text: String,
-    pub tags: Vec<String>,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub struct MemoryCandidate {
-    pub id: String,
-    pub score: f32,
-    pub pattern: Pattern,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MemoryNode {
     pub id: String,
     pub embedding: Vec<u32>,
@@ -127,13 +115,12 @@ impl InMemoryEngine {
             .into_iter()
             .filter(|record| record.score >= config.threshold)
             .take(config.top_k.max(1))
-            .map(|record| MemoryCandidate {
+            .enumerate()
+            .map(|(rank, record)| MemoryCandidate {
                 id: record.record.id,
                 score: record.score as f32,
-                pattern: Pattern {
-                    text: record.record.text,
-                    tags: record.record.tags,
-                },
+                source: MemorySource::Exact,
+                rank,
             })
             .collect()
     }

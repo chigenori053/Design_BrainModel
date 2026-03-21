@@ -22,12 +22,12 @@ jobs:
 
       - name: pareto evaluation
         if: ${{ inputs.target == 'pareto' || inputs.target == 'all' }}
-        run: cargo run -p cli -- pareto-eval
+        run: cargo run -p design_cli -- analyze
 
       - name: search evaluation
         if: ${{ inputs.target == 'search' || inputs.target == 'all' }}
-        run: cargo run -p cli -- search-eval
+        run: cargo run -p design_cli -- analyze --hv-guided
 
       - name: simulation
         if: ${{ inputs.target == 'simulation' || inputs.target == 'all' }}
-        run: cargo run -p cli -- simulation
+        run: cargo run -p design_cli -- simulate

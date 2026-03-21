@@ -1,6 +1,61 @@
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{ChatContext, Clarification, SlotMap, SlotValue};
 
+use crate::plan::Plan;
+use crate::state::{Context, Mode, State};
+
+/// Phase0 Patch: タスク（Phase4で本格実装）
+///
+/// CommandやAgentが生成する作業単位のプレースホルダ。
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Task {
+    pub description: String,
+    pub completed: bool,
+}
+
+impl Task {
+    pub fn new(description: impl Into<String>) -> Self {
+        Self {
+            description: description.into(),
+            completed: false,
+        }
+    }
+}
+
+/// Phase0 Patch: Agent型CLIセッション（拡張版）
+///
+/// CLIを状態機械として扱う。Phase2以降でPlannerとExecutorに接続される。
+///
+/// # 拡張ポイント
+/// - `history` : 全入力の履歴（Phase1でCommand履歴フィルタリングに使用）
+/// - `tasks`   : タスクリスト（Phase4で本格実装）
+#[derive(Clone, Debug, Default)]
+pub struct AgentSession {
+    /// 現在の状態
+    pub state: State,
+    /// 実行中のプラン（Phase2で使用）
+    pub current_plan: Option<Plan>,
+    /// 実行モード（Phase2で使用）
+    pub mode: Mode,
+    /// セッションコンテキスト（スロット・推論情報）
+    pub context: Context,
+    /// 入力履歴（Agent/Command 問わず全入力を記録）
+    pub history: Vec<String>,
+    /// タスクリスト（Phase4で使用）
+    pub tasks: Vec<Task>,
+}
+
+impl AgentSession {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 入力を履歴に記録する
+    pub fn record(&mut self, input: &str) {
+        self.history.push(input.to_string());
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatSession {
     pub history: Vec<String>,

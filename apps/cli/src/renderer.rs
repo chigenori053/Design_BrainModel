@@ -1,5 +1,6 @@
 use std::io::{self, Write};
 
+use design_search_engine::stable_v03::ReasoningTrace;
 use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
@@ -14,6 +15,10 @@ pub fn render_result<W: Write>(writer: &mut W, result: &RuntimeResult) -> io::Re
     } else if let Some(trace) = &result.intent_trace {
         writeln!(writer)?;
         render_summary(writer, &trace.final_slots)?;
+    }
+    if let Some(trace) = &result.reasoning_trace {
+        writeln!(writer)?;
+        render_reasoning_trace(writer, trace)?;
     }
     writeln!(writer)?;
     writeln!(writer, "Files:")?;
@@ -52,6 +57,40 @@ pub fn render_summary<W: Write>(writer: &mut W, slots: &SlotMap) -> io::Result<(
     Ok(())
 }
 
+pub fn render_reasoning_trace<W: Write>(
+    writer: &mut W,
+    trace: &ReasoningTrace,
+) -> io::Result<()> {
+    writeln!(writer, "[Reasoning]")?;
+    writeln!(
+        writer,
+        "request_id={} total_nodes={} max_depth={} recall_hit_rate={:.2}",
+        trace.request_id.0,
+        trace.stats.total_nodes,
+        trace.stats.max_depth,
+        trace.stats.recall_hit_rate
+    )?;
+    writeln!(
+        writer,
+        "stats avg_branching={:.2} steps={}",
+        trace.stats.avg_branching,
+        trace.steps.len()
+    )?;
+
+    if !trace.steps.is_empty() {
+        writeln!(writer, "Steps:")?;
+        for step in &trace.steps {
+            writeln!(
+                writer,
+                " - depth {} beam={} candidates={} pruned={} recall_hits={}",
+                step.depth, step.beam_width, step.candidates, step.pruned, step.recall_hits
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
 pub fn render_explanation<W: Write>(writer: &mut W, explanation: &Explanation) -> io::Result<()> {
     writeln!(writer, "[Intent]")?;
     for item in &explanation.intent {
@@ -70,6 +109,13 @@ pub fn render_explanation<W: Write>(writer: &mut W, explanation: &Explanation) -
         for decision in &explanation.decisions {
             writeln!(writer, "- {}", decision.message)?;
         }
+    }
+
+    if let Some(reasoning) = &explanation.reasoning {
+        writeln!(writer)?;
+        writeln!(writer, "[Reasoning Proof]")?;
+        writeln!(writer, "strategy: {:?}", reasoning.strategy_reason.strategy)?;
+        writeln!(writer, "{}", reasoning.text)?;
     }
 
     Ok(())
@@ -103,6 +149,7 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
     writeln!(writer, "Root: {}", report.root)?;
     writeln!(writer, "Files: {}", report.total_files)?;
     writeln!(writer, "Source files: {}", report.source_files)?;
+    writeln!(writer, "Avg Complexity: {}", report.avg_complexity)?;
     if !report.languages.is_empty() {
         writeln!(writer, "Languages:")?;
         for (language, count) in &report.languages {
@@ -111,6 +158,22 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
     }
     if !report.architecture_hints.is_empty() {
         writeln!(writer, "Hints: {}", report.architecture_hints.join(", "))?;
+    }
+    if !report.modules.is_empty() {
+        writeln!(writer, "Modules:")?;
+        for module in &report.modules {
+            writeln!(writer, " - {} ({} files)", module.name, module.file_count)?;
+        }
+    }
+    if !report.dependencies.is_empty() {
+        writeln!(writer, "Dependencies:")?;
+        for dependency in &report.dependencies {
+            writeln!(writer, " - {} -> {}", dependency.from, dependency.to)?;
+        }
+    }
+    if report.todo_files > 0 {
+        writeln!(writer, "Issues:")?;
+        writeln!(writer, " - TODO found in {} files", report.todo_files)?;
     }
     writer.flush()
 }
@@ -149,11 +212,36 @@ pub fn render_validation_report<W: Write>(
 pub fn render_run_report<W: Write>(writer: &mut W, report: &RunReport) -> io::Result<()> {
     writeln!(writer, "Run")?;
     writeln!(writer, "Root: {}", report.root)?;
-    writeln!(writer, "Mode: {}", report.mode)?;
-    match &report.selected_command {
-        Some(command) => writeln!(writer, "Command: {command}")?,
-        None => writeln!(writer, "Command: <none>")?,
+    writeln!(writer, "Status: {}", report.status)?;
+    writeln!(writer, "Exit code: {}", report.exit_code)?;
+    writeln!(writer, "Duration: {} ms", report.duration_ms)?;
+    writeln!(
+        writer,
+        "Command: {} {}",
+        report.command,
+        report.args.join(" ")
+    )?;
+    writeln!(writer, "Sandbox:")?;
+    writeln!(
+        writer,
+        " - timeout={}ms network={} fs_write={} deterministic={}",
+        report.sandbox.max_execution_time_ms,
+        report.sandbox.allow_network,
+        report.sandbox.allow_fs_write,
+        report.deterministic
+    )?;
+    writeln!(
+        writer,
+        " - stdout_size={} stderr_size={} timed_out={}",
+        report.telemetry.stdout_size, report.telemetry.stderr_size, report.sandbox.timed_out
+    )?;
+    if !report.stdout.is_empty() {
+        writeln!(writer, "Stdout:")?;
+        writeln!(writer, "{}", report.stdout)?;
     }
-    writeln!(writer, "Reason: {}", report.reason)?;
+    if !report.stderr.is_empty() {
+        writeln!(writer, "Stderr:")?;
+        writeln!(writer, "{}", report.stderr)?;
+    }
     writer.flush()
 }

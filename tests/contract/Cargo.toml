@@ -1,0 +1,23 @@
+[package]
+name = "contract_audit_tests"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+contract_strict = [
+    "bridge/contract_strict",
+    "contracts/contract_strict",
+    "design_search_engine/contract_strict",
+    "runtime_core/contract_strict",
+]
+
+[dependencies]
+bridge = { workspace = true }
+contracts = { workspace = true }
+design_search_engine = { workspace = true }
+memory_space_phase14 = { workspace = true }
+runtime_core = { workspace = true }
+architecture_ir = { workspace = true }
+world_model = { workspace = true }
+
+[build-dependencies]

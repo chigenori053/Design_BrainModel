@@ -1,0 +1,62 @@
+{
+  "request_id": "4ff685807810985e",
+  "input": "build rust api",
+  "result": {
+    "project_root": "generated_project",
+    "files": [
+      "generated_project/src/api.rs",
+      "generated_project/src/axum.rs",
+      "generated_project/src/balanced.rs",
+      "generated_project/Cargo.toml",
+      "generated_project/tests/test_api.rs",
+      "generated_project/tests/test_axum.rs",
+      "generated_project/tests/test_balanced.rs"
+    ],
+    "candidate_count": 8,
+    "selected_score": 0.36250000000000004
+  },
+  "trace": {
+    "steps": [
+      {
+        "depth": 0,
+        "beam_width": 3,
+        "candidates": 5,
+        "pruned": 0,
+        "recall_hits": 5
+      },
+      {
+        "depth": 1,
+        "beam_width": 2,
+        "candidates": 45,
+        "pruned": 0,
+        "recall_hits": 2
+      },
+      {
+        "depth": 2,
+        "beam_width": 1,
+        "candidates": 16,
+        "pruned": 0,
+        "recall_hits": 1
+      }
+    ]
+  },
+  "trace_stats": {
+    "total_nodes": 66,
+    "max_depth": 2,
+    "recall_hit_rate": 0.121212125,
+    "avg_branching": 30.5
+  },
+  "metrics": {
+    "latency_ms": 15,
+    "success": true,
+    "nodes_explored": 66,
+    "beam_avg": 2.0,
+    "cache_hit": true
+  },
+  "failure": null,
+  "anomalies": {
+    "latency_spike": false,
+    "exploration_explosion": false,
+    "recall_low": true
+  }
+}

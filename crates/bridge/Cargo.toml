@@ -1,0 +1,12 @@
+[package]
+name = "bridge"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+contract_strict = []
+
+[dependencies]
+architecture_ir = { workspace = true }
+contracts = { workspace = true }
+world_model = { workspace = true }

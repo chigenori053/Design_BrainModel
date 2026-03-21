@@ -27,6 +27,16 @@ fn temp_project_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn temp_sleep_project_dir(name: &str) -> PathBuf {
+    let dir = temp_project_dir(name);
+    fs::write(
+        dir.join("src/main.rs"),
+        "fn main() { std::thread::sleep(std::time::Duration::from_secs(2)); }\n",
+    )
+    .expect("write sleep source");
+    dir
+}
+
 #[test]
 fn generate_command_outputs_json() {
     let out = Command::new(cli_bin())
@@ -53,7 +63,7 @@ fn generate_command_outputs_json() {
 #[test]
 fn analyze_validate_and_run_commands_output_json() {
     let dir = temp_project_dir("analyze");
-    for command in ["analyze", "validate", "run"] {
+    for command in ["analyze", "validate"] {
         let out = Command::new(cli_bin())
             .args([command, dir.to_str().expect("utf8 path"), "--json"])
             .output()
@@ -61,7 +71,38 @@ fn analyze_validate_and_run_commands_output_json() {
         assert_eq!(out.status.code(), Some(0), "failed command: {command}");
         let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
         assert_eq!(stdout["root"], dir.display().to_string());
+        if command == "analyze" {
+            assert_eq!(stdout["total_files"], 1);
+            assert_eq!(stdout["avg_complexity"], "Low");
+            assert!(stdout["modules"].is_array());
+            assert!(stdout["dependencies"].is_array());
+        }
     }
+
+    let out = Command::new(cli_bin())
+        .args(["run", dir.to_str().expect("utf8 path"), "--json"])
+        .output()
+        .expect("run cli run");
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["status"], "success");
+    assert_eq!(stdout["exit_code"], 0);
+    assert!(stdout["root"].as_str().unwrap_or("").contains("dbm_run_"));
+    assert!(stdout["command"].as_str().unwrap_or("").ends_with("cargo"));
+    assert_eq!(stdout["sandbox"]["allow_network"], false);
+    assert_eq!(stdout["sandbox"]["timed_out"], false);
+    assert!(
+        stdout["sandbox"]["working_dir"]
+            .as_str()
+            .unwrap_or("")
+            .contains("dbm_run_")
+    );
+    assert!(
+        stdout["telemetry"]["memory_usage_kb"].is_number()
+            || stdout["telemetry"]["memory_usage_kb"] == "unknown"
+    );
+    assert_eq!(stdout["output_meta"]["streamed"], true);
+    assert!(stdout["sandbox_mode"].is_string());
 }
 
 #[test]
@@ -108,4 +149,43 @@ fn repl_mode_runs_command_and_quits() {
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert!(stdout.contains("REPL Mode"));
     assert!(stdout.contains("Analysis"));
+}
+
+#[test]
+fn run_command_reports_timeout() {
+    let dir = temp_sleep_project_dir("timeout");
+    let out = Command::new(cli_bin())
+        .args([
+            "run",
+            dir.to_str().expect("utf8 path"),
+            "--timeout-ms",
+            "10",
+            "--json",
+        ])
+        .output()
+        .expect("run timeout");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["status"], "timeout");
+    assert_eq!(stdout["exit_code"], -1);
+    assert_eq!(stdout["sandbox"]["timed_out"], true);
+}
+
+#[test]
+fn run_command_rejects_parent_traversal() {
+    let dir = temp_project_dir("traversal");
+    let parent = dir
+        .parent()
+        .expect("parent")
+        .join("..")
+        .join(dir.file_name().expect("file name"));
+    let out = Command::new(cli_bin())
+        .args(["run", parent.to_str().expect("utf8 path"), "--json"])
+        .output()
+        .expect("run traversal");
+
+    assert_eq!(out.status.code(), Some(1));
+    let stderr = String::from_utf8(out.stderr).expect("utf8 stderr");
+    assert!(stderr.contains("ValidationError"));
 }

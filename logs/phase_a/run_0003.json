@@ -1,0 +1,24 @@
+{
+  "request_id": "baa0489b-0e2c-4e80-9a8e-e876ec9e0cc9",
+  "input": "build rust cli",
+  "result": null,
+  "trace": null,
+  "trace_stats": null,
+  "metrics": {
+    "latency_ms": 9,
+    "success": false,
+    "nodes_explored": 0,
+    "beam_avg": 0.0,
+    "cache_hit": false
+  },
+  "failure": {
+    "failure_type": "search_failure",
+    "input": "build rust cli",
+    "actual": "clarification required: Which interface type do you want? (api/web/worker)"
+  },
+  "anomalies": {
+    "latency_spike": false,
+    "exploration_explosion": false,
+    "recall_low": true
+  }
+}

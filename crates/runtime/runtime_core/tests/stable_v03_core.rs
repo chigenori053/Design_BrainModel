@@ -12,7 +12,7 @@ use constraint_engine::stable_v03::{
     NoCycleConstraint,
 };
 use design_search_engine::stable_v03::{
-    ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, SearchInput,
+    ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, ReasoningInput,
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
@@ -118,7 +118,7 @@ struct FixedSearchEngine {
 }
 
 impl DesignSearchEngine for FixedSearchEngine {
-    fn search(&self, _input: SearchInput) -> Vec<ArchitectureCandidate> {
+    fn search(&self, _input: ReasoningInput) -> Vec<ArchitectureCandidate> {
         self.candidates.clone()
     }
 }
