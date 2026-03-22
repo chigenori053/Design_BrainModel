@@ -5,7 +5,10 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
-use crate::app::{AnalysisReport, DesignReport, RunReport, ValidationReport};
+use crate::app::{AnalysisReport, DesignReport, RefactorReport, RunReport, ValidationReport};
+use integration_layer::{
+    Issue, IssueType, LayerType, NodeRole, Pattern, RefactorAction, RefactorPlanAction, Severity,
+};
 
 pub fn render_result<W: Write>(writer: &mut W, result: &RuntimeResult) -> io::Result<()> {
     writeln!(writer, "✔ Project generated")?;
@@ -171,11 +174,113 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
             writeln!(writer, " - {} -> {}", dependency.from, dependency.to)?;
         }
     }
-    if report.todo_files > 0 {
-        writeln!(writer, "Issues:")?;
-        writeln!(writer, " - TODO found in {} files", report.todo_files)?;
+    writeln!(writer, "Cycles Detected: {}", report.cycles.cycles.len())?;
+    for (index, cycle) in report.cycles.cycles.iter().enumerate() {
+        writeln!(writer)?;
+        writeln!(writer, "Cycle #{}:", index + 1)?;
+        let mut path = cycle.nodes.clone();
+        if cycle.nodes.len() >= 2 {
+            path.push(cycle.nodes[0].clone());
+        }
+        writeln!(writer, "  {}", path.join(" -> "))?;
     }
+    if !report.layers.layers.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Layers:")?;
+        for layer in &report.layers.layers {
+            writeln!(writer, "Layer {}:", layer.level)?;
+            for node in &layer.nodes {
+                writeln!(writer, "  {}", node)?;
+            }
+        }
+    }
+    if !report.violations.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Violations:")?;
+        for violation in &report.violations {
+            writeln!(writer, "  {} -> {} ({} <= {})", violation.from, violation.to, violation.from_level, violation.to_level)?;
+        }
+    }
+    if !report.roles.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Roles:")?;
+        for role in &report.roles {
+            writeln!(
+                writer,
+                "- {}: {} ({:.2})",
+                role.node_name,
+                node_role_label(&role.role),
+                f32::from(role.confidence_milli) / 1000.0
+            )?;
+        }
+    }
+    if !report.semantic_layers.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Semantic Layers:")?;
+        for layer in &report.semantic_layers {
+            writeln!(writer, "- Layer {}: {}", layer.level, layer_type_label(&layer.layer_type))?;
+        }
+    }
+    if !report.data_flow.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Data Flow:")?;
+        for flow in &report.data_flow {
+            writeln!(writer, "- {} -> {} ({:.2})", flow.from, flow.to, flow.weight)?;
+        }
+    }
+    writeln!(writer)?;
+    render_issue_group(writer, "Structural Issues", &report.issues, "Structural")?;
+    render_issue_group(writer, "Semantic Issues", &report.issues, "Semantic")?;
+    render_issue_group(writer, "Data Flow Issues", &report.issues, "Data Flow")?;
+    writeln!(writer, "Summary: Critical: {} | High: {} | Medium: {}", report.summary.critical, report.summary.high, report.summary.medium)?;
+    writeln!(writer)?;
+    writeln!(writer, "Next Action:")?;
+    writeln!(writer, "{}", report.next_action)?;
     writer.flush()
+}
+
+fn render_issue_group<W: Write>(
+    writer: &mut W,
+    title: &str,
+    issues: &[Issue],
+    category: &str,
+) -> io::Result<()> {
+    let group = issues
+        .iter()
+        .filter(|issue| issue_category(issue) == category)
+        .collect::<Vec<_>>();
+    if group.is_empty() {
+        writeln!(writer, "{title}")?;
+        writeln!(writer, "- none observed")?;
+        return Ok(());
+    }
+    writeln!(writer, "{title}")?;
+    for issue in group {
+        writeln!(
+            writer,
+            "- ({}) {}",
+            severity_label(&issue.severity),
+            issue.description
+        )?;
+    }
+    Ok(())
+}
+
+fn issue_category(issue: &Issue) -> &'static str {
+    match issue.kind {
+        IssueType::Cycle | IssueType::LayerViolation | IssueType::OrphanNode => "Structural",
+        IssueType::GodObject | IssueType::RoleMismatch => "Semantic",
+        IssueType::Hub | IssueType::DataFlowAnomaly => "Data Flow",
+    }
+}
+
+fn severity_label(severity: &Severity) -> &'static str {
+    match severity {
+        Severity::Critical => "Critical",
+        Severity::High => "High",
+        Severity::Medium => "Medium",
+        Severity::Low => "Low",
+    }
 }
 
 pub fn render_design_report<W: Write>(writer: &mut W, report: &DesignReport) -> io::Result<()> {
@@ -184,6 +289,64 @@ pub fn render_design_report<W: Write>(writer: &mut W, report: &DesignReport) -> 
     writeln!(writer, "Style: {}", report.inferred_style)?;
     writeln!(writer, "Components: {}", report.components.join(", "))?;
     writeln!(writer, "Design units: {}", report.design_units.join(", "))?;
+    writeln!(writer)?;
+    writeln!(writer, "Design Analysis:")?;
+    writeln!(
+        writer,
+        "- Cycles: {} ({})",
+        report.cycles.cycles.len(),
+        if report.cycles.has_cycle { "INVALID" } else { "OK" }
+    )?;
+    writeln!(writer, "- Layers: {}", report.layers.layers.len())?;
+    writeln!(writer, "- Violations: {}", report.violations.len())?;
+    if !report.layers.layers.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Layer Model:")?;
+        for layer in &report.layers.layers {
+            writeln!(writer, "Layer {}: {}", layer.level, layer.nodes.join(", "))?;
+        }
+    }
+    if !report.violations.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Violations:")?;
+        for violation in &report.violations {
+            writeln!(writer, "- {} -> {}", violation.from, violation.to)?;
+        }
+    }
+    if !report.roles.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Roles:")?;
+        for role in &report.roles {
+            writeln!(writer, "- {}: {}", role.node_name, node_role_label(&role.role))?;
+        }
+    }
+    if !report.patterns.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Patterns:")?;
+        for pattern in &report.patterns {
+            writeln!(writer, "- {}", pattern_label(pattern))?;
+        }
+    }
+    if !report.suggestions.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Insights:")?;
+        for suggestion in &report.suggestions {
+            writeln!(
+                writer,
+                "- {} [{}]: {}",
+                suggestion.target,
+                refactor_action_label(&suggestion.action),
+                suggestion.reason
+            )?;
+        }
+    }
+    if !report.recommended_next_steps.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Recommendation:")?;
+        for step in &report.recommended_next_steps {
+            writeln!(writer, "- {step}")?;
+        }
+    }
     writer.flush()
 }
 
@@ -206,7 +369,80 @@ pub fn render_validation_report<W: Write>(
             writeln!(writer, " - {warning}")?;
         }
     }
+    if !report.patterns.is_empty() {
+        writeln!(writer, "Patterns:")?;
+        for pattern in &report.patterns {
+            writeln!(writer, " - {}", pattern_label(pattern))?;
+        }
+    }
+    if !report.layers.layers.is_empty() {
+        writeln!(writer, "Layers:")?;
+        for layer in &report.layers.layers {
+            writeln!(writer, " - Layer {}: {}", layer.level, layer.nodes.join(", "))?;
+        }
+    }
     writer.flush()
+}
+
+fn node_role_label(role: &NodeRole) -> &'static str {
+    match role {
+        NodeRole::Core => "Core",
+        NodeRole::Service => "Service",
+        NodeRole::Infrastructure => "Infrastructure",
+        NodeRole::Interface => "Interface",
+        NodeRole::Presentation => "Presentation",
+        NodeRole::Utility => "Utility",
+        NodeRole::Test => "Test",
+        NodeRole::Unknown => "Unknown",
+    }
+}
+
+fn layer_type_label(layer: &LayerType) -> &'static str {
+    match layer {
+        LayerType::CoreLayer => "CoreLayer",
+        LayerType::DomainLayer => "DomainLayer",
+        LayerType::ApplicationLayer => "ApplicationLayer",
+        LayerType::InterfaceLayer => "InterfaceLayer",
+        LayerType::InfrastructureLayer => "InfrastructureLayer",
+    }
+}
+
+fn pattern_label(pattern: &Pattern) -> String {
+    match pattern {
+        Pattern::Layered => "Layered Architecture".to_string(),
+        Pattern::Cyclic { nodes } => format!("Cyclic Modular ({})", nodes.join(" <-> ")),
+        Pattern::Hub { node } => format!("Hub Structure ({node})"),
+        Pattern::GodObject { node } => format!("God Object ({node})"),
+    }
+}
+
+fn refactor_action_label(action: &RefactorAction) -> &'static str {
+    match action {
+        RefactorAction::IntroduceAbstraction => "IntroduceAbstraction",
+        RefactorAction::InvertDependency => "InvertDependency",
+        RefactorAction::SplitModule => "SplitModule",
+        RefactorAction::ExtractInterface => "ExtractInterface",
+    }
+}
+
+fn refactor_plan_action_label(action: &RefactorPlanAction) -> String {
+    match action {
+        RefactorPlanAction::IntroduceInterface { between } => {
+            format!("Introduce Interface between {} and {}", between.0, between.1)
+        }
+        RefactorPlanAction::RemoveDependency { from, to } => {
+            format!("Remove Dependency {} -> {}", from, to)
+        }
+        RefactorPlanAction::SplitModule { target } => format!("Split Module {}", target),
+        RefactorPlanAction::MoveDependency { from, to, via } => match via {
+            Some(via) => format!("Move Dependency {} -> {} via {}", from, to, via),
+            None => format!("Move Dependency {} -> {}", from, to),
+        }
+        RefactorPlanAction::ExtractComponent { from } => {
+            format!("Extract Component from {}", from)
+        }
+        RefactorPlanAction::IsolateNode { node } => format!("Isolate Node {}", node),
+    }
 }
 
 pub fn render_run_report<W: Write>(writer: &mut W, report: &RunReport) -> io::Result<()> {
@@ -243,5 +479,34 @@ pub fn render_run_report<W: Write>(writer: &mut W, report: &RunReport) -> io::Re
         writeln!(writer, "Stderr:")?;
         writeln!(writer, "{}", report.stderr)?;
     }
+    writer.flush()
+}
+
+pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport) -> io::Result<()> {
+    writeln!(writer, "Refactor Plan")?;
+    writeln!(writer, "Root: {}", report.root)?;
+    writeln!(writer)?;
+    for (index, step) in report.plan.steps.iter().enumerate() {
+        writeln!(writer, "{}. {}", index + 1, refactor_plan_action_label(&step.action))?;
+        writeln!(writer, "   {}", step.reason)?;
+    }
+    writeln!(writer)?;
+    writeln!(writer, "Simulation:")?;
+    writeln!(
+        writer,
+        "Cycles: {} -> {}",
+        report.simulation.before.cycle_count, report.simulation.after.cycle_count
+    )?;
+    writeln!(
+        writer,
+        "Violations: {} -> {}",
+        report.simulation.before.layer_violations, report.simulation.after.layer_violations
+    )?;
+    writeln!(
+        writer,
+        "Coupling: {:.2} -> {:.2}",
+        f32::from(report.simulation.before.coupling_score_milli) / 1000.0,
+        f32::from(report.simulation.after.coupling_score_milli) / 1000.0
+    )?;
     writer.flush()
 }

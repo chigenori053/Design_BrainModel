@@ -63,7 +63,7 @@ fn generate_command_outputs_json() {
 #[test]
 fn analyze_validate_and_run_commands_output_json() {
     let dir = temp_project_dir("analyze");
-    for command in ["analyze", "validate"] {
+    for command in ["analyze", "validate", "refactor"] {
         let out = Command::new(cli_bin())
             .args([command, dir.to_str().expect("utf8 path"), "--json"])
             .output()
@@ -76,6 +76,22 @@ fn analyze_validate_and_run_commands_output_json() {
             assert_eq!(stdout["avg_complexity"], "Low");
             assert!(stdout["modules"].is_array());
             assert!(stdout["dependencies"].is_array());
+            assert!(stdout["data_flow"].is_array());
+            assert!(stdout["issues"].is_array());
+            let first_issue = stdout["issues"].as_array().and_then(|issues| issues.first()).cloned();
+            if let Some(issue) = first_issue {
+                assert!(issue["id"].is_string());
+                assert!(issue["kind"].is_string());
+                assert!(issue["severity"].is_string());
+                assert!(issue["description"].is_string());
+                assert!(issue["evidence"].is_array());
+            }
+            assert!(stdout.get("plan").is_none());
+            assert!(stdout.get("simulation").is_none());
+        }
+        if command == "refactor" {
+            assert!(stdout["plan"]["steps"].is_array());
+            assert!(stdout["simulation"]["before"]["cycle_count"].is_number());
         }
     }
 
@@ -103,6 +119,104 @@ fn analyze_validate_and_run_commands_output_json() {
     );
     assert_eq!(stdout["output_meta"]["streamed"], true);
     assert!(stdout["sandbox_mode"].is_string());
+}
+
+#[test]
+fn analyze_no_refactor_output() {
+    let dir = temp_project_dir("analyze_pure");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run analyze");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("Next Action:"));
+    assert!(stdout.contains("cli refactor"));
+    assert!(!stdout.contains("Introduce Interface"));
+    assert!(!stdout.contains("Split Module"));
+    assert!(!stdout.contains("Move Dependency"));
+    assert!(!stdout.contains("Simulation:"));
+}
+
+#[test]
+fn analyze_no_action_words() {
+    let dir = temp_project_dir("analyze_words");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run analyze");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).expect("utf8").to_ascii_lowercase();
+    for word in ["should", "fix", "introduce", "split", "move", "optimize", "improve"] {
+        assert!(!stdout.contains(word), "unexpected action word: {word}");
+    }
+}
+
+#[test]
+fn analyze_contains_only_diagnostics() {
+    let dir = temp_project_dir("analyze_diagnostics");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run analyze");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("Structural Issues") || stdout.contains("Semantic Issues") || stdout.contains("Data Flow Issues"));
+    assert!(!stdout.contains("should"));
+    assert!(!stdout.contains("fix"));
+}
+
+#[test]
+fn analyze_output_structure() {
+    let dir = temp_project_dir("analyze_structure");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run analyze");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains("Analysis"));
+    assert!(stdout.contains("Structural Issues"));
+    assert!(stdout.contains("Semantic Issues"));
+    assert!(stdout.contains("Data Flow Issues"));
+    assert!(stdout.contains("Summary:"));
+    assert!(stdout.contains("Next Action:"));
+}
+
+#[test]
+fn next_action_only_refactor_command() {
+    let dir = temp_project_dir("analyze_next_action");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path")])
+        .output()
+        .expect("run analyze");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout = String::from_utf8(out.stdout).expect("utf8");
+    assert!(stdout.contains(&format!("cli refactor {}", dir.display())));
+    assert!(!stdout.contains("Fix this"));
+    assert!(!stdout.contains("fix by"));
+}
+
+#[test]
+fn cli_analyze_pure_mode() {
+    let dir = temp_project_dir("analyze_cli_pure");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path"), "--json"])
+        .output()
+        .expect("run analyze json");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert!(stdout["issues"].is_array());
+    assert!(stdout["summary"].is_object());
+    assert_eq!(stdout["next_action"], format!("cli refactor {}", dir.display()));
+    assert!(stdout.get("plan").is_none());
+    assert!(stdout.get("simulation").is_none());
 }
 
 #[test]

@@ -1,5 +1,4 @@
 use std::collections::{BTreeMap, BTreeSet};
-use std::sync::{OnceLock, RwLock};
 
 use architecture_ir::stable_v03::{
     ArchitectureGraph, ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType,
@@ -13,7 +12,6 @@ pub use contracts::{
     state_hash_for_graph,
 };
 use bridge::reasoning_input_from_intent;
-use serde_json::Value;
 use world_model::stable_v03::IntentState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -35,12 +33,6 @@ pub struct RecallContext {
     pub patterns: Vec<RecalledPattern>,
     pub constraints: Vec<Constraint>,
     pub confidence: f64,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) struct SearchInput {
-    pub intent: IntentState,
-    pub recall: Option<RecallContext>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -234,126 +226,6 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
             validation,
         }
     }
-}
-
-struct SemanticAdapter;
-
-impl SemanticAdapter {
-    fn adapt(intent: &IntentState, recall: Option<&RecallContext>) -> SemanticRepresentation {
-        if let Some(cached) = semantic_cache()
-            .read()
-            .expect("semantic cache read lock")
-            .get(&intent.raw)
-            .cloned()
-        {
-            return cached;
-        }
-
-        let mut labels = intent
-            .tokens
-            .iter()
-            .filter(|token| !token.trim().is_empty())
-            .map(|token| token.to_ascii_lowercase())
-            .collect::<BTreeSet<_>>();
-        if let Some(recall) = recall {
-            for pattern in &recall.patterns {
-                for tag in &pattern.tags {
-                    labels.insert(tag.to_ascii_lowercase());
-                }
-            }
-        }
-
-        let semantic = if labels.is_empty() {
-            strict_json_fallback(&intent.raw).unwrap_or_else(default_semantic_representation)
-        } else {
-            semantic_from_labels(labels.into_iter().collect())
-        };
-        semantic_cache()
-            .write()
-            .expect("semantic cache write lock")
-            .insert(intent.raw.clone(), semantic.clone());
-        semantic
-    }
-}
-
-fn semantic_cache() -> &'static RwLock<BTreeMap<String, SemanticRepresentation>> {
-    static CACHE: OnceLock<RwLock<BTreeMap<String, SemanticRepresentation>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(BTreeMap::new()))
-}
-
-fn llm_cache() -> &'static RwLock<BTreeMap<String, SemanticRepresentation>> {
-    static CACHE: OnceLock<RwLock<BTreeMap<String, SemanticRepresentation>>> = OnceLock::new();
-    CACHE.get_or_init(|| RwLock::new(BTreeMap::new()))
-}
-
-fn strict_json_fallback(raw: &str) -> Option<SemanticRepresentation> {
-    if let Some(cached) = llm_cache()
-        .read()
-        .expect("llm cache read lock")
-        .get(raw)
-        .cloned()
-    {
-        return Some(cached);
-    }
-
-    let parsed = serde_json::from_str::<Value>(raw).ok()?;
-    let intents = parsed
-        .get("intents")?
-        .as_array()?
-        .iter()
-        .map(|value| Some(Intent {
-            label: value.as_str()?.to_string(),
-        }))
-        .collect::<Option<Vec<_>>>()?;
-    let relations = parsed
-        .get("relations")
-        .and_then(Value::as_array)
-        .cloned()
-        .unwrap_or_default()
-        .iter()
-        .map(parse_relation)
-        .collect::<Option<Vec<_>>>()?;
-    let semantic = SemanticRepresentation::new(relations, intents);
-    llm_cache()
-        .write()
-        .expect("llm cache write lock")
-        .insert(raw.to_string(), semantic.clone());
-    Some(semantic)
-}
-
-fn parse_relation(value: &Value) -> Option<Relation> {
-    let relation_type = match value.get("type")?.as_str()? {
-        "DerivedFrom" => ContractRelationType::DerivedFrom,
-        "DependsOn" => ContractRelationType::DependsOn,
-        "SimilarTo" => ContractRelationType::SimilarTo,
-        "ConstraintHint" => ContractRelationType::ConstraintHint,
-        _ => return None,
-    };
-    Some(Relation {
-        from: NodeId(value.get("from")?.as_str()?.to_string()),
-        to: NodeId(value.get("to")?.as_str()?.to_string()),
-        relation_type,
-    })
-}
-
-fn default_semantic_representation() -> SemanticRepresentation {
-    semantic_from_labels(vec!["general".to_string()])
-}
-
-fn semantic_from_labels(labels: Vec<String>) -> SemanticRepresentation {
-    let intents = labels
-        .into_iter()
-        .map(|label| Intent { label })
-        .collect::<Vec<_>>();
-    let relations = intents
-        .windows(2)
-        .map(|window| Relation {
-            from: NodeId(window[0].label.clone()),
-            to: NodeId(window[1].label.clone()),
-            relation_type: ContractRelationType::DerivedFrom,
-        })
-        .collect::<Vec<_>>();
-    SemanticRepresentation::new(relations, intents)
 }
 
 fn seed_hypotheses(

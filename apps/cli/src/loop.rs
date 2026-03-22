@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Write};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use memory_space_phase14::stable_v03::InMemoryEngine;
@@ -7,7 +8,10 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 
 use crate::command::{Command, parse_command};
 use crate::input::{InputState, read_input};
-use crate::renderer::{render_question, render_result};
+use crate::renderer::{
+    render_analysis_report, render_design_report, render_question, render_result,
+    render_validation_report,
+};
 use crate::session::{ChatSession, merge_slots};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -59,6 +63,10 @@ where
         return Ok(LoopSignal::Continue);
     }
 
+    if handle_slash_command(&input, writer)? {
+        return Ok(LoopSignal::Continue);
+    }
+
     let merged_slots = build_merged_slots(session, &input)
         .map_err(|err| io::Error::other(format!("slot extraction failed: {err}")))?;
     let context = runtime_core::ChatContext {
@@ -79,6 +87,51 @@ where
         }
     }
     Ok(LoopSignal::Continue)
+}
+
+fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<bool> {
+    if !input.starts_with('/') {
+        return Ok(false);
+    }
+
+    let mut parts = input.split_whitespace();
+    let Some(command) = parts.next() else {
+        return Ok(false);
+    };
+
+    match command {
+        "/analyze" => {
+            let path = parts.next().unwrap_or(".");
+            let report = crate::app::analyze_path(&PathBuf::from(path))
+                .map_err(|err| io::Error::other(format!("analyze failed: {err}")))?;
+            render_analysis_report(writer, &report)?;
+            Ok(true)
+        }
+        "/design" => {
+            let path = parts.next().unwrap_or(".");
+            let report = crate::app::build_design_report(&PathBuf::from(path))
+                .map_err(|err| io::Error::other(format!("design failed: {err}")))?;
+            render_design_report(writer, &report)?;
+            Ok(true)
+        }
+        "/validate" => {
+            let path = parts.next().unwrap_or(".");
+            let report = crate::app::build_validation_report(&PathBuf::from(path))
+                .map_err(|err| io::Error::other(format!("validate failed: {err}")))?;
+            render_validation_report(writer, &report)?;
+            Ok(true)
+        }
+        "/help" => {
+            writeln!(writer, "Slash commands: /analyze [path], /design [path], /validate [path], /reset, /quit")?;
+            writer.flush()?;
+            Ok(true)
+        }
+        _ => {
+            writeln!(writer, "Unknown slash command: {command}")?;
+            writer.flush()?;
+            Ok(true)
+        }
+    }
 }
 
 fn build_merged_slots(

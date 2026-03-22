@@ -7,4 +7,8 @@ edition = "2024"
 architecture_ir = { workspace = true }
 code_language_core = { workspace = true }
 contracts = { workspace = true }
+serde = { workspace = true }
 unified_design_ir = { workspace = true }
+
+[dev-dependencies]
+serde_json = { workspace = true }

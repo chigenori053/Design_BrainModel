@@ -1,4 +1,5 @@
 use std::io::Cursor;
+use std::{fs, time::{SystemTime, UNIX_EPOCH}};
 
 use design_cli::app::build_runtime;
 use design_cli::r#loop::{LoopSignal, step};
@@ -226,4 +227,36 @@ fn clarification_state_can_be_set_and_resolved() {
     assert!(session.pending_clarification.is_some());
     session.resolve_clarification();
     assert!(session.pending_clarification.is_none());
+}
+
+#[test]
+fn slash_analyze_bypasses_clarification_flow() {
+    let runtime = build_runtime();
+    let mut session = ChatSession::new();
+    let mut output = Vec::new();
+
+    let mut first = Cursor::new("build api\n");
+    step(&runtime, &mut session, &mut first, &mut output).expect("first step");
+    assert!(session.pending_clarification.is_some());
+
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("design_cli_chat_loop_{unique}"));
+    fs::create_dir_all(dir.join("src")).expect("create src");
+    fs::write(
+        dir.join("Cargo.toml"),
+        "[package]\nname = \"sample\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("write manifest");
+    fs::write(dir.join("src/main.rs"), "fn main() {}\n").expect("write source");
+
+    output.clear();
+    let mut analyze = Cursor::new(format!("/analyze {}\n", dir.display()));
+    let signal = step(&runtime, &mut session, &mut analyze, &mut output).expect("analyze step");
+    assert_eq!(signal, LoopSignal::Continue);
+    let rendered = String::from_utf8(output).expect("utf8");
+    assert!(rendered.contains("Analysis"));
+    assert!(rendered.contains(&dir.display().to_string()));
 }

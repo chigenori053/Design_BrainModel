@@ -2571,6 +2571,8 @@ dependencies = [
  "architecture_ir",
  "code_language_core",
  "contracts",
+ "serde",
+ "serde_json",
  "unified_design_ir",
 ]
 
