@@ -6,6 +6,10 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, Subcommand};
+use code_language_core::stable_v03::dynamic_ir::{
+    DefaultRuleValidator, bootstrap_rule_store, promote_validated_rule, prune_rules,
+    rollback_rule, should_promote_validated, validate_all_candidates, validate_candidate_rule,
+};
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
 use integration_layer::{
     AnalysisInput as IntegrationAnalysisInput, CodePatch, CycleReport, DiagnosticAnalysis, Issue,
@@ -27,7 +31,7 @@ use crate::coding::{
 use crate::r#loop::run_loop;
 use crate::renderer::{
     render_analysis_report, render_coding_report, render_design_report, render_refactor_report,
-    render_result, render_run_report, render_validation_report,
+    render_result, render_rules_report, render_run_report, render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -51,13 +55,60 @@ enum Commands {
     Validate(PathArgs),
     Refactor(PathArgs),
     Coding(CodingArgs),
+    Diff(CodingArgs),
+    Check(CodingArgs),
+    Apply(CodingArgs),
     Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
     /// Launch the interactive TUI viewer for a saved UI payload JSON.
     Tui(TuiArgs),
+    Rules(RulesArgs),
     /// Memory management commands.
     Memory(MemoryArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RulesArgs {
+    #[command(subcommand)]
+    pub command: RulesCommands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum RulesCommands {
+    List(RulesListArgs),
+    Inspect(RulesRuleArgs),
+    Validate(RulesRuleArgs),
+    Promote(RulesPromoteArgs),
+    Rollback(RulesRuleArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RulesListArgs {
+    #[arg(long, default_value = "rust")]
+    pub lang: String,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RulesRuleArgs {
+    pub rule_id: String,
+    #[arg(long, default_value = "rust")]
+    pub lang: String,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RulesPromoteArgs {
+    pub rule_id: Option<String>,
+    #[arg(long, default_value_t = false)]
+    pub validated: bool,
+    #[arg(long, default_value = "rust")]
+    pub lang: String,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -126,11 +177,17 @@ pub struct CodingArgs {
     #[arg(long, default_value_t = false)]
     pub check: bool,
     #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+    #[arg(long, default_value_t = false)]
     pub no_build: bool,
     #[arg(long, default_value_t = false)]
     pub backup: bool,
     #[arg(long, default_value_t = false)]
     pub format: bool,
+    #[arg(long, default_value_t = false)]
+    pub safe: bool,
+    #[arg(long, default_value_t = false)]
+    pub auto_commit: bool,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -310,6 +367,35 @@ pub struct RunSandbox {
     pub timed_out: bool,
 }
 
+#[derive(Debug, Serialize)]
+pub struct RulesReport {
+    pub language: String,
+    pub action: String,
+    pub active: Vec<RuleReport>,
+    pub candidate: Vec<RuleReport>,
+    pub validated: Vec<ValidatedRuleReport>,
+    pub deprecated: Vec<RuleReport>,
+    pub message: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct RuleReport {
+    pub id: String,
+    pub priority: u32,
+    pub confidence: f32,
+    pub usage_count: u32,
+    pub source: String,
+    pub bucket: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct ValidatedRuleReport {
+    pub id: String,
+    pub validation_score: f32,
+    pub passed_checks: Vec<String>,
+    pub source: String,
+}
+
 pub fn run() -> Result<(), String> {
     run_with_args(std::env::args_os())
 }
@@ -342,11 +428,15 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Design(args)) => execute_design(args),
         Some(Commands::Validate(args)) => execute_validate(args),
         Some(Commands::Refactor(args)) => execute_refactor(args),
-        Some(Commands::Coding(args)) => execute_coding(args),
+        Some(Commands::Coding(args)) => execute_coding(args, CodingMode::Coding),
+        Some(Commands::Diff(args)) => execute_coding(args, CodingMode::Diff),
+        Some(Commands::Check(args)) => execute_coding(args, CodingMode::Check),
+        Some(Commands::Apply(args)) => execute_coding(args, CodingMode::Apply),
         Some(Commands::Run(args)) => execute_run(args),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
         Some(Commands::Tui(args)) => execute_tui(args),
+        Some(Commands::Rules(args)) => execute_rules(args),
         Some(Commands::Memory(args)) => execute_memory(args),
         None => {
             let mut cmd = Cli::command();
@@ -542,7 +632,34 @@ fn execute_refactor(args: PathArgs) -> Result<(), String> {
     render_refactor_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
-fn execute_coding(args: CodingArgs) -> Result<(), String> {
+#[derive(Debug, Clone, Copy)]
+enum CodingMode {
+    Coding,
+    Diff,
+    Check,
+    Apply,
+}
+
+fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> {
+    match mode {
+        CodingMode::Coding => {}
+        CodingMode::Diff => {
+            args.apply = false;
+            args.check = false;
+        }
+        CodingMode::Check => {
+            args.apply = false;
+            args.check = true;
+        }
+        CodingMode::Apply => {
+            args.apply = true;
+            args.check = true;
+        }
+    }
+    if args.dry_run {
+        args.apply = false;
+    }
+
     let (root, patches) = if let Some(input) = &args.input {
         let root = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
         (root, load_patches_from_json(input)?)
@@ -565,6 +682,8 @@ fn execute_coding(args: CodingArgs) -> Result<(), String> {
             no_build: args.no_build,
             backup: args.backup,
             format: args.format,
+            safe_mode: true,
+            auto_commit: args.auto_commit,
         },
     )?;
     let report = CodingReport {
@@ -586,6 +705,113 @@ fn execute_run(args: RunArgs) -> Result<(), String> {
         return Ok(());
     }
     render_run_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+}
+
+fn execute_rules(args: RulesArgs) -> Result<(), String> {
+    let validator = DefaultRuleValidator;
+    match args.command {
+        RulesCommands::List(args) => {
+            let mut store = bootstrap_rule_store(&args.lang);
+            prune_rules(&mut store, 100);
+            let report = rules_report_from_store(&args.lang, "list", &store, None);
+            if report_json(args.json, &report)? {
+                return Ok(());
+            }
+            render_rules_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+        }
+        RulesCommands::Inspect(args) => {
+            let store = bootstrap_rule_store(&args.lang);
+            let message = inspect_rule_message(&store, &args.rule_id);
+            let report = rules_report_from_store(&args.lang, "inspect", &store, message);
+            if report_json(args.json, &report)? {
+                return Ok(());
+            }
+            render_rules_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+        }
+        RulesCommands::Validate(args) => {
+            let mut store = bootstrap_rule_store(&args.lang);
+            if let Some(validated) = validate_candidate_rule(&store, &args.rule_id, &validator) {
+                store.validated_rules.push(validated);
+            }
+            let message = if store.validated_rules.is_empty() {
+                Some(format!("rule not found or not candidate: {}", args.rule_id))
+            } else {
+                Some(format!("validated {}", args.rule_id))
+            };
+            let report = rules_report_from_store(&args.lang, "validate", &store, message);
+            if report_json(args.json, &report)? {
+                return Ok(());
+            }
+            render_rules_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+        }
+        RulesCommands::Promote(args) => {
+            let mut store = bootstrap_rule_store(&args.lang);
+            store.validated_rules = validate_all_candidates(&store, &validator);
+            let promoted = if args.validated {
+                let ids = store
+                    .validated_rules
+                    .iter()
+                    .filter(|record| {
+                        should_promote_validated(
+                            &record.rule,
+                            &code_language_core::stable_v03::dynamic_ir::ValidationResult {
+                                passed: record.passed_checks.len() == 5,
+                                score: record.validation_score,
+                                checks: record.passed_checks.clone(),
+                            },
+                        )
+                    })
+                    .map(|record| record.rule.id.clone())
+                    .collect::<Vec<_>>();
+                let mut count = 0;
+                for rule_id in ids {
+                    if promote_validated_rule(&mut store, &rule_id) {
+                        count += 1;
+                    }
+                }
+                count
+            } else if let Some(rule_id) = args.rule_id.as_deref() {
+                let allow = store
+                    .validated_rules
+                    .iter()
+                    .find(|record| record.rule.id == rule_id)
+                    .map(|record| {
+                        should_promote_validated(
+                            &record.rule,
+                            &code_language_core::stable_v03::dynamic_ir::ValidationResult {
+                                passed: record.passed_checks.len() == 5,
+                                score: record.validation_score,
+                                checks: record.passed_checks.clone(),
+                            },
+                        )
+                    })
+                    .unwrap_or(false);
+                usize::from(allow && promote_validated_rule(&mut store, rule_id))
+            } else {
+                0
+            };
+            let message = Some(format!("promoted {} rule(s)", promoted));
+            let report = rules_report_from_store(&args.lang, "promote", &store, message);
+            if report_json(args.json, &report)? {
+                return Ok(());
+            }
+            render_rules_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+        }
+        RulesCommands::Rollback(args) => {
+            let mut store = bootstrap_rule_store(&args.lang);
+            let rolled_back = rollback_rule(&mut store, &args.rule_id);
+            let message = Some(if rolled_back {
+                format!("rolled back {}", args.rule_id)
+            } else {
+                format!("active rule not found: {}", args.rule_id)
+            });
+            let report = rules_report_from_store(&args.lang, "rollback", &store, message);
+            if report_json(args.json, &report)? {
+                return Ok(());
+            }
+            render_rules_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+        }
+    }
 }
 
 fn wizard_mode(args: WizardArgs) -> Result<(), String> {
@@ -1243,6 +1469,122 @@ fn report_json<T: Serialize>(enabled: bool, report: &T) -> Result<bool, String> 
         serde_json::to_string_pretty(&payload).map_err(|err| err.to_string())?
     );
     Ok(true)
+}
+
+fn rules_report_from_store(
+    lang: &str,
+    action: &str,
+    store: &code_language_core::stable_v03::dynamic_ir::RuleStore,
+    message: Option<String>,
+) -> RulesReport {
+    RulesReport {
+        language: lang.to_string(),
+        action: action.to_string(),
+        active: store
+            .active_rules
+            .iter()
+            .map(|record| rule_report(&record.rule, "active"))
+            .collect(),
+        candidate: store
+            .candidate_rules
+            .iter()
+            .map(|record| rule_report(&record.rule, "candidate"))
+            .collect(),
+        validated: store
+            .validated_rules
+            .iter()
+            .map(|record| ValidatedRuleReport {
+                id: record.rule.id.clone(),
+                validation_score: record.validation_score,
+                passed_checks: record
+                    .passed_checks
+                    .iter()
+                    .map(validation_check_label)
+                    .map(str::to_string)
+                    .collect(),
+                source: rule_source_label(&record.rule.source).to_string(),
+            })
+            .collect(),
+        deprecated: store
+            .deprecated_rules
+            .iter()
+            .map(|record| rule_report(&record.rule, "deprecated"))
+            .collect(),
+        message,
+    }
+}
+
+fn rule_report(
+    rule: &code_language_core::stable_v03::dynamic_ir::MappingRule,
+    bucket: &str,
+) -> RuleReport {
+    RuleReport {
+        id: rule.id.clone(),
+        priority: rule.priority,
+        confidence: rule.confidence,
+        usage_count: rule.usage_count,
+        source: rule_source_label(&rule.source).to_string(),
+        bucket: bucket.to_string(),
+    }
+}
+
+fn inspect_rule_message(
+    store: &code_language_core::stable_v03::dynamic_ir::RuleStore,
+    rule_id: &str,
+) -> Option<String> {
+    if let Some(record) = store.active_rules.iter().find(|record| record.rule.id == rule_id) {
+        return Some(format!(
+            "active rule {} (confidence {:.2}, usage {})",
+            record.rule.id, record.rule.confidence, record.rule.usage_count
+        ));
+    }
+    if let Some(record) = store
+        .candidate_rules
+        .iter()
+        .find(|record| record.rule.id == rule_id)
+    {
+        return Some(format!(
+            "candidate rule {} (confidence {:.2}, usage {})",
+            record.rule.id, record.rule.confidence, record.rule.usage_count
+        ));
+    }
+    if let Some(record) = store
+        .validated_rules
+        .iter()
+        .find(|record| record.rule.id == rule_id)
+    {
+        return Some(format!(
+            "validated rule {} (validation {:.2})",
+            record.rule.id, record.validation_score
+        ));
+    }
+    None
+}
+
+fn rule_source_label(source: &code_language_core::stable_v03::dynamic_ir::RuleSource) -> &'static str {
+    match source {
+        code_language_core::stable_v03::dynamic_ir::RuleSource::Static => "Static",
+        code_language_core::stable_v03::dynamic_ir::RuleSource::Learned => "Learned",
+        code_language_core::stable_v03::dynamic_ir::RuleSource::User => "User",
+    }
+}
+
+fn validation_check_label(
+    check: &code_language_core::stable_v03::dynamic_ir::ValidationCheck,
+) -> &'static str {
+    match check {
+        code_language_core::stable_v03::dynamic_ir::ValidationCheck::RegressionPass => {
+            "RegressionPass"
+        }
+        code_language_core::stable_v03::dynamic_ir::ValidationCheck::Deterministic => {
+            "Deterministic"
+        }
+        code_language_core::stable_v03::dynamic_ir::ValidationCheck::NoConflict => "NoConflict",
+        code_language_core::stable_v03::dynamic_ir::ValidationCheck::DiffSafe => "DiffSafe",
+        code_language_core::stable_v03::dynamic_ir::ValidationCheck::CrossLanguageConsistent => {
+            "CrossLanguageConsistent"
+        }
+    }
 }
 
 // ── Memory command ────────────────────────────────────────────────────────────

@@ -98,6 +98,38 @@ fn write_patch_input(dir: &std::path::Path, name: &str, replacement: &str) -> Pa
     input
 }
 
+fn init_git_repo(dir: &std::path::Path) {
+    let init = Command::new("git")
+        .args(["init"])
+        .current_dir(dir)
+        .output()
+        .expect("git init");
+    assert!(init.status.success(), "git init failed");
+
+    for (key, value) in [("user.email", "dbm@example.com"), ("user.name", "DBM")] {
+        let config = Command::new("git")
+            .args(["config", key, value])
+            .current_dir(dir)
+            .output()
+            .expect("git config");
+        assert!(config.status.success(), "git config failed");
+    }
+
+    let add = Command::new("git")
+        .args(["add", "."])
+        .current_dir(dir)
+        .output()
+        .expect("git add");
+    assert!(add.status.success(), "git add failed");
+
+    let commit = Command::new("git")
+        .args(["commit", "-m", "initial"])
+        .current_dir(dir)
+        .output()
+        .expect("git commit");
+    assert!(commit.status.success(), "initial commit failed");
+}
+
 #[test]
 fn generate_command_outputs_json() {
     let out = Command::new(cli_bin())
@@ -215,8 +247,32 @@ fn coding_command_outputs_json() {
     assert_eq!(stdout["execution"]["checked"], false);
     assert_eq!(stdout["execution"]["build_ok"], true);
     assert_eq!(stdout["execution"]["applied"], false);
+    assert!(stdout["execution"]["diff"]["diffs"].is_array());
+    assert!(stdout["execution"]["diff"]["breaking_count"].is_number());
     assert!(stdout["changes"]["changes"].is_array());
     assert!(stdout["changes"]["summary"]["total_changes"].is_number());
+}
+
+#[test]
+fn diff_command_outputs_diff_report() {
+    let dir = temp_coding_project_dir("diff_mode");
+    let input = write_patch_input(&dir, "patches_diff.json", "world_service");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "diff",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--json",
+        ])
+        .output()
+        .expect("run diff");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "dry-run");
+    assert!(stdout["execution"]["diff"]["diffs"].is_array());
 }
 
 #[test]
@@ -235,6 +291,29 @@ fn coding_check_does_not_modify_workspace() {
         ])
         .output()
         .expect("run coding check");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "checked");
+    assert_eq!(stdout["execution"]["checked"], true);
+    assert!(!dir.join("src/debug_renderer_interface.rs").exists());
+}
+
+#[test]
+fn check_command_runs_validation_without_modifying_workspace() {
+    let dir = temp_coding_project_dir("check_mode");
+    let input = write_patch_input(&dir, "patches_check_mode.json", "world_service");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "check",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--json",
+        ])
+        .output()
+        .expect("run check");
 
     assert_eq!(out.status.code(), Some(0));
     let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
@@ -298,6 +377,82 @@ fn coding_apply_rolls_back_on_build_fail() {
         fs::read_to_string(dir.join("src/main.rs")).expect("read main after"),
         original
     );
+}
+
+#[test]
+fn apply_command_can_auto_commit() {
+    let dir = temp_coding_project_dir("apply_commit");
+    init_git_repo(&dir);
+    let input = write_patch_input(&dir, "patches_apply.json", "world_service");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "apply",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--auto-commit",
+            "--json",
+        ])
+        .output()
+        .expect("run apply");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "applied");
+    assert_eq!(stdout["execution"]["committed"], true);
+    assert!(stdout["execution"]["commit_id"].is_string());
+    assert!(stdout["execution"]["branch"].is_string());
+}
+
+#[test]
+fn rules_list_outputs_json() {
+    let out = Command::new(cli_bin())
+        .args(["rules", "list", "--json"])
+        .output()
+        .expect("run rules list");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["language"], "rust");
+    assert_eq!(stdout["action"], "list");
+    assert!(stdout["active"].is_array());
+    assert!(stdout["candidate"].is_array());
+}
+
+#[test]
+fn rules_validate_outputs_validated_rule() {
+    let out = Command::new(cli_bin())
+        .args(["rules", "validate", "candidate_rust_bytes", "--json"])
+        .output()
+        .expect("run rules validate");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["action"], "validate");
+    assert!(stdout["validated"].is_array());
+    assert_eq!(stdout["validated"][0]["id"], "candidate_rust_bytes");
+}
+
+#[test]
+fn rules_promote_and_rollback_are_exposed() {
+    let promote = Command::new(cli_bin())
+        .args(["rules", "promote", "--validated", "--json"])
+        .output()
+        .expect("run rules promote");
+    assert_eq!(promote.status.code(), Some(0));
+    let promote_stdout: Value = serde_json::from_slice(&promote.stdout).expect("json stdout");
+    assert_eq!(promote_stdout["action"], "promote");
+    assert!(promote_stdout["active"].is_array());
+
+    let rollback = Command::new(cli_bin())
+        .args(["rules", "rollback", "async_fn", "--json"])
+        .output()
+        .expect("run rules rollback");
+    assert_eq!(rollback.status.code(), Some(0));
+    let rollback_stdout: Value = serde_json::from_slice(&rollback.stdout).expect("json stdout");
+    assert_eq!(rollback_stdout["action"], "rollback");
+    assert!(rollback_stdout["deprecated"].is_array());
 }
 
 #[test]

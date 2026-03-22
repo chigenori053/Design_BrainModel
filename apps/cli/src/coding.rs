@@ -1,4 +1,4 @@
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -71,6 +71,8 @@ pub struct CodingOptions {
     pub no_build: bool,
     pub backup: bool,
     pub format: bool,
+    pub safe_mode: bool,
+    pub auto_commit: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -85,6 +87,10 @@ pub struct CodingExecutionResult {
     pub reason: Option<String>,
     pub sandbox_root: Option<String>,
     pub files_changed: usize,
+    pub diff: DiffReport,
+    pub committed: bool,
+    pub commit_id: Option<String>,
+    pub branch: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +111,26 @@ pub struct FixResult {
     pub build_fixed: bool,
     pub registered_modules: Vec<String>,
     pub created_placeholders: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffKind {
+    Add,
+    Modify,
+    Delete,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ASTDiff {
+    pub kind: DiffKind,
+    pub target: String,
+    pub breaking: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DiffReport {
+    pub diffs: Vec<ASTDiff>,
+    pub breaking_count: usize,
 }
 
 pub fn load_patches_from_json(path: &Path) -> Result<Vec<CodePatch>, String> {
@@ -191,6 +217,11 @@ pub fn execute_code_change_set(
     change_set: &CodeChangeSet,
     options: &CodingOptions,
 ) -> Result<CodingExecutionResult, String> {
+    let diff = compute_diff_report(root, change_set)?;
+    if options.safe_mode {
+        validate_diff_report(&diff)?;
+    }
+
     let checked = options.check || options.apply;
     let backed_up = options.apply || options.backup;
     let sandbox_root = if checked {
@@ -236,6 +267,10 @@ pub fn execute_code_change_set(
                 .as_ref()
                 .map(|path| path.display().to_string()),
             files_changed: 0,
+            diff,
+            committed: false,
+            commit_id: None,
+            branch: None,
         });
     }
 
@@ -257,6 +292,10 @@ pub fn execute_code_change_set(
                 .as_ref()
                 .map(|path| path.display().to_string()),
             files_changed: 0,
+            diff,
+            committed: false,
+            commit_id: None,
+            branch: None,
         });
     }
 
@@ -277,20 +316,55 @@ pub fn execute_code_change_set(
                 run_build_validation(root)
             }
         }) {
-        Ok(()) => Ok(CodingExecutionResult {
-            status: "applied".to_string(),
-            applied: true,
-            checked,
-            build_fixed,
-            build_ok,
-            rolled_back: false,
-            backed_up,
-            reason: None,
-            sandbox_root: sandbox_root
-                .as_ref()
-                .map(|path| path.display().to_string()),
-            files_changed: change_set.summary.total_changes,
-        }),
+        Ok(()) => {
+            let (committed, commit_id, branch, reason) = if options.auto_commit {
+                match git_commit(root) {
+                    Ok((commit_id, branch)) => (true, Some(commit_id), Some(branch), None),
+                    Err(err) => {
+                        restore_workspace(backups)?;
+                        return Ok(CodingExecutionResult {
+                            status: "failed".to_string(),
+                            applied: false,
+                            checked,
+                            build_fixed,
+                            build_ok,
+                            rolled_back: true,
+                            backed_up,
+                            reason: Some(err),
+                            sandbox_root: sandbox_root
+                                .as_ref()
+                                .map(|path| path.display().to_string()),
+                            files_changed: 0,
+                            diff,
+                            committed: false,
+                            commit_id: None,
+                            branch: None,
+                        });
+                    }
+                }
+            } else {
+                (false, None, None, None)
+            };
+
+            Ok(CodingExecutionResult {
+                status: "applied".to_string(),
+                applied: true,
+                checked,
+                build_fixed,
+                build_ok,
+                rolled_back: false,
+                backed_up,
+                reason,
+                sandbox_root: sandbox_root
+                    .as_ref()
+                    .map(|path| path.display().to_string()),
+                files_changed: change_set.summary.total_changes,
+                diff,
+                committed,
+                commit_id,
+                branch,
+            })
+        }
         Err(err) => {
             restore_workspace(backups)?;
             Ok(CodingExecutionResult {
@@ -306,6 +380,10 @@ pub fn execute_code_change_set(
                     .as_ref()
                     .map(|path| path.display().to_string()),
                 files_changed: 0,
+                diff,
+                committed: false,
+                commit_id: None,
+                branch: None,
             })
         }
     }
@@ -327,6 +405,148 @@ pub fn apply_code_change_set(root: &Path, change_set: &CodeChangeSet) -> Result<
             .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     Ok(())
+}
+
+pub fn compute_diff_report(root: &Path, change_set: &CodeChangeSet) -> Result<DiffReport, String> {
+    let mut diffs = Vec::new();
+    for change in &change_set.changes {
+        let path = root.join(&change.file_path);
+        let original = if path.exists() {
+            fs::read_to_string(&path)
+                .map_err(|err| format!("failed to read {}: {err}", path.display()))?
+        } else {
+            String::new()
+        };
+        let replacement = change
+            .hunks
+            .last()
+            .map(|hunk| hunk.replacement.clone())
+            .unwrap_or_default();
+        let diff = match change.change_type {
+            ChangeType::CreateFile => ASTDiff {
+                kind: DiffKind::Add,
+                target: change.file_path.clone(),
+                breaking: false,
+            },
+            ChangeType::ModifyFile => ASTDiff {
+                kind: DiffKind::Modify,
+                target: change.file_path.clone(),
+                breaking: has_breaking_public_api_change(&original, &replacement),
+            },
+            ChangeType::MoveFile => ASTDiff {
+                kind: DiffKind::Delete,
+                target: change.file_path.clone(),
+                breaking: contains_public_api(&original),
+            },
+        };
+        diffs.push(diff);
+    }
+    diffs.sort_by(|lhs, rhs| lhs.target.cmp(&rhs.target));
+    let breaking_count = diffs.iter().filter(|diff| diff.breaking).count();
+    Ok(DiffReport { diffs, breaking_count })
+}
+
+pub fn validate_diff_report(diff: &DiffReport) -> Result<(), String> {
+    if let Some(breaking) = diff.diffs.iter().find(|entry| entry.breaking) {
+        return Err(format!(
+            "breaking change detected in {} ({:?})",
+            breaking.target, breaking.kind
+        ));
+    }
+    Ok(())
+}
+
+fn contains_public_api(content: &str) -> bool {
+    !public_api_signatures(content).is_empty()
+}
+
+fn has_breaking_public_api_change(original: &str, replacement: &str) -> bool {
+    let before = public_api_signatures(original);
+    let after = public_api_signatures(replacement);
+    before.iter().any(|signature| !after.contains(signature))
+}
+
+fn public_api_signatures(content: &str) -> BTreeSet<String> {
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| {
+            line.starts_with("pub fn ")
+                || line.starts_with("pub struct ")
+                || line.starts_with("pub trait ")
+                || line.starts_with("pub enum ")
+                || line.starts_with("export function ")
+                || line.starts_with("export interface ")
+                || line.starts_with("def ")
+        })
+        .map(ToString::to_string)
+        .collect()
+}
+
+fn git_commit(root: &Path) -> Result<(String, String), String> {
+    let git_dir = root.join(".git");
+    if !git_dir.exists() {
+        return Err(format!("git repository not found in {}", root.display()));
+    }
+
+    let branch = current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string());
+    if branch == "HEAD" {
+        run_git(root, &["checkout", "-B", "dbm/auto-branch"])?;
+    }
+
+    run_git(root, &["add", "."])?;
+
+    let status = Command::new("git")
+        .args(["diff", "--cached", "--quiet"])
+        .current_dir(root)
+        .status()
+        .map_err(|err| format!("failed to run git diff --cached: {err}"))?;
+    if status.success() {
+        let head = current_commit(root)?.unwrap_or_default();
+        return Ok((head, current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string())));
+    }
+
+    run_git(root, &["commit", "-m", "DBM apply"])?;
+    let commit_id = current_commit(root)?.ok_or_else(|| "failed to resolve commit id".to_string())?;
+    let branch = current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string());
+    Ok((commit_id, branch))
+}
+
+fn run_git(root: &Path, args: &[&str]) -> Result<(), String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(root)
+        .output()
+        .map_err(|err| format!("failed to run git {:?}: {err}", args))?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+    }
+}
+
+fn current_branch(root: &Path) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .args(["branch", "--show-current"])
+        .current_dir(root)
+        .output()
+        .map_err(|err| format!("failed to resolve branch: {err}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+}
+
+fn current_commit(root: &Path) -> Result<Option<String>, String> {
+    let output = Command::new("git")
+        .args(["rev-parse", "--short", "HEAD"])
+        .current_dir(root)
+        .output()
+        .map_err(|err| format!("failed to resolve commit: {err}"))?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
 }
 
 pub fn fix_build(project_root: &Path) -> Result<FixResult, String> {
@@ -957,6 +1177,8 @@ mod tests {
                 no_build: false,
                 backup: false,
                 format: false,
+                safe_mode: true,
+                auto_commit: false,
             },
         )
         .expect("apply");
@@ -1001,6 +1223,8 @@ mod tests {
                 no_build: false,
                 backup: true,
                 format: false,
+                safe_mode: true,
+                auto_commit: false,
             },
         )
         .expect("execute");
@@ -1042,12 +1266,54 @@ mod tests {
                 no_build: false,
                 backup: false,
                 format: false,
+                safe_mode: true,
+                auto_commit: false,
             },
         )
         .expect("execute");
         assert_eq!(result.status, "checked");
         assert!(result.build_fixed);
         assert!(!root.join("src/world_service.rs").exists());
+    }
+
+    #[test]
+    fn breaking_diff_rejected_in_safe_mode() {
+        let root = temp_dir("breaking_diff");
+        write_rust_project(&root, "pub fn exposed() {}\nfn main() {}\n");
+        let change_set = CodeChangeSet {
+            changes: vec![CodeChange {
+                file_path: "src/main.rs".to_string(),
+                change_type: ChangeType::ModifyFile,
+                hunks: vec![DiffHunk {
+                    start_line: 1,
+                    end_line: 2,
+                    replacement: "fn main() {}\n".to_string(),
+                }],
+            }],
+            summary: ChangeSummary {
+                total_changes: 1,
+                create_files: 0,
+                modify_files: 1,
+                move_files: 0,
+            },
+        };
+
+        let err = execute_code_change_set(
+            &root,
+            &change_set,
+            &CodingOptions {
+                apply: false,
+                check: false,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+            },
+        )
+        .expect_err("breaking diff should fail validation");
+
+        assert!(err.contains("breaking change detected"));
     }
 
     #[test]

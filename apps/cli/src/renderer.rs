@@ -5,7 +5,10 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
-use crate::app::{AnalysisReport, CodingReport, DesignReport, RefactorReport, RunReport, ValidationReport};
+use crate::app::{
+    AnalysisReport, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
+    ValidationReport,
+};
 use integration_layer::{
     Issue, IssueType, LayerType, NodeRole, PatchOperation, Pattern, PhaseType, RefactorAction,
     RefactorPlanAction, Severity,
@@ -538,6 +541,33 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
     writeln!(writer, "Applied: {}", report.execution.applied)?;
     writeln!(writer, "Rollback: {}", report.execution.rolled_back)?;
     writeln!(writer, "Files changed: {}", report.execution.files_changed)?;
+    writeln!(
+        writer,
+        "Diffs: {} (breaking={})",
+        report.execution.diff.diffs.len(),
+        report.execution.diff.breaking_count
+    )?;
+    if !report.execution.diff.diffs.is_empty() {
+        writeln!(writer, "Diff Analysis:")?;
+        for diff in &report.execution.diff.diffs {
+            writeln!(
+                writer,
+                "- {:?} {}{}",
+                diff.kind,
+                diff.target,
+                if diff.breaking { " [breaking]" } else { "" }
+            )?;
+        }
+    }
+    if report.execution.committed {
+        writeln!(writer, "Committed: true")?;
+        if let Some(branch) = &report.execution.branch {
+            writeln!(writer, "Branch: {}", branch)?;
+        }
+        if let Some(commit_id) = &report.execution.commit_id {
+            writeln!(writer, "Commit: {}", commit_id)?;
+        }
+    }
     if let Some(reason) = &report.execution.reason {
         writeln!(writer, "Reason: {reason}")?;
     }
@@ -549,6 +579,63 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
                 writeln!(writer, "+ {}", line)?;
             }
         }
+    }
+    writer.flush()
+}
+
+pub fn render_rules_report<W: Write>(writer: &mut W, report: &RulesReport) -> io::Result<()> {
+    writeln!(writer, "Rules")?;
+    writeln!(writer, "Language: {}", report.language)?;
+    writeln!(writer, "Action: {}", report.action)?;
+    writeln!(writer, "Active: {}", report.active.len())?;
+    writeln!(writer, "Candidate: {}", report.candidate.len())?;
+    writeln!(writer, "Validated: {}", report.validated.len())?;
+    writeln!(writer, "Deprecated: {}", report.deprecated.len())?;
+    if !report.active.is_empty() {
+        writeln!(writer, "Active Rules:")?;
+        for rule in &report.active {
+            writeln!(
+                writer,
+                "- {} [{}] conf={:.2} usage={}",
+                rule.id, rule.source, rule.confidence, rule.usage_count
+            )?;
+        }
+    }
+    if !report.candidate.is_empty() {
+        writeln!(writer, "Candidate Rules:")?;
+        for rule in &report.candidate {
+            writeln!(
+                writer,
+                "- {} [{}] conf={:.2} usage={}",
+                rule.id, rule.source, rule.confidence, rule.usage_count
+            )?;
+        }
+    }
+    if !report.validated.is_empty() {
+        writeln!(writer, "Validated Rules:")?;
+        for rule in &report.validated {
+            writeln!(
+                writer,
+                "- {} [{}] score={:.2} checks={}",
+                rule.id,
+                rule.source,
+                rule.validation_score,
+                rule.passed_checks.join(", ")
+            )?;
+        }
+    }
+    if !report.deprecated.is_empty() {
+        writeln!(writer, "Deprecated Rules:")?;
+        for rule in &report.deprecated {
+            writeln!(
+                writer,
+                "- {} [{}] conf={:.2} usage={}",
+                rule.id, rule.source, rule.confidence, rule.usage_count
+            )?;
+        }
+    }
+    if let Some(message) = &report.message {
+        writeln!(writer, "Message: {}", message)?;
     }
     writer.flush()
 }

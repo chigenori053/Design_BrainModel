@@ -1,3 +1,5 @@
+pub mod program_v1;
+
 use std::collections::BTreeSet;
 
 use design_domain::{Architecture, DependencyKind, DesignUnit, Layer};

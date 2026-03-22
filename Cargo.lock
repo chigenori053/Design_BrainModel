@@ -953,7 +953,10 @@ dependencies = [
 name = "code_ir"
 version = "0.1.0"
 dependencies = [
+ "architecture_ir",
  "design_domain",
+ "serde",
+ "unified_design_ir",
 ]
 
 [[package]]
@@ -1297,6 +1300,7 @@ dependencies = [
  "analysis_tools",
  "bridge",
  "clap",
+ "code_language_core",
  "crossterm",
  "design_reasoning",
  "design_search_engine",

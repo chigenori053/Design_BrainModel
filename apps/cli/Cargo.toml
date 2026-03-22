@@ -29,6 +29,7 @@ design_reasoning = { workspace = true }
 design_search_engine = { workspace = true }
 hybrid_vm = { workspace = true }
 integration_layer = { workspace = true }
+code_language_core = { workspace = true }
 unified_design_ir = { workspace = true }
 runtime_vm = { workspace = true }
 runtime_core = { workspace = true }
