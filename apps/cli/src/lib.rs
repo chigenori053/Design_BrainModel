@@ -1,5 +1,6 @@
 pub mod app;
 pub mod command;
+pub mod coding;
 pub mod memory_seed;
 pub mod commands;
 pub mod dbm;

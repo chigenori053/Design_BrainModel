@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use architecture_ir::stable_v03::{ArchitectureGraph, RelationType as ArchitectureRelationType};
 use code_language_core::stable_v03::GeneratedFile;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use unified_design_ir::{
     DesignEdge, DesignGraph, DesignGraphBuilder, DesignNode, DesignNodeId, DesignNodeKind,
     DesignRelation,
@@ -333,7 +333,7 @@ pub struct DataEdge {
     pub weight_milli: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RefactorPlanAction {
     IntroduceInterface { between: (String, String) },
     RemoveDependency { from: String, to: String },
@@ -343,34 +343,86 @@ pub enum RefactorPlanAction {
     IsolateNode { node: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ActionSet {
     pub actions: Vec<RefactorPlanAction>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-pub struct RefactorPlanStep {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub enum PhaseType {
+    BreakCycle,
+    FixLayering,
+    RestructureModules,
+    OptimizeFlow,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefactorPhase {
+    pub phase_type: PhaseType,
+    pub actions: Vec<RefactorPlanAction>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MetricsDelta {
+    pub cycle_count: isize,
+    pub layer_violations: isize,
+    pub coupling_score_milli: i32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanSummary {
+    pub total_actions: usize,
+    pub phase_count: usize,
+    pub expected_improvement: MetricsDelta,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatchOperation {
+    CreateInterface {
+        name: String,
+        between: (String, String),
+    },
+    UpdateDependency {
+        from: String,
+        to: String,
+        via: Option<String>,
+    },
+    SplitModule {
+        module: String,
+        new_modules: Vec<String>,
+    },
+    ExtractComponent {
+        from: String,
+        component: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodePatch {
+    pub patch_id: String,
     pub action: RefactorPlanAction,
-    pub reason: String,
+    pub operations: Vec<PatchOperation>,
+    pub description: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RefactorPlan {
-    pub steps: Vec<RefactorPlanStep>,
+    pub phases: Vec<RefactorPhase>,
+    pub summary: PlanSummary,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimulationMetrics {
     pub cycle_count: usize,
     pub layer_violations: usize,
     pub coupling_score_milli: u16,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SimulationResult {
-    pub new_ir: ArchitectureIr,
     pub before: SimulationMetrics,
     pub after: SimulationMetrics,
+    pub delta: MetricsDelta,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -398,6 +450,7 @@ pub struct StructuralAnalysis {
     pub data_flow: DataFlowGraph,
     pub action_set: ActionSet,
     pub refactor_plan: RefactorPlan,
+    pub code_patches: Vec<CodePatch>,
     pub simulation: SimulationResult,
 }
 
@@ -674,8 +727,10 @@ pub fn structural_analysis(graph: &DesignGraph) -> StructuralAnalysis {
         &diagnostics.violations,
     );
     let action_set = action_set_from_issues(&diagnostics.issues);
-    let refactor_plan = refactor_plan(&action_set);
+    let mut refactor_plan = refactor_plan(&action_set);
+    let code_patches = generate_patches(&refactor_plan);
     let simulation = simulate_refactor(&diagnostics.ir, &refactor_plan);
+    refactor_plan.summary.expected_improvement = simulation.delta.clone();
 
     StructuralAnalysis {
         ir: diagnostics.ir,
@@ -688,6 +743,7 @@ pub fn structural_analysis(graph: &DesignGraph) -> StructuralAnalysis {
         data_flow: diagnostics.data_flow,
         action_set,
         refactor_plan,
+        code_patches,
         simulation,
     }
 }
@@ -1448,22 +1504,127 @@ pub fn action_set_from_issues(issues: &[Issue]) -> ActionSet {
 }
 
 pub fn refactor_plan(action_set: &ActionSet) -> RefactorPlan {
-    let mut steps = action_set
-        .actions
-        .iter()
-        .cloned()
-        .map(|action| RefactorPlanStep {
-            reason: refactor_action_reason(&action),
-            action,
-        })
-        .collect::<Vec<_>>();
-    steps.sort_by(|lhs, rhs| {
-        action_sort_key(&lhs.action)
-            .cmp(&action_sort_key(&rhs.action))
-            .then_with(|| lhs.reason.cmp(&rhs.reason))
-    });
-    steps.dedup();
-    RefactorPlan { steps }
+    let mut grouped = BTreeMap::<PhaseType, Vec<RefactorPlanAction>>::new();
+    for action in &action_set.actions {
+        grouped
+            .entry(phase_for_action(action))
+            .or_default()
+            .push(action.clone());
+    }
+
+    let mut phases = Vec::new();
+    for phase_type in [
+        PhaseType::BreakCycle,
+        PhaseType::FixLayering,
+        PhaseType::RestructureModules,
+        PhaseType::OptimizeFlow,
+    ] {
+        if let Some(actions) = grouped.get_mut(&phase_type) {
+            actions.sort_by(|lhs, rhs| action_sort_key(lhs).cmp(&action_sort_key(rhs)));
+            actions.dedup();
+            if !actions.is_empty() {
+                phases.push(RefactorPhase {
+                    phase_type,
+                    actions: actions.clone(),
+                });
+            }
+        }
+    }
+
+    RefactorPlan {
+        summary: PlanSummary {
+            total_actions: phases.iter().map(|phase| phase.actions.len()).sum(),
+            phase_count: phases.len(),
+            expected_improvement: MetricsDelta {
+                cycle_count: 0,
+                layer_violations: 0,
+                coupling_score_milli: 0,
+            },
+        },
+        phases,
+    }
+}
+
+pub fn generate_patches(plan: &RefactorPlan) -> Vec<CodePatch> {
+    let mut patches = Vec::new();
+    for phase in &plan.phases {
+        for action in &phase.actions {
+            patches.push(map_action_to_patch(action));
+        }
+    }
+    patches
+}
+
+fn map_action_to_patch(action: &RefactorPlanAction) -> CodePatch {
+    let (operations, description) = match action {
+        RefactorPlanAction::IntroduceInterface { between } => {
+            let interface_name = interface_name(&between.0, &between.1);
+            (
+                vec![
+                    PatchOperation::CreateInterface {
+                        name: interface_name.clone(),
+                        between: (between.0.clone(), between.1.clone()),
+                    },
+                    PatchOperation::UpdateDependency {
+                        from: between.1.clone(),
+                        to: between.0.clone(),
+                        via: Some(interface_name.clone()),
+                    },
+                ],
+                format!(
+                    "Introduce {} as an abstract boundary between {} and {}",
+                    interface_name, between.0, between.1
+                ),
+            )
+        }
+        RefactorPlanAction::RemoveDependency { from, to } => (
+            vec![PatchOperation::UpdateDependency {
+                from: from.clone(),
+                to: to.clone(),
+                via: None,
+            }],
+            format!("Update dependency specification for {} -> {}", from, to),
+        ),
+        RefactorPlanAction::MoveDependency { from, to, via } => (
+            vec![PatchOperation::UpdateDependency {
+                from: from.clone(),
+                to: to.clone(),
+                via: via.clone(),
+            }],
+            format!("Redirect dependency from {} to {}", from, to),
+        ),
+        RefactorPlanAction::SplitModule { target } => (
+            vec![PatchOperation::SplitModule {
+                module: target.clone(),
+                new_modules: vec![
+                    format!("{target}_core"),
+                    format!("{target}_api"),
+                ],
+            }],
+            format!("Split {} into narrower modules", target),
+        ),
+        RefactorPlanAction::ExtractComponent { from } => (
+            vec![PatchOperation::ExtractComponent {
+                from: from.clone(),
+                component: format!("{}_service", from),
+            }],
+            format!("Extract a component from {}", from),
+        ),
+        RefactorPlanAction::IsolateNode { node } => (
+            vec![PatchOperation::ExtractComponent {
+                from: node.clone(),
+                component: format!("{}_isolated", node),
+            }],
+            format!("Isolate {}", node),
+        ),
+    };
+
+    CodePatch {
+        patch_id: stable_id(&format!("patch:{action:?}")),
+        action: action.clone(),
+        operations,
+        description,
+    }
 }
 
 pub fn map_issue_to_actions(issue: &Issue) -> Vec<RefactorPlanAction> {
@@ -1579,33 +1740,15 @@ fn resolve_conflicts(actions: Vec<RefactorPlanAction>) -> Vec<RefactorPlanAction
     resolved
 }
 
-fn refactor_action_reason(action: &RefactorPlanAction) -> String {
+fn phase_for_action(action: &RefactorPlanAction) -> PhaseType {
     match action {
-        RefactorPlanAction::IntroduceInterface { between } => format!(
-            "Replace mutual dependency between {} and {} with a shared interface",
-            between.0, between.1
-        ),
-        RefactorPlanAction::RemoveDependency { from, to } => {
-            format!("Remove dependency from {from} to {to} to reduce structural pressure")
+        RefactorPlanAction::IntroduceInterface { .. } => PhaseType::BreakCycle,
+        RefactorPlanAction::MoveDependency { .. } | RefactorPlanAction::RemoveDependency { .. } => {
+            PhaseType::FixLayering
         }
-        RefactorPlanAction::MoveDependency { from, to, via } => match via {
-            Some(via) => format!(
-                "Move dependency from {} to {} through {} to restore role boundaries",
-                from, to, via
-            ),
-            None => format!(
-                "Move dependency from {} to {} to restore layer ordering",
-                from, to
-            ),
-        },
-        RefactorPlanAction::SplitModule { target } => {
-            format!("Split {target} because responsibilities are over-concentrated")
-        }
-        RefactorPlanAction::ExtractComponent { from } => {
-            format!("Extract a narrower component from {from} to reduce concentration")
-        }
-        RefactorPlanAction::IsolateNode { node } => {
-            format!("Isolate {node} so it remains explicitly outside the active dependency graph")
+        RefactorPlanAction::SplitModule { .. } => PhaseType::RestructureModules,
+        RefactorPlanAction::ExtractComponent { .. } | RefactorPlanAction::IsolateNode { .. } => {
+            PhaseType::OptimizeFlow
         }
     }
 }
@@ -1613,8 +1756,9 @@ fn refactor_action_reason(action: &RefactorPlanAction) -> String {
 pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> SimulationResult {
     let before = simulation_metrics(ir);
     let mut new_ir = ir.clone();
-    for step in &plan.steps {
-        match &step.action {
+    for phase in &plan.phases {
+        for action in &phase.actions {
+            match action {
             RefactorPlanAction::IntroduceInterface { between } => {
                 let interface_name = format!("{}_{}_interface", between.0, between.1);
                 let interface_id = stable_node_id(&interface_name);
@@ -1738,12 +1882,22 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                 }
             }
         }
+        }
     }
     new_ir.nodes.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id).then_with(|| lhs.name.cmp(&rhs.name)));
     new_ir.edges.sort_by(|lhs, rhs| lhs.from.cmp(&rhs.from).then_with(|| lhs.to.cmp(&rhs.to)));
     new_ir.edges.dedup();
     let after = simulation_metrics(&new_ir);
-    SimulationResult { new_ir, before, after }
+    SimulationResult {
+        before: before.clone(),
+        after: after.clone(),
+        delta: MetricsDelta {
+            cycle_count: after.cycle_count as isize - before.cycle_count as isize,
+            layer_violations: after.layer_violations as isize - before.layer_violations as isize,
+            coupling_score_milli: i32::from(after.coupling_score_milli)
+                - i32::from(before.coupling_score_milli),
+        },
+    }
 }
 
 fn simulation_metrics(ir: &ArchitectureIr) -> SimulationMetrics {
@@ -2083,6 +2237,26 @@ fn virtual_interface_node(from: &str, to: &str) -> String {
     let mut pair = vec![from.to_string(), to.to_string()];
     pair.sort();
     format!("{}_{}_interface", pair[0], pair[1])
+}
+
+fn interface_name(from: &str, to: &str) -> String {
+    let mut pair = vec![pascal_case(from), pascal_case(to)];
+    pair.sort();
+    format!("{}{}Interface", pair[0], pair[1])
+}
+
+fn pascal_case(value: &str) -> String {
+    value
+        .split(['_', '-', ' '])
+        .filter(|segment| !segment.is_empty())
+        .map(|segment| {
+            let mut chars = segment.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<String>()
 }
 
 fn canonical_pair(lhs: &str, rhs: &str) -> (String, String) {
@@ -2584,9 +2758,12 @@ mod tests {
     #[test]
     fn cycle_break_plan_contains_interface_step() {
         let analysis = structural_analysis(&cyclic_graph_with_orphan());
-        assert!(analysis.refactor_plan.steps.iter().any(|step| {
-            matches!(step.action, RefactorPlanAction::IntroduceInterface { .. })
-        }));
+        assert!(analysis
+            .refactor_plan
+            .phases
+            .iter()
+            .flat_map(|phase| phase.actions.iter())
+            .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. })));
     }
 
     #[test]
@@ -2811,5 +2988,155 @@ mod tests {
                 target: "renderer".to_string(),
             }]
         );
+    }
+
+    #[test]
+    fn action_to_phase_mapping() {
+        assert_eq!(
+            phase_for_action(&RefactorPlanAction::IntroduceInterface {
+                between: ("a".to_string(), "b".to_string()),
+            }),
+            PhaseType::BreakCycle
+        );
+        assert_eq!(
+            phase_for_action(&RefactorPlanAction::MoveDependency {
+                from: "a".to_string(),
+                to: "b".to_string(),
+                via: None,
+            }),
+            PhaseType::FixLayering
+        );
+        assert_eq!(
+            phase_for_action(&RefactorPlanAction::SplitModule {
+                target: "x".to_string(),
+            }),
+            PhaseType::RestructureModules
+        );
+        assert_eq!(
+            phase_for_action(&RefactorPlanAction::ExtractComponent {
+                from: "x".to_string(),
+            }),
+            PhaseType::OptimizeFlow
+        );
+    }
+
+    #[test]
+    fn phase_ordering() {
+        let actions = ActionSet {
+            actions: vec![
+                RefactorPlanAction::ExtractComponent {
+                    from: "world".to_string(),
+                },
+                RefactorPlanAction::SplitModule {
+                    target: "renderer".to_string(),
+                },
+                RefactorPlanAction::MoveDependency {
+                    from: "renderer".to_string(),
+                    to: "world".to_string(),
+                    via: Some("renderer_world_interface".to_string()),
+                },
+                RefactorPlanAction::IntroduceInterface {
+                    between: ("debug".to_string(), "renderer".to_string()),
+                },
+            ],
+        };
+        let plan = refactor_plan(&actions);
+        let order = plan
+            .phases
+            .iter()
+            .map(|phase| &phase.phase_type)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            order,
+            vec![
+                &PhaseType::BreakCycle,
+                &PhaseType::FixLayering,
+                &PhaseType::RestructureModules,
+                &PhaseType::OptimizeFlow,
+            ]
+        );
+    }
+
+    #[test]
+    fn interface_before_move() {
+        let plan = refactor_plan(&ActionSet {
+            actions: vec![
+                RefactorPlanAction::MoveDependency {
+                    from: "renderer".to_string(),
+                    to: "world".to_string(),
+                    via: Some("renderer_world_interface".to_string()),
+                },
+                RefactorPlanAction::IntroduceInterface {
+                    between: ("debug".to_string(), "renderer".to_string()),
+                },
+            ],
+        });
+        let break_cycle_index = plan
+            .phases
+            .iter()
+            .position(|phase| phase.phase_type == PhaseType::BreakCycle)
+            .expect("break cycle phase");
+        let fix_layering_index = plan
+            .phases
+            .iter()
+            .position(|phase| phase.phase_type == PhaseType::FixLayering)
+            .expect("fix layering phase");
+        assert!(break_cycle_index < fix_layering_index);
+    }
+
+    #[test]
+    fn plan_improves_metrics() {
+        let analysis = structural_analysis(&cyclic_graph_with_orphan());
+        assert!(analysis.simulation.delta.cycle_count <= 0);
+        assert!(analysis.simulation.delta.layer_violations <= 0);
+        assert!(analysis.simulation.delta.coupling_score_milli <= 0);
+    }
+
+    #[test]
+    fn plan_deterministic() {
+        let lhs = structural_analysis(&cyclic_graph_with_orphan()).refactor_plan;
+        let rhs = structural_analysis(&cyclic_graph_with_orphan()).refactor_plan;
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn interface_patch_generation() {
+        let patch = map_action_to_patch(&RefactorPlanAction::IntroduceInterface {
+            between: ("debug".to_string(), "renderer".to_string()),
+        });
+        assert!(matches!(
+            patch.operations.first(),
+            Some(PatchOperation::CreateInterface { name, .. }) if name == "DebugRendererInterface"
+        ));
+        assert!(patch
+            .operations
+            .iter()
+            .any(|operation| matches!(operation, PatchOperation::UpdateDependency { via: Some(via), .. } if via == "DebugRendererInterface")));
+    }
+
+    #[test]
+    fn interface_naming() {
+        assert_eq!(interface_name("debug", "renderer"), "DebugRendererInterface");
+        assert_eq!(interface_name("renderer", "world"), "RendererWorldInterface");
+    }
+
+    #[test]
+    fn patch_deterministic() {
+        let plan = structural_analysis(&cyclic_graph_with_orphan()).refactor_plan;
+        let lhs = generate_patches(&plan);
+        let rhs = generate_patches(&plan);
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn patch_matches_plan() {
+        let analysis = structural_analysis(&cyclic_graph_with_orphan());
+        let action_count = analysis
+            .refactor_plan
+            .phases
+            .iter()
+            .map(|phase| phase.actions.len())
+            .sum::<usize>();
+        assert_eq!(analysis.code_patches.len(), action_count);
     }
 }

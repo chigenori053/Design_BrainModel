@@ -37,6 +37,67 @@ fn temp_sleep_project_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn temp_coding_project_dir(name: &str) -> PathBuf {
+    let dir = temp_project_dir(name);
+    fs::write(dir.join("src/debug.rs"), "pub fn log() {}\n").expect("write debug");
+    fs::write(
+        dir.join("src/renderer.rs"),
+        "use crate::debug;\npub fn render() { debug::log(); }\n",
+    )
+    .expect("write renderer");
+    dir
+}
+
+fn write_patch_input(dir: &std::path::Path, name: &str, replacement: &str) -> PathBuf {
+    let input = dir.join(name);
+    fs::write(
+        &input,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "patches": [
+                {
+                    "patch_id": "patch-1",
+                    "action": {
+                        "IntroduceInterface": {
+                            "between": ["debug", "renderer"]
+                        }
+                    },
+                    "operations": [
+                        {
+                            "CreateInterface": {
+                                "name": "DebugRendererInterface",
+                                "between": ["debug", "renderer"]
+                            }
+                        },
+                        {
+                            "UpdateDependency": {
+                                "from": "renderer",
+                                "to": "debug",
+                                "via": "DebugRendererInterface"
+                            }
+                        },
+                        {
+                            "SplitModule": {
+                                "module": "renderer",
+                                "new_modules": ["renderer_core", "renderer_api"]
+                            }
+                        },
+                        {
+                            "ExtractComponent": {
+                                "from": "world",
+                                "component": replacement
+                            }
+                        }
+                    ],
+                    "description": "Introduce interface"
+                }
+            ]
+        }))
+        .expect("json"),
+    )
+    .expect("write input");
+    input
+}
+
 #[test]
 fn generate_command_outputs_json() {
     let out = Command::new(cli_bin())
@@ -90,8 +151,17 @@ fn analyze_validate_and_run_commands_output_json() {
             assert!(stdout.get("simulation").is_none());
         }
         if command == "refactor" {
-            assert!(stdout["plan"]["steps"].is_array());
+            assert!(stdout["plan"]["phases"].is_array());
+            assert!(stdout["plan"]["summary"]["total_actions"].is_number());
+            assert!(stdout["patches"].is_array());
+            let first_patch = stdout["patches"].as_array().and_then(|patches| patches.first()).cloned();
+            if let Some(patch) = first_patch {
+                assert!(patch["patch_id"].is_string());
+                assert!(patch["operations"].is_array());
+                assert!(patch["description"].is_string());
+            }
             assert!(stdout["simulation"]["before"]["cycle_count"].is_number());
+            assert!(stdout["simulation"]["delta"]["cycle_count"].is_number());
         }
     }
 
@@ -119,6 +189,115 @@ fn analyze_validate_and_run_commands_output_json() {
     );
     assert_eq!(stdout["output_meta"]["streamed"], true);
     assert!(stdout["sandbox_mode"].is_string());
+}
+
+#[test]
+fn coding_command_outputs_json() {
+    let dir = temp_coding_project_dir("coding");
+    let input = write_patch_input(&dir, "patches.json", "world_service");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "coding",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--json",
+        ])
+        .output()
+        .expect("run coding");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["root"], dir.display().to_string());
+    assert_eq!(stdout["dry_run"], true);
+    assert_eq!(stdout["execution"]["status"], "dry-run");
+    assert_eq!(stdout["execution"]["checked"], false);
+    assert_eq!(stdout["execution"]["build_ok"], true);
+    assert_eq!(stdout["execution"]["applied"], false);
+    assert!(stdout["changes"]["changes"].is_array());
+    assert!(stdout["changes"]["summary"]["total_changes"].is_number());
+}
+
+#[test]
+fn coding_check_does_not_modify_workspace() {
+    let dir = temp_coding_project_dir("coding_check");
+    let input = write_patch_input(&dir, "patches_check.json", "world_service");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "coding",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--check",
+            "--json",
+        ])
+        .output()
+        .expect("run coding check");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "checked");
+    assert_eq!(stdout["execution"]["checked"], true);
+    assert!(!dir.join("src/debug_renderer_interface.rs").exists());
+}
+
+#[test]
+fn coding_apply_rolls_back_on_build_fail() {
+    let dir = temp_coding_project_dir("coding_rollback");
+    let input = dir.join("bad_patches.json");
+    fs::write(
+        &input,
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "patches": [
+                {
+                    "patch_id": "patch-bad",
+                    "action": {
+                        "MoveDependency": {
+                            "from": "renderer",
+                            "to": "debug",
+                            "via": null
+                        }
+                    },
+                    "operations": [
+                        {
+                            "UpdateDependency": {
+                                "from": "main",
+                                "to": "debug",
+                                "via": null
+                            }
+                        }
+                    ],
+                    "description": "Break main"
+                }
+            ]
+        }))
+        .expect("json"),
+    )
+    .expect("write input");
+
+    let original = fs::read_to_string(dir.join("src/main.rs")).expect("read main");
+    let out = Command::new(cli_bin())
+        .args([
+            "coding",
+            dir.to_str().expect("utf8 path"),
+            "--input",
+            input.to_str().expect("utf8 input"),
+            "--apply",
+            "--json",
+        ])
+        .output()
+        .expect("run coding apply");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "failed");
+    assert_eq!(stdout["execution"]["rolled_back"], true);
+    assert_eq!(
+        fs::read_to_string(dir.join("src/main.rs")).expect("read main after"),
+        original
+    );
 }
 
 #[test]

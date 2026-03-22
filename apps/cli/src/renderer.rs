@@ -5,9 +5,10 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
-use crate::app::{AnalysisReport, DesignReport, RefactorReport, RunReport, ValidationReport};
+use crate::app::{AnalysisReport, CodingReport, DesignReport, RefactorReport, RunReport, ValidationReport};
 use integration_layer::{
-    Issue, IssueType, LayerType, NodeRole, Pattern, RefactorAction, RefactorPlanAction, Severity,
+    Issue, IssueType, LayerType, NodeRole, PatchOperation, Pattern, PhaseType, RefactorAction,
+    RefactorPlanAction, Severity,
 };
 
 pub fn render_result<W: Write>(writer: &mut W, result: &RuntimeResult) -> io::Result<()> {
@@ -486,9 +487,21 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
     writeln!(writer, "Refactor Plan")?;
     writeln!(writer, "Root: {}", report.root)?;
     writeln!(writer)?;
-    for (index, step) in report.plan.steps.iter().enumerate() {
-        writeln!(writer, "{}. {}", index + 1, refactor_plan_action_label(&step.action))?;
-        writeln!(writer, "   {}", step.reason)?;
+    for (index, phase) in report.plan.phases.iter().enumerate() {
+        writeln!(writer, "Phase {}: {}", index + 1, phase_type_label(&phase.phase_type))?;
+        for action in &phase.actions {
+            writeln!(writer, "- {}", refactor_plan_action_label(action))?;
+        }
+        writeln!(writer)?;
+    }
+    writeln!(writer, "Code Patches:")?;
+    for (index, patch) in report.patches.iter().enumerate() {
+        writeln!(writer)?;
+        writeln!(writer, "[Patch {}]", index + 1)?;
+        writeln!(writer, "Action: {}", refactor_plan_action_label(&patch.action))?;
+        for operation in &patch.operations {
+            writeln!(writer, "- {}", patch_operation_label(operation))?;
+        }
     }
     writeln!(writer)?;
     writeln!(writer, "Simulation:")?;
@@ -509,4 +522,60 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
         f32::from(report.simulation.after.coupling_score_milli) / 1000.0
     )?;
     writer.flush()
+}
+
+pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> io::Result<()> {
+    writeln!(writer, "Code Changes")?;
+    writeln!(writer, "Root: {}", report.root)?;
+    writeln!(writer, "Mode: {}", if report.dry_run { "dry-run" } else { "apply" })?;
+    writeln!(writer, "Status: {}", report.execution.status)?;
+    writeln!(
+        writer,
+        "Build: {}",
+        if report.execution.build_ok { "OK" } else { "FAILED" }
+    )?;
+    writeln!(writer, "Checked: {}", report.execution.checked)?;
+    writeln!(writer, "Applied: {}", report.execution.applied)?;
+    writeln!(writer, "Rollback: {}", report.execution.rolled_back)?;
+    writeln!(writer, "Files changed: {}", report.execution.files_changed)?;
+    if let Some(reason) = &report.execution.reason {
+        writeln!(writer, "Reason: {reason}")?;
+    }
+    for change in &report.changes.changes {
+        writeln!(writer)?;
+        writeln!(writer, "[{:?}] {}", change.change_type, change.file_path)?;
+        for hunk in &change.hunks {
+            for line in hunk.replacement.lines() {
+                writeln!(writer, "+ {}", line)?;
+            }
+        }
+    }
+    writer.flush()
+}
+
+fn patch_operation_label(operation: &PatchOperation) -> String {
+    match operation {
+        PatchOperation::CreateInterface { name, .. } => {
+            format!("Create interface {}", name)
+        }
+        PatchOperation::UpdateDependency { from, to, via } => match via {
+            Some(via) => format!("Update dependency {} -> {} via {}", from, to, via),
+            None => format!("Update dependency {} -> {}", from, to),
+        },
+        PatchOperation::SplitModule { module, new_modules } => {
+            format!("Split {} into {}", module, new_modules.join(", "))
+        }
+        PatchOperation::ExtractComponent { from, component } => {
+            format!("Extract component {} from {}", component, from)
+        }
+    }
+}
+
+fn phase_type_label(phase_type: &PhaseType) -> &'static str {
+    match phase_type {
+        PhaseType::BreakCycle => "Break Cycle",
+        PhaseType::FixLayering => "Fix Layering",
+        PhaseType::RestructureModules => "Restructure Modules",
+        PhaseType::OptimizeFlow => "Optimize Flow",
+    }
 }

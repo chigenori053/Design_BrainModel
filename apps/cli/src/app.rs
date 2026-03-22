@@ -8,7 +8,7 @@ use std::sync::Arc;
 use clap::{CommandFactory, Parser, Subcommand};
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
 use integration_layer::{
-    AnalysisInput as IntegrationAnalysisInput, CycleReport, DiagnosticAnalysis, Issue,
+    AnalysisInput as IntegrationAnalysisInput, CodePatch, CycleReport, DiagnosticAnalysis, Issue,
     LayerModel, LayerViolation, Pattern, RefactorPlan, RefactorSuggestion, RoleAssignment,
     SemanticLayer, Severity, SimulationResult, StructuralAnalysis, SystemInput, SystemOutput,
     diagnostic_analysis, structural_analysis, to_relations, to_system_output, trace_links,
@@ -20,10 +20,14 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::dbm::{DBMClient, ProjectAnalysisResult};
+use crate::coding::{
+    CodeChangeSet, CodingExecutionResult, CodingOptions, execute_code_change_set,
+    generate_code_change_set, load_patches_from_json,
+};
 use crate::r#loop::run_loop;
 use crate::renderer::{
-    render_analysis_report, render_design_report, render_refactor_report, render_result, render_run_report,
-    render_validation_report,
+    render_analysis_report, render_coding_report, render_design_report, render_refactor_report,
+    render_result, render_run_report, render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -46,6 +50,7 @@ enum Commands {
     Design(PathArgs),
     Validate(PathArgs),
     Refactor(PathArgs),
+    Coding(CodingArgs),
     Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
@@ -107,6 +112,25 @@ pub struct AnalyzeArgs {
 #[derive(clap::Args, Debug, Clone)]
 pub struct PathArgs {
     pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct CodingArgs {
+    pub path: Option<PathBuf>,
+    #[arg(long)]
+    pub input: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub apply: bool,
+    #[arg(long, default_value_t = false)]
+    pub check: bool,
+    #[arg(long, default_value_t = false)]
+    pub no_build: bool,
+    #[arg(long, default_value_t = false)]
+    pub backup: bool,
+    #[arg(long, default_value_t = false)]
+    pub format: bool,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -229,7 +253,17 @@ pub struct ValidationReport {
 pub struct RefactorReport {
     pub root: String,
     pub plan: RefactorPlan,
+    pub patches: Vec<CodePatch>,
     pub simulation: SimulationResult,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CodingReport {
+    pub root: String,
+    pub dry_run: bool,
+    pub execution: CodingExecutionResult,
+    pub patches: Vec<CodePatch>,
+    pub changes: CodeChangeSet,
 }
 
 #[derive(Debug, Serialize)]
@@ -308,6 +342,7 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Design(args)) => execute_design(args),
         Some(Commands::Validate(args)) => execute_validate(args),
         Some(Commands::Refactor(args)) => execute_refactor(args),
+        Some(Commands::Coding(args)) => execute_coding(args),
         Some(Commands::Run(args)) => execute_run(args),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
@@ -498,12 +533,51 @@ fn execute_refactor(args: PathArgs) -> Result<(), String> {
     let report = RefactorReport {
         root: analysis.root,
         plan: structural.refactor_plan,
+        patches: structural.code_patches,
         simulation: structural.simulation,
     };
     if report_json(args.json, &report)? {
         return Ok(());
     }
     render_refactor_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+}
+
+fn execute_coding(args: CodingArgs) -> Result<(), String> {
+    let (root, patches) = if let Some(input) = &args.input {
+        let root = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
+        (root, load_patches_from_json(input)?)
+    } else {
+        let Some(path) = args.path.clone() else {
+            return Err("coding requires either <path> or --input".to_string());
+        };
+        let analysis = analyze_path(&path)?;
+        let design_graph = design_graph_from_analysis(&analysis);
+        let structural = structural_analysis(&design_graph);
+        (path, structural.code_patches)
+    };
+    let changes = generate_code_change_set(&root, &patches)?;
+    let execution = execute_code_change_set(
+        &root,
+        &changes,
+        &CodingOptions {
+            apply: args.apply,
+            check: args.check,
+            no_build: args.no_build,
+            backup: args.backup,
+            format: args.format,
+        },
+    )?;
+    let report = CodingReport {
+        root: root.display().to_string(),
+        dry_run: !args.apply,
+        execution,
+        patches,
+        changes,
+    };
+    if report_json(args.json, &report)? {
+        return Ok(());
+    }
+    render_coding_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
 fn execute_run(args: RunArgs) -> Result<(), String> {
