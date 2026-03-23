@@ -8,10 +8,12 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 
 use crate::command::{Command, parse_command};
 use crate::input::{InputState, read_input};
+use crate::state::State;
 use crate::renderer::{
     render_analysis_report, render_design_report, render_question, render_result,
     render_validation_report,
 };
+use crate::service::{analyze_path, build_design_report, build_validation_report};
 use crate::session::{ChatSession, merge_slots};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -46,7 +48,7 @@ where
     R: BufRead,
     W: Write,
 {
-    let input = match read_input(reader, writer)? {
+    let input = match read_input(reader, writer, State::Idle)? {
         InputState::Line(input) => input,
         InputState::Eof => return Ok(LoopSignal::Exit),
     };
@@ -102,21 +104,21 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
     match command {
         "/analyze" => {
             let path = parts.next().unwrap_or(".");
-            let report = crate::app::analyze_path(&PathBuf::from(path))
+            let report = analyze_path(&PathBuf::from(path))
                 .map_err(|err| io::Error::other(format!("analyze failed: {err}")))?;
             render_analysis_report(writer, &report)?;
             Ok(true)
         }
         "/design" => {
             let path = parts.next().unwrap_or(".");
-            let report = crate::app::build_design_report(&PathBuf::from(path))
+            let report = build_design_report(&PathBuf::from(path))
                 .map_err(|err| io::Error::other(format!("design failed: {err}")))?;
             render_design_report(writer, &report)?;
             Ok(true)
         }
         "/validate" => {
             let path = parts.next().unwrap_or(".");
-            let report = crate::app::build_validation_report(&PathBuf::from(path))
+            let report = build_validation_report(&PathBuf::from(path))
                 .map_err(|err| io::Error::other(format!("validate failed: {err}")))?;
             render_validation_report(writer, &report)?;
             Ok(true)

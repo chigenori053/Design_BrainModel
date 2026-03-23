@@ -5,7 +5,7 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
-use crate::app::{
+use crate::service::{
     AnalysisReport, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
     ValidationReport,
 };

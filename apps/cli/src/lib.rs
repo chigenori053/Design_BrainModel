@@ -13,6 +13,7 @@ pub mod renderer;
 pub mod repl;
 pub mod router;
 pub mod runner;
+pub mod service;
 pub mod session;
 pub mod state;
 pub mod ops;
