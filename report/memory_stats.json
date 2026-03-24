@@ -1,8 +1,8 @@
 {
-  "integrity_errors": 0,
   "memory_edges": 39,
   "memory_nodes": 29,
-  "recall_latency_ms": 0.018665338,
-  "search_latency_ms": 0.643607173,
+  "recall_max_ms": 0.00825,
+  "recall_mean_ms": 0.0022760158999999996,
+  "search_mean_ms": 0.09183839889999999,
   "template_count": 14
 }
