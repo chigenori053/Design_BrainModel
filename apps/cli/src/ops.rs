@@ -121,7 +121,10 @@ impl RunLogBuilder {
         let (trace_view, trace_stats) = extract_trace(result);
         let nodes_explored = result.trace.generated_hypotheses;
         let beam_avg = compute_beam_avg(&trace_view);
-        let recall_hit_rate = trace_stats.as_ref().map(|s| s.recall_hit_rate).unwrap_or(0.0);
+        let recall_hit_rate = trace_stats
+            .as_ref()
+            .map(|s| s.recall_hit_rate)
+            .unwrap_or(0.0);
 
         let metrics = RunMetrics {
             latency_ms: self.latency_ms,
@@ -142,7 +145,12 @@ impl RunLogBuilder {
             input: self.input,
             result: Some(RunResultSummary {
                 project_root: result.project_layout.root_dir.clone(),
-                files: result.project_layout.files.iter().map(|f| f.path.clone()).collect(),
+                files: result
+                    .project_layout
+                    .files
+                    .iter()
+                    .map(|f| f.path.clone())
+                    .collect(),
                 candidate_count: result.trace.candidate_count,
                 selected_score: result.trace.selected_score,
             }),
@@ -213,9 +221,9 @@ fn write_json<T: serde::Serialize>(value: &T, path: &Path) -> Result<(), String>
                 .map_err(|e| format!("cannot create log dir {}: {e}", parent.display()))?;
         }
     }
-    let json = serde_json::to_string_pretty(value).map_err(|e| format!("log serialization: {e}"))?;
-    std::fs::write(path, json)
-        .map_err(|e| format!("cannot write log {}: {e}", path.display()))
+    let json =
+        serde_json::to_string_pretty(value).map_err(|e| format!("log serialization: {e}"))?;
+    std::fs::write(path, json).map_err(|e| format!("cannot write log {}: {e}", path.display()))
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

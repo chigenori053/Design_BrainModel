@@ -152,10 +152,12 @@ pub fn patches_to_edits(patches: &[CodePatch]) -> Vec<Edit> {
     for patch in patches {
         for operation in &patch.operations {
             match operation {
-                PatchOperation::CreateInterface { name, between } => edits.push(Edit::CreateInterface {
-                    name: name.clone(),
-                    between: between.clone(),
-                }),
+                PatchOperation::CreateInterface { name, between } => {
+                    edits.push(Edit::CreateInterface {
+                        name: name.clone(),
+                        between: between.clone(),
+                    })
+                }
                 PatchOperation::UpdateDependency { from, to, via } => {
                     edits.push(Edit::ReplaceDependency {
                         from: from.clone(),
@@ -163,7 +165,10 @@ pub fn patches_to_edits(patches: &[CodePatch]) -> Vec<Edit> {
                         via: via.clone(),
                     })
                 }
-                PatchOperation::SplitModule { module, new_modules } => edits.push(Edit::SplitModule {
+                PatchOperation::SplitModule {
+                    module,
+                    new_modules,
+                } => edits.push(Edit::SplitModule {
                     module: module.clone(),
                     targets: new_modules.clone(),
                 }),
@@ -179,7 +184,10 @@ pub fn patches_to_edits(patches: &[CodePatch]) -> Vec<Edit> {
     edits
 }
 
-pub fn generate_code_change_set(root: &Path, patches: &[CodePatch]) -> Result<CodeChangeSet, String> {
+pub fn generate_code_change_set(
+    root: &Path,
+    patches: &[CodePatch],
+) -> Result<CodeChangeSet, String> {
     let mut drafts = BTreeMap::<String, FileDraft>::new();
     for edit in patches_to_edits(patches) {
         apply_edit(root, &mut drafts, edit)?;
@@ -199,15 +207,17 @@ pub fn generate_code_change_set(root: &Path, patches: &[CodePatch]) -> Result<Co
         .collect::<Vec<_>>();
     changes.sort_by(|lhs, rhs| lhs.file_path.cmp(&rhs.file_path));
 
-    let summary = changes.iter().fold(ChangeSummary::default(), |mut summary, change| {
-        summary.total_changes += 1;
-        match change.change_type {
-            ChangeType::CreateFile => summary.create_files += 1,
-            ChangeType::ModifyFile => summary.modify_files += 1,
-            ChangeType::MoveFile => summary.move_files += 1,
-        }
-        summary
-    });
+    let summary = changes
+        .iter()
+        .fold(ChangeSummary::default(), |mut summary, change| {
+            summary.total_changes += 1;
+            match change.change_type {
+                ChangeType::CreateFile => summary.create_files += 1,
+                ChangeType::ModifyFile => summary.modify_files += 1,
+                ChangeType::MoveFile => summary.move_files += 1,
+            }
+            summary
+        });
 
     Ok(CodeChangeSet { changes, summary })
 }
@@ -263,9 +273,7 @@ pub fn execute_code_change_set(
             rolled_back: true,
             backed_up,
             reason,
-            sandbox_root: sandbox_root
-                .as_ref()
-                .map(|path| path.display().to_string()),
+            sandbox_root: sandbox_root.as_ref().map(|path| path.display().to_string()),
             files_changed: 0,
             diff,
             committed: false,
@@ -288,9 +296,7 @@ pub fn execute_code_change_set(
             rolled_back: false,
             backed_up: false,
             reason: None,
-            sandbox_root: sandbox_root
-                .as_ref()
-                .map(|path| path.display().to_string()),
+            sandbox_root: sandbox_root.as_ref().map(|path| path.display().to_string()),
             files_changed: 0,
             diff,
             committed: false,
@@ -355,9 +361,7 @@ pub fn execute_code_change_set(
                 rolled_back: false,
                 backed_up,
                 reason,
-                sandbox_root: sandbox_root
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
+                sandbox_root: sandbox_root.as_ref().map(|path| path.display().to_string()),
                 files_changed: change_set.summary.total_changes,
                 diff,
                 committed,
@@ -376,9 +380,7 @@ pub fn execute_code_change_set(
                 rolled_back: true,
                 backed_up,
                 reason: Some(err),
-                sandbox_root: sandbox_root
-                    .as_ref()
-                    .map(|path| path.display().to_string()),
+                sandbox_root: sandbox_root.as_ref().map(|path| path.display().to_string()),
                 files_changed: 0,
                 diff,
                 committed: false,
@@ -443,7 +445,10 @@ pub fn compute_diff_report(root: &Path, change_set: &CodeChangeSet) -> Result<Di
     }
     diffs.sort_by(|lhs, rhs| lhs.target.cmp(&rhs.target));
     let breaking_count = diffs.iter().filter(|diff| diff.breaking).count();
-    Ok(DiffReport { diffs, breaking_count })
+    Ok(DiffReport {
+        diffs,
+        breaking_count,
+    })
 }
 
 pub fn validate_diff_report(diff: &DiffReport) -> Result<(), String> {
@@ -503,11 +508,15 @@ fn git_commit(root: &Path) -> Result<(String, String), String> {
         .map_err(|err| format!("failed to run git diff --cached: {err}"))?;
     if status.success() {
         let head = current_commit(root)?.unwrap_or_default();
-        return Ok((head, current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string())));
+        return Ok((
+            head,
+            current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string()),
+        ));
     }
 
     run_git(root, &["commit", "-m", "DBM apply"])?;
-    let commit_id = current_commit(root)?.ok_or_else(|| "failed to resolve commit id".to_string())?;
+    let commit_id =
+        current_commit(root)?.ok_or_else(|| "failed to resolve commit id".to_string())?;
     let branch = current_branch(root)?.unwrap_or_else(|| "dbm/auto-branch".to_string());
     Ok((commit_id, branch))
 }
@@ -534,7 +543,9 @@ fn current_branch(root: &Path) -> Result<Option<String>, String> {
     if !output.status.success() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
 fn current_commit(root: &Path) -> Result<Option<String>, String> {
@@ -546,7 +557,9 @@ fn current_commit(root: &Path) -> Result<Option<String>, String> {
     if !output.status.success() {
         return Ok(None);
     }
-    Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+    Ok(Some(
+        String::from_utf8_lossy(&output.stdout).trim().to_string(),
+    ))
 }
 
 pub fn fix_build(project_root: &Path) -> Result<FixResult, String> {
@@ -569,7 +582,11 @@ pub fn fix_build(project_root: &Path) -> Result<FixResult, String> {
     Ok(fix)
 }
 
-fn apply_edit(root: &Path, drafts: &mut BTreeMap<String, FileDraft>, edit: Edit) -> Result<(), String> {
+fn apply_edit(
+    root: &Path,
+    drafts: &mut BTreeMap<String, FileDraft>,
+    edit: Edit,
+) -> Result<(), String> {
     match edit {
         Edit::CreateInterface { name, .. } => {
             let file_name = format!("src/{}.rs", snake_case(&name));
@@ -589,7 +606,8 @@ fn apply_edit(root: &Path, drafts: &mut BTreeMap<String, FileDraft>, edit: Edit)
             for target in targets {
                 let file_name = format!("src/{}.rs", snake_case(&target));
                 let draft = load_or_create_draft(root, drafts, &file_name, true)?;
-                draft.content = format!("pub struct {} {{\n    // TODO\n}}\n", pascal_case(&target));
+                draft.content =
+                    format!("pub struct {} {{\n    // TODO\n}}\n", pascal_case(&target));
             }
         }
         Edit::ExtractComponent { name, .. } => {
@@ -659,7 +677,10 @@ fn detect_top_level_modules(root: &Path) -> Result<Vec<String>, String> {
     for entry in entries {
         let path = entry.path();
         if path.is_file() && path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
-            let stem = path.file_stem().and_then(|stem| stem.to_str()).unwrap_or_default();
+            let stem = path
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or_default();
             if !matches!(stem, "lib" | "main") {
                 modules.push(stem.to_string());
             }
@@ -826,7 +847,11 @@ fn copy_dir_recursive(from: &Path, to: &Path) -> Result<(), String> {
                     .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
             }
             fs::copy(&from_path, &to_path).map_err(|err| {
-                format!("failed to copy {} to {}: {err}", from_path.display(), to_path.display())
+                format!(
+                    "failed to copy {} to {}: {err}",
+                    from_path.display(),
+                    to_path.display()
+                )
             })?;
         }
     }
@@ -927,7 +952,10 @@ fn restore_workspace(backups: Vec<BackupEntry>) -> Result<(), String> {
             None => {
                 if backup.path.exists() {
                     fs::remove_file(&backup.path).map_err(|err| {
-                        format!("failed to remove {} during rollback: {err}", backup.path.display())
+                        format!(
+                            "failed to remove {} during rollback: {err}",
+                            backup.path.display()
+                        )
                     })?;
                 }
             }
@@ -1082,16 +1110,22 @@ mod tests {
             description: "interface".to_string(),
         }];
         let change_set = generate_code_change_set(&root, &patches).expect("change set");
-        assert!(change_set
-            .changes
-            .iter()
-            .any(|change| change.file_path == "src/debug_renderer_interface.rs"));
+        assert!(
+            change_set
+                .changes
+                .iter()
+                .any(|change| change.file_path == "src/debug_renderer_interface.rs")
+        );
     }
 
     #[test]
     fn diff_generation() {
         let root = temp_dir("diff_generation");
-        fs::write(root.join("src/renderer.rs"), "use crate::world;\nfn render() {}\n").expect("write");
+        fs::write(
+            root.join("src/renderer.rs"),
+            "use crate::world;\nfn render() {}\n",
+        )
+        .expect("write");
         let patches = vec![CodePatch {
             patch_id: "p1".to_string(),
             action: RefactorPlanAction::MoveDependency {
@@ -1109,7 +1143,11 @@ mod tests {
         let change_set = generate_code_change_set(&root, &patches).expect("change set");
         let change = change_set.changes.first().expect("change");
         assert_eq!(change.change_type, ChangeType::ModifyFile);
-        assert!(change.hunks[0].replacement.contains("use crate::renderer_world_interface;"));
+        assert!(
+            change.hunks[0]
+                .replacement
+                .contains("use crate::renderer_world_interface;")
+        );
     }
 
     #[test]
@@ -1320,10 +1358,17 @@ mod tests {
     fn mod_insertion() {
         let root = temp_dir("mod_insertion");
         write_rust_project(&root, "fn main() {}\n");
-        fs::write(root.join("src/world_service.rs"), "pub struct WorldService {}\n")
-            .expect("write module");
+        fs::write(
+            root.join("src/world_service.rs"),
+            "pub struct WorldService {}\n",
+        )
+        .expect("write module");
         let fix = fix_build(&root).expect("fix build");
-        assert!(fix.registered_modules.iter().any(|module| module == "world_service"));
+        assert!(
+            fix.registered_modules
+                .iter()
+                .any(|module| module == "world_service")
+        );
         let main = fs::read_to_string(root.join("src/main.rs")).expect("read main");
         assert!(main.contains("pub mod world_service;"));
     }
@@ -1341,10 +1386,11 @@ mod tests {
         )
         .expect("write renderer");
         let fix = fix_build(&root).expect("fix build");
-        assert!(fix
-            .created_placeholders
-            .iter()
-            .any(|module| module == "renderer_world_interface"));
+        assert!(
+            fix.created_placeholders
+                .iter()
+                .any(|module| module == "renderer_world_interface")
+        );
         assert!(root.join("src/renderer_world_interface.rs").exists());
         let main = fs::read_to_string(root.join("src/main.rs")).expect("read main");
         assert!(main.contains("pub mod renderer_world_interface;"));
@@ -1376,8 +1422,11 @@ mod tests {
     fn fix_deterministic() {
         let root = temp_dir("fix_deterministic");
         write_rust_project(&root, "fn main() {}\n");
-        fs::write(root.join("src/world_service.rs"), "pub struct WorldService {}\n")
-            .expect("write module");
+        fs::write(
+            root.join("src/world_service.rs"),
+            "pub struct WorldService {}\n",
+        )
+        .expect("write module");
         let lhs = fix_build(&root).expect("lhs");
         let main_after_lhs = fs::read_to_string(root.join("src/main.rs")).expect("read lhs");
         let rhs = fix_build(&root).expect("rhs");

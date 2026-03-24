@@ -46,15 +46,16 @@ impl PlannerMode {
 ///
 /// DBM が失敗した場合は RuleBased にフォールバックする。
 pub fn create_plan(input: &str, session: &AgentSession, mode: PlannerMode) -> Plan {
+    let last_path = session.context.last_path.as_deref();
     match mode {
-        PlannerMode::RuleBased => RuleBasedPlanner::new().plan(input),
+        PlannerMode::RuleBased => RuleBasedPlanner::new().plan(input, last_path),
         PlannerMode::DBM => {
             let adapter = DBMPlannerAdapter::new();
             match adapter.create_plan(input, session) {
                 Ok(plan) => plan,
                 Err(_) => {
                     // DBM失敗 → RuleBasedにフォールバック
-                    RuleBasedPlanner::new().plan(input)
+                    RuleBasedPlanner::new().plan(input, last_path)
                 }
             }
         }

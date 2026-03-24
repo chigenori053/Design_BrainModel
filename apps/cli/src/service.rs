@@ -1,190 +1,27 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 
+use crate::dbm::ProjectAnalysisResult;
+use crate::world;
 use integration_layer::{
-    CycleReport, DiagnosticAnalysis, Issue, LayerModel, LayerViolation, Pattern, RoleAssignment,
-    SemanticLayer, Severity, StructuralAnalysis, SystemInput, SystemOutput, diagnostic_analysis,
-    structural_analysis, to_relations, to_system_output, validate_round_trip_design,
+    CycleReport, DiagnosticAnalysis, Issue, LayerModel, Severity, StructuralAnalysis, SystemInput,
+    SystemOutput, diagnostic_analysis, structural_analysis, to_relations, to_system_output,
+    validate_round_trip_design,
 };
-use serde::Serialize;
 
-use crate::coding::{CodeChangeSet, CodingExecutionResult};
-use crate::dbm::{DBMClient, ProjectAnalysisResult};
-use crate::runner::{MemoryUsage, OutputMeta, SandboxMode};
+#[path = "service/dto.rs"]
+pub mod dto;
+#[path = "service/reasoning.rs"]
+pub mod reasoning;
 
-#[derive(Debug, Clone, Serialize)]
-pub struct AnalysisReport {
-    pub root: String,
-    pub total_files: usize,
-    pub source_files: usize,
-    pub avg_complexity: String,
-    pub manifests: Vec<String>,
-    pub languages: BTreeMap<String, usize>,
-    pub top_level_entries: Vec<String>,
-    pub architecture_hints: Vec<String>,
-    pub modules: Vec<AnalysisModule>,
-    pub dependencies: Vec<AnalysisDependency>,
-    pub todo_files: usize,
-    pub cycles: CycleReport,
-    pub layers: LayerModel,
-    pub violations: Vec<LayerViolation>,
-    pub roles: Vec<RoleAssignment>,
-    pub semantic_layers: Vec<SemanticLayer>,
-    pub data_flow: Vec<DataFlowEdgeReport>,
-    pub issues: Vec<Issue>,
-    pub summary: AnalysisSummary,
-    pub next_action: String,
-}
-
-#[derive(Debug, Clone, Serialize, Default)]
-pub struct AnalysisSummary {
-    pub critical: usize,
-    pub high: usize,
-    pub medium: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AnalysisModule {
-    pub name: String,
-    pub file_count: usize,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct AnalysisDependency {
-    pub from: String,
-    pub to: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DesignReport {
-    pub root: String,
-    pub inferred_style: String,
-    pub components: Vec<String>,
-    pub design_units: Vec<String>,
-    pub recommended_next_steps: Vec<String>,
-    pub cycles: CycleReport,
-    pub layers: LayerModel,
-    pub violations: Vec<LayerViolation>,
-    pub roles: Vec<RoleAssignment>,
-    pub semantic_layers: Vec<SemanticLayer>,
-    pub patterns: Vec<Pattern>,
-    pub suggestions: Vec<integration_layer::RefactorSuggestion>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ValidationReport {
-    pub root: String,
-    pub valid: bool,
-    pub issues: Vec<String>,
-    pub warnings: Vec<String>,
-    pub cycles: CycleReport,
-    pub layers: LayerModel,
-    pub violations: Vec<LayerViolation>,
-    pub patterns: Vec<Pattern>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RefactorReport {
-    pub root: String,
-    pub plan: integration_layer::RefactorPlan,
-    pub patches: Vec<integration_layer::CodePatch>,
-    pub simulation: integration_layer::SimulationResult,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct CodingReport {
-    pub root: String,
-    pub dry_run: bool,
-    pub execution: CodingExecutionResult,
-    pub patches: Vec<integration_layer::CodePatch>,
-    pub changes: CodeChangeSet,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct DataFlowEdgeReport {
-    pub from: String,
-    pub to: String,
-    pub weight: f32,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunReport {
-    pub root: String,
-    pub status: String,
-    pub exit_code: i32,
-    pub duration_ms: u128,
-    pub stdout: String,
-    pub stderr: String,
-    pub command: String,
-    pub args: Vec<String>,
-    pub telemetry: RunTelemetry,
-    pub sandbox: RunSandbox,
-    pub output_meta: OutputMeta,
-    pub stderr_meta: OutputMeta,
-    pub sandbox_mode: SandboxMode,
-    pub deterministic: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunTelemetry {
-    pub duration_ms: u128,
-    pub exit_code: i32,
-    pub stdout_size: usize,
-    pub stderr_size: usize,
-    pub memory_usage_kb: MemoryUsage,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RunSandbox {
-    pub max_execution_time_ms: u64,
-    pub allow_network: bool,
-    pub allow_fs_write: bool,
-    pub allowed_paths: Vec<String>,
-    pub working_dir: String,
-    pub timed_out: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RulesReport {
-    pub language: String,
-    pub action: String,
-    pub active: Vec<RuleReport>,
-    pub candidate: Vec<RuleReport>,
-    pub validated: Vec<ValidatedRuleReport>,
-    pub deprecated: Vec<RuleReport>,
-    pub message: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct RuleReport {
-    pub id: String,
-    pub priority: u32,
-    pub confidence: f32,
-    pub usage_count: u32,
-    pub source: String,
-    pub bucket: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-pub struct ValidatedRuleReport {
-    pub id: String,
-    pub validation_score: f32,
-    pub passed_checks: Vec<String>,
-    pub source: String,
-}
+pub use dto::*;
+pub use reasoning::{
+    DeterministicIssueAggregator, IssueAggregator, generate_plan, infer_root_cause,
+};
 
 pub fn analyze_path(path: &Path) -> Result<AnalysisReport, String> {
-    if !path.exists() {
-        return Err(format!("path does not exist: {}", path.display()));
-    }
-    if !path.is_dir() {
-        return Err(format!("path is not a directory: {}", path.display()));
-    }
-    let client = DBMClient::new();
-    let project = client
-        .analyze_project(&path.display().to_string())
-        .map_err(|err| format!("project analysis failed: {err}"))?;
+    let project = world::analyze_project(path)?;
     build_analysis_report(path, &project)
 }
 
@@ -193,10 +30,12 @@ pub fn build_design_report(path: &Path) -> Result<DesignReport, String> {
     let design_graph = design_graph_from_analysis(&analysis);
     let structural = structural_analysis(&design_graph);
     let analysis = enrich_analysis_report(analysis, diagnostic_analysis(&design_graph));
-    Ok(match to_system_output(to_relations(SystemInput::Design(design_graph))) {
-        SystemOutput::Design(graph) => design_report_from_graph(&analysis, &graph, &structural),
-        _ => design_from_analysis(&analysis),
-    })
+    Ok(
+        match to_system_output(to_relations(SystemInput::Design(design_graph))) {
+            SystemOutput::Design(graph) => design_report_from_graph(&analysis, &graph, &structural),
+            _ => design_from_analysis(&analysis),
+        },
+    )
 }
 
 pub fn build_validation_report(path: &Path) -> Result<ValidationReport, String> {
@@ -272,6 +111,12 @@ pub fn enrich_analysis_report(
 ) -> AnalysisReport {
     let issues = structural.issues.clone();
     let summary = summarize_issues(&issues);
+    let root_cause = if issues.is_empty() {
+        None
+    } else {
+        Some(infer_root_cause(&issues))
+    };
+    let refactor_plan = root_cause.as_ref().map(generate_plan).unwrap_or_default();
     analysis.cycles = structural.cycle_report;
     analysis.layers = structural.layer_model;
     analysis.violations = structural.violations;
@@ -290,6 +135,8 @@ pub fn enrich_analysis_report(
     analysis.issues = issues;
     analysis.summary = summary;
     analysis.next_action = format!("cli refactor {}", analysis.root);
+    analysis.root_cause = root_cause;
+    analysis.refactor_plan = refactor_plan;
     analysis
 }
 
@@ -344,8 +191,7 @@ pub fn validate_from_analysis(
 }
 
 pub fn path_contains_parent_component(path: &Path) -> bool {
-    path.components()
-        .any(|component| matches!(component, Component::ParentDir))
+    world::path_contains_parent_component(path)
 }
 
 fn summarize_issues(issues: &[Issue]) -> AnalysisSummary {
@@ -377,13 +223,25 @@ fn design_from_analysis(analysis: &AnalysisReport) -> DesignReport {
     };
 
     let mut components = Vec::new();
-    if analysis.top_level_entries.iter().any(|entry| entry == "src") {
+    if analysis
+        .top_level_entries
+        .iter()
+        .any(|entry| entry == "src")
+    {
         components.push("src".to_string());
     }
-    if analysis.top_level_entries.iter().any(|entry| entry == "tests") {
+    if analysis
+        .top_level_entries
+        .iter()
+        .any(|entry| entry == "tests")
+    {
         components.push("tests".to_string());
     }
-    if analysis.top_level_entries.iter().any(|entry| entry == "crates") {
+    if analysis
+        .top_level_entries
+        .iter()
+        .any(|entry| entry == "crates")
+    {
         components.push("crates".to_string());
     }
     if components.is_empty() {
@@ -450,7 +308,10 @@ fn design_report_from_graph(
     report
 }
 
-fn build_analysis_report(root: &Path, project: &ProjectAnalysisResult) -> Result<AnalysisReport, String> {
+fn build_analysis_report(
+    root: &Path,
+    project: &ProjectAnalysisResult,
+) -> Result<AnalysisReport, String> {
     let mut languages = BTreeMap::new();
     let mut todo_files = 0usize;
     for file in &project.files {
@@ -504,6 +365,8 @@ fn build_analysis_report(root: &Path, project: &ProjectAnalysisResult) -> Result
         issues: Vec::new(),
         summary: AnalysisSummary::default(),
         next_action: String::new(),
+        root_cause: None,
+        refactor_plan: Vec::new(),
     })
 }
 

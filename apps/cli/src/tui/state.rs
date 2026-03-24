@@ -44,7 +44,11 @@ impl TuiState {
 
     /// Depth of the currently selected trace step.
     pub fn selected_depth(&self) -> Option<usize> {
-        self.payload.trace.steps.get(self.selected_step).map(|s| s.depth)
+        self.payload
+            .trace
+            .steps
+            .get(self.selected_step)
+            .map(|s| s.depth)
     }
 
     /// Ids of all hypotheses whose depth matches `depth`.
@@ -141,7 +145,13 @@ impl TuiState {
         if let Some(id) = self.selected_hypothesis {
             if let Some(h) = self.payload.hypotheses.iter().find(|h| h.id == id) {
                 let depth = h.depth;
-                if let Some(pos) = self.payload.trace.steps.iter().position(|s| s.depth == depth) {
+                if let Some(pos) = self
+                    .payload
+                    .trace
+                    .steps
+                    .iter()
+                    .position(|s| s.depth == depth)
+                {
                     self.selected_step = pos;
                 }
             }

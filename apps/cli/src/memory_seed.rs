@@ -30,12 +30,21 @@ pub struct SeedEntry {
 /// so that the recall scorer can match on either form.
 fn synonym_map() -> HashMap<&'static str, Vec<&'static str>> {
     let mut m: HashMap<&'static str, Vec<&'static str>> = HashMap::new();
-    m.insert("cli",     vec!["command", "terminal", "tool", "repl", "bin"]);
-    m.insert("service", vec!["backend", "microservice", "daemon", "worker", "server"]);
-    m.insert("api",     vec!["rest", "http", "endpoint", "route", "grpc"]);
-    m.insert("web",     vec!["http", "server", "browser", "html", "frontend", "backend"]);
-    m.insert("db",      vec!["database", "storage", "sql", "nosql", "persistence"]);
-    m.insert("rust",    vec!["cargo", "crate", "tokio", "async"]);
+    m.insert("cli", vec!["command", "terminal", "tool", "repl", "bin"]);
+    m.insert(
+        "service",
+        vec!["backend", "microservice", "daemon", "worker", "server"],
+    );
+    m.insert("api", vec!["rest", "http", "endpoint", "route", "grpc"]);
+    m.insert(
+        "web",
+        vec!["http", "server", "browser", "html", "frontend", "backend"],
+    );
+    m.insert(
+        "db",
+        vec!["database", "storage", "sql", "nosql", "persistence"],
+    );
+    m.insert("rust", vec!["cargo", "crate", "tokio", "async"]);
     m
 }
 
@@ -60,10 +69,7 @@ fn expand_tags(tags: &[String]) -> Vec<String> {
 fn seed_to_record(entry: SeedEntry) -> MemoryRecord {
     // Combine intent + pattern + solution into a rich text blob so the
     // term-overlap scorer finds query words in multiple fields.
-    let text = format!(
-        "{} {} {}",
-        entry.intent, entry.pattern, entry.solution
-    );
+    let text = format!("{} {} {}", entry.intent, entry.pattern, entry.solution);
     let mut tags = expand_tags(&entry.tags);
     // Mark as knowledge-seed so the intent refiner's apply_memory skips it.
     // Seeds are reference patterns, not user-session memory — they must not
@@ -155,7 +161,10 @@ mod tests {
             tags: vec!["cli".to_string()],
             limit: 5,
         });
-        assert!(!results.is_empty(), "expected ≥1 recall result for 'cli tool'");
+        assert!(
+            !results.is_empty(),
+            "expected ≥1 recall result for 'cli tool'"
+        );
         let has_clap = results.iter().any(|r| r.text.contains("clap"));
         assert!(has_clap, "expected clap in cli recall results");
     }
@@ -168,7 +177,10 @@ mod tests {
             tags: vec!["service".to_string(), "backend".to_string()],
             limit: 5,
         });
-        assert!(!results.is_empty(), "expected ≥1 recall result for 'service backend'");
+        assert!(
+            !results.is_empty(),
+            "expected ≥1 recall result for 'service backend'"
+        );
     }
 
     #[test]

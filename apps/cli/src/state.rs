@@ -47,11 +47,27 @@ pub enum Mode {
 pub struct Context {
     /// 入力履歴
     pub history: Vec<String>,
+    /// 最後に操作したファイル/ディレクトリパス
+    pub last_path: Option<String>,
+    /// 最後に実行したコマンド名
+    pub last_command: Option<String>,
 }
 
 impl Context {
     pub fn push(&mut self, input: impl Into<String>) {
         self.history.push(input.into());
+    }
+
+    /// 最後に使ったパスを保存する
+    pub fn set_last_path(&mut self, path: &str) {
+        if !path.is_empty() && path != "." {
+            self.last_path = Some(path.to_string());
+        }
+    }
+
+    /// 最後に使ったパスを返す（なければ "."）
+    pub fn last_path_or_default(&self) -> &str {
+        self.last_path.as_deref().unwrap_or(".")
     }
 }
 
@@ -85,5 +101,32 @@ mod tests {
         ctx.push("input1");
         ctx.push("input2");
         assert_eq!(ctx.history, vec!["input1", "input2"]);
+    }
+
+    #[test]
+    fn context_set_last_path_stores_path() {
+        let mut ctx = Context::default();
+        ctx.set_last_path("src/main.rs");
+        assert_eq!(ctx.last_path, Some("src/main.rs".to_string()));
+    }
+
+    #[test]
+    fn context_set_last_path_ignores_dot() {
+        let mut ctx = Context::default();
+        ctx.set_last_path(".");
+        assert_eq!(ctx.last_path, None);
+    }
+
+    #[test]
+    fn context_last_path_or_default_returns_dot_when_none() {
+        let ctx = Context::default();
+        assert_eq!(ctx.last_path_or_default(), ".");
+    }
+
+    #[test]
+    fn context_last_path_or_default_returns_stored_path() {
+        let mut ctx = Context::default();
+        ctx.set_last_path("src/lib.rs");
+        assert_eq!(ctx.last_path_or_default(), "src/lib.rs");
     }
 }

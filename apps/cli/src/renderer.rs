@@ -5,7 +5,7 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
-use crate::service::{
+use crate::service::dto::{
     AnalysisReport, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
     ValidationReport,
 };
@@ -64,10 +64,7 @@ pub fn render_summary<W: Write>(writer: &mut W, slots: &SlotMap) -> io::Result<(
     Ok(())
 }
 
-pub fn render_reasoning_trace<W: Write>(
-    writer: &mut W,
-    trace: &ReasoningTrace,
-) -> io::Result<()> {
+pub fn render_reasoning_trace<W: Write>(writer: &mut W, trace: &ReasoningTrace) -> io::Result<()> {
     writeln!(writer, "[Reasoning]")?;
     writeln!(
         writer,
@@ -202,7 +199,11 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
         writeln!(writer)?;
         writeln!(writer, "Violations:")?;
         for violation in &report.violations {
-            writeln!(writer, "  {} -> {} ({} <= {})", violation.from, violation.to, violation.from_level, violation.to_level)?;
+            writeln!(
+                writer,
+                "  {} -> {} ({} <= {})",
+                violation.from, violation.to, violation.from_level, violation.to_level
+            )?;
         }
     }
     if !report.roles.is_empty() {
@@ -222,21 +223,34 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
         writeln!(writer)?;
         writeln!(writer, "Semantic Layers:")?;
         for layer in &report.semantic_layers {
-            writeln!(writer, "- Layer {}: {}", layer.level, layer_type_label(&layer.layer_type))?;
+            writeln!(
+                writer,
+                "- Layer {}: {}",
+                layer.level,
+                layer_type_label(&layer.layer_type)
+            )?;
         }
     }
     if !report.data_flow.is_empty() {
         writeln!(writer)?;
         writeln!(writer, "Data Flow:")?;
         for flow in &report.data_flow {
-            writeln!(writer, "- {} -> {} ({:.2})", flow.from, flow.to, flow.weight)?;
+            writeln!(
+                writer,
+                "- {} -> {} ({:.2})",
+                flow.from, flow.to, flow.weight
+            )?;
         }
     }
     writeln!(writer)?;
     render_issue_group(writer, "Structural Issues", &report.issues, "Structural")?;
     render_issue_group(writer, "Semantic Issues", &report.issues, "Semantic")?;
     render_issue_group(writer, "Data Flow Issues", &report.issues, "Data Flow")?;
-    writeln!(writer, "Summary: Critical: {} | High: {} | Medium: {}", report.summary.critical, report.summary.high, report.summary.medium)?;
+    writeln!(
+        writer,
+        "Summary: Critical: {} | High: {} | Medium: {}",
+        report.summary.critical, report.summary.high, report.summary.medium
+    )?;
     writeln!(writer)?;
     writeln!(writer, "Next Action:")?;
     writeln!(writer, "{}", report.next_action)?;
@@ -299,7 +313,11 @@ pub fn render_design_report<W: Write>(writer: &mut W, report: &DesignReport) -> 
         writer,
         "- Cycles: {} ({})",
         report.cycles.cycles.len(),
-        if report.cycles.has_cycle { "INVALID" } else { "OK" }
+        if report.cycles.has_cycle {
+            "INVALID"
+        } else {
+            "OK"
+        }
     )?;
     writeln!(writer, "- Layers: {}", report.layers.layers.len())?;
     writeln!(writer, "- Violations: {}", report.violations.len())?;
@@ -321,7 +339,12 @@ pub fn render_design_report<W: Write>(writer: &mut W, report: &DesignReport) -> 
         writeln!(writer)?;
         writeln!(writer, "Roles:")?;
         for role in &report.roles {
-            writeln!(writer, "- {}: {}", role.node_name, node_role_label(&role.role))?;
+            writeln!(
+                writer,
+                "- {}: {}",
+                role.node_name,
+                node_role_label(&role.role)
+            )?;
         }
     }
     if !report.patterns.is_empty() {
@@ -382,7 +405,12 @@ pub fn render_validation_report<W: Write>(
     if !report.layers.layers.is_empty() {
         writeln!(writer, "Layers:")?;
         for layer in &report.layers.layers {
-            writeln!(writer, " - Layer {}: {}", layer.level, layer.nodes.join(", "))?;
+            writeln!(
+                writer,
+                " - Layer {}: {}",
+                layer.level,
+                layer.nodes.join(", ")
+            )?;
         }
     }
     writer.flush()
@@ -432,7 +460,10 @@ fn refactor_action_label(action: &RefactorAction) -> &'static str {
 fn refactor_plan_action_label(action: &RefactorPlanAction) -> String {
     match action {
         RefactorPlanAction::IntroduceInterface { between } => {
-            format!("Introduce Interface between {} and {}", between.0, between.1)
+            format!(
+                "Introduce Interface between {} and {}",
+                between.0, between.1
+            )
         }
         RefactorPlanAction::RemoveDependency { from, to } => {
             format!("Remove Dependency {} -> {}", from, to)
@@ -441,7 +472,7 @@ fn refactor_plan_action_label(action: &RefactorPlanAction) -> String {
         RefactorPlanAction::MoveDependency { from, to, via } => match via {
             Some(via) => format!("Move Dependency {} -> {} via {}", from, to, via),
             None => format!("Move Dependency {} -> {}", from, to),
-        }
+        },
         RefactorPlanAction::ExtractComponent { from } => {
             format!("Extract Component from {}", from)
         }
@@ -491,7 +522,12 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
     writeln!(writer, "Root: {}", report.root)?;
     writeln!(writer)?;
     for (index, phase) in report.plan.phases.iter().enumerate() {
-        writeln!(writer, "Phase {}: {}", index + 1, phase_type_label(&phase.phase_type))?;
+        writeln!(
+            writer,
+            "Phase {}: {}",
+            index + 1,
+            phase_type_label(&phase.phase_type)
+        )?;
         for action in &phase.actions {
             writeln!(writer, "- {}", refactor_plan_action_label(action))?;
         }
@@ -501,7 +537,11 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
     for (index, patch) in report.patches.iter().enumerate() {
         writeln!(writer)?;
         writeln!(writer, "[Patch {}]", index + 1)?;
-        writeln!(writer, "Action: {}", refactor_plan_action_label(&patch.action))?;
+        writeln!(
+            writer,
+            "Action: {}",
+            refactor_plan_action_label(&patch.action)
+        )?;
         for operation in &patch.operations {
             writeln!(writer, "- {}", patch_operation_label(operation))?;
         }
@@ -530,12 +570,20 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
 pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> io::Result<()> {
     writeln!(writer, "Code Changes")?;
     writeln!(writer, "Root: {}", report.root)?;
-    writeln!(writer, "Mode: {}", if report.dry_run { "dry-run" } else { "apply" })?;
+    writeln!(
+        writer,
+        "Mode: {}",
+        if report.dry_run { "dry-run" } else { "apply" }
+    )?;
     writeln!(writer, "Status: {}", report.execution.status)?;
     writeln!(
         writer,
         "Build: {}",
-        if report.execution.build_ok { "OK" } else { "FAILED" }
+        if report.execution.build_ok {
+            "OK"
+        } else {
+            "FAILED"
+        }
     )?;
     writeln!(writer, "Checked: {}", report.execution.checked)?;
     writeln!(writer, "Applied: {}", report.execution.applied)?;
@@ -649,7 +697,10 @@ fn patch_operation_label(operation: &PatchOperation) -> String {
             Some(via) => format!("Update dependency {} -> {} via {}", from, to, via),
             None => format!("Update dependency {} -> {}", from, to),
         },
-        PatchOperation::SplitModule { module, new_modules } => {
+        PatchOperation::SplitModule {
+            module,
+            new_modules,
+        } => {
             format!("Split {} into {}", module, new_modules.join(", "))
         }
         PatchOperation::ExtractComponent { from, component } => {

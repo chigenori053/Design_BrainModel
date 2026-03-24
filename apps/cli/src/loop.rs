@@ -8,13 +8,13 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 
 use crate::command::{Command, parse_command};
 use crate::input::{InputState, read_input};
-use crate::state::State;
 use crate::renderer::{
     render_analysis_report, render_design_report, render_question, render_result,
     render_validation_report,
 };
 use crate::service::{analyze_path, build_design_report, build_validation_report};
 use crate::session::{ChatSession, merge_slots};
+use crate::state::State;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoopSignal {
@@ -124,7 +124,10 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
             Ok(true)
         }
         "/help" => {
-            writeln!(writer, "Slash commands: /analyze [path], /design [path], /validate [path], /reset, /quit")?;
+            writeln!(
+                writer,
+                "Slash commands: /analyze [path], /design [path], /validate [path], /reset, /quit"
+            )?;
             writer.flush()?;
             Ok(true)
         }

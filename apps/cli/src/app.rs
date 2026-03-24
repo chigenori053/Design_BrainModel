@@ -6,11 +6,14 @@ use std::sync::Arc;
 
 use clap::{CommandFactory, Parser, Subcommand};
 use code_language_core::stable_v03::dynamic_ir::{
-    DefaultRuleValidator, bootstrap_rule_store, promote_validated_rule, prune_rules,
-    rollback_rule, should_promote_validated, validate_all_candidates, validate_candidate_rule,
+    DefaultRuleValidator, bootstrap_rule_store, promote_validated_rule, prune_rules, rollback_rule,
+    should_promote_validated, validate_all_candidates, validate_candidate_rule,
 };
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
-use integration_layer::{SystemOutput, diagnostic_analysis, structural_analysis, to_relations, trace_links, validate_mapping};
+use integration_layer::{
+    SystemOutput, diagnostic_analysis, structural_analysis, to_relations, to_system_output,
+    trace_links, validate_mapping,
+};
 use memory_space_phase14::stable_v03::InMemoryEngine;
 use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use serde::Serialize;
@@ -414,6 +417,7 @@ fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
     let report = report?;
     let canonical_input = analysis_to_system_input(&report);
     let relations = to_relations(canonical_input.clone());
+    let _system_output = to_system_output(relations.clone());
     let validation = validate_mapping(&canonical_input, &relations);
     if !validation.is_valid {
         return Err("integration mapping failed for analysis report".to_string());
@@ -913,7 +917,11 @@ fn inspect_rule_message(
     store: &code_language_core::stable_v03::dynamic_ir::RuleStore,
     rule_id: &str,
 ) -> Option<String> {
-    if let Some(record) = store.active_rules.iter().find(|record| record.rule.id == rule_id) {
+    if let Some(record) = store
+        .active_rules
+        .iter()
+        .find(|record| record.rule.id == rule_id)
+    {
         return Some(format!(
             "active rule {} (confidence {:.2}, usage {})",
             record.rule.id, record.rule.confidence, record.rule.usage_count
@@ -942,7 +950,9 @@ fn inspect_rule_message(
     None
 }
 
-fn rule_source_label(source: &code_language_core::stable_v03::dynamic_ir::RuleSource) -> &'static str {
+fn rule_source_label(
+    source: &code_language_core::stable_v03::dynamic_ir::RuleSource,
+) -> &'static str {
     match source {
         code_language_core::stable_v03::dynamic_ir::RuleSource::Static => "Static",
         code_language_core::stable_v03::dynamic_ir::RuleSource::Learned => "Learned",
@@ -982,10 +992,7 @@ fn execute_memory_import(args: MemoryImportArgs) -> Result<(), String> {
     let engine = InMemoryEngine::default();
     let count = crate::memory_seed::load_seeds_into(&engine, &args.path);
     if count == 0 {
-        return Err(format!(
-            "no records loaded from {}",
-            args.path.display()
-        ));
+        return Err(format!("no records loaded from {}", args.path.display()));
     }
 
     println!("Loaded {count} seed records from {}", args.path.display());
@@ -1035,7 +1042,9 @@ fn execute_tui(args: TuiArgs) -> Result<(), String> {
 
 /// Build a UiPayload from a completed RuntimeResult.
 /// Exported so other CLI commands can call it (e.g. `generate --tui`).
-pub fn ui_payload_from_result(result: &runtime_core::stable_v03::RuntimeResult) -> crate::tui::model::UiPayload {
+pub fn ui_payload_from_result(
+    result: &runtime_core::stable_v03::RuntimeResult,
+) -> crate::tui::model::UiPayload {
     use crate::tui::model::{
         HypothesisViewModel, MemoryCandidateViewModel, ScorePartsViewModel, TraceStatsViewModel,
         TraceStepViewModel, TraceViewModel, UiPayload,
@@ -1136,35 +1145,124 @@ pub fn ui_payload_from_result(result: &runtime_core::stable_v03::RuntimeResult) 
 /// Demo payload used when no JSON file is provided.
 fn demo_payload() -> crate::tui::model::UiPayload {
     use crate::tui::model::{
-        HypothesisViewModel, HypothesisRelationViewModel, MemoryCandidateViewModel,
+        HypothesisRelationViewModel, HypothesisViewModel, MemoryCandidateViewModel,
         ScorePartsViewModel, TraceStatsViewModel, TraceStepViewModel, TraceViewModel, UiPayload,
     };
 
     let steps = vec![
-        TraceStepViewModel { depth: 0, beam_width: 5, candidates: 12, pruned: 7, recall_hits: 3 },
-        TraceStepViewModel { depth: 1, beam_width: 4, candidates: 9,  pruned: 5, recall_hits: 2 },
-        TraceStepViewModel { depth: 2, beam_width: 3, candidates: 6,  pruned: 3, recall_hits: 1 },
+        TraceStepViewModel {
+            depth: 0,
+            beam_width: 5,
+            candidates: 12,
+            pruned: 7,
+            recall_hits: 3,
+        },
+        TraceStepViewModel {
+            depth: 1,
+            beam_width: 4,
+            candidates: 9,
+            pruned: 5,
+            recall_hits: 2,
+        },
+        TraceStepViewModel {
+            depth: 2,
+            beam_width: 3,
+            candidates: 6,
+            pruned: 3,
+            recall_hits: 1,
+        },
     ];
 
     let sp = |r: f32, g: f32, c: f32, m: f32| ScorePartsViewModel {
-        relevance: r, goal: g, constraint: c, memory: m,
+        relevance: r,
+        goal: g,
+        constraint: c,
+        memory: m,
     };
 
     let hypotheses = vec![
-        HypothesisViewModel { id: 0, parent: None,    depth: 0, score: 0.92, score_parts: sp(0.90, 0.88, 0.95, 0.85), relations: vec![] },
-        HypothesisViewModel { id: 1, parent: Some(0), depth: 1, score: 0.88, score_parts: sp(0.85, 0.82, 0.90, 0.80), relations: vec![] },
-        HypothesisViewModel { id: 2, parent: Some(0), depth: 1, score: 0.85, score_parts: sp(0.82, 0.80, 0.88, 0.78),
-            relations: vec![HypothesisRelationViewModel { to_id: 4, relation_type: "similar".to_string() }] },
-        HypothesisViewModel { id: 3, parent: Some(1), depth: 2, score: 0.81, score_parts: sp(0.78, 0.75, 0.85, 0.72), relations: vec![] },
-        HypothesisViewModel { id: 4, parent: Some(1), depth: 2, score: 0.79, score_parts: sp(0.76, 0.73, 0.83, 0.70), relations: vec![] },
-        HypothesisViewModel { id: 5, parent: Some(2), depth: 2, score: 0.80, score_parts: sp(0.77, 0.74, 0.84, 0.71), relations: vec![] },
+        HypothesisViewModel {
+            id: 0,
+            parent: None,
+            depth: 0,
+            score: 0.92,
+            score_parts: sp(0.90, 0.88, 0.95, 0.85),
+            relations: vec![],
+        },
+        HypothesisViewModel {
+            id: 1,
+            parent: Some(0),
+            depth: 1,
+            score: 0.88,
+            score_parts: sp(0.85, 0.82, 0.90, 0.80),
+            relations: vec![],
+        },
+        HypothesisViewModel {
+            id: 2,
+            parent: Some(0),
+            depth: 1,
+            score: 0.85,
+            score_parts: sp(0.82, 0.80, 0.88, 0.78),
+            relations: vec![HypothesisRelationViewModel {
+                to_id: 4,
+                relation_type: "similar".to_string(),
+            }],
+        },
+        HypothesisViewModel {
+            id: 3,
+            parent: Some(1),
+            depth: 2,
+            score: 0.81,
+            score_parts: sp(0.78, 0.75, 0.85, 0.72),
+            relations: vec![],
+        },
+        HypothesisViewModel {
+            id: 4,
+            parent: Some(1),
+            depth: 2,
+            score: 0.79,
+            score_parts: sp(0.76, 0.73, 0.83, 0.70),
+            relations: vec![],
+        },
+        HypothesisViewModel {
+            id: 5,
+            parent: Some(2),
+            depth: 2,
+            score: 0.80,
+            score_parts: sp(0.77, 0.74, 0.84, 0.71),
+            relations: vec![],
+        },
     ];
 
     let memory = vec![
-        MemoryCandidateViewModel { id: "mem-a1b2".to_string(), score: 0.91, source: "exact".to_string(), rank: 0, tags: vec!["web".to_string(), "rust".to_string()] },
-        MemoryCandidateViewModel { id: "mem-c3d4".to_string(), score: 0.84, source: "cache".to_string(), rank: 1, tags: vec!["api".to_string()] },
-        MemoryCandidateViewModel { id: "mem-e5f6".to_string(), score: 0.80, source: "cache".to_string(), rank: 2, tags: vec!["service".to_string(), "grpc".to_string()] },
-        MemoryCandidateViewModel { id: "mem-g7h8".to_string(), score: 0.72, source: "index".to_string(), rank: 3, tags: vec![] },
+        MemoryCandidateViewModel {
+            id: "mem-a1b2".to_string(),
+            score: 0.91,
+            source: "exact".to_string(),
+            rank: 0,
+            tags: vec!["web".to_string(), "rust".to_string()],
+        },
+        MemoryCandidateViewModel {
+            id: "mem-c3d4".to_string(),
+            score: 0.84,
+            source: "cache".to_string(),
+            rank: 1,
+            tags: vec!["api".to_string()],
+        },
+        MemoryCandidateViewModel {
+            id: "mem-e5f6".to_string(),
+            score: 0.80,
+            source: "cache".to_string(),
+            rank: 2,
+            tags: vec!["service".to_string(), "grpc".to_string()],
+        },
+        MemoryCandidateViewModel {
+            id: "mem-g7h8".to_string(),
+            score: 0.72,
+            source: "index".to_string(),
+            rank: 3,
+            tags: vec![],
+        },
     ];
 
     UiPayload {

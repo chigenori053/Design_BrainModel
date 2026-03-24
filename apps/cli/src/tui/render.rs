@@ -93,7 +93,9 @@ fn render_trace(frame: &mut Frame, state: &mut TuiState, area: Rect) {
             );
 
             let style = if is_sel {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -232,11 +234,18 @@ fn render_hypothesis_graph(frame: &mut Frame, state: &mut TuiState, area: Rect) 
         .collect();
 
     // How many rows the cross-link section needs (min 1 blank separator).
-    let cross_rows = if cross_links.is_empty() { 0 } else { cross_links.len() + 2 };
+    let cross_rows = if cross_links.is_empty() {
+        0
+    } else {
+        cross_links.len() + 2
+    };
 
     let inner = block.inner(area);
     let tree_height = inner.height.saturating_sub(cross_rows as u16);
-    let tree_area = Rect { height: tree_height, ..inner };
+    let tree_area = Rect {
+        height: tree_height,
+        ..inner
+    };
     let link_area = Rect {
         y: inner.y + tree_height,
         height: inner.height - tree_height,
@@ -255,7 +264,9 @@ fn render_hypothesis_graph(frame: &mut Frame, state: &mut TuiState, area: Rect) 
             let text = format!("{}H{} ({:.2})", line.prefix, line.id, line.score);
 
             let style = if is_sel {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else if is_depth {
                 Style::default().fg(Color::Cyan)
             } else {
@@ -266,7 +277,9 @@ fn render_hypothesis_graph(frame: &mut Frame, state: &mut TuiState, area: Rect) 
         })
         .collect();
 
-    let list_index = tree_lines.iter().position(|l| Some(l.id) == state.selected_hypothesis);
+    let list_index = tree_lines
+        .iter()
+        .position(|l| Some(l.id) == state.selected_hypothesis);
 
     let mut list_state = ListState::default();
     list_state.select(list_index);
@@ -297,7 +310,9 @@ fn render_score_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
         let bar_width = (area.width as usize).saturating_sub(4).min(20).max(8);
         let content = build_score_content(hyp.id, hyp.score, &hyp.score_parts, bar_width);
         frame.render_widget(
-            Paragraph::new(content).block(block).wrap(Wrap { trim: false }),
+            Paragraph::new(content)
+                .block(block)
+                .wrap(Wrap { trim: false }),
             area,
         );
     } else {
@@ -310,7 +325,12 @@ fn render_score_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
     }
 }
 
-fn build_score_content(id: usize, total: f32, parts: &ScorePartsViewModel, bar_width: usize) -> String {
+fn build_score_content(
+    id: usize,
+    total: f32,
+    parts: &ScorePartsViewModel,
+    bar_width: usize,
+) -> String {
     let mut out = format!("  H{id}\n  Total: {total:.2}\n\n");
     out.push_str(&score_bar("relevance ", parts.relevance, bar_width));
     out.push_str(&score_bar("goal      ", parts.goal, bar_width));
@@ -398,10 +418,8 @@ fn render_help_bar(frame: &mut Frame, area: Rect) {
         height: 1,
     };
     frame.render_widget(
-        Paragraph::new(
-            " ↑↓ navigate   Tab cycle panel [Trace→Graph→Memory]   q quit ",
-        )
-        .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(" ↑↓ navigate   Tab cycle panel [Trace→Graph→Memory]   q quit ")
+            .style(Style::default().fg(Color::DarkGray)),
         help_area,
     );
 }

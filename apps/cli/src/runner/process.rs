@@ -26,6 +26,16 @@ pub(crate) fn execute_process(
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .stdin(Stdio::null());
+
+    // Isolate the child into its own process group (PGID == child PID).
+    // This allows killing the entire descendant tree on timeout by sending
+    // SIGKILL to the negative PGID (`kill -9 -{pid}`).
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        command.process_group(0);
+    }
+
     configure_environment(&mut command, config, timeout, policy);
 
     let mut child = command
@@ -58,6 +68,16 @@ pub(crate) fn execute_process(
                 child.kill().map_err(|err| {
                     RunnerError::TimeoutError(format!("failed to kill timed out process: {err}"))
                 })?;
+                // On Unix, kill the entire process group to reap all descendants
+                // (grandchildren, etc.) that the direct child may have spawned.
+                // Since we used process_group(0), PGID == child PID.
+                #[cfg(unix)]
+                {
+                    let _ = Command::new("kill")
+                        .args(["-9", &format!("-{pid}")])
+                        .stderr(Stdio::null())
+                        .status();
+                }
                 let waited = child.wait().map_err(|err| {
                     RunnerError::TimeoutError(format!("failed to reap timed out process: {err}"))
                 })?;

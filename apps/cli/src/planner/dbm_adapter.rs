@@ -115,7 +115,7 @@ mod tests {
         // design input → generate_architecture which may fail with clarification
         let plan = match adapter.create_plan("design the schema", &session) {
             Ok(p) => p,
-            Err(_) => RuleBasedPlanner::new().plan("design the schema"),
+            Err(_) => RuleBasedPlanner::new().plan("design the schema", None),
         };
 
         assert!(!plan.steps.is_empty());

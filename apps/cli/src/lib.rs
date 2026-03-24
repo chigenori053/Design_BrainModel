@@ -1,12 +1,14 @@
 pub mod app;
-pub mod command;
 pub mod coding;
-pub mod memory_seed;
+pub mod command;
 pub mod commands;
 pub mod dbm;
 pub mod executor;
 pub mod input;
 pub mod r#loop;
+pub mod memory_seed;
+pub mod nl_executor;
+pub mod ops;
 pub mod plan;
 pub mod planner;
 pub mod renderer;
@@ -16,5 +18,7 @@ pub mod runner;
 pub mod service;
 pub mod session;
 pub mod state;
-pub mod ops;
 pub mod tui;
+
+pub(crate) mod debug;
+pub(crate) mod world;
