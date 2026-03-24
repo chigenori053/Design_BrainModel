@@ -2,8 +2,8 @@ use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Node, NodeType};
 use bridge::{legacy::LegacyHypothesis, reasoning_input_from_intent};
 use contracts::{
     Context, EvaluationScore, Hypothesis, HypothesisId, MemoryCandidate, MemorySource, NodeId,
-    ReasoningInput, ReasoningTrace, RequestId, ScoreParts, SemanticHash, SemanticRepresentation, State,
-    StateHash, TraceStats, TraceStep, ValidationReason, ValidationResult,
+    ReasoningInput, ReasoningTrace, RequestId, ScoreParts, SemanticHash, SemanticRepresentation,
+    State, StateHash, TraceStats, TraceStep, ValidationReason, ValidationResult,
 };
 use design_search_engine::stable_v03::{
     Constraint, DesignSearchEngine, DeterministicBeamSearchEngine, RecallContext, RecalledPattern,
@@ -34,7 +34,11 @@ fn recall_context() -> RecallContext {
 fn search_input() -> ReasoningInput {
     let intent = IntentState {
         raw: "api service cache".to_string(),
-        tokens: vec!["api".to_string(), "service".to_string(), "cache".to_string()],
+        tokens: vec![
+            "api".to_string(),
+            "service".to_string(),
+            "cache".to_string(),
+        ],
     };
     let extra_tokens = recall_context()
         .patterns
@@ -84,7 +88,12 @@ fn score_ranges_and_relation_invariants_hold() {
 
     assert!(score.is_valid());
     assert!(candidate.is_valid());
-    assert!(semantic.relations.iter().all(|relation| relation.from != relation.to));
+    assert!(
+        semantic
+            .relations
+            .iter()
+            .all(|relation| relation.from != relation.to)
+    );
 }
 
 #[test]
@@ -104,7 +113,11 @@ fn candidate_ordering_is_stable() {
     let result = engine.search_with_trace(search_input());
 
     let mut sorted = result.candidates.clone();
-    sorted.sort_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).then_with(|| lhs.id.cmp(&rhs.id)));
+    sorted.sort_by(|lhs, rhs| {
+        rhs.score
+            .total_cmp(&lhs.score)
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
     assert_eq!(result.candidates, sorted);
 }
 

@@ -43,10 +43,16 @@ fn validation_returns_only_reasons_and_does_not_mutate_scores() {
             semantic_hash: SemanticHash("sem".to_string()),
         },
     ];
-    let before = hypotheses.iter().map(|hypothesis| hypothesis.score).collect::<Vec<_>>();
+    let before = hypotheses
+        .iter()
+        .map(|hypothesis| hypothesis.score)
+        .collect::<Vec<_>>();
 
     let validation = validate_hypothesis_set(&hypotheses);
-    let after = hypotheses.iter().map(|hypothesis| hypothesis.score).collect::<Vec<_>>();
+    let after = hypotheses
+        .iter()
+        .map(|hypothesis| hypothesis.score)
+        .collect::<Vec<_>>();
 
     assert_eq!(before, after);
     assert!(!validation.is_valid);

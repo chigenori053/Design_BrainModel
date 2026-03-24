@@ -171,7 +171,10 @@ fn analyze_validate_and_run_commands_output_json() {
             assert!(stdout["dependencies"].is_array());
             assert!(stdout["data_flow"].is_array());
             assert!(stdout["issues"].is_array());
-            let first_issue = stdout["issues"].as_array().and_then(|issues| issues.first()).cloned();
+            let first_issue = stdout["issues"]
+                .as_array()
+                .and_then(|issues| issues.first())
+                .cloned();
             if let Some(issue) = first_issue {
                 assert!(issue["id"].is_string());
                 assert!(issue["kind"].is_string());
@@ -186,7 +189,10 @@ fn analyze_validate_and_run_commands_output_json() {
             assert!(stdout["plan"]["phases"].is_array());
             assert!(stdout["plan"]["summary"]["total_actions"].is_number());
             assert!(stdout["patches"].is_array());
-            let first_patch = stdout["patches"].as_array().and_then(|patches| patches.first()).cloned();
+            let first_patch = stdout["patches"]
+                .as_array()
+                .and_then(|patches| patches.first())
+                .cloned();
             if let Some(patch) = first_patch {
                 assert!(patch["patch_id"].is_string());
                 assert!(patch["operations"].is_array());
@@ -482,8 +488,18 @@ fn analyze_no_action_words() {
         .expect("run analyze");
 
     assert_eq!(out.status.code(), Some(0));
-    let stdout = String::from_utf8(out.stdout).expect("utf8").to_ascii_lowercase();
-    for word in ["should", "fix", "introduce", "split", "move", "optimize", "improve"] {
+    let stdout = String::from_utf8(out.stdout)
+        .expect("utf8")
+        .to_ascii_lowercase();
+    for word in [
+        "should",
+        "fix",
+        "introduce",
+        "split",
+        "move",
+        "optimize",
+        "improve",
+    ] {
         assert!(!stdout.contains(word), "unexpected action word: {word}");
     }
 }
@@ -498,7 +514,11 @@ fn analyze_contains_only_diagnostics() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert!(stdout.contains("Structural Issues") || stdout.contains("Semantic Issues") || stdout.contains("Data Flow Issues"));
+    assert!(
+        stdout.contains("Structural Issues")
+            || stdout.contains("Semantic Issues")
+            || stdout.contains("Data Flow Issues")
+    );
     assert!(!stdout.contains("should"));
     assert!(!stdout.contains("fix"));
 }
@@ -548,7 +568,10 @@ fn cli_analyze_pure_mode() {
     let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
     assert!(stdout["issues"].is_array());
     assert!(stdout["summary"].is_object());
-    assert_eq!(stdout["next_action"], format!("cli refactor {}", dir.display()));
+    assert_eq!(
+        stdout["next_action"],
+        format!("cli refactor {}", dir.display())
+    );
     assert!(stdout.get("plan").is_none());
     assert!(stdout.get("simulation").is_none());
 }

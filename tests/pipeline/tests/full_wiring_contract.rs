@@ -59,7 +59,11 @@ fn trace_links_preserve_relation_to_source_mapping() {
         .execute(IntentInput::new("build rust api"))
         .expect("runtime succeeds");
 
-    for (trace_link, relation) in result.trace_links.iter().zip(result.output_relations.iter()) {
+    for (trace_link, relation) in result
+        .trace_links
+        .iter()
+        .zip(result.output_relations.iter())
+    {
         assert_eq!(trace_link.relation_id, relation.id);
         assert_eq!(trace_link.provenance, relation.provenance);
     }

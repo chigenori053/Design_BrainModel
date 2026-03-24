@@ -1,17 +1,20 @@
 use runtime_core::RuntimeEvent;
-use runtime_vm::{ExecutionMode, HybridVm, Phase9RuntimeAdapter};
+use runtime_vm::{ExecutionMode, Phase9RuntimeAdapter, dbm_test, test_support::with_test_vm};
 
-fn execute_phase9(input: &str) -> runtime_core::Phase9RuntimeContext {
-    let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-    vm.set_input_text(input.to_string());
-    vm.execute();
-    Phase9RuntimeAdapter::from_legacy(vm.context())
+fn execute_phase9(
+    runtime: &mut runtime_vm::RuntimeContext,
+    input: &str,
+) -> runtime_core::Phase9RuntimeContext {
+    with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+        vm.set_input_text(input.to_string());
+        vm.execute();
+        Phase9RuntimeAdapter::from_legacy(vm.context())
+    })
 }
 
-#[test]
-fn same_input_yields_same_event_sequence() {
-    let left = execute_phase9("phase9 determinism");
-    let right = execute_phase9("phase9 determinism");
+dbm_test!(same_input_yields_same_event_sequence, runtime, {
+    let left = execute_phase9(runtime, "phase9 determinism");
+    let right = execute_phase9(runtime, "phase9 determinism");
 
     let left_events = left
         .event_bus
@@ -25,45 +28,42 @@ fn same_input_yields_same_event_sequence() {
         .collect::<Vec<RuntimeEvent>>();
 
     assert_eq!(left_events, right_events);
-}
+});
 
-#[test]
-fn same_input_yields_same_hypothesis() {
-    let left = execute_phase9("phase9 determinism");
-    let right = execute_phase9("phase9 determinism");
+dbm_test!(same_input_yields_same_hypothesis, runtime, {
+    let left = execute_phase9(runtime, "phase9 determinism");
+    let right = execute_phase9(runtime, "phase9 determinism");
 
     assert_eq!(left.hypotheses, right.hypotheses);
-}
+});
 
-#[test]
-fn same_input_yields_same_recall_candidates() {
-    let left = execute_phase9("phase9 determinism");
-    let right = execute_phase9("phase9 determinism");
+dbm_test!(same_input_yields_same_recall_candidates, runtime, {
+    let left = execute_phase9(runtime, "phase9 determinism");
+    let right = execute_phase9(runtime, "phase9 determinism");
 
     assert_eq!(left.recall_result, right.recall_result);
-}
+});
 
-#[test]
-fn same_input_yields_same_consistency() {
-    let left = execute_phase9("phase9 determinism");
-    let right = execute_phase9("phase9 determinism");
+dbm_test!(same_input_yields_same_consistency, runtime, {
+    let left = execute_phase9(runtime, "phase9 determinism");
+    let right = execute_phase9(runtime, "phase9 determinism");
 
     assert_eq!(left.evaluation, right.evaluation);
-}
+});
 
-#[test]
-fn adapter_lift_is_stable() {
-    let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-    vm.set_input_text("phase9 determinism".to_string());
-    vm.execute();
+dbm_test!(adapter_lift_is_stable, runtime, {
+    with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+        vm.set_input_text("phase9 determinism".to_string());
+        vm.execute();
 
-    let first = Phase9RuntimeAdapter::snapshot(vm.context());
-    let second = Phase9RuntimeAdapter::snapshot(vm.context());
+        let first = Phase9RuntimeAdapter::snapshot(vm.context());
+        let second = Phase9RuntimeAdapter::snapshot(vm.context());
 
-    assert_eq!(first.request_id, second.request_id);
-    assert_eq!(first.modality, second.modality);
-    assert_eq!(first.stage, second.stage);
-    assert_eq!(first.recalled_memories, second.recalled_memories);
-    assert_eq!(first.hypotheses, second.hypotheses);
-    assert_eq!(first.events, second.events);
-}
+        assert_eq!(first.request_id, second.request_id);
+        assert_eq!(first.modality, second.modality);
+        assert_eq!(first.stage, second.stage);
+        assert_eq!(first.recalled_memories, second.recalled_memories);
+        assert_eq!(first.hypotheses, second.hypotheses);
+        assert_eq!(first.events, second.events);
+    });
+});

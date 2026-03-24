@@ -1,9 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
+use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Node, NodeType};
 use design_search_engine::stable_v03::{
     Constraint, DeterministicBeamSearchEngine, RecallContext, RecalledPattern,
 };
-use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Node, NodeType};
 use pipeline_tests::{extract_fn_body, read_workspace_file};
 use world_model::stable_v03::IntentState;
 
@@ -34,7 +34,11 @@ fn hypotheses_form_a_dag_with_unique_state_hashes() {
     let input = engine.contract_input(
         &IntentState {
             raw: "api service cache".to_string(),
-            tokens: vec!["api".to_string(), "service".to_string(), "cache".to_string()],
+            tokens: vec![
+                "api".to_string(),
+                "service".to_string(),
+                "cache".to_string(),
+            ],
         },
         Some(&recall_context()),
     );
@@ -59,17 +63,21 @@ fn hypotheses_form_a_dag_with_unique_state_hashes() {
             .len(),
         snapshot.hypotheses.len()
     );
-    assert!(snapshot
-        .hypotheses
-        .windows(2)
-        .all(|pair| pair[0].depth <= pair[1].depth));
+    assert!(
+        snapshot
+            .hypotheses
+            .windows(2)
+            .all(|pair| pair[0].depth <= pair[1].depth)
+    );
     for hypothesis in &snapshot.hypotheses {
         let mut current = hypothesis.parent;
         let mut seen = BTreeSet::new();
         while let Some(parent) = current {
             assert!(ids.contains(&parent));
             assert!(seen.insert(parent));
-            current = by_id.get(&parent).and_then(|parent_hypothesis| parent_hypothesis.parent);
+            current = by_id
+                .get(&parent)
+                .and_then(|parent_hypothesis| parent_hypothesis.parent);
         }
     }
 }

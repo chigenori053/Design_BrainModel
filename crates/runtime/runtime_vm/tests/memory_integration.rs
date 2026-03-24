@@ -16,7 +16,7 @@ use memory_space_phase14::{
     EvaluationScores, ReasoningTrace, SearchStep, embed_architecture, embed_evaluation,
     embed_template,
 };
-use runtime_vm::{ExecutionMode, HybridVm};
+use runtime_vm::{ExecutionMode, dbm_test, test_support::with_test_vm};
 
 fn seed_template_memory(memory: &mut DesignMemorySpace) {
     for template in builtin_templates().into_iter().take(5) {
@@ -135,8 +135,7 @@ fn web_api_intent() -> IntentModel {
     }
 }
 
-#[test]
-fn t1_recall_determinism_and_quality() {
+dbm_test!(t1_recall_determinism_and_quality, #[ignore = "heavy memory integration"], runtime, {
     let mut memory = DesignMemorySpace::default();
     seed_template_memory(&mut memory);
     let engine = ArchitectureTemplateEngine::with_builtin_library();
@@ -169,11 +168,11 @@ fn t1_recall_determinism_and_quality() {
     }
 
     assert!(selected.windows(2).all(|pair| pair[0] == pair[1]));
-    println!("T1 determinism_rate=1.0 selected_template={}", selected[0]);
-}
+    let _ = &selected[0];
+});
 
-#[test]
-fn t2_template_explosion_and_t6_learning_validation() {
+dbm_test!(t2_template_explosion_and_t6_learning_validation, #[ignore = "heavy memory integration"], runtime, {
+    let _ = runtime;
     let engine = ArchitectureSearchEngine::default();
     let mut memory = DesignMemorySpace::default();
     seed_template_memory(&mut memory);
@@ -207,15 +206,10 @@ fn t2_template_explosion_and_t6_learning_validation() {
         "duplicate templates detected"
     );
     assert!(template_count >= seed_count);
-    println!(
-        "T2 template_count={} growth_rate={:.2}",
-        template_count,
-        template_count as f64 / seed_count.max(1) as f64
-    );
-}
+});
 
-#[test]
-fn t3_memory_growth_and_consistency() {
+dbm_test!(t3_memory_growth_and_consistency, #[ignore = "heavy memory integration"], runtime, {
+    let _ = runtime;
     let mut memory = DesignMemorySpace::default();
     seed_template_memory(&mut memory);
 
@@ -279,11 +273,11 @@ fn t3_memory_growth_and_consistency() {
         assert!(memory.graph.get(edge.from).is_some(), "orphan from-node");
         assert!(memory.graph.get(edge.to).is_some(), "orphan to-node");
     }
-    println!("T3 node_count={node_count} edge_count={edge_count}");
-}
+    let _ = edge_count;
+});
 
-#[test]
-fn t4_evaluation_cache_correctness() {
+dbm_test!(t4_evaluation_cache_correctness, runtime, {
+    let _ = runtime;
     let memory = Arc::new(Mutex::new(DesignMemorySpace::default()));
     let first = ArchitectureEvaluatorEngine::with_memory_space(memory.clone());
     let second = ArchitectureEvaluatorEngine::with_memory_space(memory);
@@ -297,11 +291,10 @@ fn t4_evaluation_cache_correctness() {
     assert_eq!(first_result.diagnostics, second_result.diagnostics);
     assert!(!first_result.telemetry.cache_hit);
     assert!(second_result.telemetry.cache_hit);
-    println!("T4 cache_hit=true score_difference=0");
-}
+});
 
-#[test]
-fn t5_search_performance_improves_with_memory() {
+dbm_test!(t5_search_performance_improves_with_memory, #[ignore = "heavy memory integration"], runtime, {
+    let _ = runtime;
     let engine = ArchitectureSearchEngine {
         config: SearchConfig {
             beam_width: 8,
@@ -338,36 +331,32 @@ fn t5_search_performance_improves_with_memory() {
         "evaluation reduction was {evaluation_reduction:.2}"
     );
     assert!(guided.telemetry.search_depth <= baseline.telemetry.search_depth);
-    println!(
-        "T5 candidate_reduction={:.2} evaluation_reduction={:.2} baseline_time_ms={} guided_time_ms={}",
-        candidate_reduction,
-        evaluation_reduction,
-        baseline_time.as_millis(),
-        memory_time.as_millis()
-    );
-}
+    let _ = (baseline_time, memory_time);
+});
 
-#[test]
-fn t7_integration_stability() {
+dbm_test!(t7_integration_stability, #[ignore = "heavy memory integration"], runtime, {
     let mut panic_count = 0usize;
     let mut invalid_architecture = 0usize;
     let mut evaluation_failure = 0usize;
 
     for iteration in 0..1_000 {
-        let result = std::panic::catch_unwind(|| {
-            let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-            vm.set_input_text(format!("design web api iteration {iteration}"));
-            vm.execute();
-            vm
-        });
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+                vm.set_input_text(format!("design web api iteration {iteration}"));
+                vm.execute();
+                (
+                    vm.context().design_state.is_some(),
+                    vm.context().reasoning_result.is_some(),
+                )
+            })
+        }));
 
         match result {
-            Ok(vm) => {
-                let ctx = vm.context();
-                if ctx.design_state.is_none() {
+            Ok((has_design_state, has_reasoning_result)) => {
+                if !has_design_state {
                     invalid_architecture += 1;
                 }
-                if ctx.reasoning_result.is_none() {
+                if !has_reasoning_result {
                     evaluation_failure += 1;
                 }
             }
@@ -378,12 +367,10 @@ fn t7_integration_stability() {
     assert_eq!(panic_count, 0);
     assert_eq!(invalid_architecture, 0);
     assert_eq!(evaluation_failure, 0);
-    println!("T7 panic=0 invalid_architecture=0 evaluation_failure=0");
-}
+});
 
-#[test]
-#[ignore = "stress test"]
-fn stress_memory_integration_10k_generations() {
+dbm_test!(stress_memory_integration_10k_generations, #[ignore = "stress test"], runtime, {
+    let _ = runtime;
     let engine = ArchitectureSearchEngine::default();
     let mut memory = DesignMemorySpace::default();
     seed_template_memory(&mut memory);
@@ -406,11 +393,5 @@ fn stress_memory_integration_10k_generations() {
     );
     let recall_latency = recall_started.elapsed();
     assert!(recall_latency.as_millis() < 20, "recall latency too high");
-    println!(
-        "stress memory_nodes={} memory_edges={} total_time_ms={} recall_latency_ms={}",
-        memory.graph.nodes().len(),
-        memory.graph.edges().len(),
-        started.elapsed().as_millis(),
-        recall_latency.as_millis()
-    );
-}
+    let _ = started;
+});

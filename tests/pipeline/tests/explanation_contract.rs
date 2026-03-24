@@ -1,8 +1,8 @@
-use design_cli::renderer::render_explanation;
 use contracts::{
-    MemoryRef, NodeId, ReasoningTrace, Relation, RelationType, RequestId, Strategy,
-    StrategyReason, TraceProofStep, TraceStep,
+    MemoryRef, NodeId, ReasoningTrace, Relation, RelationType, RequestId, Strategy, StrategyReason,
+    TraceProofStep, TraceStep,
 };
+use design_cli::renderer::render_explanation;
 use runtime_core::{
     CompressionConfig, TraceIndex, build_proof, compress_proof, explain_reasoning_trace,
     infer_with_explain_full,

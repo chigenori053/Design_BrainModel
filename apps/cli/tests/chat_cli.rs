@@ -1,5 +1,8 @@
 use std::io::Cursor;
-use std::{fs, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    fs,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 use design_cli::app::build_runtime;
 use design_cli::r#loop::{LoopSignal, step};

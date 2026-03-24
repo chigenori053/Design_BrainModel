@@ -3,17 +3,18 @@ use code_ir::program_v1::{
     Module, Program, Statement, TargetDomain, TypeRef, Visibility,
 };
 use code_language_core::stable_v03::{
+    DefaultSemanticValidator, LanguageBackend, PythonBackend, PythonRenderer, Renderer,
+    RustBackend, RustRenderer, SafeGenerationError, TypeScriptBackend, TypeScriptRenderer,
+    Validator,
     dynamic_ir::{
         DefaultRuleValidator, DynamicInterpreter, EvaluationResult, LanguageInterpreter,
         LearningEngine, MappingRule, MemoryRuleRecord, RuleEngine, RuleSource, RuleStore,
         RuleValidator, SemanticCondition, TargetScope, TransformTemplate, ValidationCheck,
         ValidationContext, bootstrap_rule_store, lower_program_with_profile,
         promote_validated_rule, python_profile, resolve_profile, resolve_profile_from_memory,
-        rollback_rule, rust_profile, select_rule_records, should_promote,
-        should_promote_validated, ts_profile, validate_candidate_rule,
+        rollback_rule, rust_profile, select_rule_records, should_promote, should_promote_validated,
+        ts_profile, validate_candidate_rule,
     },
-    DefaultSemanticValidator, LanguageBackend, PythonBackend, PythonRenderer, Renderer, RustBackend,
-    RustRenderer, SafeGenerationError, TypeScriptBackend, TypeScriptRenderer, Validator,
     safe_generate_program,
 };
 use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
@@ -119,7 +120,12 @@ fn validator_rejects_error_effect_without_can_fail() {
     let program = sample_program(vec![Effect::Error]);
     let result = DefaultSemanticValidator.validate_program(&program);
     assert!(!result.is_valid);
-    assert!(result.errors.iter().any(|issue| issue.code == "error_effect_requires_can_fail"));
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|issue| issue.code == "error_effect_requires_can_fail")
+    );
 }
 
 #[test]
@@ -137,15 +143,22 @@ fn validator_rejects_missing_await() {
         body: Block::default(),
     });
     program.modules[0].functions[0].body = Block {
-        statements: vec![Statement::Expression(Expression::Call(code_ir::program_v1::Call {
-            function: "fetch".to_string(),
-            args: Vec::new(),
-        }))],
+        statements: vec![Statement::Expression(Expression::Call(
+            code_ir::program_v1::Call {
+                function: "fetch".to_string(),
+                args: Vec::new(),
+            },
+        ))],
     };
 
     let result = DefaultSemanticValidator.validate_program(&program);
     assert!(!result.is_valid);
-    assert!(result.errors.iter().any(|issue| issue.code == "missing_await"));
+    assert!(
+        result
+            .errors
+            .iter()
+            .any(|issue| issue.code == "missing_await")
+    );
 }
 
 #[test]
@@ -263,11 +276,16 @@ fn memory_can_override_language_profile() {
     });
 
     let profile = resolve_profile_from_memory(&memory as &dyn MemoryEngine, "rust");
-    assert_eq!(profile.type_system.primitive_map.get("Int"), Some(&"i64".to_string()));
-    assert!(profile
-        .import_rules
-        .iter()
-        .any(|rule| rule.import == "core::result::Result"));
+    assert_eq!(
+        profile.type_system.primitive_map.get("Int"),
+        Some(&"i64".to_string())
+    );
+    assert!(
+        profile
+            .import_rules
+            .iter()
+            .any(|rule| rule.import == "core::result::Result")
+    );
 }
 
 #[test]
@@ -431,19 +449,28 @@ fn validated_rule_can_be_promoted_to_active() {
     store.validated_rules.push(validated);
 
     assert!(promote_validated_rule(&mut store, "candidate_rust_bytes"));
-    assert!(store
-        .active_rules
-        .iter()
-        .any(|record| record.rule.id == "candidate_rust_bytes"));
+    assert!(
+        store
+            .active_rules
+            .iter()
+            .any(|record| record.rule.id == "candidate_rust_bytes")
+    );
 }
 
 #[test]
 fn active_rule_can_be_rolled_back() {
     let mut store = bootstrap_rule_store("rust");
     assert!(rollback_rule(&mut store, "async_fn"));
-    assert!(!store.active_rules.iter().any(|record| record.rule.id == "async_fn"));
-    assert!(store
-        .deprecated_rules
-        .iter()
-        .any(|record| record.rule.id == "async_fn"));
+    assert!(
+        !store
+            .active_rules
+            .iter()
+            .any(|record| record.rule.id == "async_fn")
+    );
+    assert!(
+        store
+            .deprecated_rules
+            .iter()
+            .any(|record| record.rule.id == "async_fn")
+    );
 }

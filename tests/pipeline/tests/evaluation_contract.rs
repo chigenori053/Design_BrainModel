@@ -1,6 +1,4 @@
-use design_search_engine::stable_v03::{
-    DeterministicBeamSearchEngine, evaluate_hypothesis,
-};
+use design_search_engine::stable_v03::{DeterministicBeamSearchEngine, evaluate_hypothesis};
 use pipeline_tests::{extract_fn_body, read_workspace_file};
 use world_model::stable_v03::IntentState;
 

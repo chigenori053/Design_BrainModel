@@ -1,11 +1,14 @@
 use runtime_core::{Phase9RuntimeContext, RuntimeEvent};
-use runtime_vm::{ExecutionMode, HybridVm, Phase9RuntimeAdapter};
+use runtime_vm::{
+    ExecutionMode, Phase9RuntimeAdapter, RuntimeContext, dbm_test, test_support::with_test_vm,
+};
 
-fn execute_phase29(input: &str) -> Phase9RuntimeContext {
-    let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-    vm.set_input_text(input.to_string());
-    vm.execute();
-    Phase9RuntimeAdapter::from_legacy(vm.context())
+fn execute_phase29(runtime: &mut RuntimeContext, input: &str) -> Phase9RuntimeContext {
+    with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+        vm.set_input_text(input.to_string());
+        vm.execute();
+        Phase9RuntimeAdapter::from_legacy(vm.context())
+    })
 }
 
 fn event_index(events: &[RuntimeEvent], target: RuntimeEvent) -> usize {
@@ -15,9 +18,8 @@ fn event_index(events: &[RuntimeEvent], target: RuntimeEvent) -> usize {
         .expect("event must exist")
 }
 
-#[test]
-fn phase29_pipeline_propagates_simulation_into_evaluation() {
-    let phase = execute_phase29("phase29 runtime integration");
+dbm_test!(phase29_pipeline_propagates_simulation_into_evaluation, #[ignore = "heavy integration"], runtime, {
+    let phase = execute_phase29(runtime, "phase29 runtime integration");
     let world_state = phase.world_state.as_ref().expect("world state");
     let simulation = world_state.simulation.as_ref().expect("simulation");
     let ai_context = phase.ai_context.as_ref().expect("ai context");
@@ -34,11 +36,10 @@ fn phase29_pipeline_propagates_simulation_into_evaluation() {
     assert!(evaluation.total_score > 0.0);
     assert_eq!(summary.best_simulation_score, simulation.total());
     assert!(summary.best_score >= simulation.total() * 0.5);
-}
+});
 
-#[test]
-fn phase29_runtime_events_preserve_simulation_to_evaluation_order() {
-    let phase = execute_phase29("phase29 telemetry ordering");
+dbm_test!(phase29_runtime_events_preserve_simulation_to_evaluation_order, #[ignore = "heavy integration"], runtime, {
+    let phase = execute_phase29(runtime, "phase29 telemetry ordering");
     let events = phase.event_bus.events().cloned().collect::<Vec<_>>();
 
     let pattern_match_started = event_index(&events, RuntimeEvent::PatternMatchStarted);
@@ -57,11 +58,10 @@ fn phase29_runtime_events_preserve_simulation_to_evaluation_order() {
     assert!(causal_analysis_started < evaluation_started);
     assert!(evaluation_started < policy_eval_completed);
     assert!(policy_eval_completed < evaluation_completed);
-}
+});
 
-#[test]
-fn phase29_learning_feedback_records_experience_after_simulation() {
-    let phase = execute_phase29("phase29 learning feedback");
+dbm_test!(phase29_learning_feedback_records_experience_after_simulation, #[ignore = "heavy integration"], runtime, {
+    let phase = execute_phase29(runtime, "phase29 learning feedback");
     let events = phase.event_bus.events().cloned().collect::<Vec<_>>();
     let ai_context = phase.ai_context.as_ref().expect("ai context");
 
@@ -72,4 +72,4 @@ fn phase29_learning_feedback_records_experience_after_simulation() {
     assert_eq!(ai_context.experience_state.graph.knowledges.len(), 1);
     assert_eq!(ai_context.experience_state.graph.lifecycle_states.len(), 1);
     assert_eq!(ai_context.experience_state.graph.lifecycle_metrics.len(), 1);
-}
+});

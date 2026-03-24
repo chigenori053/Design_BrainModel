@@ -1,8 +1,8 @@
-use bridge::reasoning_input_from_intent;
 use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Node, NodeType};
+use bridge::reasoning_input_from_intent;
 use design_search_engine::stable_v03::{
-    Constraint, DesignSearchEngine, DeterministicBeamSearchEngine, RecallContext, RecalledPattern,
-    Context, ReasoningInput,
+    Constraint, Context, DesignSearchEngine, DeterministicBeamSearchEngine, ReasoningInput,
+    RecallContext, RecalledPattern,
 };
 use world_model::stable_v03::IntentState;
 
@@ -94,8 +94,13 @@ fn bridge_produces_deterministic_contract_input() {
     let input_without_recall = engine.contract_input(&test_intent(), None);
     let input_with_recall = engine.contract_input(&test_intent(), Some(&recall_context()));
 
-    assert_eq!(input_without_recall.request_id, input_with_recall.request_id);
-    assert!(input_with_recall.semantic.intents.len() >= input_without_recall.semantic.intents.len());
+    assert_eq!(
+        input_without_recall.request_id,
+        input_with_recall.request_id
+    );
+    assert!(
+        input_with_recall.semantic.intents.len() >= input_without_recall.semantic.intents.len()
+    );
 }
 
 #[test]
@@ -175,7 +180,13 @@ fn synthetic_latency_scales_with_input_complexity() {
     let small = engine.search_with_trace(input_with_tokens(&["api", "db"]));
     let medium = engine.search_with_trace(input_with_tokens(&["api", "service", "db", "cache"]));
     let large = engine.search_with_trace(input_with_tokens(&[
-        "api", "service", "db", "cache", "worker", "queue", "analytics",
+        "api",
+        "service",
+        "db",
+        "cache",
+        "worker",
+        "queue",
+        "analytics",
     ]));
 
     assert!(small.trace.stats.total_nodes <= medium.trace.stats.total_nodes);
@@ -195,7 +206,11 @@ fn input_with_memory(tokens: &[&str], memory_scores: &[f32]) -> ReasoningInput {
         .map(|(rank, &score)| MemoryCandidate {
             id: format!("mem-{rank}"),
             score,
-            source: if score >= 0.9 { MemorySource::Exact } else { MemorySource::Index },
+            source: if score >= 0.9 {
+                MemorySource::Exact
+            } else {
+                MemorySource::Index
+            },
             rank,
         })
         .collect();
@@ -207,7 +222,8 @@ fn score_with_memory_exceeds_score_without_memory() {
     let engine = DeterministicBeamSearchEngine::default();
 
     let without_memory = engine.search_with_trace(input_with_tokens(&["api", "service"]));
-    let with_memory = engine.search_with_trace(input_with_memory(&["api", "service"], &[0.85, 0.70]));
+    let with_memory =
+        engine.search_with_trace(input_with_memory(&["api", "service"], &[0.85, 0.70]));
 
     let best_without = without_memory
         .candidates
@@ -242,8 +258,17 @@ fn memory_zero_matches_no_memory_behavior() {
         result_zero.candidates.len(),
         "candidate count should match when no memory candidates"
     );
-    for (a, b) in result_no.candidates.iter().zip(result_zero.candidates.iter()) {
-        assert!((a.score - b.score).abs() < 1e-6, "scores should be identical: {:.6} vs {:.6}", a.score, b.score);
+    for (a, b) in result_no
+        .candidates
+        .iter()
+        .zip(result_zero.candidates.iter())
+    {
+        assert!(
+            (a.score - b.score).abs() < 1e-6,
+            "scores should be identical: {:.6} vs {:.6}",
+            a.score,
+            b.score
+        );
     }
 }
 
@@ -255,9 +280,10 @@ fn memory_high_candidates_survive_beam_selection() {
         ..DeterministicBeamSearchEngine::default()
     };
 
-    let with_strong_memory = engine.search_with_trace(
-        input_with_memory(&["api", "service", "db"], &[0.95, 0.80, 0.60])
-    );
+    let with_strong_memory = engine.search_with_trace(input_with_memory(
+        &["api", "service", "db"],
+        &[0.95, 0.80, 0.60],
+    ));
 
     // All candidates should have higher scores when memory is strong.
     for candidate in &with_strong_memory.candidates {
@@ -280,6 +306,9 @@ fn search_remains_deterministic_with_memory() {
     let first = engine.search_with_trace(input.clone());
     let second = engine.search_with_trace(input);
 
-    assert_eq!(first.candidates, second.candidates, "search must be deterministic with memory");
+    assert_eq!(
+        first.candidates, second.candidates,
+        "search must be deterministic with memory"
+    );
     assert_eq!(first.trace.stats, second.trace.stats);
 }

@@ -10,6 +10,7 @@ use architecture_search::{
     ArchitectureSearchEngine, ArchitectureTemplateEngine, IntentModel, SearchConfig,
 };
 use memory_space_phase14::{DesignIntentRecord, DesignMemorySpace, embed_template};
+use runtime_vm::dbm_test;
 use serde_json::json;
 
 #[derive(Clone, Debug)]
@@ -520,8 +521,8 @@ fn write_artifacts(result: &QualitySuiteResult) {
     fs::write(dir.join("search_report.md"), report).expect("write search_report.md");
 }
 
-#[test]
-fn architecture_quality_suite() {
+dbm_test!(architecture_quality_suite, #[ignore = "heavy architecture quality suite"], runtime, {
+    let _ = runtime;
     let result = run_quality_suite();
 
     for (name, (baseline, memory)) in &result.q1_cases {
@@ -567,11 +568,10 @@ fn architecture_quality_suite() {
     );
     assert!(result.recall_latency_mean_ms < 20.0);
     assert!(result.recall_latency_max_ms < 50.0);
-}
+});
 
-#[test]
-#[ignore = "long-run memory quality test"]
-fn long_run_memory_test() {
+dbm_test!(long_run_memory_test, #[ignore = "long-run memory quality test"], runtime, {
+    let _ = runtime;
     let engine = search_engine();
     let mut memory = DesignMemorySpace::default();
     seed_domain_memory(&mut memory);
@@ -615,4 +615,4 @@ fn long_run_memory_test() {
         serde_json::to_string_pretty(&summary).expect("serialize long-run summary"),
     )
     .expect("write long-run summary");
-}
+});

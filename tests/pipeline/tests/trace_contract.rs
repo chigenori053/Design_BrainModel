@@ -1,5 +1,5 @@
-use design_cli::renderer::render_reasoning_trace;
 use contracts::{ReasoningTrace, RequestId, TraceStats, TraceStep};
+use design_cli::renderer::render_reasoning_trace;
 
 #[test]
 fn trace_steps_are_sorted_and_stats_recompute() {
@@ -30,7 +30,12 @@ fn trace_steps_are_sorted_and_stats_recompute() {
         ],
     );
 
-    assert!(trace.steps.windows(2).all(|pair| pair[0].depth <= pair[1].depth));
+    assert!(
+        trace
+            .steps
+            .windows(2)
+            .all(|pair| pair[0].depth <= pair[1].depth)
+    );
     assert_eq!(trace.stats, TraceStats::from_steps(&trace.steps));
 }
 

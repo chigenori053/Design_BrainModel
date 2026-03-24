@@ -1,9 +1,9 @@
+use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 use code_ir::program_v1::{
     BackendLanguage, BuildValidation, Effect, GenerationMode, Program, TargetDomain,
 };
 use design_domain::{Architecture, Dependency, DependencyKind, DesignUnit};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
-use architecture_ir::stable_v03::{ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType};
 
 fn implementation_units() -> Vec<unified_design_ir::ImplementationUnit> {
     let architecture = ArchitectureGraphBuilder::new()
@@ -19,21 +19,17 @@ fn implementation_units() -> Vec<unified_design_ir::ImplementationUnit> {
 #[test]
 fn program_from_implementation_units_is_deterministic() {
     let units = implementation_units();
-    let lhs = Program::from_implementation_units(
-        "Example",
-        "1.0.0",
-        vec![TargetDomain::Backend],
-        &units,
-    );
-    let rhs = Program::from_implementation_units(
-        "Example",
-        "1.0.0",
-        vec![TargetDomain::Backend],
-        &units,
-    );
+    let lhs =
+        Program::from_implementation_units("Example", "1.0.0", vec![TargetDomain::Backend], &units);
+    let rhs =
+        Program::from_implementation_units("Example", "1.0.0", vec![TargetDomain::Backend], &units);
     assert_eq!(lhs, rhs);
     assert_eq!(lhs.modules.len(), 2);
-    assert!(lhs.modules.iter().all(|module| !module.functions.is_empty()));
+    assert!(
+        lhs.modules
+            .iter()
+            .all(|module| !module.functions.is_empty())
+    );
 }
 
 #[test]
@@ -52,19 +48,17 @@ fn architecture_to_program_maps_dependencies() {
         kind: DependencyKind::Calls,
     });
 
-    let program = Program::from_architecture(
-        "Example",
-        "1.0.0",
-        vec![TargetDomain::Cli],
-        &architecture,
-    );
+    let program =
+        Program::from_architecture("Example", "1.0.0", vec![TargetDomain::Cli], &architecture);
 
     assert_eq!(program.metadata.target_domains, vec![TargetDomain::Cli]);
     assert!(!program.dependencies.is_empty());
-    assert!(program
-        .modules
-        .iter()
-        .any(|module| module.functions.iter().any(|function| function.effects.contains(&Effect::Mutation))));
+    assert!(program.modules.iter().any(|module| {
+        module
+            .functions
+            .iter()
+            .any(|function| function.effects.contains(&Effect::Mutation))
+    }));
 }
 
 #[test]
@@ -80,9 +74,15 @@ fn backend_stub_rendering_matches_language_shapes() {
     let python = program.render_stub_source_tree(BackendLanguage::Python);
     let ts = program.render_stub_source_tree(BackendLanguage::TypeScript);
 
-    assert!(rust.iter().any(|(_, content)| content.contains("pub trait")));
+    assert!(
+        rust.iter()
+            .any(|(_, content)| content.contains("pub trait"))
+    );
     assert!(python.iter().any(|(_, content)| content.contains("def ")));
-    assert!(ts.iter().any(|(_, content)| content.contains("export interface")));
+    assert!(
+        ts.iter()
+            .any(|(_, content)| content.contains("export interface"))
+    );
 }
 
 #[test]

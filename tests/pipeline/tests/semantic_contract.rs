@@ -21,11 +21,12 @@ fn semantic_hash_and_request_id_are_deterministic() {
 
     assert_eq!(lhs.semantic.hash, rhs.semantic.hash);
     assert_eq!(lhs.request_id, rhs.request_id);
-    assert!(lhs
-        .semantic
-        .intents
-        .windows(2)
-        .all(|pair| pair[0] <= pair[1]));
+    assert!(
+        lhs.semantic
+            .intents
+            .windows(2)
+            .all(|pair| pair[0] <= pair[1])
+    );
 }
 
 #[test]
@@ -57,7 +58,11 @@ fn semantic_representation_normalizes_sorting_and_relations() {
     );
 
     assert_eq!(
-        semantic.intents.iter().map(|intent| intent.label.as_str()).collect::<Vec<_>>(),
+        semantic
+            .intents
+            .iter()
+            .map(|intent| intent.label.as_str())
+            .collect::<Vec<_>>(),
         vec!["api", "service"]
     );
     assert_eq!(semantic.relations.len(), 1);

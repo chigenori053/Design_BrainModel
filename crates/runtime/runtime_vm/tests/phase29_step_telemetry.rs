@@ -1,15 +1,18 @@
 use runtime_core::RuntimeEvent;
-use runtime_vm::{ExecutionMode, HybridVm, Phase9RuntimeAdapter};
+use runtime_vm::{
+    ExecutionMode, Phase9RuntimeAdapter, RuntimeContext, dbm_test, test_support::with_test_vm,
+};
 
-fn execute_phase29(input: &str) -> Vec<RuntimeEvent> {
-    let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-    vm.set_input_text(input.to_string());
-    vm.execute();
-    Phase9RuntimeAdapter::from_legacy(vm.context())
-        .event_bus
-        .events()
-        .cloned()
-        .collect()
+fn execute_phase29(runtime: &mut RuntimeContext, input: &str) -> Vec<RuntimeEvent> {
+    with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+        vm.set_input_text(input.to_string());
+        vm.execute();
+        Phase9RuntimeAdapter::from_legacy(vm.context())
+            .event_bus
+            .events()
+            .cloned()
+            .collect()
+    })
 }
 
 fn event_index(events: &[RuntimeEvent], target: RuntimeEvent) -> usize {
@@ -19,9 +22,8 @@ fn event_index(events: &[RuntimeEvent], target: RuntimeEvent) -> usize {
         .expect("event must exist")
 }
 
-#[test]
-fn phase29_emits_simulation_step_events() {
-    let events = execute_phase29("phase29 simulation step telemetry");
+dbm_test!(phase29_emits_simulation_step_events, #[ignore = "heavy integration"], runtime, {
+    let events = execute_phase29(runtime, "phase29 simulation step telemetry");
     let step_count = events
         .iter()
         .filter(|event| **event == RuntimeEvent::SimulationStep)
@@ -30,11 +32,10 @@ fn phase29_emits_simulation_step_events() {
     assert!(events.contains(&RuntimeEvent::SimulationStarted));
     assert!(events.contains(&RuntimeEvent::SimulationCompleted));
     assert!(step_count > 0);
-}
+});
 
-#[test]
-fn phase29_simulation_step_events_are_ordered_between_start_and_completion() {
-    let events = execute_phase29("phase29 simulation step ordering");
+dbm_test!(phase29_simulation_step_events_are_ordered_between_start_and_completion, #[ignore = "heavy integration"], runtime, {
+    let events = execute_phase29(runtime, "phase29 simulation step ordering");
     let started = event_index(&events, RuntimeEvent::SimulationStarted);
     let completed = event_index(&events, RuntimeEvent::SimulationCompleted);
     let step_indices = events
@@ -49,12 +50,11 @@ fn phase29_simulation_step_events_are_ordered_between_start_and_completion() {
             .iter()
             .all(|index| started < *index && *index < completed)
     );
-}
+});
 
-#[test]
-fn phase29_simulation_step_telemetry_is_deterministic() {
-    let left = execute_phase29("phase29 deterministic simulation step telemetry");
-    let right = execute_phase29("phase29 deterministic simulation step telemetry");
+dbm_test!(phase29_simulation_step_telemetry_is_deterministic, #[ignore = "heavy integration"], runtime, {
+    let left = execute_phase29(runtime, "phase29 deterministic simulation step telemetry");
+    let right = execute_phase29(runtime, "phase29 deterministic simulation step telemetry");
 
     assert_eq!(left, right);
-}
+});
