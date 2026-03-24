@@ -6,11 +6,11 @@ shift || true
 extra_args=("$@")
 
 run_cargo_test() {
-  if ((${#extra_args[@]})); then
-    cargo test "$@" "${extra_args[@]}"
-  else
-    cargo test "$@"
-  fi
+  cargo test "$@" -- --test-threads=1
+}
+
+run_cargo_test_ignored() {
+  cargo test "$@" -- --ignored --test-threads=1
 }
 
 run_invariants() {
@@ -33,9 +33,9 @@ run_knowledge_engine() {
 }
 
 run_determinism() {
-  run_cargo_test -p design_search_engine --test determinism --locked -- --test-threads=1
-  run_cargo_test -p ai_context --test determinism --locked -- --test-threads=1
-  run_cargo_test -p runtime_vm --test determinism --locked -- --test-threads=1
+  run_cargo_test -p design_search_engine --test determinism --locked
+  run_cargo_test -p ai_context --test determinism --locked
+  run_cargo_test -p runtime_vm --test determinism --locked
 }
 
 run_integration() {
@@ -46,7 +46,7 @@ run_integration() {
 }
 
 run_experiments() {
-  run_cargo_test -p design_search_engine --test experiments --locked -- --ignored
+  run_cargo_test_ignored -p design_search_engine --test experiments --locked
 }
 
 case "${category}" in
