@@ -106,19 +106,19 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: memory_space property tests
-        run: cargo test -p memory_space --lib proptest_props --locked
+        run: cargo test -p memory_space --lib proptest_props --locked -- --test-threads=1
 
       - name: field_engine property tests
-        run: cargo test -p field_engine --lib proptest_props --locked
+        run: cargo test -p field_engine --lib proptest_props --locked -- --test-threads=1
 
       - name: recomposer property tests
-        run: cargo test -p recomposer --lib proptest_props --locked
+        run: cargo test -p recomposer --lib proptest_props --locked -- --test-threads=1
 
       - name: pareto property tests
-        run: cargo test -p agent_core --test contract hypervolume_monotonicity --locked
+        run: cargo test -p agent_core --test contract hypervolume_monotonicity --locked -- --test-threads=1
 
       - name: hypervolume monotonicity
-        run: cargo test -p agent_core --test engine pareto --locked
+        run: cargo test -p agent_core --test engine pareto --locked -- --test-threads=1
 
   tier3_integration:
     name: Tier3 Integration
@@ -148,10 +148,13 @@ jobs:
       - uses: Swatinem/rust-cache@v2
 
       - name: scaling stress tests
-        run: cargo test -p reasoning_agent --test scaling --release --locked
+        run: cargo test -p reasoning_agent --test scaling --release --locked -- --test-threads=1
 
       - name: deep trace stability
-        run: cargo test -p agent_core --test heavy --release --features ci-heavy --locked
+        run: cargo test -p agent_core --test heavy --release --features ci-heavy --locked -- --test-threads=1
+
+      - name: runtime_vm heavy tests
+        run: cargo test -p runtime_vm --locked -- --ignored --test-threads=1
 
   tier5_determinism:
     name: Tier5 Determinism
