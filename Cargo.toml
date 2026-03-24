@@ -1,5 +1,6 @@
 [workspace]
 members = [
+    "xtask",
     "crates/architecture_ir",
     "crates/architecture_search",
     "crates/code_ir",
@@ -91,6 +92,9 @@ members = [
     "tests/pipeline"
 ]
 resolver = "2"
+
+[profile.test]
+opt-level = 1
 
 [workspace.dependencies]
 architecture_ir = { path = "crates/architecture_ir" }

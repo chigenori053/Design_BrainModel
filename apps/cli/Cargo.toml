@@ -13,6 +13,10 @@ name = "cli"
 path = "src/main.rs"
 
 [[bin]]
+name = "dbm"
+path = "src/dbm_main.rs"
+
+[[bin]]
 name = "design"
 path = "src/design_main.rs"
 
@@ -43,4 +47,5 @@ uuid = { version = "1", features = ["v4"] }
 wait-timeout = "0.2"
 world_model_core = { workspace = true }
 crossterm = { workspace = true }
+ctrlc = "3.4"
 ratatui = { workspace = true }
