@@ -6,6 +6,7 @@ pub mod pipeline;
 pub mod runtime;
 pub mod runtime_context;
 pub mod scheduler;
+pub mod test_support;
 
 pub use adapter::{Phase9RuntimeAdapter, Phase9RuntimeSnapshot};
 pub use agent_registry::AgentRegistry;

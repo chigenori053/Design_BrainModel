@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use architecture_ir::stable_v03::{
     ArchitectureGraph, ArchitectureGraphBuilder, Edge, Node, NodeType, RelationType,
 };
+use bridge::reasoning_input_from_intent;
 pub use contracts::{
     Context, Decision, EvaluationScore, Goal, Hypothesis, HypothesisId, Intent, MemoryCandidate,
     MemoryRef, NodeId, ReasoningInput, ReasoningTrace, Relation, RelationId,
@@ -11,7 +12,6 @@ pub use contracts::{
     TraceStep, ValidationReason, ValidationResult, request_id_for, semantic_hash_for_text,
     state_hash_for_graph,
 };
-use bridge::reasoning_input_from_intent;
 use world_model::stable_v03::IntentState;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -147,11 +147,19 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
         }
         all.extend(beam.clone());
 
-        let mut previous_best = beam.iter().map(|hypothesis| hypothesis.score).fold(0.0, f32::max);
+        let mut previous_best = beam
+            .iter()
+            .map(|hypothesis| hypothesis.score)
+            .fold(0.0, f32::max);
         for depth in 1..=self.max_depth {
             let mut candidates = Vec::new();
             for parent in &beam {
-                candidates.extend(expand_hypothesis(parent, &reasoning_input, depth, &mut next_id));
+                candidates.extend(expand_hypothesis(
+                    parent,
+                    &reasoning_input,
+                    depth,
+                    &mut next_id,
+                ));
             }
             if candidates.is_empty() {
                 break;
@@ -167,10 +175,7 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
             let total_candidates = candidates.len();
             let deduped = dedup_hypotheses(candidates);
             let pruned = total_candidates.saturating_sub(deduped.len());
-            let next_beam = deduped
-                .into_iter()
-                .take(beam_width)
-                .collect::<Vec<_>>();
+            let next_beam = deduped.into_iter().take(beam_width).collect::<Vec<_>>();
             let recall_hits = next_beam
                 .iter()
                 .filter(|hypothesis| hypothesis.score_parts.memory > 0.0)
@@ -185,13 +190,20 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
             if next_beam.is_empty() {
                 break;
             }
-            let best_score = next_beam.iter().map(|hypothesis| hypothesis.score).fold(0.0, f32::max);
+            let best_score = next_beam
+                .iter()
+                .map(|hypothesis| hypothesis.score)
+                .fold(0.0, f32::max);
             all.extend(next_beam.clone());
             if should_terminate_early(best_score, previous_best, &next_beam, self) {
                 break;
             }
             previous_best = best_score;
-            all.sort_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).then_with(|| lhs.id.cmp(&rhs.id)));
+            all.sort_by(|lhs, rhs| {
+                rhs.score
+                    .total_cmp(&lhs.score)
+                    .then_with(|| lhs.id.cmp(&rhs.id))
+            });
             all.dedup_by(|lhs, rhs| lhs.state_hash == rhs.state_hash);
             all.sort_by(|lhs, rhs| lhs.depth.cmp(&rhs.depth).then_with(|| lhs.id.cmp(&rhs.id)));
             beam = next_beam;
@@ -211,12 +223,15 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
                 .total_cmp(&lhs.score)
                 .then_with(|| lhs.id.cmp(&rhs.id))
         });
-        let solution = candidates.first().cloned().unwrap_or_else(|| ArchitectureCandidate {
-            id: "empty".to_string(),
-            architecture: ArchitectureGraph::default(),
-            score: 0.0,
-            depth: 0,
-        });
+        let solution = candidates
+            .first()
+            .cloned()
+            .unwrap_or_else(|| ArchitectureCandidate {
+                id: "empty".to_string(),
+                architecture: ArchitectureGraph::default(),
+                score: 0.0,
+                depth: 0,
+            });
 
         ReasoningResult {
             confidence: solution.score as f32,
@@ -228,10 +243,7 @@ impl ReasoningCore for DeterministicBeamSearchEngine {
     }
 }
 
-fn seed_hypotheses(
-    reasoning_input: &ReasoningInput,
-    next_id: &mut usize,
-) -> Vec<Hypothesis> {
+fn seed_hypotheses(reasoning_input: &ReasoningInput, next_id: &mut usize) -> Vec<Hypothesis> {
     let mut seeds = reasoning_input
         .semantic
         .intents
@@ -239,7 +251,10 @@ fn seed_hypotheses(
         .enumerate()
         .map(|(rank, intent)| {
             let architecture = ArchitectureGraphBuilder::new()
-                .add_node(Node::new(intent.label.clone(), classify_token(&intent.label)))
+                .add_node(Node::new(
+                    intent.label.clone(),
+                    classify_token(&intent.label),
+                ))
                 .build()
                 .unwrap_or_default();
             let memory = memory_score_from_candidates(&reasoning_input.memory_candidates);
@@ -330,7 +345,9 @@ fn append_token(base: &ArchitectureGraph, token: &str) -> ArchitectureGraph {
         .nodes()
         .iter()
         .cloned()
-        .fold(ArchitectureGraphBuilder::new(), |builder, node| builder.add_node(node));
+        .fold(ArchitectureGraphBuilder::new(), |builder, node| {
+            builder.add_node(node)
+        });
     builder = base
         .edges()
         .iter()
@@ -338,7 +355,11 @@ fn append_token(base: &ArchitectureGraph, token: &str) -> ArchitectureGraph {
         .fold(builder, |builder, edge| builder.add_edge(edge));
     builder
         .add_node(node.clone())
-        .add_edge(Edge::new(predecessor, node.id.clone(), RelationType::DependsOn))
+        .add_edge(Edge::new(
+            predecessor,
+            node.id.clone(),
+            RelationType::DependsOn,
+        ))
         .build()
         .unwrap_or_default()
 }
@@ -354,10 +375,7 @@ fn candidate_tokens(input: &ReasoningInput) -> Vec<String> {
         .collect()
 }
 
-fn score_parts_for(
-    architecture: &ArchitectureGraph,
-    input: &ReasoningInput,
-) -> ScoreParts {
+fn score_parts_for(architecture: &ArchitectureGraph, input: &ReasoningInput) -> ScoreParts {
     let relevance = semantic_overlap(architecture, &input.semantic);
     let goal_distance = goal_similarity(architecture, &input.goal);
     let constraint = 1.0;
@@ -438,11 +456,18 @@ fn dedup_hypotheses(hypotheses: Vec<Hypothesis>) -> Vec<Hypothesis> {
     let mut seen = BTreeSet::new();
     let mut result = Vec::new();
     for hypothesis in hypotheses {
-        if seen.insert((hypothesis.state_hash.clone(), hypothesis.semantic_hash.clone())) {
+        if seen.insert((
+            hypothesis.state_hash.clone(),
+            hypothesis.semantic_hash.clone(),
+        )) {
             result.push(hypothesis);
         }
     }
-    result.sort_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).then_with(|| lhs.id.cmp(&rhs.id)));
+    result.sort_by(|lhs, rhs| {
+        rhs.score
+            .total_cmp(&lhs.score)
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
     result
 }
 
@@ -479,7 +504,11 @@ fn hypotheses_to_candidates(hypotheses: &[Hypothesis]) -> Vec<ArchitectureCandid
             depth: hypothesis.depth,
         })
         .collect::<Vec<_>>();
-    candidates.sort_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).then_with(|| lhs.id.cmp(&rhs.id)));
+    candidates.sort_by(|lhs, rhs| {
+        rhs.score
+            .total_cmp(&lhs.score)
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
     candidates
 }
 
@@ -507,7 +536,11 @@ fn score_entropy(candidates: &[Hypothesis]) -> f32 {
     if candidates.len() <= 1 {
         return 0.0;
     }
-    let mean = candidates.iter().map(|candidate| candidate.score).sum::<f32>() / candidates.len() as f32;
+    let mean = candidates
+        .iter()
+        .map(|candidate| candidate.score)
+        .sum::<f32>()
+        / candidates.len() as f32;
     candidates
         .iter()
         .map(|candidate| {
@@ -524,10 +557,12 @@ fn should_terminate_early(
     beam: &[Hypothesis],
     engine: &DeterministicBeamSearchEngine,
 ) -> bool {
-    let Some(best) = beam
-        .iter()
-        .max_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).reverse().then_with(|| lhs.id.cmp(&rhs.id)))
-    else {
+    let Some(best) = beam.iter().max_by(|lhs, rhs| {
+        rhs.score
+            .total_cmp(&lhs.score)
+            .reverse()
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    }) else {
         return false;
     };
     best_score >= engine.early_termination_score
@@ -571,7 +606,12 @@ impl DeterministicBeamSearchEngine {
         for depth in 1..=self.max_depth {
             let mut candidates = Vec::new();
             for parent in &beam {
-                candidates.extend(expand_hypothesis(parent, &reasoning_input, depth, &mut next_id));
+                candidates.extend(expand_hypothesis(
+                    parent,
+                    &reasoning_input,
+                    depth,
+                    &mut next_id,
+                ));
             }
             if candidates.is_empty() {
                 break;
@@ -638,17 +678,22 @@ impl DeterministicBeamSearchEngine {
 
     pub fn adaptive_beam_width(&self, depth: usize, entropy: f32) -> usize {
         if !self.adaptive_beam {
-            return self.beam_width.clamp(self.min_beam_width, self.max_beam_width);
+            return self
+                .beam_width
+                .clamp(self.min_beam_width, self.max_beam_width);
         }
         let scale = (entropy * self.max_beam_width as f32).round() as isize;
         let width = self.beam_width as isize + scale - depth as isize;
-        width
-            .clamp(self.min_beam_width as isize, self.max_beam_width as isize) as usize
+        width.clamp(self.min_beam_width as isize, self.max_beam_width as isize) as usize
     }
 }
 
 impl DeterministicBeamSearchEngine {
-    pub fn contract_input(&self, intent: &IntentState, recall: Option<&RecallContext>) -> ReasoningInput {
+    pub fn contract_input(
+        &self,
+        intent: &IntentState,
+        recall: Option<&RecallContext>,
+    ) -> ReasoningInput {
         let extra_tokens = recall
             .map(|recall| {
                 recall
@@ -688,7 +733,10 @@ pub fn validate_hypothesis_set(hypotheses: &[Hypothesis]) -> ValidationResult {
     validate_hypotheses(hypotheses)
 }
 
-fn proof_steps_for(hypotheses: &[Hypothesis], memory_candidates: &[MemoryCandidate]) -> Vec<TraceProofStep> {
+fn proof_steps_for(
+    hypotheses: &[Hypothesis],
+    memory_candidates: &[MemoryCandidate],
+) -> Vec<TraceProofStep> {
     let by_id = hypotheses
         .iter()
         .map(|hypothesis| (hypothesis.id, hypothesis))

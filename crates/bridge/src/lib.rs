@@ -95,10 +95,7 @@ impl From<legacy::LegacyHypothesis> for Hypothesis {
     }
 }
 
-pub fn contract_hypothesis_from_graph(
-    graph: ArchitectureGraph,
-    semantic_seed: &str,
-) -> Hypothesis {
+pub fn contract_hypothesis_from_graph(graph: ArchitectureGraph, semantic_seed: &str) -> Hypothesis {
     Hypothesis {
         id: HypothesisId(0),
         state: State {

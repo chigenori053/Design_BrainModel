@@ -19,7 +19,7 @@ use constraint_engine::stable_v03::{
 };
 use design_search_engine::stable_v03::{
     ArchitectureCandidate, Constraint as RecallConstraint, Context, DesignSearchEngine,
-    RecallContext, ReasoningTrace, RecalledPattern,
+    ReasoningTrace, RecallContext, RecalledPattern,
 };
 use implementation_core::stable_v03::{
     DefaultProjectGenerator, ExecutionPlan, ProjectGenerator, ProjectLayout,
@@ -256,8 +256,10 @@ impl RuntimeExecutor {
         let design = self.mapper.map(&selected.architecture);
         let output_relations =
             to_relations(SystemInput::Architecture(selected.architecture.clone()));
-        let mapping_validation =
-            validate_mapping(&SystemInput::Architecture(selected.architecture.clone()), &output_relations);
+        let mapping_validation = validate_mapping(
+            &SystemInput::Architecture(selected.architecture.clone()),
+            &output_relations,
+        );
         if !mapping_validation.is_valid {
             return Err(CoreError::SearchFailed);
         }

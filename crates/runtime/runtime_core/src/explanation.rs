@@ -79,7 +79,10 @@ impl ExplanationBuilder for DefaultExplanationBuilder {
         Explanation {
             intent: explain_slots(trace),
             decisions: explain_decisions(trace),
-            reasoning: result.reasoning_trace.as_ref().and_then(explain_reasoning_trace),
+            reasoning: result
+                .reasoning_trace
+                .as_ref()
+                .and_then(explain_reasoning_trace),
         }
     }
 }
@@ -273,7 +276,10 @@ fn collect_reasons(node: &ProofNode, reasons: &mut Vec<String>) {
         ));
     }
     for memory in &node.memory_refs {
-        reasons.push(format!("experience {} influenced this step", memory.experience_id));
+        reasons.push(format!(
+            "experience {} influenced this step",
+            memory.experience_id
+        ));
     }
     if node.cycle {
         reasons.push(format!(
@@ -296,11 +302,7 @@ fn proof_confidence(step: &TraceProofStep, parents: &[ProofNode]) -> f32 {
     let parent_confidence = if parents.is_empty() {
         1.0
     } else {
-        parents
-            .iter()
-            .map(|parent| parent.confidence)
-            .sum::<f32>()
-            / parents.len() as f32
+        parents.iter().map(|parent| parent.confidence).sum::<f32>() / parents.len() as f32
     };
     ((memory_confidence + parent_confidence) / 2.0).clamp(0.0, 1.0)
 }

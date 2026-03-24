@@ -123,12 +123,16 @@ impl SemanticRepresentation {
             &intents
                 .iter()
                 .map(|intent| intent.label.as_str())
-                .chain(relations.iter().map(|relation| match relation.relation_type {
-                    RelationType::DerivedFrom => "DerivedFrom",
-                    RelationType::DependsOn => "DependsOn",
-                    RelationType::SimilarTo => "SimilarTo",
-                    RelationType::ConstraintHint => "ConstraintHint",
-                }))
+                .chain(
+                    relations
+                        .iter()
+                        .map(|relation| match relation.relation_type {
+                            RelationType::DerivedFrom => "DerivedFrom",
+                            RelationType::DependsOn => "DependsOn",
+                            RelationType::SimilarTo => "SimilarTo",
+                            RelationType::ConstraintHint => "ConstraintHint",
+                        }),
+                )
                 .collect::<Vec<_>>()
                 .join("|"),
         ));
@@ -175,9 +179,14 @@ pub struct ScoreParts {
 
 impl ScoreParts {
     pub fn is_valid(&self) -> bool {
-        [self.relevance, self.goal_distance, self.constraint, self.memory]
-            .into_iter()
-            .all(|value| (0.0..=1.0).contains(&value))
+        [
+            self.relevance,
+            self.goal_distance,
+            self.constraint,
+            self.memory,
+        ]
+        .into_iter()
+        .all(|value| (0.0..=1.0).contains(&value))
     }
 }
 
@@ -304,7 +313,8 @@ impl TraceStats {
         let avg_branching = if branching_steps == 0 {
             0.0
         } else {
-            steps.iter()
+            steps
+                .iter()
                 .filter(|step| step.depth > 0)
                 .map(|step| step.candidates as f32)
                 .sum::<f32>()

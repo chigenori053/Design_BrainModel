@@ -1,19 +1,25 @@
 use std::sync::Arc;
-use std::{collections::{BTreeMap, BTreeSet, HashMap}, fs, path::{Path, PathBuf}, process::Command, time::{SystemTime, UNIX_EPOCH}};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap},
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
+use crate::stable_v03::dynamic_ir::LanguageInterpreter;
 use code_ir::program_v1::{
     BinaryOperator as ProgramBinaryOperator, Block as ProgramBlock, Effect as ProgramEffect,
-    Expression as ProgramExpression, Function as ProgramFunction, FunctionInput as ProgramFunctionInput,
-    FunctionOutput as ProgramFunctionOutput, Literal as ProgramLiteral, Module as ProgramModule,
-    Program, State as ProgramState, StateKind as ProgramStateKind, Statement as ProgramStatement,
-    Type as ProgramType, TypeKind as ProgramTypeKind, TypeRef as ProgramTypeRef,
-    Visibility as ProgramVisibility,
+    Expression as ProgramExpression, Function as ProgramFunction,
+    FunctionInput as ProgramFunctionInput, FunctionOutput as ProgramFunctionOutput,
+    Literal as ProgramLiteral, Module as ProgramModule, Program, State as ProgramState,
+    StateKind as ProgramStateKind, Statement as ProgramStatement, Type as ProgramType,
+    TypeKind as ProgramTypeKind, TypeRef as ProgramTypeRef, Visibility as ProgramVisibility,
 };
 use memory_space_phase14::stable_v03::{MemoryEngine, MemoryQuery, MemoryRecord};
 use unified_design_ir::{
     FieldSpec, ImplementationUnit, InterfaceSpec, MethodSpec, StructSpec, TypeRef,
 };
-use crate::stable_v03::dynamic_ir::LanguageInterpreter;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeModule {
@@ -369,11 +375,7 @@ pub mod dynamic_ir {
             profile: &LanguageProfile,
         ) -> TargetModule;
 
-        fn interpret_type(
-            &self,
-            ty: &SemanticType,
-            profile: &LanguageProfile,
-        ) -> TargetType;
+        fn interpret_type(&self, ty: &SemanticType, profile: &LanguageProfile) -> TargetType;
 
         fn interpret_function(
             &self,
@@ -435,17 +437,15 @@ pub mod dynamic_ir {
             module: &SemanticModule,
             _profile: &LanguageProfile,
         ) -> TargetModule {
-            let mut items = module
-                .types
-                .iter()
-                .map(|ty| TargetItem::Type(self.interpret_type(ty, &self.profile)))
-                .chain(
-                    module
-                        .functions
-                        .iter()
-                        .map(|func| TargetItem::Function(self.interpret_function(func, &self.profile))),
-                )
-                .collect::<Vec<_>>();
+            let mut items =
+                module
+                    .types
+                    .iter()
+                    .map(|ty| TargetItem::Type(self.interpret_type(ty, &self.profile)))
+                    .chain(module.functions.iter().map(|func| {
+                        TargetItem::Function(self.interpret_function(func, &self.profile))
+                    }))
+                    .collect::<Vec<_>>();
             items.extend(module.state.iter().map(|state| {
                 TargetItem::State(TargetState {
                     name: state.name.clone(),
@@ -459,11 +459,7 @@ pub mod dynamic_ir {
             }
         }
 
-        fn interpret_type(
-            &self,
-            ty: &SemanticType,
-            _profile: &LanguageProfile,
-        ) -> TargetType {
+        fn interpret_type(&self, ty: &SemanticType, _profile: &LanguageProfile) -> TargetType {
             TargetType {
                 name: ty.name.clone(),
                 kind: lower_type_kind(&ty.kind),
@@ -512,7 +508,12 @@ pub mod dynamic_ir {
                         ty: lower_input_type(input, &ctx, &self.rule_engine, &self.profile),
                     })
                     .collect(),
-                output: lower_function_output(&func.outputs, &ctx, &self.rule_engine, &self.profile),
+                output: lower_function_output(
+                    &func.outputs,
+                    &ctx,
+                    &self.rule_engine,
+                    &self.profile,
+                ),
                 semantics,
                 body: func
                     .body
@@ -929,11 +930,7 @@ pub mod dynamic_ir {
     }
 
     impl LearningEngine {
-        pub fn evaluate_rule(
-            &self,
-            record: &mut MemoryRuleRecord,
-            evaluation: &EvaluationResult,
-        ) {
+        pub fn evaluate_rule(&self, record: &mut MemoryRuleRecord, evaluation: &EvaluationResult) {
             let score = evaluation.score();
             record.history.push(score);
             update_rule(&mut record.rule, score);
@@ -969,7 +966,9 @@ pub mod dynamic_ir {
                 }
             }
             kept.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
-            store.deprecated_rules.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
+            store
+                .deprecated_rules
+                .sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
             store.active_rules = kept;
         }
     }
@@ -1013,7 +1012,10 @@ pub mod dynamic_ir {
     }
 
     pub fn should_promote_validated(rule: &MappingRule, validation: &ValidationResult) -> bool {
-        validation.passed && validation.score > 0.85 && rule.confidence > 0.8 && rule.usage_count > 20
+        validation.passed
+            && validation.score > 0.85
+            && rule.confidence > 0.8
+            && rule.usage_count > 20
     }
 
     pub fn effective_priority(rule: &MappingRule) -> f32 {
@@ -1068,7 +1070,10 @@ pub mod dynamic_ir {
                 history: Vec::new(),
             })
             .collect::<Vec<_>>();
-        let candidate_rules = vec![candidate_rule_for(lang)].into_iter().flatten().collect();
+        let candidate_rules = vec![candidate_rule_for(lang)]
+            .into_iter()
+            .flatten()
+            .collect();
         RuleStore {
             active_rules,
             candidate_rules,
@@ -1087,7 +1092,11 @@ pub mod dynamic_ir {
             .iter()
             .find(|record| record.rule.id == rule_id)?;
         let ctx = ValidationContext {
-            active_rules: store.active_rules.iter().map(|record| record.rule.clone()).collect(),
+            active_rules: store
+                .active_rules
+                .iter()
+                .map(|record| record.rule.clone())
+                .collect(),
             regression_pass: true,
             deterministic: true,
             diff_safe: true,
@@ -1115,27 +1124,41 @@ pub mod dynamic_ir {
     }
 
     pub fn promote_validated_rule(store: &mut RuleStore, rule_id: &str) -> bool {
-        let Some(index) = store.validated_rules.iter().position(|record| record.rule.id == rule_id) else {
+        let Some(index) = store
+            .validated_rules
+            .iter()
+            .position(|record| record.rule.id == rule_id)
+        else {
             return false;
         };
         let validated = store.validated_rules.remove(index);
         let rule_id = validated.rule.id.clone();
-        store.candidate_rules.retain(|record| record.rule.id != rule_id);
+        store
+            .candidate_rules
+            .retain(|record| record.rule.id != rule_id);
         store.active_rules.push(MemoryRuleRecord {
             rule: validated.rule,
             history: vec![validated.validation_score],
         });
-        store.active_rules.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
+        store
+            .active_rules
+            .sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
         true
     }
 
     pub fn rollback_rule(store: &mut RuleStore, rule_id: &str) -> bool {
-        let Some(index) = store.active_rules.iter().position(|record| record.rule.id == rule_id) else {
+        let Some(index) = store
+            .active_rules
+            .iter()
+            .position(|record| record.rule.id == rule_id)
+        else {
             return false;
         };
         let record = store.active_rules.remove(index);
         store.deprecated_rules.push(record);
-        store.deprecated_rules.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
+        store
+            .deprecated_rules
+            .sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
         true
     }
 
@@ -1149,7 +1172,9 @@ pub mod dynamic_ir {
             }
         }
         kept.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
-        store.deprecated_rules.sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
+        store
+            .deprecated_rules
+            .sort_by(|lhs, rhs| lhs.rule.id.cmp(&rhs.rule.id));
         store.candidate_rules = kept;
     }
 
@@ -1207,10 +1232,13 @@ pub mod dynamic_ir {
                 effects: func.effects.clone(),
                 can_fail: func.can_fail,
                 is_mutable: func.effects.contains(&ProgramEffect::Mutation)
-                    || func
-                        .inputs
-                        .iter()
-                        .any(|input| input.borrow.as_ref().map(|borrow| borrow.is_mut).unwrap_or(false)),
+                    || func.inputs.iter().any(|input| {
+                        input
+                            .borrow
+                            .as_ref()
+                            .map(|borrow| borrow.is_mut)
+                            .unwrap_or(false)
+                    }),
             }
         }
 
@@ -1259,7 +1287,11 @@ pub mod dynamic_ir {
     ) -> String {
         let base = lower_type_ref(&input.r#type, profile);
         let mutability = ctx.is_mutable
-            || input.borrow.as_ref().map(|borrow| borrow.is_mut).unwrap_or(false);
+            || input
+                .borrow
+                .as_ref()
+                .map(|borrow| borrow.is_mut)
+                .unwrap_or(false);
         let transforms = if mutability {
             engine.transforms_for(
                 TargetScope::Function,
@@ -1343,8 +1375,14 @@ pub mod dynamic_ir {
 
     fn apply_profile_record(profile: &mut LanguageProfile, record: &MemoryRecord) {
         for relation in &record.relations {
-            if let Some((name, mapped)) = relation.strip_prefix("primitive:").and_then(|value| value.split_once('=')) {
-                profile.type_system.primitive_map.insert(name.to_string(), mapped.to_string());
+            if let Some((name, mapped)) = relation
+                .strip_prefix("primitive:")
+                .and_then(|value| value.split_once('='))
+            {
+                profile
+                    .type_system
+                    .primitive_map
+                    .insert(name.to_string(), mapped.to_string());
                 continue;
             }
             if let Some(value) = relation.strip_prefix("nullable:") {
@@ -1389,8 +1427,16 @@ pub mod dynamic_ir {
                 }
             }
         }
-        profile.rules.sort_by(|lhs, rhs| lhs.priority.cmp(&rhs.priority).then_with(|| lhs.id.cmp(&rhs.id)));
-        profile.import_rules.sort_by(|lhs, rhs| lhs.symbol.cmp(&rhs.symbol).then_with(|| lhs.import.cmp(&rhs.import)));
+        profile.rules.sort_by(|lhs, rhs| {
+            lhs.priority
+                .cmp(&rhs.priority)
+                .then_with(|| lhs.id.cmp(&rhs.id))
+        });
+        profile.import_rules.sort_by(|lhs, rhs| {
+            lhs.symbol
+                .cmp(&rhs.symbol)
+                .then_with(|| lhs.import.cmp(&rhs.import))
+        });
     }
 
     fn parse_rule(value: &str) -> Option<MappingRule> {
@@ -1463,9 +1509,11 @@ pub mod dynamic_ir {
                 pattern: pattern.to_string(),
             });
         }
-        value.strip_prefix("MutationMarker:").map(|pattern| TransformTemplate::MutationMarker {
-            pattern: pattern.to_string(),
-        })
+        value
+            .strip_prefix("MutationMarker:")
+            .map(|pattern| TransformTemplate::MutationMarker {
+                pattern: pattern.to_string(),
+            })
     }
 
     fn backend_flavor(profile: &LanguageProfile) -> BackendFlavor {
@@ -1484,10 +1532,15 @@ pub mod dynamic_ir {
     ) -> String {
         match stmt {
             ProgramStatement::Assign { target, value } => {
-                format!("{target} = {}", interpreter.interpret_expression(value, profile).code)
+                format!(
+                    "{target} = {}",
+                    interpreter.interpret_expression(value, profile).code
+                )
             }
             ProgramStatement::If(branch) => {
-                let condition = interpreter.interpret_expression(&branch.condition, profile).code;
+                let condition = interpreter
+                    .interpret_expression(&branch.condition, profile)
+                    .code;
                 let then_code = render_nested_block(
                     &branch
                         .then_block
@@ -1507,16 +1560,18 @@ pub mod dynamic_ir {
                     backend_flavor(profile),
                 );
                 match backend_flavor(profile) {
-                    BackendFlavor::Rust | BackendFlavor::TypeScript => format!(
-                        "if {condition} {{\n{then_code}\n}} else {{\n{else_code}\n}}"
-                    ),
+                    BackendFlavor::Rust | BackendFlavor::TypeScript => {
+                        format!("if {condition} {{\n{then_code}\n}} else {{\n{else_code}\n}}")
+                    }
                     BackendFlavor::Python => {
                         format!("if {condition}:\n{then_code}\nelse:\n{else_code}")
                     }
                 }
             }
             ProgramStatement::Loop(loop_stmt) => {
-                let iterator = interpreter.interpret_expression(&loop_stmt.iterator, profile).code;
+                let iterator = interpreter
+                    .interpret_expression(&loop_stmt.iterator, profile)
+                    .code;
                 let body = render_nested_block(
                     &loop_stmt
                         .body
@@ -1533,10 +1588,15 @@ pub mod dynamic_ir {
                 }
             }
             ProgramStatement::Return { value } => match value {
-                Some(value) => format!("return {}", interpreter.interpret_expression(value, profile).code),
+                Some(value) => format!(
+                    "return {}",
+                    interpreter.interpret_expression(value, profile).code
+                ),
                 None => "return".to_string(),
             },
-            ProgramStatement::Expression(expr) => interpreter.interpret_expression(expr, profile).code,
+            ProgramStatement::Expression(expr) => {
+                interpreter.interpret_expression(expr, profile).code
+            }
         }
     }
 
@@ -1547,12 +1607,11 @@ pub mod dynamic_ir {
                     ProgramStateKind::Mutable => "static mut".to_string(),
                     ProgramStateKind::Immutable | ProgramStateKind::Shared => "static".to_string(),
                 },
-                code_ir::program_v1::StateScope::Module | code_ir::program_v1::StateScope::Local => {
-                    match state.kind {
-                        ProgramStateKind::Mutable => "let mut".to_string(),
-                        ProgramStateKind::Immutable | ProgramStateKind::Shared => "let".to_string(),
-                    }
-                }
+                code_ir::program_v1::StateScope::Module
+                | code_ir::program_v1::StateScope::Local => match state.kind {
+                    ProgramStateKind::Mutable => "let mut".to_string(),
+                    ProgramStateKind::Immutable | ProgramStateKind::Shared => "let".to_string(),
+                },
             },
             "python" => "global".to_string(),
             "ts" | "typescript" => match state.kind {
@@ -2165,32 +2224,75 @@ impl Validator for DefaultSemanticValidator {
         for module in &program.modules {
             for ty in &module.types {
                 for field in &ty.fields {
-                    validate_type_ref(&field.r#type, &known_types, &mut result, format!("type field {}.{}", ty.name, field.name));
+                    validate_type_ref(
+                        &field.r#type,
+                        &known_types,
+                        &mut result,
+                        format!("type field {}.{}", ty.name, field.name),
+                    );
                 }
             }
             for state in &module.state {
-                validate_type_ref(&state.r#type, &known_types, &mut result, format!("state {}", state.name));
-                if state.kind == ProgramStateKind::Mutable && matches!(state.scope, code_ir::program_v1::StateScope::Global) {
-                    push_error(&mut result, "mutable_global_state", format!("mutable global state `{}` is not allowed", state.name));
+                validate_type_ref(
+                    &state.r#type,
+                    &known_types,
+                    &mut result,
+                    format!("state {}", state.name),
+                );
+                if state.kind == ProgramStateKind::Mutable
+                    && matches!(state.scope, code_ir::program_v1::StateScope::Global)
+                {
+                    push_error(
+                        &mut result,
+                        "mutable_global_state",
+                        format!("mutable global state `{}` is not allowed", state.name),
+                    );
                 }
             }
             for function in &module.functions {
                 for input in &function.inputs {
-                    validate_type_ref(&input.r#type, &known_types, &mut result, format!("function {} input {}", function.name, input.name));
+                    validate_type_ref(
+                        &input.r#type,
+                        &known_types,
+                        &mut result,
+                        format!("function {} input {}", function.name, input.name),
+                    );
                 }
-                validate_type_ref(&function.outputs.r#type, &known_types, &mut result, format!("function {} output", function.name));
+                validate_type_ref(
+                    &function.outputs.r#type,
+                    &known_types,
+                    &mut result,
+                    format!("function {} output", function.name),
+                );
 
                 if function.effects.contains(&ProgramEffect::Error) && !function.can_fail {
-                    push_error(&mut result, "error_effect_requires_can_fail", format!("function `{}` has Error effect but can_fail=false", function.name));
+                    push_error(
+                        &mut result,
+                        "error_effect_requires_can_fail",
+                        format!(
+                            "function `{}` has Error effect but can_fail=false",
+                            function.name
+                        ),
+                    );
                 }
 
                 let mutable_borrows = function
                     .inputs
                     .iter()
-                    .filter(|input| input.borrow.as_ref().map(|borrow| borrow.is_mut).unwrap_or(false))
+                    .filter(|input| {
+                        input
+                            .borrow
+                            .as_ref()
+                            .map(|borrow| borrow.is_mut)
+                            .unwrap_or(false)
+                    })
                     .count();
                 if mutable_borrows > 1 {
-                    push_error(&mut result, "borrow_conflict", format!("function `{}` has multiple mutable borrows", function.name));
+                    push_error(
+                        &mut result,
+                        "borrow_conflict",
+                        format!("function `{}` has multiple mutable borrows", function.name),
+                    );
                 }
 
                 validate_async_usage(function, &async_functions, &mut result);
@@ -2214,7 +2316,11 @@ impl ImportResolver {
         for module in &program.modules {
             let mut imports = module.imports.clone();
             for function in &module.functions {
-                collect_imports_from_type_ref(&function.outputs.r#type, &module_names, &mut imports);
+                collect_imports_from_type_ref(
+                    &function.outputs.r#type,
+                    &module_names,
+                    &mut imports,
+                );
                 for input in &function.inputs {
                     collect_imports_from_type_ref(&input.r#type, &module_names, &mut imports);
                 }
@@ -2258,7 +2364,11 @@ pub fn safe_generate_program<B: LanguageBackend, R: Renderer>(
         .modules
         .iter()
         .map(|module| GeneratedFile {
-            path: format!("{}.{}", module.name, extension_for_backend(backend_name(backend))),
+            path: format!(
+                "{}.{}",
+                module.name,
+                extension_for_backend(backend_name(backend))
+            ),
             content: render_target_module(module, backend_name(backend)),
         })
         .collect::<Vec<_>>();
@@ -2270,7 +2380,11 @@ pub fn safe_generate_program<B: LanguageBackend, R: Renderer>(
     }
 
     let _ = renderer.render_program(&target);
-    Ok(SafeGenerationOutput { files, target, imports })
+    Ok(SafeGenerationOutput {
+        files,
+        target,
+        imports,
+    })
 }
 
 pub fn recall_generation_profiles(
@@ -3104,6 +3218,7 @@ enum BackendFlavor {
     TypeScript,
 }
 
+#[allow(dead_code)]
 fn lower_block<B: LanguageBackend>(backend: &B, block: &ProgramBlock) -> Vec<TargetStmt> {
     block
         .statements
@@ -3112,6 +3227,7 @@ fn lower_block<B: LanguageBackend>(backend: &B, block: &ProgramBlock) -> Vec<Tar
         .collect()
 }
 
+#[allow(dead_code)]
 fn lower_statement_code<B: LanguageBackend>(
     backend: &B,
     stmt: &ProgramStatement,
@@ -3126,9 +3242,9 @@ fn lower_statement_code<B: LanguageBackend>(
             let then_code = render_nested_block(&lower_block(backend, &branch.then_block), flavor);
             let else_code = render_nested_block(&lower_block(backend, &branch.else_block), flavor);
             match flavor {
-                BackendFlavor::Rust | BackendFlavor::TypeScript => format!(
-                    "if {condition} {{\n{then_code}\n}} else {{\n{else_code}\n}}"
-                ),
+                BackendFlavor::Rust | BackendFlavor::TypeScript => {
+                    format!("if {condition} {{\n{then_code}\n}} else {{\n{else_code}\n}}")
+                }
                 BackendFlavor::Python => {
                     format!("if {condition}:\n{then_code}\nelse:\n{else_code}")
                 }
@@ -3263,7 +3379,11 @@ fn render_target_function(function: &TargetFunction, flavor: BackendFlavor) -> S
     let body = render_nested_block(&function.body, flavor);
     match flavor {
         BackendFlavor::Rust => {
-            let async_prefix = if function.semantics.is_async { "async " } else { "" };
+            let async_prefix = if function.semantics.is_async {
+                "async "
+            } else {
+                ""
+            };
             format!(
                 "{}{}fn {}({}) -> {} {{\n{}\n}}",
                 function.visibility,
@@ -3280,7 +3400,11 @@ fn render_target_function(function: &TargetFunction, flavor: BackendFlavor) -> S
             )
         }
         BackendFlavor::Python => {
-            let async_prefix = if function.semantics.is_async { "async " } else { "" };
+            let async_prefix = if function.semantics.is_async {
+                "async "
+            } else {
+                ""
+            };
             format!(
                 "{}def {}({}) -> {}:\n{}",
                 async_prefix,
@@ -3296,7 +3420,11 @@ fn render_target_function(function: &TargetFunction, flavor: BackendFlavor) -> S
             )
         }
         BackendFlavor::TypeScript => {
-            let async_prefix = if function.semantics.is_async { "async " } else { "" };
+            let async_prefix = if function.semantics.is_async {
+                "async "
+            } else {
+                ""
+            };
             format!(
                 "export {}function {}({}): {} {{\n{}\n}}",
                 async_prefix,
@@ -3361,8 +3489,13 @@ fn lower_visibility(visibility: &ProgramVisibility) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn lower_rust_input_type(input: &ProgramFunctionInput, effects: &[ProgramEffect]) -> String {
-    if input.borrow.as_ref().map(|borrow| borrow.is_mut).unwrap_or(false)
+    if input
+        .borrow
+        .as_ref()
+        .map(|borrow| borrow.is_mut)
+        .unwrap_or(false)
         || effects.contains(&ProgramEffect::Mutation)
     {
         format!("&mut {}", lower_rust_program_type(&input.r#type))
@@ -3371,6 +3504,7 @@ fn lower_rust_input_type(input: &ProgramFunctionInput, effects: &[ProgramEffect]
     }
 }
 
+#[allow(dead_code)]
 fn lower_rust_program_type(ty: &ProgramTypeRef) -> String {
     let base = match ty.name.as_str() {
         "Int" => "i32".to_string(),
@@ -3400,6 +3534,7 @@ fn lower_rust_program_type(ty: &ProgramTypeRef) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn lower_python_program_type(ty: &ProgramTypeRef) -> String {
     let base = match ty.name.as_str() {
         "Int" => "int".to_string(),
@@ -3416,6 +3551,7 @@ fn lower_python_program_type(ty: &ProgramTypeRef) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn lower_typescript_program_type(ty: &ProgramTypeRef) -> String {
     let base = match ty.name.as_str() {
         "Int" | "Float" => "number".to_string(),
@@ -3431,7 +3567,11 @@ fn lower_typescript_program_type(ty: &ProgramTypeRef) -> String {
     }
 }
 
-fn lower_typescript_output_type(output: &ProgramFunctionOutput, effects: &[ProgramEffect]) -> String {
+#[allow(dead_code)]
+fn lower_typescript_output_type(
+    output: &ProgramFunctionOutput,
+    effects: &[ProgramEffect],
+) -> String {
     let base = lower_typescript_program_type(&output.r#type);
     if effects.contains(&ProgramEffect::Async) {
         format!("Promise<{base}>")
@@ -3440,6 +3580,7 @@ fn lower_typescript_output_type(output: &ProgramFunctionOutput, effects: &[Progr
     }
 }
 
+#[allow(dead_code)]
 fn rust_state_binding(state: &ProgramState) -> String {
     match state.scope {
         code_ir::program_v1::StateScope::Global => match state.kind {
@@ -3457,6 +3598,7 @@ fn rust_state_binding(state: &ProgramState) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn python_state_binding(state: &ProgramState) -> String {
     match state.scope {
         code_ir::program_v1::StateScope::Global => "global".to_string(),
@@ -3465,6 +3607,7 @@ fn python_state_binding(state: &ProgramState) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn typescript_state_binding(state: &ProgramState) -> String {
     match state.kind {
         ProgramStateKind::Mutable | ProgramStateKind::Shared => "let".to_string(),
@@ -3533,10 +3676,18 @@ fn validate_type_ref(
     context: String,
 ) {
     if ty.nullable && ty.name == "Void" {
-        push_error(result, "nullable_void", format!("{context} cannot be nullable Void"));
+        push_error(
+            result,
+            "nullable_void",
+            format!("{context} cannot be nullable Void"),
+        );
     }
     if !known_types.contains(&ty.name) && !ty.name.starts_with("List") {
-        push_error(result, "unknown_type", format!("{context} references unknown type `{}`", ty.name));
+        push_error(
+            result,
+            "unknown_type",
+            format!("{context} references unknown type `{}`", ty.name),
+        );
     }
     for generic in &ty.generics {
         validate_type_ref(generic, known_types, result, context.clone());
@@ -3578,7 +3729,13 @@ fn walk_statement_for_async(
             walk_block_for_async(function, &branch.else_block, async_functions, result);
         }
         ProgramStatement::Loop(loop_stmt) => {
-            walk_expression_for_async(function, &loop_stmt.iterator, false, async_functions, result);
+            walk_expression_for_async(
+                function,
+                &loop_stmt.iterator,
+                false,
+                async_functions,
+                result,
+            );
             walk_block_for_async(function, &loop_stmt.body, async_functions, result);
         }
         ProgramStatement::Return { value } => {
@@ -3605,7 +3762,10 @@ fn walk_expression_for_async(
                 push_error(
                     result,
                     "missing_await",
-                    format!("function `{}` calls async `{}` without await", function.name, call.function),
+                    format!(
+                        "function `{}` calls async `{}` without await",
+                        function.name, call.function
+                    ),
                 );
             }
             for arg in &call.args {
@@ -3659,7 +3819,9 @@ fn collect_imports_from_statement(
     imports: &mut Vec<String>,
 ) {
     match stmt {
-        ProgramStatement::Assign { value, .. } => collect_imports_from_expression(value, module_names, imports),
+        ProgramStatement::Assign { value, .. } => {
+            collect_imports_from_expression(value, module_names, imports)
+        }
         ProgramStatement::If(branch) => {
             collect_imports_from_expression(&branch.condition, module_names, imports);
             collect_imports_from_block(&branch.then_block, module_names, imports);
@@ -3674,7 +3836,9 @@ fn collect_imports_from_statement(
                 collect_imports_from_expression(value, module_names, imports);
             }
         }
-        ProgramStatement::Expression(expr) => collect_imports_from_expression(expr, module_names, imports),
+        ProgramStatement::Expression(expr) => {
+            collect_imports_from_expression(expr, module_names, imports)
+        }
     }
 }
 
@@ -3692,12 +3856,16 @@ fn collect_imports_from_expression(
                 collect_imports_from_expression(arg, module_names, imports);
             }
         }
-        ProgramExpression::Await(inner) => collect_imports_from_expression(inner, module_names, imports),
+        ProgramExpression::Await(inner) => {
+            collect_imports_from_expression(inner, module_names, imports)
+        }
         ProgramExpression::BinaryOp(op) => {
             collect_imports_from_expression(&op.left, module_names, imports);
             collect_imports_from_expression(&op.right, module_names, imports);
         }
-        ProgramExpression::UnaryOp(op) => collect_imports_from_expression(&op.expr, module_names, imports),
+        ProgramExpression::UnaryOp(op) => {
+            collect_imports_from_expression(&op.expr, module_names, imports)
+        }
         ProgramExpression::Literal(_) | ProgramExpression::Variable(_) => {}
     }
 }
@@ -3735,9 +3903,11 @@ fn run_safe_build_validation(
     for file in files {
         let path = sandbox.join("src").join(&file.path);
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
-        fs::write(&path, &file.content).map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+        fs::write(&path, &file.content)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
     let result = match flavor {
         BackendFlavor::Rust => {
@@ -3766,8 +3936,11 @@ fn run_safe_build_validation(
                 .map(|name| format!("pub mod {name};"))
                 .collect::<Vec<_>>();
             mod_lines.sort();
-            fs::write(sandbox.join("src/lib.rs"), format!("{}\n", mod_lines.join("\n")))
-                .map_err(|err| format!("failed to write lib.rs: {err}"))?;
+            fs::write(
+                sandbox.join("src/lib.rs"),
+                format!("{}\n", mod_lines.join("\n")),
+            )
+            .map_err(|err| format!("failed to write lib.rs: {err}"))?;
             run_command_in(&program.build_validation.command, &sandbox)
         }
         BackendFlavor::Python | BackendFlavor::TypeScript => Ok(()),

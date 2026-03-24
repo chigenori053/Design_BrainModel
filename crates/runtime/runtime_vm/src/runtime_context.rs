@@ -42,3 +42,33 @@ pub struct RuntimeContext {
     pub hypotheses: Vec<RuntimeHypothesis>,
     pub tick: u64,
 }
+
+impl RuntimeContext {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn release_completed_task_memory(&mut self) {
+        self.memory_candidates.clear();
+        self.memory_trace_ids.clear();
+        self.reasoning_result = None;
+        self.search_state = None;
+        self.design_state = None;
+        self.hypothesis_graph = None;
+        self.hypotheses.clear();
+        self.evaluation_cache_hits = 0;
+    }
+
+    pub fn force_clear_all(&mut self) {
+        self.input_text.clear();
+        self.semantic_units.clear();
+        self.concepts.clear();
+        self.intent_nodes.clear();
+        self.concept_activation.clear();
+        self.concept_field = None;
+        self.intent_graph = None;
+        self.release_completed_task_memory();
+        self.selected_template = None;
+        self.tick = 0;
+    }
+}

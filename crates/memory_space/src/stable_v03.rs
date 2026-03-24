@@ -109,7 +109,11 @@ impl InMemoryEngine {
         self.records.read().expect("memory read lock").clone()
     }
 
-    pub fn recall_candidates(&self, input: RecallInput, config: RecallConfig) -> Vec<MemoryCandidate> {
+    pub fn recall_candidates(
+        &self,
+        input: RecallInput,
+        config: RecallConfig,
+    ) -> Vec<MemoryCandidate> {
         self.recall(input)
             .records
             .into_iter()
@@ -125,7 +129,12 @@ impl InMemoryEngine {
             .collect()
     }
 
-    pub fn store_edge(&self, from: impl Into<String>, to: impl Into<String>, relation: MemoryRelation) {
+    pub fn store_edge(
+        &self,
+        from: impl Into<String>,
+        to: impl Into<String>,
+        relation: MemoryRelation,
+    ) {
         let mut edges = self.edges.write().expect("memory edge write lock");
         let edge = MemoryEdge {
             from: from.into(),
@@ -181,13 +190,17 @@ impl InMemoryEngine {
     }
 
     pub fn cache_stats(&self) -> CacheStats {
-        self.cache_stats.read().expect("cache stats read lock").clone()
+        self.cache_stats
+            .read()
+            .expect("cache stats read lock")
+            .clone()
     }
 }
 
 impl MemoryEngine for InMemoryEngine {
     fn recall(&self, input: RecallInput) -> RecallResult {
-        let cache_key = format!("{}::{}",
+        let cache_key = format!(
+            "{}::{}",
             input.intent.raw.to_ascii_lowercase(),
             input.limit.max(1)
         );
@@ -217,8 +230,15 @@ impl MemoryEngine for InMemoryEngine {
             .collect::<Vec<_>>();
         normalize_scores(&mut recalled);
         recalled.retain(|record| record.score >= 0.1);
-        prioritize_cluster_neighbors(&mut recalled, &self.edges.read().expect("memory edge read lock"));
-        recalled.sort_by(|lhs, rhs| rhs.score.total_cmp(&lhs.score).then_with(|| lhs.record.id.cmp(&rhs.record.id)));
+        prioritize_cluster_neighbors(
+            &mut recalled,
+            &self.edges.read().expect("memory edge read lock"),
+        );
+        recalled.sort_by(|lhs, rhs| {
+            rhs.score
+                .total_cmp(&lhs.score)
+                .then_with(|| lhs.record.id.cmp(&rhs.record.id))
+        });
         recalled.truncate(input.limit.max(1));
         let confidence = if recalled.is_empty() {
             0.0
@@ -288,7 +308,11 @@ impl InMemoryEngine {
                 (approx > 0.0).then_some((record.clone(), approx))
             })
             .collect::<Vec<_>>();
-        scored.sort_by(|lhs, rhs| rhs.1.total_cmp(&lhs.1).then_with(|| lhs.0.id.cmp(&rhs.0.id)));
+        scored.sort_by(|lhs, rhs| {
+            rhs.1
+                .total_cmp(&lhs.1)
+                .then_with(|| lhs.0.id.cmp(&rhs.0.id))
+        });
         scored
             .into_iter()
             .take(limit.max(1))

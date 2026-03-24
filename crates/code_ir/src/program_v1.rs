@@ -660,8 +660,9 @@ fn state_from_field(field: &FieldSpec) -> State {
 
 fn map_unified_type_ref(ty: &unified_design_ir::TypeRef) -> TypeRef {
     match ty {
-        unified_design_ir::TypeRef::Primitive(name)
-        | unified_design_ir::TypeRef::Custom(name) => TypeRef::named(name.clone()),
+        unified_design_ir::TypeRef::Primitive(name) | unified_design_ir::TypeRef::Custom(name) => {
+            TypeRef::named(name.clone())
+        }
         unified_design_ir::TypeRef::List(inner) => TypeRef {
             name: "List".to_string(),
             generics: vec![map_unified_type_ref(inner)],
@@ -732,7 +733,11 @@ fn render_module_stub(module: &Module, backend: BackendLanguage) -> String {
 }
 
 fn render_rust_module(module: &Module) -> String {
-    let mut lines = module.imports.iter().map(|import| format!("use {import};")).collect::<Vec<_>>();
+    let mut lines = module
+        .imports
+        .iter()
+        .map(|import| format!("use {import};"))
+        .collect::<Vec<_>>();
     if !lines.is_empty() {
         lines.push(String::new());
     }
@@ -741,7 +746,11 @@ fn render_rust_module(module: &Module) -> String {
             TypeKind::Struct => {
                 lines.push(format!("pub struct {} {{", ty.name));
                 for field in &ty.fields {
-                    lines.push(format!("    pub {}: {},", field.name, render_rust_type(&field.r#type)));
+                    lines.push(format!(
+                        "    pub {}: {},",
+                        field.name,
+                        render_rust_type(&field.r#type)
+                    ));
                 }
                 lines.push("}".to_string());
             }
@@ -762,7 +771,11 @@ fn render_rust_module(module: &Module) -> String {
         lines.push(String::new());
     }
     for function in &module.functions {
-        let async_prefix = if function.effects.contains(&Effect::Async) { "async " } else { "" };
+        let async_prefix = if function.effects.contains(&Effect::Async) {
+            "async "
+        } else {
+            ""
+        };
         lines.push(format!(
             "pub {}fn {}({}) -> {} {{",
             async_prefix,
@@ -787,7 +800,11 @@ fn render_python_module(module: &Module) -> String {
         }
     }
     for function in &module.functions {
-        let async_prefix = if function.effects.contains(&Effect::Async) { "async " } else { "" };
+        let async_prefix = if function.effects.contains(&Effect::Async) {
+            "async "
+        } else {
+            ""
+        };
         lines.push(format!(
             "{}def {}({}):",
             async_prefix,
@@ -812,7 +829,11 @@ fn render_typescript_module(module: &Module) -> String {
             TypeKind::Struct => {
                 lines.push(format!("export interface {} {{", ty.name));
                 for field in &ty.fields {
-                    lines.push(format!("  {}: {};", field.name, render_typescript_type(&field.r#type)));
+                    lines.push(format!(
+                        "  {}: {};",
+                        field.name,
+                        render_typescript_type(&field.r#type)
+                    ));
                 }
                 lines.push("}".to_string());
                 lines.push(String::new());
@@ -835,7 +856,10 @@ fn render_typescript_module(module: &Module) -> String {
     }
     for function in &module.functions {
         let output = if function.effects.contains(&Effect::Async) {
-            format!("Promise<{}>", render_typescript_type(&function.outputs.r#type))
+            format!(
+                "Promise<{}>",
+                render_typescript_type(&function.outputs.r#type)
+            )
         } else {
             render_typescript_type(&function.outputs.r#type)
         };
@@ -876,7 +900,12 @@ fn render_rust_type(ty: &TypeRef) -> String {
             ty.name.clone()
         }
     } else {
-        let inner = ty.generics.iter().map(render_rust_type).collect::<Vec<_>>().join(", ");
+        let inner = ty
+            .generics
+            .iter()
+            .map(render_rust_type)
+            .collect::<Vec<_>>()
+            .join(", ");
         if ty.nullable {
             format!("Option<{}<{}>>", ty.name, inner)
         } else {

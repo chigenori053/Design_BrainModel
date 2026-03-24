@@ -81,28 +81,32 @@ impl HybridVm {
     pub fn context_mut(&mut self) -> &mut RuntimeContext {
         &mut self.context
     }
+
+    pub fn into_context(self) -> RuntimeContext {
+        self.context
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::{dbm_test, test_support::with_test_vm};
 
-    #[test]
-    fn hybrid_vm_runs_reasoning_pipeline() {
-        let mut vm = HybridVm::new(ExecutionMode::Reasoning);
-        vm.set_input_text("optimize database query performance");
+    dbm_test!(hybrid_vm_runs_reasoning_pipeline, runtime, {
+        with_test_vm(runtime, ExecutionMode::Reasoning, |vm| {
+            vm.set_input_text("optimize database query performance");
+            vm.execute();
 
-        vm.execute();
+            assert!(!vm.context().semantic_units.is_empty());
+            assert!(!vm.context().concepts.is_empty());
+            assert!(vm.context().tick > 0);
+        });
+    });
 
-        assert!(!vm.context().semantic_units.is_empty());
-        assert!(!vm.context().concepts.is_empty());
-        assert!(vm.context().tick > 0);
-    }
-
-    #[test]
-    fn changing_mode_rebuilds_pipeline() {
-        let mut vm = HybridVm::new(ExecutionMode::Analysis);
-        vm.set_mode(ExecutionMode::Simulation);
-        assert_eq!(vm.mode(), ExecutionMode::Simulation);
-    }
+    dbm_test!(changing_mode_rebuilds_pipeline, runtime, {
+        with_test_vm(runtime, ExecutionMode::Analysis, |vm| {
+            vm.set_mode(ExecutionMode::Simulation);
+            assert_eq!(vm.mode(), ExecutionMode::Simulation);
+        });
+    });
 }

@@ -335,12 +335,27 @@ pub struct DataEdge {
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum RefactorPlanAction {
-    IntroduceInterface { between: (String, String) },
-    RemoveDependency { from: String, to: String },
-    SplitModule { target: String },
-    MoveDependency { from: String, to: String, via: Option<String> },
-    ExtractComponent { from: String },
-    IsolateNode { node: String },
+    IntroduceInterface {
+        between: (String, String),
+    },
+    RemoveDependency {
+        from: String,
+        to: String,
+    },
+    SplitModule {
+        target: String,
+    },
+    MoveDependency {
+        from: String,
+        to: String,
+        via: Option<String>,
+    },
+    ExtractComponent {
+        from: String,
+    },
+    IsolateNode {
+        node: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,7 +473,9 @@ pub fn to_relations(input: SystemInput) -> Vec<CanonicalRelation> {
     match input {
         SystemInput::Design(graph) => design_to_relations(&graph),
         SystemInput::Code(files) => code_to_relations(&files),
-        SystemInput::Analyze(input) => goals_to_relations(&analysis_to_goals(&input), &input.system_id),
+        SystemInput::Analyze(input) => {
+            goals_to_relations(&analysis_to_goals(&input), &input.system_id)
+        }
         SystemInput::Architecture(graph) => architecture_to_relations(&graph),
     }
 }
@@ -477,7 +494,10 @@ pub fn to_system_output(relations: Vec<CanonicalRelation>) -> SystemOutput {
     let actions = relations
         .iter()
         .map(|relation| DesignAction {
-            title: format!("{:?} {} -> {}", relation.predicate, relation.subject.0, relation.object.0),
+            title: format!(
+                "{:?} {} -> {}",
+                relation.predicate, relation.subject.0, relation.object.0
+            ),
             relation_id: relation.id.clone(),
             suggestion: suggestion_for_relation(relation),
         })
@@ -528,7 +548,8 @@ pub fn validate_mapping(input: &SystemInput, relations: &[CanonicalRelation]) ->
                 });
             }
             if !known_entities.is_empty()
-                && (!known_entities.contains(&relation.subject) || !known_entities.contains(&relation.object))
+                && (!known_entities.contains(&relation.subject)
+                    || !known_entities.contains(&relation.object))
             {
                 relation_issues.push(ValidationIssue {
                     relation_id: relation.id.clone(),
@@ -538,7 +559,11 @@ pub fn validate_mapping(input: &SystemInput, relations: &[CanonicalRelation]) ->
             relation_issues
         })
         .collect::<Vec<_>>();
-    issues.sort_by(|lhs, rhs| lhs.relation_id.cmp(&rhs.relation_id).then_with(|| lhs.message.cmp(&rhs.message)));
+    issues.sort_by(|lhs, rhs| {
+        lhs.relation_id
+            .cmp(&rhs.relation_id)
+            .then_with(|| lhs.message.cmp(&rhs.message))
+    });
     ValidationReport {
         is_valid: issues.is_empty(),
         issues,
@@ -580,12 +605,24 @@ pub fn validate_round_trip_design(graph: &DesignGraph) -> ValidationReport {
     let original_edges = graph
         .edges()
         .iter()
-        .map(|edge| (edge.source.0.clone(), edge.target.0.clone(), edge.relation.clone()))
+        .map(|edge| {
+            (
+                edge.source.0.clone(),
+                edge.target.0.clone(),
+                edge.relation.clone(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     let rebuilt_edges = rebuilt
         .edges()
         .iter()
-        .map(|edge| (edge.source.0.clone(), edge.target.0.clone(), edge.relation.clone()))
+        .map(|edge| {
+            (
+                edge.source.0.clone(),
+                edge.target.0.clone(),
+                edge.relation.clone(),
+            )
+        })
         .collect::<BTreeSet<_>>();
     if original_edges != rebuilt_edges {
         issues.push(ValidationIssue {
@@ -593,7 +630,11 @@ pub fn validate_round_trip_design(graph: &DesignGraph) -> ValidationReport {
             message: "EdgeMismatch".to_string(),
         });
     }
-    issues.sort_by(|lhs, rhs| lhs.relation_id.cmp(&rhs.relation_id).then_with(|| lhs.message.cmp(&rhs.message)));
+    issues.sort_by(|lhs, rhs| {
+        lhs.relation_id
+            .cmp(&rhs.relation_id)
+            .then_with(|| lhs.message.cmp(&rhs.message))
+    });
     ValidationReport {
         is_valid: issues.is_empty(),
         issues,
@@ -684,7 +725,11 @@ pub fn diagnostic_analysis(graph: &DesignGraph) -> DiagnosticAnalysis {
             message: "OrphanNode".to_string(),
         });
     }
-    integrity.issues.sort_by(|lhs, rhs| lhs.relation_id.cmp(&rhs.relation_id).then_with(|| lhs.message.cmp(&rhs.message)));
+    integrity.issues.sort_by(|lhs, rhs| {
+        lhs.relation_id
+            .cmp(&rhs.relation_id)
+            .then_with(|| lhs.message.cmp(&rhs.message))
+    });
     integrity.issues.dedup();
     integrity.is_valid = integrity.issues.is_empty();
 
@@ -703,7 +748,14 @@ pub fn diagnostic_analysis(graph: &DesignGraph) -> DiagnosticAnalysis {
         patterns,
         suggestions: Vec::new(),
     };
-    let issues = generate_issues(&ir, &cycle_report, &violations, &semantic, &data_flow, &integrity);
+    let issues = generate_issues(
+        &ir,
+        &cycle_report,
+        &violations,
+        &semantic,
+        &data_flow,
+        &integrity,
+    );
 
     DiagnosticAnalysis {
         ir,
@@ -751,7 +803,9 @@ pub fn structural_analysis(graph: &DesignGraph) -> StructuralAnalysis {
 pub fn analysis_to_goals(input: &AnalysisInput) -> Vec<CanonicalGoal> {
     let mut goals = vec![CanonicalGoal::ArchitectureValid(input.system_id.clone())];
     if input.has_cycle {
-        goals.push(CanonicalGoal::ConstraintSatisfied(Entity("no_cycle".to_string())));
+        goals.push(CanonicalGoal::ConstraintSatisfied(Entity(
+            "no_cycle".to_string(),
+        )));
     }
     if let Some(first) = input.entities.first() {
         goals.push(CanonicalGoal::ChangeImpactSafe(Entity(first.clone())));
@@ -783,19 +837,22 @@ fn design_to_relations(graph: &DesignGraph) -> Vec<CanonicalRelation> {
         .collect::<Vec<_>>();
     relations.extend(
         graph
-        .edges()
-        .iter()
-        .map(|edge| CanonicalRelation {
-            id: stable_id(&format!("design:{}:{}:{:?}", edge.source.0, edge.target.0, edge.relation)),
-            predicate: predicate_from_design_relation(&edge.relation),
-            subject: Entity(edge.source.0.clone()),
-            object: Entity(edge.target.0.clone()),
-            provenance: Provenance {
-                source_type: SourceType::DesignEdge,
-                source_id: format!("{}->{}", edge.source.0, edge.target.0),
-            },
-        })
-        .collect::<Vec<_>>(),
+            .edges()
+            .iter()
+            .map(|edge| CanonicalRelation {
+                id: stable_id(&format!(
+                    "design:{}:{}:{:?}",
+                    edge.source.0, edge.target.0, edge.relation
+                )),
+                predicate: predicate_from_design_relation(&edge.relation),
+                subject: Entity(edge.source.0.clone()),
+                object: Entity(edge.target.0.clone()),
+                provenance: Provenance {
+                    source_type: SourceType::DesignEdge,
+                    source_id: format!("{}->{}", edge.source.0, edge.target.0),
+                },
+            })
+            .collect::<Vec<_>>(),
     );
     relations.sort_by(relation_order);
     relations
@@ -806,7 +863,10 @@ fn architecture_to_relations(graph: &ArchitectureGraph) -> Vec<CanonicalRelation
         .edges()
         .iter()
         .map(|edge| CanonicalRelation {
-            id: stable_id(&format!("arch:{}:{}:{:?}", edge.source.0, edge.target.0, edge.relation)),
+            id: stable_id(&format!(
+                "arch:{}:{}:{:?}",
+                edge.source.0, edge.target.0, edge.relation
+            )),
             predicate: match edge.relation {
                 ArchitectureRelationType::DependsOn
                 | ArchitectureRelationType::Calls
@@ -1046,7 +1106,10 @@ fn design_node_kind(kind: &ArchitectureNodeKind) -> DesignNodeKind {
 }
 
 fn stable_node_id(name: &str) -> String {
-    stable_id(&format!("node:{}", name.replace('\\', "/").to_ascii_lowercase()))
+    stable_id(&format!(
+        "node:{}",
+        name.replace('\\', "/").to_ascii_lowercase()
+    ))
 }
 
 pub fn cycle_report(ir: &ArchitectureIr) -> CycleReport {
@@ -1066,7 +1129,11 @@ pub fn cycle_report(ir: &ArchitectureIr) -> CycleReport {
                 })
             } else {
                 let node = component.first()?;
-                if ir.edges.iter().any(|edge| edge.from == *node && edge.to == *node) {
+                if ir
+                    .edges
+                    .iter()
+                    .any(|edge| edge.from == *node && edge.to == *node)
+                {
                     Some(Cycle {
                         size: 1,
                         nodes: vec![node_name_by_id(ir, node)?],
@@ -1116,11 +1183,7 @@ pub fn infer_layers(ir: &ArchitectureIr) -> LayerModel {
     }
 
     let mut levels = vec![None; components.len()];
-    fn assign_level(
-        index: usize,
-        children: &[Vec<usize>],
-        levels: &mut [Option<usize>],
-    ) -> usize {
+    fn assign_level(index: usize, children: &[Vec<usize>], levels: &mut [Option<usize>]) -> usize {
         if let Some(level) = levels[index] {
             return level;
         }
@@ -1214,7 +1277,12 @@ pub fn infer_roles(ir: &ArchitectureIr, model: &LayerModel) -> Vec<RoleAssignmen
     let fan_in = fan_in_map(ir);
     let fan_out = fan_out_map(ir);
 
-    let max_level = model.layers.iter().map(|layer| layer.level).max().unwrap_or(0);
+    let max_level = model
+        .layers
+        .iter()
+        .map(|layer| layer.level)
+        .max()
+        .unwrap_or(0);
     let cycle_nodes = cycle_report(ir)
         .cycles
         .into_iter()
@@ -1240,20 +1308,32 @@ pub fn infer_roles(ir: &ArchitectureIr, model: &LayerModel) -> Vec<RoleAssignmen
             };
             let in_ratio = inbound as f32 / (inbound.max(outbound).max(1) as f32);
             let out_ratio = outbound as f32 / (inbound.max(outbound).max(1) as f32);
-            let cycle_factor = if cycle_nodes.contains(&node.name) { 1.0 } else { 0.0 };
+            let cycle_factor = if cycle_nodes.contains(&node.name) {
+                1.0
+            } else {
+                0.0
+            };
 
             let mut score = RoleScore {
                 core_milli: score_to_milli(in_ratio * (1.0 - out_ratio) * (1.0 - level_ratio)),
-                service_milli: score_to_milli(((in_ratio + out_ratio) / 2.0) * (0.4 + level_ratio * 0.4)),
-                infra_milli: score_to_milli(out_ratio * (1.0 - level_ratio) * dependency_directionality),
+                service_milli: score_to_milli(
+                    ((in_ratio + out_ratio) / 2.0) * (0.4 + level_ratio * 0.4),
+                ),
+                infra_milli: score_to_milli(
+                    out_ratio * (1.0 - level_ratio) * dependency_directionality,
+                ),
                 interface_milli: score_to_milli(
                     level_ratio
                         * (0.3 + out_ratio * 0.7)
                         * (1.0 - in_ratio * 0.85)
                         * (1.0 - cycle_factor * 0.75),
                 ),
-                presentation_milli: score_to_milli(level_ratio * out_ratio * (1.0 - cycle_factor * 0.2)),
-                utility_milli: score_to_milli((1.0 - in_ratio) * out_ratio * (0.5 + cycle_factor * 0.3)),
+                presentation_milli: score_to_milli(
+                    level_ratio * out_ratio * (1.0 - cycle_factor * 0.2),
+                ),
+                utility_milli: score_to_milli(
+                    (1.0 - in_ratio) * out_ratio * (0.5 + cycle_factor * 0.3),
+                ),
             };
 
             // Minimal deterministic name hints remain as tie-break bias only.
@@ -1286,7 +1366,11 @@ pub fn infer_roles(ir: &ArchitectureIr, model: &LayerModel) -> Vec<RoleAssignmen
             ];
             let (role, confidence_milli) = candidates
                 .into_iter()
-                .max_by(|lhs, rhs| lhs.1.cmp(&rhs.1).then_with(|| role_rank(&lhs.0).cmp(&role_rank(&rhs.0)).reverse()))
+                .max_by(|lhs, rhs| {
+                    lhs.1
+                        .cmp(&rhs.1)
+                        .then_with(|| role_rank(&lhs.0).cmp(&role_rank(&rhs.0)).reverse())
+                })
                 .unwrap_or((NodeRole::Unknown, 500));
             let (role, confidence_milli) = if lower.contains("test") {
                 (NodeRole::Test, 940)
@@ -1302,7 +1386,11 @@ pub fn infer_roles(ir: &ArchitectureIr, model: &LayerModel) -> Vec<RoleAssignmen
             }
         })
         .collect::<Vec<_>>();
-    roles.sort_by(|lhs, rhs| lhs.node_name.cmp(&rhs.node_name).then_with(|| lhs.node_id.cmp(&rhs.node_id)));
+    roles.sort_by(|lhs, rhs| {
+        lhs.node_name
+            .cmp(&rhs.node_name)
+            .then_with(|| lhs.node_id.cmp(&rhs.node_id))
+    });
     roles
 }
 
@@ -1315,7 +1403,12 @@ pub fn semantic_layers(
         .into_iter()
         .map(|role| (role.node_name, role.role))
         .collect::<BTreeMap<_, _>>();
-    let max_level = model.layers.iter().map(|layer| layer.level).max().unwrap_or(0);
+    let max_level = model
+        .layers
+        .iter()
+        .map(|layer| layer.level)
+        .max()
+        .unwrap_or(0);
     let violation_nodes = violations
         .iter()
         .flat_map(|violation| [violation.from.clone(), violation.to.clone()])
@@ -1336,7 +1429,11 @@ pub fn semantic_layers(
                 LayerType::CoreLayer
             } else if layer.level == max_level {
                 LayerType::InterfaceLayer
-            } else if layer.nodes.iter().any(|node| violation_nodes.contains(node)) {
+            } else if layer
+                .nodes
+                .iter()
+                .any(|node| violation_nodes.contains(node))
+            {
                 LayerType::ApplicationLayer
             } else if layer
                 .nodes
@@ -1414,7 +1511,9 @@ pub fn refactor_suggestions(
                     suggestions.push(RefactorSuggestion {
                         target: node.clone(),
                         action: RefactorAction::InvertDependency,
-                        reason: format!("Break cycle involving {node} by introducing an abstraction"),
+                        reason: format!(
+                            "Break cycle involving {node} by introducing an abstraction"
+                        ),
                     });
                 }
             }
@@ -1455,7 +1554,11 @@ pub fn refactor_suggestions(
         });
     }
 
-    suggestions.sort_by(|lhs, rhs| lhs.target.cmp(&rhs.target).then_with(|| lhs.reason.cmp(&rhs.reason)));
+    suggestions.sort_by(|lhs, rhs| {
+        lhs.target
+            .cmp(&rhs.target)
+            .then_with(|| lhs.reason.cmp(&rhs.reason))
+    });
     suggestions.dedup();
     suggestions
 }
@@ -1596,10 +1699,7 @@ fn map_action_to_patch(action: &RefactorPlanAction) -> CodePatch {
         RefactorPlanAction::SplitModule { target } => (
             vec![PatchOperation::SplitModule {
                 module: target.clone(),
-                new_modules: vec![
-                    format!("{target}_core"),
-                    format!("{target}_api"),
-                ],
+                new_modules: vec![format!("{target}_core"), format!("{target}_api")],
             }],
             format!("Split {} into narrower modules", target),
         ),
@@ -1653,12 +1753,18 @@ pub fn map_issue_to_actions(issue: &Issue) -> Vec<RefactorPlanAction> {
             _ => Vec::new(),
         },
         IssueType::Hub => match &issue.scope {
-            IssueScope::Node(node) => vec![RefactorPlanAction::ExtractComponent { from: node.clone() }],
+            IssueScope::Node(node) => {
+                vec![RefactorPlanAction::ExtractComponent { from: node.clone() }]
+            }
             _ => Vec::new(),
         },
         IssueType::DataFlowAnomaly => match &issue.scope {
-            IssueScope::Edge(_, to) => vec![RefactorPlanAction::ExtractComponent { from: to.clone() }],
-            IssueScope::Node(node) => vec![RefactorPlanAction::ExtractComponent { from: node.clone() }],
+            IssueScope::Edge(_, to) => {
+                vec![RefactorPlanAction::ExtractComponent { from: to.clone() }]
+            }
+            IssueScope::Node(node) => {
+                vec![RefactorPlanAction::ExtractComponent { from: node.clone() }]
+            }
             _ => Vec::new(),
         },
         IssueType::OrphanNode => match &issue.scope {
@@ -1689,7 +1795,9 @@ fn resolve_conflicts(actions: Vec<RefactorPlanAction>) -> Vec<RefactorPlanAction
     let cycle_pairs = actions
         .iter()
         .filter_map(|action| match action {
-            RefactorPlanAction::IntroduceInterface { between } => Some(canonical_pair(&between.0, &between.1)),
+            RefactorPlanAction::IntroduceInterface { between } => {
+                Some(canonical_pair(&between.0, &between.1))
+            }
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -1697,9 +1805,11 @@ fn resolve_conflicts(actions: Vec<RefactorPlanAction>) -> Vec<RefactorPlanAction
     let move_pairs = actions
         .iter()
         .filter_map(|action| match action {
-            RefactorPlanAction::MoveDependency { from, to, via: None } => {
-                Some((from.clone(), to.clone()))
-            }
+            RefactorPlanAction::MoveDependency {
+                from,
+                to,
+                via: None,
+            } => Some((from.clone(), to.clone())),
             _ => None,
         })
         .collect::<BTreeSet<_>>();
@@ -1726,7 +1836,11 @@ fn resolve_conflicts(actions: Vec<RefactorPlanAction>) -> Vec<RefactorPlanAction
     let mut resolved = Vec::new();
     for action in actions {
         let conflicted = match &action {
-            RefactorPlanAction::MoveDependency { from, to, via: None } => {
+            RefactorPlanAction::MoveDependency {
+                from,
+                to,
+                via: None,
+            } => {
                 let pair = canonical_pair(from, to);
                 cycle_pairs.contains(&pair) || bidirectional_pairs.contains(&pair)
             }
@@ -1759,22 +1873,22 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
     for phase in &plan.phases {
         for action in &phase.actions {
             match action {
-            RefactorPlanAction::IntroduceInterface { between } => {
-                let interface_name = format!("{}_{}_interface", between.0, between.1);
-                let interface_id = stable_node_id(&interface_name);
-                if !new_ir.nodes.iter().any(|node| node.id == interface_id) {
-                    new_ir.nodes.push(ArchitectureIrNode {
-                        id: interface_id.clone(),
-                        name: interface_name.clone(),
-                        kind: ArchitectureNodeKind::Module,
-                    });
-                }
-                let id_to_name = new_ir
-                    .nodes
-                    .iter()
-                    .map(|node| (node.id.clone(), node.name.clone()))
-                    .collect::<BTreeMap<_, _>>();
-                new_ir.edges.retain(|edge| {
+                RefactorPlanAction::IntroduceInterface { between } => {
+                    let interface_name = format!("{}_{}_interface", between.0, between.1);
+                    let interface_id = stable_node_id(&interface_name);
+                    if !new_ir.nodes.iter().any(|node| node.id == interface_id) {
+                        new_ir.nodes.push(ArchitectureIrNode {
+                            id: interface_id.clone(),
+                            name: interface_name.clone(),
+                            kind: ArchitectureNodeKind::Module,
+                        });
+                    }
+                    let id_to_name = new_ir
+                        .nodes
+                        .iter()
+                        .map(|node| (node.id.clone(), node.name.clone()))
+                        .collect::<BTreeMap<_, _>>();
+                    new_ir.edges.retain(|edge| {
                     let from = id_to_name.get(&edge.from);
                     let to = id_to_name.get(&edge.to);
                     !matches!(
@@ -1783,109 +1897,138 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                             if (a == between.0 && b == between.1) || (a == between.1 && b == between.0)
                     )
                 });
-                for endpoint in [between.0.clone(), between.1.clone()] {
-                    if let Some(endpoint_id) = new_ir
-                        .nodes
-                        .iter()
-                        .find(|node| node.name == endpoint)
-                        .map(|node| node.id.clone())
-                    {
-                        new_ir.edges.push(ArchitectureIrEdge {
-                            from: endpoint_id,
-                            to: interface_id.clone(),
-                            kind: ArchitectureEdgeKind::DependsOn,
-                        });
-                    }
-                }
-            }
-            RefactorPlanAction::RemoveDependency { from, to } => {
-                if let (Some(from_id), Some(to_id)) = (
-                    new_ir.nodes.iter().find(|node| &node.name == from).map(|node| node.id.clone()),
-                    new_ir.nodes.iter().find(|node| &node.name == to).map(|node| node.id.clone()),
-                ) {
-                    new_ir.edges.retain(|edge| !(edge.from == from_id && edge.to == to_id));
-                }
-            }
-            RefactorPlanAction::SplitModule { target } => {
-                if let Some(source) = new_ir.nodes.iter().find(|node| &node.name == target).cloned() {
-                    let split_name = format!("{target}_extracted");
-                    let split_id = stable_node_id(&split_name);
-                    if !new_ir.nodes.iter().any(|node| node.id == split_id) {
-                        new_ir.nodes.push(ArchitectureIrNode {
-                            id: split_id.clone(),
-                            name: split_name,
-                            kind: source.kind,
-                        });
-                    }
-                    if let Some(first_edge) = new_ir
-                        .edges
-                        .iter_mut()
-                        .find(|edge| edge.from == source.id || edge.to == source.id)
-                    {
-                        if first_edge.from == source.id {
-                            first_edge.from = split_id.clone();
-                        } else {
-                            first_edge.to = split_id.clone();
-                        }
-                    }
-                }
-            }
-            RefactorPlanAction::MoveDependency { from, to, via } => {
-                if let (Some(from_id), Some(to_id)) = (
-                    new_ir.nodes.iter().find(|node| &node.name == from).map(|node| node.id.clone()),
-                    new_ir.nodes.iter().find(|node| &node.name == to).map(|node| node.id.clone()),
-                ) {
-                    new_ir.edges.retain(|edge| !(edge.from == from_id && edge.to == to_id));
-                    if let Some(via) = via {
-                        let via_id = stable_node_id(via);
-                        if !new_ir.nodes.iter().any(|node| node.id == via_id) {
-                            new_ir.nodes.push(ArchitectureIrNode {
-                                id: via_id.clone(),
-                                name: via.clone(),
-                                kind: ArchitectureNodeKind::Module,
+                    for endpoint in [between.0.clone(), between.1.clone()] {
+                        if let Some(endpoint_id) = new_ir
+                            .nodes
+                            .iter()
+                            .find(|node| node.name == endpoint)
+                            .map(|node| node.id.clone())
+                        {
+                            new_ir.edges.push(ArchitectureIrEdge {
+                                from: endpoint_id,
+                                to: interface_id.clone(),
+                                kind: ArchitectureEdgeKind::DependsOn,
                             });
                         }
-                        new_ir.edges.push(ArchitectureIrEdge {
-                            from: from_id,
-                            to: via_id.clone(),
-                            kind: ArchitectureEdgeKind::DependsOn,
-                        });
-                        new_ir.edges.push(ArchitectureIrEdge {
-                            from: via_id,
-                            to: to_id,
-                            kind: ArchitectureEdgeKind::DependsOn,
+                    }
+                }
+                RefactorPlanAction::RemoveDependency { from, to } => {
+                    if let (Some(from_id), Some(to_id)) = (
+                        new_ir
+                            .nodes
+                            .iter()
+                            .find(|node| &node.name == from)
+                            .map(|node| node.id.clone()),
+                        new_ir
+                            .nodes
+                            .iter()
+                            .find(|node| &node.name == to)
+                            .map(|node| node.id.clone()),
+                    ) {
+                        new_ir
+                            .edges
+                            .retain(|edge| !(edge.from == from_id && edge.to == to_id));
+                    }
+                }
+                RefactorPlanAction::SplitModule { target } => {
+                    if let Some(source) = new_ir
+                        .nodes
+                        .iter()
+                        .find(|node| &node.name == target)
+                        .cloned()
+                    {
+                        let split_name = format!("{target}_extracted");
+                        let split_id = stable_node_id(&split_name);
+                        if !new_ir.nodes.iter().any(|node| node.id == split_id) {
+                            new_ir.nodes.push(ArchitectureIrNode {
+                                id: split_id.clone(),
+                                name: split_name,
+                                kind: source.kind,
+                            });
+                        }
+                        if let Some(first_edge) = new_ir
+                            .edges
+                            .iter_mut()
+                            .find(|edge| edge.from == source.id || edge.to == source.id)
+                        {
+                            if first_edge.from == source.id {
+                                first_edge.from = split_id.clone();
+                            } else {
+                                first_edge.to = split_id.clone();
+                            }
+                        }
+                    }
+                }
+                RefactorPlanAction::MoveDependency { from, to, via } => {
+                    if let (Some(from_id), Some(to_id)) = (
+                        new_ir
+                            .nodes
+                            .iter()
+                            .find(|node| &node.name == from)
+                            .map(|node| node.id.clone()),
+                        new_ir
+                            .nodes
+                            .iter()
+                            .find(|node| &node.name == to)
+                            .map(|node| node.id.clone()),
+                    ) {
+                        new_ir
+                            .edges
+                            .retain(|edge| !(edge.from == from_id && edge.to == to_id));
+                        if let Some(via) = via {
+                            let via_id = stable_node_id(via);
+                            if !new_ir.nodes.iter().any(|node| node.id == via_id) {
+                                new_ir.nodes.push(ArchitectureIrNode {
+                                    id: via_id.clone(),
+                                    name: via.clone(),
+                                    kind: ArchitectureNodeKind::Module,
+                                });
+                            }
+                            new_ir.edges.push(ArchitectureIrEdge {
+                                from: from_id,
+                                to: via_id.clone(),
+                                kind: ArchitectureEdgeKind::DependsOn,
+                            });
+                            new_ir.edges.push(ArchitectureIrEdge {
+                                from: via_id,
+                                to: to_id,
+                                kind: ArchitectureEdgeKind::DependsOn,
+                            });
+                        }
+                    }
+                }
+                RefactorPlanAction::ExtractComponent { from } => {
+                    let extracted = format!("{from}_component");
+                    let extracted_id = stable_node_id(&extracted);
+                    if !new_ir.nodes.iter().any(|node| node.id == extracted_id) {
+                        new_ir.nodes.push(ArchitectureIrNode {
+                            id: extracted_id.clone(),
+                            name: extracted,
+                            kind: ArchitectureNodeKind::Module,
                         });
                     }
                 }
-            }
-            RefactorPlanAction::ExtractComponent { from } => {
-                let extracted = format!("{from}_component");
-                let extracted_id = stable_node_id(&extracted);
-                if !new_ir.nodes.iter().any(|node| node.id == extracted_id) {
-                    new_ir.nodes.push(ArchitectureIrNode {
-                        id: extracted_id.clone(),
-                        name: extracted,
-                        kind: ArchitectureNodeKind::Module,
-                    });
+                RefactorPlanAction::IsolateNode { node } => {
+                    if let Some(node_id) = new_ir
+                        .nodes
+                        .iter()
+                        .find(|candidate| &candidate.name == node)
+                        .map(|candidate| candidate.id.clone())
+                    {
+                        new_ir
+                            .edges
+                            .retain(|edge| edge.from != node_id && edge.to != node_id);
+                    }
                 }
             }
-            RefactorPlanAction::IsolateNode { node } => {
-                if let Some(node_id) = new_ir
-                    .nodes
-                    .iter()
-                    .find(|candidate| &candidate.name == node)
-                    .map(|candidate| candidate.id.clone())
-                {
-                    new_ir
-                        .edges
-                        .retain(|edge| edge.from != node_id && edge.to != node_id);
-                }
-            }
-        }
         }
     }
-    new_ir.nodes.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id).then_with(|| lhs.name.cmp(&rhs.name)));
-    new_ir.edges.sort_by(|lhs, rhs| lhs.from.cmp(&rhs.from).then_with(|| lhs.to.cmp(&rhs.to)));
+    new_ir
+        .nodes
+        .sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id).then_with(|| lhs.name.cmp(&rhs.name)));
+    new_ir
+        .edges
+        .sort_by(|lhs, rhs| lhs.from.cmp(&rhs.from).then_with(|| lhs.to.cmp(&rhs.to)));
     new_ir.edges.dedup();
     let after = simulation_metrics(&new_ir);
     SimulationResult {
@@ -1901,7 +2044,11 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
 }
 
 fn simulation_metrics(ir: &ArchitectureIr) -> SimulationMetrics {
-    let cycles = cycle_report(ir).cycles.iter().filter(|cycle| cycle.size >= 2).count();
+    let cycles = cycle_report(ir)
+        .cycles
+        .iter()
+        .filter(|cycle| cycle.size >= 2)
+        .count();
     let layers = infer_layers(ir);
     let violations = layer_violations(ir, &layers).len();
     let coupling = if ir.nodes.is_empty() {
@@ -1937,10 +2084,14 @@ fn generate_issues(
         if cycle.size >= 2 {
             let nodes = stable_nodes(&cycle.nodes);
             issues.push(Issue {
-                id: issue_id(IssueType::Cycle, &IssueScope::Subgraph(nodes.clone()), &[Evidence {
-                    kind: EvidenceType::Nodes,
-                    value: nodes.join(", "),
-                }]),
+                id: issue_id(
+                    IssueType::Cycle,
+                    &IssueScope::Subgraph(nodes.clone()),
+                    &[Evidence {
+                        kind: EvidenceType::Nodes,
+                        value: nodes.join(", "),
+                    }],
+                ),
                 kind: IssueType::Cycle,
                 severity: Severity::Critical,
                 scope: IssueScope::Subgraph(nodes.clone()),
@@ -2011,7 +2162,11 @@ fn generate_issues(
                         }],
                     ),
                     kind: IssueType::GodObject,
-                    severity: if total > 4 { Severity::High } else { Severity::Medium },
+                    severity: if total > 4 {
+                        Severity::High
+                    } else {
+                        Severity::Medium
+                    },
                     scope: IssueScope::Node(node.clone()),
                     description: "Responsibility concentration detected".to_string(),
                     evidence: vec![Evidence {
@@ -2182,7 +2337,11 @@ fn issue_id(kind: IssueType, scope: &IssueScope, evidence: &[Evidence]) -> Strin
         .map(|item| format!("{:?}:{}", item.kind, item.value))
         .collect::<Vec<_>>();
     evidence_parts.sort();
-    stable_id(&format!("{kind:?}|{}|{}", issue_scope_key(scope), evidence_parts.join("|")))
+    stable_id(&format!(
+        "{kind:?}|{}|{}",
+        issue_scope_key(scope),
+        evidence_parts.join("|")
+    ))
 }
 
 fn issue_scope_key(scope: &IssueScope) -> String {
@@ -2312,7 +2471,11 @@ fn strongly_connected_components(ir: &ArchitectureIr) -> Vec<Vec<String>> {
         components: Vec<Vec<String>>,
     }
 
-    fn strong_connect(node: &str, adjacency: &BTreeMap<String, Vec<String>>, state: &mut TarjanState) {
+    fn strong_connect(
+        node: &str,
+        adjacency: &BTreeMap<String, Vec<String>>,
+        state: &mut TarjanState,
+    ) {
         state.indices.insert(node.to_string(), state.index);
         state.lowlink.insert(node.to_string(), state.index);
         state.index += 1;
@@ -2557,8 +2720,16 @@ mod tests {
         let goals = analysis_to_goals(&input);
         let relations = to_relations(SystemInput::Analyze(input));
 
-        assert!(goals.iter().any(|goal| matches!(goal, CanonicalGoal::ConstraintSatisfied(_))));
-        assert!(relations.iter().any(|relation| relation.predicate == Predicate::Satisfies));
+        assert!(
+            goals
+                .iter()
+                .any(|goal| matches!(goal, CanonicalGoal::ConstraintSatisfied(_)))
+        );
+        assert!(
+            relations
+                .iter()
+                .any(|relation| relation.predicate == Predicate::Satisfies)
+        );
     }
 
     #[test]
@@ -2637,7 +2808,13 @@ mod tests {
         let level_of = model
             .layers
             .iter()
-            .flat_map(|layer| layer.nodes.iter().cloned().map(move |node| (node, layer.level)))
+            .flat_map(|layer| {
+                layer
+                    .nodes
+                    .iter()
+                    .cloned()
+                    .map(move |node| (node, layer.level))
+            })
             .collect::<BTreeMap<_, _>>();
         assert_eq!(level_of.get("world"), Some(&0));
         assert_eq!(level_of.get("debug"), Some(&1));
@@ -2649,7 +2826,13 @@ mod tests {
         let analysis = structural_analysis(&cyclic_graph_with_orphan());
         assert!(analysis.cycle_report.has_cycle);
         assert!(!analysis.violations.is_empty());
-        assert!(analysis.integrity.issues.iter().any(|issue| issue.message == "CycleDetected"));
+        assert!(
+            analysis
+                .integrity
+                .issues
+                .iter()
+                .any(|issue| issue.message == "CycleDetected")
+        );
     }
 
     #[test]
@@ -2715,11 +2898,13 @@ mod tests {
             })
             .build();
         let analysis = structural_analysis(&graph);
-        assert!(analysis
-            .semantic
-            .patterns
-            .iter()
-            .any(|pattern| matches!(pattern, Pattern::GodObject { node } if node == "god")));
+        assert!(
+            analysis
+                .semantic
+                .patterns
+                .iter()
+                .any(|pattern| matches!(pattern, Pattern::GodObject { node } if node == "god"))
+        );
     }
 
     #[test]
@@ -2748,22 +2933,26 @@ mod tests {
     fn data_flow_extraction_produces_edges() {
         let analysis = structural_analysis(&cyclic_graph_with_orphan());
         assert!(!analysis.data_flow.flows.is_empty());
-        assert!(analysis
-            .data_flow
-            .flows
-            .iter()
-            .any(|flow| flow.from == "debug" && flow.to == "renderer"));
+        assert!(
+            analysis
+                .data_flow
+                .flows
+                .iter()
+                .any(|flow| flow.from == "debug" && flow.to == "renderer")
+        );
     }
 
     #[test]
     fn cycle_break_plan_contains_interface_step() {
         let analysis = structural_analysis(&cyclic_graph_with_orphan());
-        assert!(analysis
-            .refactor_plan
-            .phases
-            .iter()
-            .flat_map(|phase| phase.actions.iter())
-            .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. })));
+        assert!(
+            analysis
+                .refactor_plan
+                .phases
+                .iter()
+                .flat_map(|phase| phase.actions.iter())
+                .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. }))
+        );
     }
 
     #[test]
@@ -2784,8 +2973,16 @@ mod tests {
     fn issue_ids_are_deterministic() {
         let lhs = diagnostic_analysis(&cyclic_graph_with_orphan());
         let rhs = diagnostic_analysis(&cyclic_graph_with_orphan());
-        let lhs_ids = lhs.issues.into_iter().map(|issue| issue.id).collect::<Vec<_>>();
-        let rhs_ids = rhs.issues.into_iter().map(|issue| issue.id).collect::<Vec<_>>();
+        let lhs_ids = lhs
+            .issues
+            .into_iter()
+            .map(|issue| issue.id)
+            .collect::<Vec<_>>();
+        let rhs_ids = rhs
+            .issues
+            .into_iter()
+            .map(|issue| issue.id)
+            .collect::<Vec<_>>();
         assert_eq!(lhs_ids, rhs_ids);
     }
 
@@ -2811,10 +3008,9 @@ mod tests {
             .issues
             .iter()
             .any(|issue| issue.kind == IssueType::Cycle && issue.severity == Severity::Critical));
-        assert!(analysis
-            .issues
-            .iter()
-            .any(|issue| issue.kind == IssueType::LayerViolation && issue.severity == Severity::High));
+        assert!(analysis.issues.iter().any(
+            |issue| issue.kind == IssueType::LayerViolation && issue.severity == Severity::High
+        ));
         assert!(analysis
             .issues
             .iter()
@@ -2912,7 +3108,10 @@ mod tests {
         let lhs = action_set_from_issues(&diagnostic_analysis(&cyclic_graph_with_orphan()).issues);
         let rhs = action_set_from_issues(&diagnostic_analysis(&cyclic_graph_with_orphan()).issues);
         assert_eq!(lhs, rhs);
-        assert_eq!(lhs.actions.len(), lhs.actions.iter().collect::<BTreeSet<_>>().len());
+        assert_eq!(
+            lhs.actions.len(),
+            lhs.actions.iter().collect::<BTreeSet<_>>().len()
+        );
     }
 
     #[test]
@@ -2933,10 +3132,12 @@ mod tests {
     fn critical_always_emitted() {
         let issues = diagnostic_analysis(&cyclic_graph_with_orphan()).issues;
         let actions = action_set_from_issues(&issues);
-        assert!(actions
-            .actions
-            .iter()
-            .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. })));
+        assert!(
+            actions
+                .actions
+                .iter()
+                .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. }))
+        );
     }
 
     #[test]
@@ -2958,11 +3159,14 @@ mod tests {
 
     #[test]
     fn cycle_overrides_move_dependency() {
-        let actions = action_set_from_issues(&diagnostic_analysis(&cyclic_graph_with_orphan()).issues);
-        assert!(actions
-            .actions
-            .iter()
-            .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. })));
+        let actions =
+            action_set_from_issues(&diagnostic_analysis(&cyclic_graph_with_orphan()).issues);
+        assert!(
+            actions
+                .actions
+                .iter()
+                .any(|action| matches!(action, RefactorPlanAction::IntroduceInterface { .. }))
+        );
         assert!(!actions.actions.iter().any(|action| {
             matches!(
                 action,
@@ -3116,8 +3320,14 @@ mod tests {
 
     #[test]
     fn interface_naming() {
-        assert_eq!(interface_name("debug", "renderer"), "DebugRendererInterface");
-        assert_eq!(interface_name("renderer", "world"), "RendererWorldInterface");
+        assert_eq!(
+            interface_name("debug", "renderer"),
+            "DebugRendererInterface"
+        );
+        assert_eq!(
+            interface_name("renderer", "world"),
+            "RendererWorldInterface"
+        );
     }
 
     #[test]
