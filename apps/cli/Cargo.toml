@@ -24,6 +24,10 @@ path = "src/design_main.rs"
 name = "phase1_batch"
 path = "src/phase1_batch_main.rs"
 
+[[bin]]
+name = "design_cli"
+path = "src/design_cli_main.rs"
+
 [dependencies]
 analysis_tools = { workspace = true }
 agent_core = { workspace = true }
