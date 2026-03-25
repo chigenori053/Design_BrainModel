@@ -1,0 +1,12 @@
+[package]
+name = "memory_persistence"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+contract_strict = []
+
+[dependencies]
+memory_space_phase14 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }

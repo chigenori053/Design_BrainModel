@@ -89,7 +89,8 @@ members = [
     "apps/lsp",
     "crates/core/world_model_core",
     "tests/contract",
-    "tests/pipeline"
+    "tests/pipeline",
+    "crates/memory_persistence"
 ]
 resolver = "2"
 
@@ -163,6 +164,7 @@ world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
 memory_space_phase14 = { path = "crates/memory_space" }
+memory_persistence = { path = "crates/memory_persistence" }
 policy_engine = { path = "crates/policy_engine" }
 search_verification = { path = "crates/search_verification" }
 runtime_vm = { path = "crates/runtime/runtime_vm" }

@@ -1328,6 +1328,7 @@ dependencies = [
  "fs_extra",
  "hybrid_vm",
  "integration_layer",
+ "memory_persistence",
  "memory_space_phase14",
  "ratatui",
  "runtime_core",
@@ -2984,6 +2985,15 @@ dependencies = [
  "knowledge_lifecycle",
  "language_core",
  "semantic_domain",
+]
+
+[[package]]
+name = "memory_persistence"
+version = "0.1.0"
+dependencies = [
+ "memory_space_phase14",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
