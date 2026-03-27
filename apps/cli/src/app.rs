@@ -19,13 +19,16 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use serde::Serialize;
 use serde_json::json;
 
+use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
 use crate::coding::{
     CodingOptions, execute_code_change_set, generate_code_change_set, load_patches_from_json,
 };
+use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
 use crate::r#loop::run_loop;
 use crate::renderer::{
-    render_analysis_report, render_coding_report, render_design_report, render_refactor_report,
-    render_result, render_rules_report, render_run_report, render_validation_report,
+    render_analysis_report, render_autonomous_execute_report, render_coding_report,
+    render_design_report, render_exec_report, render_refactor_report, render_result,
+    render_rules_report, render_run_report, render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -58,6 +61,8 @@ enum Commands {
     Diff(CodingArgs),
     Check(CodingArgs),
     Apply(CodingArgs),
+    Exec(ExecArgs),
+    Execute(ExecuteArgs),
     Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
@@ -206,6 +211,38 @@ pub struct RunArgs {
 }
 
 #[derive(clap::Args, Debug, Clone)]
+pub struct ExecArgs {
+    pub action: ExecAction,
+    pub path: Option<PathBuf>,
+    #[arg(long, default_value_t = 60_000)]
+    pub timeout_ms: u64,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+#[command(visible_alias = "/execute")]
+pub struct ExecuteArgs {
+    pub input: String,
+    #[arg(long)]
+    pub path: Option<PathBuf>,
+    #[arg(long, default_value_t = 60_000)]
+    pub timeout_ms: u64,
+    #[arg(long, default_value_t = false)]
+    pub auto_commit: bool,
+    #[arg(long, default_value_t = false)]
+    pub no_commit: bool,
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+    #[arg(long, default_value_t = false)]
+    pub rollback_on_failure: bool,
+    #[arg(long, default_value_t = false)]
+    pub auto_remote: bool,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
 pub struct WizardArgs {
     #[arg(long, default_value_t = false)]
     pub json: bool,
@@ -271,6 +308,8 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Diff(args)) => execute_coding(args, CodingMode::Diff),
         Some(Commands::Check(args)) => execute_coding(args, CodingMode::Check),
         Some(Commands::Apply(args)) => execute_coding(args, CodingMode::Apply),
+        Some(Commands::Exec(args)) => execute_exec(args),
+        Some(Commands::Execute(args)) => execute_autonomous(args),
         Some(Commands::Run(args)) => execute_run(args),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
@@ -537,6 +576,38 @@ fn execute_run(args: RunArgs) -> Result<(), String> {
     render_run_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
+fn execute_exec(args: ExecArgs) -> Result<(), String> {
+    let path = args.path.unwrap_or_else(|| PathBuf::from("."));
+    let report = execute_exec_command(&path, args.action, args.timeout_ms)?;
+    if report_json(args.json, &report)? {
+        return Ok(());
+    }
+    render_exec_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+}
+
+fn execute_autonomous(args: ExecuteArgs) -> Result<(), String> {
+    let path = args.path.unwrap_or_else(|| PathBuf::from("."));
+    let report = execute_autonomous_command_with_options(
+        &path,
+        &args.input,
+        args.timeout_ms,
+        GitIntegrationOptions {
+            auto_commit: args.auto_commit,
+            require_confirmation: !args.auto_commit && !args.json,
+            no_commit: args.no_commit,
+            dry_run: args.dry_run,
+            rollback_on_failure: args.rollback_on_failure,
+            auto_remote: args.auto_remote,
+            enable_remote: !args.json,
+        },
+    )?;
+    if report_json(args.json, &report)? {
+        return Ok(());
+    }
+    render_autonomous_execute_report(&mut io::stdout().lock(), &report)
+        .map_err(|err| err.to_string())
+}
+
 fn execute_rules(args: RulesArgs) -> Result<(), String> {
     let validator = DefaultRuleValidator;
     match args.command {
@@ -800,6 +871,14 @@ fn execute_run_command(args: &RunArgs) -> Result<RunReport, String> {
         &policy,
         result,
     ))
+}
+
+pub fn execute_exec_command(
+    path: &Path,
+    action: ExecAction,
+    timeout_ms: u64,
+) -> Result<ExecReport, String> {
+    ExecutionFoundation::execute(path, action, timeout_ms)
 }
 
 fn detect_run_target(path: &Path) -> Result<ExecutionTarget, String> {

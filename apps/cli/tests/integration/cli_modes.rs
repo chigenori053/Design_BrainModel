@@ -48,6 +48,44 @@ fn temp_coding_project_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn temp_node_execute_project_dir(name: &str) -> PathBuf {
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("design_cli_node_{name}_{unique}"));
+    fs::create_dir_all(&dir).expect("create node dir");
+    fs::write(
+        dir.join("package.json"),
+        r#"{
+  "name": "sample-node",
+  "version": "0.1.0",
+  "scripts": {
+    "build": "node build.js",
+    "start": "node index.js",
+    "test": "node build.js"
+  }
+}
+"#,
+    )
+    .expect("write package");
+    fs::write(
+        dir.join("build.js"),
+        r#"const fs = require("fs");
+const file = "index.js";
+const source = fs.readFileSync(file, "utf8");
+if (source.includes("const broken = true;")) {
+  console.error("DBM_PATCH:index.js|const broken = true;|const fixed = true;");
+  process.exit(1);
+}
+console.log("build ok");
+"#,
+    )
+    .expect("write build script");
+    fs::write(dir.join("index.js"), "const broken = true;\n").expect("write index");
+    dir
+}
+
 fn write_patch_input(dir: &std::path::Path, name: &str, replacement: &str) -> PathBuf {
     let input = dir.join(name);
     fs::write(
@@ -128,6 +166,13 @@ fn init_git_repo(dir: &std::path::Path) {
         .output()
         .expect("git commit");
     assert!(commit.status.success(), "initial commit failed");
+
+    let branch = Command::new("git")
+        .args(["checkout", "-b", "feature/test"])
+        .current_dir(dir)
+        .output()
+        .expect("git checkout");
+    assert!(branch.status.success(), "git checkout failed");
 }
 
 #[test]
@@ -409,6 +454,35 @@ fn apply_command_can_auto_commit() {
     assert_eq!(stdout["execution"]["committed"], true);
     assert!(stdout["execution"]["commit_id"].is_string());
     assert!(stdout["execution"]["branch"].is_string());
+}
+
+#[test]
+fn execute_command_can_auto_commit_single_file_fix() {
+    let dir = temp_node_execute_project_dir("execute_commit");
+    init_git_repo(&dir);
+
+    let out = Command::new(cli_bin())
+        .args([
+            "execute",
+            "buildして",
+            "--path",
+            dir.to_str().expect("utf8 path"),
+            "--auto-commit",
+            "--json",
+        ])
+        .output()
+        .expect("run execute");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["status"], "success");
+    assert_eq!(stdout["git"]["committed"], true);
+    assert_eq!(stdout["git"]["changed_files"][0], "index.js");
+    assert!(stdout["git"]["commit_id"].is_string());
+    assert_eq!(
+        fs::read_to_string(dir.join("index.js")).expect("read updated index"),
+        "const fixed = true;\n"
+    );
 }
 
 #[test]

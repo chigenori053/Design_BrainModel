@@ -5,13 +5,15 @@ use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
 
+use crate::autonomous_execute::AutonomousExecuteReport;
+use crate::execution_foundation::ExecReport;
 use crate::service::dto::{
     AnalysisReport, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
     ValidationReport,
 };
 use integration_layer::{
-    Issue, IssueType, LayerType, NodeRole, PatchOperation, Pattern, PhaseType, RefactorAction,
-    RefactorPlanAction, Severity,
+    EvidenceType, Issue, IssueType, LayerType, NodeRole, PatchOperation, Pattern, PhaseType,
+    RefactorAction, RefactorPlanAction, Severity,
 };
 
 pub fn render_result<W: Write>(writer: &mut W, result: &RuntimeResult) -> io::Result<()> {
@@ -199,10 +201,30 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
         writeln!(writer)?;
         writeln!(writer, "Violations:")?;
         for violation in &report.violations {
+            let tag = if violation.from_level == violation.to_level {
+                "SAME-LAYER CYCLE"
+            } else if violation.from_level > violation.to_level {
+                "DOWNWARD VIOLATION"
+            } else {
+                "LAYER SKIP"
+            };
+            let from_layer = if violation.from_layer_name.is_empty() {
+                format!("Layer {}", violation.from_level)
+            } else {
+                format!(
+                    "Layer {}: {}",
+                    violation.from_level, violation.from_layer_name
+                )
+            };
+            let to_layer = if violation.to_layer_name.is_empty() {
+                format!("Layer {}", violation.to_level)
+            } else {
+                format!("Layer {}: {}", violation.to_level, violation.to_layer_name)
+            };
             writeln!(
                 writer,
-                "  {} -> {} ({} <= {})",
-                violation.from, violation.to, violation.from_level, violation.to_level
+                "  [{tag}] {} ({}) -> {} ({})",
+                violation.from, from_layer, violation.to, to_layer
             )?;
         }
     }
@@ -269,19 +291,63 @@ fn render_issue_group<W: Write>(
         .collect::<Vec<_>>();
     if group.is_empty() {
         writeln!(writer, "{title}")?;
-        writeln!(writer, "- none observed")?;
+        writeln!(writer, "  None")?;
         return Ok(());
     }
     writeln!(writer, "{title}")?;
     for issue in group {
         writeln!(
             writer,
-            "- ({}) {}",
+            "  ({}) {}",
             severity_label(&issue.severity),
             issue.description
         )?;
+        if let Some(hint) = issue_hint(issue) {
+            writeln!(writer, "       {hint}")?;
+        }
     }
     Ok(())
+}
+
+fn issue_hint(issue: &Issue) -> Option<String> {
+    match issue.kind {
+        IssueType::OrphanNode => Some(
+            "→ Consider: remove, merge into a lower-level module, or add intentional dependency"
+                .to_string(),
+        ),
+        IssueType::GodObject => Some(
+            "→ Consider splitting into sub-modules or introducing an abstraction layer".to_string(),
+        ),
+        IssueType::RoleMismatch => {
+            let role_specific = issue
+                .evidence
+                .iter()
+                .find(|ev| ev.kind == EvidenceType::Role)
+                .and_then(|ev| {
+                    let mut parts = ev.value.splitn(2, "->");
+                    let from_role = parts.next()?;
+                    let to_role = parts.next()?;
+                    Some(format!(
+                        "→ {} layer should not depend on {} layer. \
+                         Suggested fix: extract shared interface to a lower-level (Core/Service) layer.",
+                        from_role, to_role
+                    ))
+                });
+            Some(role_specific.unwrap_or_else(|| {
+                "→ Suggested fix: extract shared interface to a lower-level (Core/Service) layer."
+                    .to_string()
+            }))
+        }
+        IssueType::Hub => Some(
+            "→ Consider extracting responsibilities or introducing an abstraction layer"
+                .to_string(),
+        ),
+        IssueType::Cycle => Some(
+            "→ Break the cycle by introducing a trait/interface or reversing a dependency"
+                .to_string(),
+        ),
+        IssueType::LayerViolation | IssueType::DataFlowAnomaly => None,
+    }
 }
 
 fn issue_category(issue: &Issue) -> &'static str {
@@ -517,6 +583,143 @@ pub fn render_run_report<W: Write>(writer: &mut W, report: &RunReport) -> io::Re
     writer.flush()
 }
 
+pub fn render_exec_report<W: Write>(writer: &mut W, report: &ExecReport) -> io::Result<()> {
+    writeln!(writer, "Exec")?;
+    writeln!(writer, "Root: {}", report.root)?;
+    writeln!(writer, "Project: {}", report.project_type.as_str())?;
+    writeln!(writer, "Action: {}", report.action.as_str())?;
+    writeln!(writer, "Status: {}", report.status)?;
+    writeln!(writer, "Exit code: {}", report.exit_code)?;
+    writeln!(writer, "Duration: {} ms", report.duration_ms)?;
+    if let Some(command) = &report.command {
+        writeln!(writer, "Command: {} {}", command, report.args.join(" "))?;
+    }
+    if !report.stdout.is_empty() {
+        writeln!(writer, "Stdout:")?;
+        writeln!(writer, "{}", report.stdout)?;
+    }
+    if !report.stderr.is_empty() {
+        writeln!(writer, "Stderr:")?;
+        writeln!(writer, "{}", report.stderr)?;
+    }
+    writer.flush()
+}
+
+pub fn render_autonomous_execute_report<W: Write>(
+    writer: &mut W,
+    report: &AutonomousExecuteReport,
+) -> io::Result<()> {
+    if report.completed {
+        writeln!(writer, "✔ Completed")?;
+    } else {
+        writeln!(writer, "✖ Failed")?;
+        if let Some(reason) = &report.reason {
+            writeln!(writer, "Reason: {reason}")?;
+        }
+    }
+    writeln!(writer, "Root: {}", report.root)?;
+    writeln!(writer, "Project: {}", report.project_type.as_str())?;
+    writeln!(writer, "Retries: {}", report.retry_count)?;
+    if !report.tasks.is_empty() {
+        writeln!(writer, "Tasks: {}", report.tasks.join(" -> "))?;
+    }
+    if !report.attempts.is_empty() {
+        writeln!(writer)?;
+        for attempt in &report.attempts {
+            writeln!(writer, "Attempt {}:", attempt.attempt)?;
+            if attempt.exec_report.success {
+                writeln!(writer, "  Success")?;
+            } else {
+                writeln!(
+                    writer,
+                    "  Error: {}",
+                    attempt
+                        .debug
+                        .as_ref()
+                        .map(|debug| debug.primary.signature_hint.as_str())
+                        .unwrap_or(&attempt.exec_report.error_type)
+                )?;
+                if let Some(debug) = &attempt.debug {
+                    writeln!(writer, "  Signature: {}", debug.primary.signature)?;
+                    writeln!(writer, "  Action: {}", debug.primary.action)?;
+                    writeln!(writer, "  Confidence: {:.2}", debug.confidence)?;
+                    writeln!(writer, "  Context Adjusted: {}", debug.context_adjusted)?;
+                }
+                if let Some(fix) = &attempt.fix {
+                    writeln!(writer, "  Fix: {}", fix.content)?;
+                }
+            }
+        }
+    }
+    if let Some(git) = &report.git {
+        writeln!(writer)?;
+        writeln!(writer, "Git:")?;
+        if git.changed_files.is_empty() {
+            writeln!(writer, "  Files: none")?;
+        } else {
+            writeln!(writer, "  Files: {}", git.changed_files.join(", "))?;
+        }
+        if !git.diff.trim().is_empty() {
+            writeln!(writer, "  Diff:")?;
+            for line in git.diff.lines() {
+                writeln!(writer, "    {}", line)?;
+            }
+        }
+        writeln!(
+            writer,
+            "  Diff Stats: +{} -{}",
+            git.diff_stats.lines_added, git.diff_stats.lines_removed
+        )?;
+        writeln!(writer, "  Committed: {}", git.committed)?;
+        writeln!(writer, "  Rolled Back: {}", git.rolled_back)?;
+        if let Some(commit_id) = &git.commit_id {
+            writeln!(writer, "  Commit: {}", commit_id)?;
+        }
+        if let Some(reason) = &git.reason {
+            writeln!(writer, "  Reason: {}", reason)?;
+        }
+    }
+    if let Some(remote) = &report.remote {
+        writeln!(writer)?;
+        writeln!(writer, "Remote:")?;
+        if let Some(branch) = &remote.branch {
+            writeln!(writer, "  Branch: {}", branch)?;
+        }
+        if let Some(base_branch) = &remote.base_branch {
+            writeln!(writer, "  Base: {}", base_branch)?;
+        }
+        writeln!(
+            writer,
+            "  Push: {}",
+            if remote.pushed { "success" } else { "skipped" }
+        )?;
+        writeln!(writer, "  PR Created: {}", remote.pr_created)?;
+        if let Some(pr_url) = &remote.pr_url {
+            writeln!(writer, "  PR: {}", pr_url)?;
+        }
+        if let Some(reason) = &remote.reason {
+            writeln!(writer, "  Reason: {}", reason)?;
+        }
+    }
+    writeln!(writer)?;
+    writeln!(writer, "Metrics:")?;
+    writeln!(writer, "  attempts: {}", report.metrics.attempts)?;
+    writeln!(writer, "  success: {}", report.metrics.success)?;
+    writeln!(
+        writer,
+        "  fix_chain: {}",
+        report.metrics.fix_chain.join(" -> ")
+    )?;
+    writeln!(writer, "  commit: {}", report.metrics.commit)?;
+    writeln!(writer, "  success_rate: {}", report.metrics.success_rate)?;
+    writeln!(
+        writer,
+        "  avg_retry_count: {}",
+        report.metrics.avg_retry_count
+    )?;
+    writer.flush()
+}
+
 pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport) -> io::Result<()> {
     writeln!(writer, "Refactor Plan")?;
     writeln!(writer, "Root: {}", report.root)?;
@@ -715,5 +918,247 @@ fn phase_type_label(phase_type: &PhaseType) -> &'static str {
         PhaseType::FixLayering => "Fix Layering",
         PhaseType::RestructureModules => "Restructure Modules",
         PhaseType::OptimizeFlow => "Optimize Flow",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use integration_layer::{
+        Evidence, EvidenceType, IssueScope, IssueType, LayerViolation, Severity,
+    };
+
+    use super::*;
+    use crate::service::dto::{AnalysisReport, AnalysisSummary};
+    use integration_layer::{CycleReport, Issue, LayerModel};
+
+    fn make_role_mismatch_issue(from_role: &str, to_role: &str) -> Issue {
+        Issue {
+            id: format!("role-mismatch-{from_role}-{to_role}"),
+            kind: IssueType::RoleMismatch,
+            severity: Severity::Medium,
+            scope: IssueScope::Edge("mod_a".to_string(), "mod_b".to_string()),
+            description: format!(
+                "Role boundary mismatch: `mod_a` ({from_role}) depends on `mod_b` ({to_role})"
+            ),
+            evidence: vec![Evidence {
+                kind: EvidenceType::Role,
+                value: format!("{from_role}->{to_role}"),
+            }],
+        }
+    }
+
+    fn make_orphan_issue(node: &str) -> Issue {
+        Issue {
+            id: format!("orphan-{node}"),
+            kind: IssueType::OrphanNode,
+            severity: Severity::Low,
+            scope: IssueScope::Node(node.to_string()),
+            description: format!("Node is isolated from the dependency graph: `{node}`"),
+            evidence: vec![],
+        }
+    }
+
+    fn empty_report() -> AnalysisReport {
+        AnalysisReport {
+            root: ".".to_string(),
+            total_files: 0,
+            source_files: 0,
+            avg_complexity: "Low".to_string(),
+            manifests: vec![],
+            languages: Default::default(),
+            top_level_entries: vec![],
+            architecture_hints: vec![],
+            modules: vec![],
+            dependencies: vec![],
+            todo_files: 0,
+            cycles: CycleReport {
+                has_cycle: false,
+                cycles: vec![],
+            },
+            layers: LayerModel { layers: vec![] },
+            violations: vec![],
+            roles: vec![],
+            semantic_layers: vec![],
+            data_flow: vec![],
+            issues: vec![],
+            summary: AnalysisSummary::default(),
+            next_action: String::new(),
+            root_cause: None,
+            refactor_plan: vec![],
+        }
+    }
+
+    // ── P2-A: RoleMismatch role-specific hint ──────────────────────────────
+
+    #[test]
+    fn issue_hint_role_mismatch_includes_from_role() {
+        let issue = make_role_mismatch_issue("Presentation", "Utility");
+        let hint = issue_hint(&issue).expect("hint should be Some");
+        assert!(
+            hint.contains("Presentation"),
+            "hint should mention from role: {hint}"
+        );
+    }
+
+    #[test]
+    fn issue_hint_role_mismatch_includes_to_role() {
+        let issue = make_role_mismatch_issue("Presentation", "Utility");
+        let hint = issue_hint(&issue).expect("hint should be Some");
+        assert!(
+            hint.contains("Utility"),
+            "hint should mention to role: {hint}"
+        );
+    }
+
+    #[test]
+    fn issue_hint_role_mismatch_fallback_when_no_evidence() {
+        let issue = Issue {
+            id: "rm-no-ev".to_string(),
+            kind: IssueType::RoleMismatch,
+            severity: Severity::Medium,
+            scope: IssueScope::Edge("a".to_string(), "b".to_string()),
+            description: "Role boundary mismatch".to_string(),
+            evidence: vec![],
+        };
+        let hint = issue_hint(&issue).expect("hint should be Some even without evidence");
+        assert!(!hint.is_empty());
+    }
+
+    #[test]
+    fn issue_hint_orphan_is_some() {
+        let issue = make_orphan_issue("types");
+        assert!(issue_hint(&issue).is_some());
+    }
+
+    #[test]
+    fn issue_hint_layer_violation_is_none() {
+        let issue = Issue {
+            id: "lv".to_string(),
+            kind: IssueType::LayerViolation,
+            severity: Severity::High,
+            scope: IssueScope::Edge("a".to_string(), "b".to_string()),
+            description: "Layer violation".to_string(),
+            evidence: vec![],
+        };
+        assert!(issue_hint(&issue).is_none());
+    }
+
+    #[test]
+    fn render_role_mismatch_hint_appears_in_output() {
+        let mut report = empty_report();
+        report.issues = vec![make_role_mismatch_issue("Presentation", "Utility")];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("Presentation"),
+            "rendered output should contain role name: {output}"
+        );
+        assert!(
+            output.contains("Utility"),
+            "rendered output should contain role name: {output}"
+        );
+    }
+
+    // ── P3: Violation rendering with semantic layer names ──────────────────
+
+    #[test]
+    fn render_violation_shows_layer_name_in_output() {
+        let mut report = empty_report();
+        report.violations = vec![LayerViolation {
+            from: "renderer".to_string(),
+            to: "debug".to_string(),
+            from_level: 1,
+            to_level: 1,
+            from_layer_name: "ApplicationLayer".to_string(),
+            to_layer_name: "ApplicationLayer".to_string(),
+        }];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("ApplicationLayer"),
+            "output should contain semantic layer name: {output}"
+        );
+    }
+
+    #[test]
+    fn render_violation_same_layer_cycle_tag_present() {
+        let mut report = empty_report();
+        report.violations = vec![LayerViolation {
+            from: "a".to_string(),
+            to: "b".to_string(),
+            from_level: 1,
+            to_level: 1,
+            from_layer_name: "ApplicationLayer".to_string(),
+            to_layer_name: "ApplicationLayer".to_string(),
+        }];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("SAME-LAYER CYCLE"),
+            "output should contain SAME-LAYER CYCLE tag: {output}"
+        );
+    }
+
+    #[test]
+    fn render_violation_downward_tag_present() {
+        let mut report = empty_report();
+        report.violations = vec![LayerViolation {
+            from: "a".to_string(),
+            to: "b".to_string(),
+            from_level: 2,
+            to_level: 1,
+            from_layer_name: "InterfaceLayer".to_string(),
+            to_layer_name: "ApplicationLayer".to_string(),
+        }];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("DOWNWARD VIOLATION"),
+            "output should contain DOWNWARD VIOLATION tag: {output}"
+        );
+    }
+
+    #[test]
+    fn render_violation_layer_skip_tag_present() {
+        let mut report = empty_report();
+        report.violations = vec![LayerViolation {
+            from: "a".to_string(),
+            to: "b".to_string(),
+            from_level: 0,
+            to_level: 2,
+            from_layer_name: "CoreLayer".to_string(),
+            to_layer_name: "InterfaceLayer".to_string(),
+        }];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("LAYER SKIP"),
+            "output should contain LAYER SKIP tag: {output}"
+        );
+    }
+
+    #[test]
+    fn render_violation_graceful_when_layer_name_empty() {
+        let mut report = empty_report();
+        report.violations = vec![LayerViolation {
+            from: "a".to_string(),
+            to: "b".to_string(),
+            from_level: 1,
+            to_level: 1,
+            from_layer_name: String::new(),
+            to_layer_name: String::new(),
+        }];
+        let mut buf = Vec::new();
+        render_analysis_report(&mut buf, &report).unwrap();
+        let output = String::from_utf8(buf).unwrap();
+        assert!(
+            output.contains("Layer 1"),
+            "output should fall back to numeric layer: {output}"
+        );
     }
 }
