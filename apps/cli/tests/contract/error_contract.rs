@@ -3,7 +3,7 @@ use std::process::Command;
 
 #[test]
 fn error_json_structure_and_exit_code_2() {
-    let exe = env!("CARGO_BIN_EXE_design");
+    let exe = env!("CARGO_BIN_EXE_design_cli");
     let out = Command::new(exe)
         .args(["invalid-cmd"])
         .output()

@@ -209,18 +209,17 @@ impl RuleBasedPlanner {
     fn extract_target_with_fallback(input: &str, last_path: Option<&str>) -> String {
         // パスに見えるトークンを探す: '/' を含む、'.' で始まる、'.rs'/'.toml' などで終わる
         for token in input.split_whitespace() {
-            if token.contains('/')
-                || token.starts_with('.')
-                || token.ends_with(".rs")
-                || token.ends_with(".toml")
-                || token.ends_with(".json")
-                || token.ends_with(".yaml")
-                || token.ends_with(".yml")
-            {
+            if Self::is_likely_path_token(token) {
                 return token.to_string();
             }
         }
-        // パスが見つからない場合は最後のトークン（コマンド語を除く）
+
+        // パスが見つからない自然文では last_path を優先する。
+        if let Some(path) = last_path {
+            return path.to_string();
+        }
+
+        // それでもフォールバックがない場合だけ、最後の path-like トークン候補を使う。
         let last_token = input
             .split_whitespace()
             .filter(|t| {
@@ -250,6 +249,7 @@ impl RuleBasedPlanner {
                         | "で"
                 )
             })
+            .filter(|t| Self::is_likely_path_token(t))
             .last();
 
         match last_token {
@@ -257,6 +257,17 @@ impl RuleBasedPlanner {
             // トークンが見つからない場合: last_path → "."
             None => last_path.unwrap_or(".").to_string(),
         }
+    }
+
+    fn is_likely_path_token(token: &str) -> bool {
+        token.contains('/')
+            || token.starts_with('.')
+            || token.ends_with(".rs")
+            || token.ends_with(".toml")
+            || token.ends_with(".json")
+            || token.ends_with(".yaml")
+            || token.ends_with(".yml")
+            || token.ends_with(".md")
     }
 }
 

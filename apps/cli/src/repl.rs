@@ -433,7 +433,7 @@ fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
 
 /// /help コマンド出力
 fn print_help<W: Write>(
-    _registry: &CommandRegistry,
+    registry: &CommandRegistry,
     planner_mode: PlannerMode,
     writer: &mut W,
 ) -> Result<(), String> {
@@ -519,6 +519,13 @@ fn print_help<W: Write>(
     writeln!(writer, "").map_err(|e| e.to_string())?;
     writeln!(
         writer,
+        "Registered commands: {}",
+        registry.command_names().join(", ")
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(writer, "").map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
         "── セッション管理 ──────────────────────────────────────────"
     )
     .map_err(|e| e.to_string())?;
@@ -526,6 +533,7 @@ fn print_help<W: Write>(
     writeln!(writer, "  /help    - このヘルプを表示").map_err(|e| e.to_string())?;
     writeln!(writer, "  /status  - セッション状態を確認").map_err(|e| e.to_string())?;
     writeln!(writer, "  /plan    - 最後のプランを確認").map_err(|e| e.to_string())?;
+    writeln!(writer, "  /run     - 現在のプランを実行").map_err(|e| e.to_string())?;
     writeln!(writer, "  /clear   - コンテキストをリセット").map_err(|e| e.to_string())?;
     writeln!(
         writer,
@@ -978,7 +986,8 @@ mod tests {
     fn analyze_project_command_works_via_repl() {
         let (output, result) = run_with_input("/analyze project src/\n/exit\n");
         assert!(result.is_ok());
-        assert!(output.contains("Project Summary:"), "got: {output}");
+        assert!(output.contains("DBM Analyze Report"), "got: {output}");
+        assert!(output.contains("Target: src/"), "got: {output}");
     }
 
     #[test]

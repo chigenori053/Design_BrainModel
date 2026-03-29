@@ -2,35 +2,15 @@
 name = "design_cli"
 version = "0.1.0"
 edition = "2024"
-default-run = "design"
+default-run = "design_cli"
 
 [features]
 ci-heavy = []
 contract_strict = []
 
 [[bin]]
-name = "cli"
-path = "src/main.rs"
-
-[[bin]]
-name = "dbm"
-path = "src/dbm_main.rs"
-
-[[bin]]
-name = "design"
-path = "src/design_main.rs"
-
-[[bin]]
-name = "phase1_batch"
-path = "src/phase1_batch_main.rs"
-
-[[bin]]
 name = "design_cli"
-path = "src/design_cli_main.rs"
-
-[[bin]]
-name = "memory_admin"
-path = "src/memory_admin_main.rs"
+path = "src/main.rs"
 
 [dependencies]
 analysis_tools = { workspace = true }

@@ -20,11 +20,13 @@
 
 #![allow(dead_code)]
 
+use std::ffi::OsString;
 use std::io::{self};
 use std::path::PathBuf;
 use std::time::Duration;
 
 use clap::Parser;
+use clap::error::ErrorKind;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -46,9 +48,9 @@ use ratatui::{
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "memory_admin",
+    name = "design_cli",
     about = "DBM MemorySpace 永続化記憶 管理者用 TUI",
-    version = "0.1.0"
+    version = env!("CARGO_PKG_VERSION")
 )]
 struct Args {
     /// 永続化ファイルのパス (省略時はオンメモリのみ)
@@ -922,8 +924,31 @@ fn fmt_epoch(epoch: u64) -> String {
 // ── main ─────────────────────────────────────────────────────────────────────
 
 fn main() {
-    let args = Args::parse();
+    if let Err(err) = run_with_args(std::env::args_os()) {
+        eprintln!("Error: {err}");
+        std::process::exit(1);
+    }
+}
 
+pub fn run_with_args<I, T>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let args = match Args::try_parse_from(args) {
+        Ok(args) => args,
+        Err(err) => match err.kind() {
+            ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                print!("{err}");
+                return Ok(());
+            }
+            _ => return Err(err.to_string()),
+        },
+    };
+    run_app(args)
+}
+
+fn run_app(args: Args) -> Result<(), String> {
     // ストアの初期化: --store が指定されていればファイルからロード
     let store = match &args.store {
         Some(path) if !args.demo => match PersistentMemoryStore::load_or_new(path) {
@@ -935,10 +960,7 @@ fn main() {
                 );
                 s
             }
-            Err(e) => {
-                eprintln!("Failed to load store from {}: {e}", path.display());
-                std::process::exit(1);
-            }
+            Err(e) => return Err(format!("Failed to load store from {}: {e}", path.display())),
         },
         _ => {
             if args.demo {
@@ -986,7 +1008,7 @@ fn main() {
     }
 
     if let Err(e) = result {
-        eprintln!("Error: {e}");
-        std::process::exit(1);
+        return Err(e);
     }
+    Ok(())
 }

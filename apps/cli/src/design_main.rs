@@ -1,5 +1,6 @@
 #![allow(dead_code)]
 
+use std::ffi::OsString;
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
@@ -30,7 +31,7 @@ use world_model_core::{
     SimpleHypothesisGenerator, WorldModel,
 };
 
-const CLI_VERSION: &str = "0.1.0";
+const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
 const PARETO_EPS: f64 = 1e-12;
 const NORMALIZE_EPS: f64 = 1e-6;
@@ -305,7 +306,7 @@ fn fill_missing_args_with_language_core(input: &str) -> Option<String> {
 }
 
 #[derive(Parser, Debug)]
-#[command(name = "design", about = "Phase1 CLI", disable_version_flag = true)]
+#[command(name = "design_cli", about = "Phase1 CLI", version = CLI_VERSION)]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -526,7 +527,18 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let raw_args = std::env::args().collect::<Vec<_>>();
+    run_with_args(std::env::args_os())
+}
+
+pub fn run_with_args<I, T>(args: I) -> Result<(), String>
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
+    let raw_args = args
+        .into_iter()
+        .map(|arg| arg.into().to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
     let known_commands = [
         "analyze", "explain", "simulate", "clear", "adopt", "reject", "export", "phase9",
     ];

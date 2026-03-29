@@ -16,7 +16,6 @@ pub mod runtime;
 
 mod diversity;
 mod engine;
-mod normalization;
 mod stability;
 
 use core_types::ObjectiveVector;

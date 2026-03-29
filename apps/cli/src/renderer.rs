@@ -1,3 +1,9 @@
+mod decision;
+mod detailed;
+mod formatter;
+mod header;
+mod summary;
+
 use std::io::{self, Write};
 
 use design_search_engine::stable_v03::ReasoningTrace;
@@ -11,6 +17,8 @@ use unified_design_ir::{
 };
 
 use crate::autonomous_execute::AutonomousExecuteReport;
+use crate::commands::analyze::project::UnifiedAnalyzeResult;
+use crate::commands::design::analyze::AnalysisResult as DbmAnalysisResult;
 use crate::execution_foundation::ExecReport;
 use crate::service::dto::{
     AnalysisReport, CodeIssue, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
@@ -21,12 +29,44 @@ use integration_layer::{
     RefactorAction, RefactorPlanAction, Severity,
 };
 
+pub fn render_unified_analyze_summary(result: &UnifiedAnalyzeResult) -> String {
+    formatter::join_sections(&[
+        header::render_header(result),
+        summary::render_summary(result),
+        decision::render_decision(result),
+    ])
+}
+
+pub fn render_unified_analyze_detailed(result: &UnifiedAnalyzeResult) -> String {
+    formatter::join_sections(&[
+        header::render_header(result),
+        detailed::render_detailed(result),
+        decision::render_decision(result),
+    ])
+}
+
 pub fn render_dbm_analyze(
     input: &str,
     summary: &DesignIssueSummary,
     issues: &[DesignIssue],
 ) -> String {
-    let mut sorted = issues.to_vec();
+    let result = DbmAnalysisResult {
+        input: input.to_string(),
+        stage: infer_stage_from_issues(issues),
+        converged: summary.critical == 0 && summary.high == 0,
+        status: if summary.critical == 0 && summary.high == 0 {
+            crate::commands::design::analyze::AnalysisStatus::Converged
+        } else {
+            crate::commands::design::analyze::AnalysisStatus::InProgress
+        },
+        summary: summary.clone(),
+        issues: issues.to_vec(),
+    };
+    render_dbm_analysis_result(&result)
+}
+
+pub fn render_dbm_analysis_result(result: &DbmAnalysisResult) -> String {
+    let mut sorted = result.issues.clone();
     sorted.sort_by(|a, b| {
         severity_rank(&a.severity)
             .cmp(&severity_rank(&b.severity))
@@ -36,8 +76,11 @@ pub fn render_dbm_analyze(
 
     let mut output = String::new();
     output.push_str("=== DBM Analyze ===\n\n");
-    output.push_str(&format!("Input: {input}\n"));
-    output.push_str(&format_summary(summary));
+    output.push_str(&format!("Input: {}\n", result.input));
+    output.push_str(&format!("Stage: {:?}\n", result.stage));
+    output.push_str(&format!("Status: {}\n", result.status.as_str()));
+    output.push_str(&format_analysis_summary(result));
+    output.push_str("\nIssues:\n");
     output.push_str("\n---\n");
     output.push_str("Details:\n");
 
@@ -57,6 +100,10 @@ pub fn render_dbm_analyze(
     }
 
     output
+}
+
+fn infer_stage_from_issues(_issues: &[DesignIssue]) -> unified_design_ir::Stage {
+    unified_design_ir::Stage::Context
 }
 
 pub fn render_dbm_diff(input: &str, diff: &DesignDiffResult) -> String {
@@ -165,6 +212,10 @@ fn format_summary(summary: &DesignIssueSummary) -> String {
         "\nSummary:\n  Critical: {}\n  High: {}\n  Medium: {}\n  Low: {}\n",
         summary.critical, summary.high, summary.medium, summary.low
     )
+}
+
+fn format_analysis_summary(result: &DbmAnalysisResult) -> String {
+    format_summary(&result.summary)
 }
 
 fn indent_summary(summary: &DesignIssueSummary) -> String {
@@ -1262,6 +1313,13 @@ mod tests {
     };
 
     use super::*;
+    use crate::commands::analyze::project::{
+        AnalyzeMode, DecisionContext, DecisionMetrics, UnifiedAnalyzeResult,
+    };
+    use crate::dbm::analyzer::{
+        Complexity as ProjectComplexity, DependencyEdge, FileAnalysis, Language as ProjectLanguage,
+        Module as ProjectModule, ProjectAnalysisResult, ProjectSummary,
+    };
     use crate::service::dto::{AnalysisReport, AnalysisSummary};
     use integration_layer::{CycleReport, Issue, LayerModel};
 
@@ -1320,6 +1378,76 @@ mod tests {
             next_action: String::new(),
             root_cause: None,
             refactor_plan: vec![],
+        }
+    }
+
+    fn sample_unified_result(mode: AnalyzeMode) -> UnifiedAnalyzeResult {
+        UnifiedAnalyzeResult {
+            path: ".".to_string(),
+            mode,
+            intent: "Maintainability".to_string(),
+            modules: 2,
+            cycles: 1,
+            coupling: "High".to_string(),
+            top_issue: "debug ↔ renderer cycle".to_string(),
+            violations: vec!["1 dependency cycle(s) detected".to_string()],
+            metrics: DecisionMetrics {
+                si: 0.91,
+                cs: 0.98,
+                rp: 0.38,
+                er: 0.05,
+            },
+            decision: DecisionContext {
+                action: "RemoveDependency(debug -> renderer)".to_string(),
+                expected_impact: "coupling down, ownership clearer".to_string(),
+                score: 0.82,
+                confidence: 0.91,
+                risk: "Low".to_string(),
+                intent_match: "Maintainability".to_string(),
+            },
+            analysis: ProjectAnalysisResult {
+                files: vec![
+                    FileAnalysis {
+                        path: "src/debug.rs".to_string(),
+                        language: ProjectLanguage::Rust,
+                        complexity: ProjectComplexity::Medium,
+                        todos: Vec::new(),
+                    },
+                    FileAnalysis {
+                        path: "src/renderer.rs".to_string(),
+                        language: ProjectLanguage::Rust,
+                        complexity: ProjectComplexity::High,
+                        todos: vec!["TODO: break cycle".to_string()],
+                    },
+                ],
+                dependencies: vec![
+                    DependencyEdge {
+                        from: "debug".to_string(),
+                        to: "renderer".to_string(),
+                    },
+                    DependencyEdge {
+                        from: "renderer".to_string(),
+                        to: "debug".to_string(),
+                    },
+                ],
+                modules: vec![
+                    ProjectModule {
+                        name: "debug".to_string(),
+                        files: vec!["src/debug.rs".to_string()],
+                    },
+                    ProjectModule {
+                        name: "renderer".to_string(),
+                        files: vec!["src/renderer.rs".to_string()],
+                    },
+                ],
+                summary: ProjectSummary {
+                    total_files: 2,
+                    languages: vec![ProjectLanguage::Rust],
+                    avg_complexity: ProjectComplexity::Medium,
+                },
+            },
+            report: None,
+            design: None,
         }
     }
 
@@ -1551,8 +1679,38 @@ mod tests {
 
         assert_eq!(
             output,
-            "=== DBM Analyze ===\n\nInput: /tmp/design.md\n\nSummary:\n  Critical: 1\n  High: 0\n  Medium: 1\n  Low: 0\n\n---\nDetails:\n\n[Critical] Missing\n  Path: function.functions\n  Reason: MissingRequiredField\n\n[Medium] OverSpecification\n  Path: interface\n  Reason: ExcessiveComplexity\n"
+            "=== DBM Analyze ===\n\nInput: /tmp/design.md\nStage: Context\nStatus: In Progress\n\nSummary:\n  Critical: 1\n  High: 0\n  Medium: 1\n  Low: 0\n\nIssues:\n\n---\nDetails:\n\n[Critical] Missing\n  Path: function.functions\n  Reason: MissingRequiredField\n\n[Medium] OverSpecification\n  Path: interface\n  Reason: ExcessiveComplexity\n"
         );
+    }
+
+    #[test]
+    fn unified_summary_uses_expected_order() {
+        let output = render_unified_analyze_summary(&sample_unified_result(AnalyzeMode::Summary));
+        let header = output.find("DBM Analyze Report").expect("header");
+        let summary = output.find("Modules: 2").expect("summary");
+        let decision = output.find("Decision Context").expect("decision");
+        assert!(header < summary);
+        assert!(summary < decision);
+    }
+
+    #[test]
+    fn unified_detailed_includes_decision_and_metrics() {
+        let output = render_unified_analyze_detailed(&sample_unified_result(AnalyzeMode::Detailed));
+        assert!(output.contains("[Modules]"), "got: {output}");
+        assert!(output.contains("[Metrics: SI/CS/RP/ER]"), "got: {output}");
+        assert!(output.contains("Top Recommendation:"), "got: {output}");
+        assert!(output.contains("Confidence: High (0.91)"), "got: {output}");
+    }
+
+    #[test]
+    fn unified_detailed_handles_empty_data() {
+        let mut result = sample_unified_result(AnalyzeMode::Detailed);
+        result.analysis.modules.clear();
+        result.analysis.dependencies.clear();
+        result.violations.clear();
+        result.top_issue = String::new();
+        let output = render_unified_analyze_detailed(&result);
+        assert!(output.contains("No issues detected"), "got: {output}");
     }
 
     #[test]

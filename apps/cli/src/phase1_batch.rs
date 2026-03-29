@@ -11,7 +11,7 @@ use serde_json::json;
 use crate::step0;
 
 pub const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
-pub const CLI_VERSION: &str = "phase1-batch-1.0";
+pub const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub fn run_from_args(args: &[String]) -> Result<(), String> {
     if args.iter().any(|arg| arg == "--version") {

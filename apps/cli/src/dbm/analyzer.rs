@@ -1,3 +1,4 @@
+use serde::Serialize;
 /// Phase3 Extended: プロジェクト単位コード解析器
 ///
 /// Phase3.1 追加:
@@ -13,7 +14,7 @@ use std::path::Path;
 
 // ─── 言語 ────────────────────────────────────────────────────────────────
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub enum Language {
     Go,
     Python,
@@ -44,7 +45,7 @@ impl Language {
 
 // ─── 複雑度 ──────────────────────────────────────────────────────────────
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum Complexity {
     Low,
     Medium,
@@ -92,7 +93,7 @@ impl Complexity {
 // ─── プロジェクト解析型 ──────────────────────────────────────────────────
 
 /// ファイル単位の解析結果
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct FileAnalysis {
     pub path: String,
     pub language: Language,
@@ -101,21 +102,21 @@ pub struct FileAnalysis {
 }
 
 /// モジュール間依存エッジ
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct DependencyEdge {
     pub from: String,
     pub to: String,
 }
 
 /// ディレクトリ単位のモジュール
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct Module {
     pub name: String,
     pub files: Vec<String>,
 }
 
 /// プロジェクト全体サマリ
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProjectSummary {
     pub total_files: usize,
     pub languages: Vec<Language>,
@@ -123,7 +124,7 @@ pub struct ProjectSummary {
 }
 
 /// プロジェクト全体解析結果
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 pub struct ProjectAnalysisResult {
     pub files: Vec<FileAnalysis>,
     pub dependencies: Vec<DependencyEdge>,

@@ -68,16 +68,7 @@ pub(crate) fn execute_process(
                 child.kill().map_err(|err| {
                     RunnerError::TimeoutError(format!("failed to kill timed out process: {err}"))
                 })?;
-                // On Unix, kill the entire process group to reap all descendants
-                // (grandchildren, etc.) that the direct child may have spawned.
-                // Since we used process_group(0), PGID == child PID.
-                #[cfg(unix)]
-                {
-                    let _ = Command::new("kill")
-                        .args(["-9", &format!("-{pid}")])
-                        .stderr(Stdio::null())
-                        .status();
-                }
+                cleanup_process_group(pid, "-9");
                 let waited = child.wait().map_err(|err| {
                     RunnerError::TimeoutError(format!("failed to reap timed out process: {err}"))
                 })?;
@@ -96,6 +87,14 @@ pub(crate) fn execute_process(
         .join()
         .map_err(|_| RunnerError::ExecutionError("stderr reader thread panicked".to_string()))?;
 
+    if !status.1 {
+        // Even after a normal exit, descendants can remain alive in the child's
+        // process group. Best-effort cleanup avoids orphaned grandchildren and
+        // keeps repeated runner tests from accumulating stray processes.
+        cleanup_process_group(pid, "-15");
+        cleanup_process_group(pid, "-9");
+    }
+
     Ok(build_result(
         status.0,
         status.1,
@@ -108,6 +107,21 @@ pub(crate) fn execute_process(
     ))
 }
 
+fn cleanup_process_group(pid: u32, signal: &str) {
+    #[cfg(unix)]
+    {
+        let sig = match signal {
+            "-15" => 15,
+            "-9" => 9,
+            _ => return,
+        };
+        unsafe extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        let _ = unsafe { kill(-(pid as i32), sig) };
+    }
+}
+
 pub(crate) fn build_result(
     status: ProcessExitStatus,
     timed_out: bool,
@@ -118,6 +132,7 @@ pub(crate) fn build_result(
     output_mode: OutputMode,
     sandbox_mode: SandboxMode,
 ) -> ExecutionResult {
+    let duration_ms = duration_ms.max(1);
     let stdout_meta = OutputMeta {
         streamed: matches!(output_mode, OutputMode::Streaming),
         truncated: stdout_bytes.len() > MAX_OUTPUT,

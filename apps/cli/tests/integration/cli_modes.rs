@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde_json::Value;
 
 fn cli_bin() -> &'static str {
-    env!("CARGO_BIN_EXE_cli")
+    env!("CARGO_BIN_EXE_design_cli")
 }
 
 fn temp_project_dir(name: &str) -> PathBuf {
