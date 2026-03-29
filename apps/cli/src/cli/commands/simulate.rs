@@ -1,12 +1,8 @@
 use std::ffi::OsString;
 
-use crate::design_main;
 use crate::ui::banner;
 
-pub fn run(args: Vec<OsString>) -> Result<(), String> {
+pub fn run(_args: Vec<OsString>) -> Result<(), String> {
     banner::print_banner();
-
-    let mut forwarded = vec![OsString::from("design_cli"), OsString::from("simulate")];
-    forwarded.extend(args);
-    design_main::run_with_args(forwarded)
+    Err("legacy simulate is only available from the design_cli binary entrypoint".to_string())
 }

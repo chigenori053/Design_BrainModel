@@ -20,15 +20,16 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
+use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::coding::{
     CodingOptions, execute_code_change_set, generate_code_change_set, load_patches_from_json,
 };
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
 use crate::r#loop::run_loop;
 use crate::renderer::{
-    render_analysis_report, render_analysis_report_markdown, render_autonomous_execute_report,
-    render_coding_report, render_design_report, render_exec_report, render_refactor_report,
-    render_result, render_rules_report, render_run_report, render_validation_report,
+    render_analysis_report_markdown, render_autonomous_execute_report, render_coding_report,
+    render_design_report, render_exec_report, render_refactor_report, render_result,
+    render_rules_report, render_run_report, render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -160,12 +161,22 @@ pub struct GenerateArgs {
 pub struct AnalyzeArgs {
     pub path: PathBuf,
     #[arg(long, default_value_t = false)]
+    pub detailed: bool,
+    #[arg(long, default_value_t = false)]
+    pub report: bool,
+    #[arg(long, default_value_t = false)]
+    pub design: bool,
+    #[arg(long, default_value = "ja")]
+    pub lang: String,
+    #[arg(long)]
+    pub intent: Option<String>,
+    #[arg(long, default_value_t = false)]
     pub json: bool,
     /// Save a structured operational log (JSON) to this path.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub out: Option<PathBuf>,
     /// Write the diagnostic report as Markdown to this path.
-    #[arg(long)]
+    #[arg(long, hide = true)]
     pub report_md: Option<PathBuf>,
 }
 
@@ -457,44 +468,82 @@ fn execute_generate(
 
 fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
     use std::time::Instant;
+
     let started = Instant::now();
-    let report = analyze_path(&args.path);
+    let mut forwarded = vec![args.path.display().to_string()];
+    if args.detailed {
+        forwarded.push("--detailed".to_string());
+    }
+    if args.report {
+        forwarded.push("--report".to_string());
+    }
+    if args.design {
+        forwarded.push("--design".to_string());
+    }
+    forwarded.push("--lang".to_string());
+    forwarded.push(args.lang.clone());
+    if let Some(intent) = &args.intent {
+        forwarded.push("--intent".to_string());
+        forwarded.push(intent.clone());
+    }
+    if args.json {
+        forwarded.push("--json".to_string());
+    }
+
+    let output_result = (|| {
+        let options = project::parse_options(&forwarded)?;
+        let mode = if args.detailed {
+            AnalyzeMode::Detailed
+        } else {
+            AnalyzeMode::Summary
+        };
+        let options = project::AnalyzeOptions {
+            path: args.path.display().to_string(),
+            mode,
+            report: options.report,
+            design: options.design,
+            language: options.language,
+            intent: options.intent,
+            json: options.json,
+        };
+        project::execute(&options.path.clone(), options)
+    })();
     let latency_ms = started.elapsed().as_millis();
 
     if let Some(ref out) = args.out {
-        let (success, actual) = match &report {
-            Ok(_) => (true, String::new()),
-            Err(e) => (false, e.clone()),
+        let (success, actual) = match &output_result {
+            Ok(_) => (true, None),
+            Err(err) => (false, Some(err.clone())),
         };
         let log = crate::ops::AnalyzeLog {
             path: args.path.display().to_string(),
             latency_ms,
             success,
-            actual: if success { None } else { Some(actual) },
+            actual,
         };
-        if let Err(e) = crate::ops::write_analyze_log(&log, out) {
-            eprintln!("warn: could not write log: {e}");
+        if let Err(err) = crate::ops::write_analyze_log(&log, out) {
+            eprintln!("warn: could not write log: {err}");
         }
     }
 
-    let report = report?;
-    let canonical_input = analysis_to_system_input(&report);
-    let relations = to_relations(canonical_input.clone());
-    let _system_output = to_system_output(relations.clone());
-    let validation = validate_mapping(&canonical_input, &relations);
-    if !validation.is_valid {
-        return Err("integration mapping failed for analysis report".to_string());
-    }
-    let design_graph = design_graph_from_analysis(&report);
-    let report = enrich_analysis_report(report, diagnostic_analysis(&design_graph));
     if let Some(path) = &args.report_md {
+        let report = analyze_path(&args.path)?;
+        let canonical_input = analysis_to_system_input(&report);
+        let relations = to_relations(canonical_input.clone());
+        let _system_output = to_system_output(relations.clone());
+        let validation = validate_mapping(&canonical_input, &relations);
+        if !validation.is_valid {
+            return Err("integration mapping failed for analysis report".to_string());
+        }
+        let design_graph = design_graph_from_analysis(&report);
+        let report = enrich_analysis_report(report, diagnostic_analysis(&design_graph));
         fs::write(path, render_analysis_report_markdown(&report))
             .map_err(|err| format!("failed to write markdown report {}: {err}", path.display()))?;
     }
-    if report_json(args.json, &report)? {
-        return Ok(());
-    }
-    render_analysis_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+
+    let output = output_result?;
+    println!("{output}");
+    Ok(())
 }
 
 fn execute_design(args: PathArgs) -> Result<(), String> {

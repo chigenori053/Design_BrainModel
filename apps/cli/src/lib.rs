@@ -5,7 +5,6 @@ pub mod coding;
 pub mod command;
 pub mod commands;
 pub mod dbm;
-pub mod design_main;
 pub mod design_output;
 pub mod execution_foundation;
 pub mod executor;

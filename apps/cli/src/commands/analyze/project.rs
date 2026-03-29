@@ -17,8 +17,9 @@ pub fn execute_unified(
     _session: &mut AgentSession,
 ) -> Result<Output, CommandError> {
     let options = parse_options(args).map_err(CommandError::ExecutionError)?;
-    let result = analyze_with_options(&options).map_err(CommandError::ExecutionError)?;
-    Ok(Output::text(dispatch_output(&result, &options)))
+    let path = options.path.clone();
+    let output = execute(&path, options).map_err(CommandError::ExecutionError)?;
+    Ok(Output::text(output))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
@@ -171,7 +172,13 @@ pub fn analyze_with_options(options: &AnalyzeOptions) -> Result<UnifiedAnalyzeRe
     })
 }
 
-fn dispatch_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
+pub fn execute(path: &str, mut options: AnalyzeOptions) -> Result<String, String> {
+    options.path = path.to_string();
+    let result = analyze_with_options(&options)?;
+    Ok(render_output(&result, &options))
+}
+
+pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
     if options.json {
         return serde_json::to_string_pretty(result)
             .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
@@ -529,7 +536,7 @@ mod tests {
             json: false,
         };
         let result = analyze_with_options(&options).unwrap();
-        let output = dispatch_output(&result, &options);
+        let output = render_output(&result, &options);
         let header = output.find("DBM Analyze Report").expect("header");
         let decision = output.find("Decision Context").expect("decision");
         let report = output.find("=== Report ===").expect("report");

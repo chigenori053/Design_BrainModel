@@ -10,7 +10,7 @@ use agent_core::{
     WorldModelMode, run_phase1_matrix,
 };
 use analysis_tools::{CaseData, compute_correlation};
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, error::ErrorKind};
 use design_reasoning::{Phase1Engine, ScsInputs};
 use design_search_engine::{
     BeamSearchController, SearchConfig as DesignSearchConfig, SearchController as _,
@@ -30,6 +30,8 @@ use world_model_core::{
     ConsistencyEvaluator, DeltaConsistencyEvaluator, DeterministicWorldModel, HypothesisGenerator,
     SimpleHypothesisGenerator, WorldModel,
 };
+
+use design_cli::commands::analyze::project::{self, AnalyzeMode, AnalyzeOptions};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
@@ -248,7 +250,7 @@ fn map_intent_to_command(intent: ResolvedIntent) -> Result<CommandRequest, Ambig
                 .ok_or(Ambiguity::MissingTarget)?;
             Ok(CommandRequest {
                 program: "design".to_string(),
-                args: vec!["analyze".to_string(), "--target".to_string(), path],
+                args: vec!["analyze".to_string(), path],
             })
         }
         IntentType::GenerateCode => Ok(CommandRequest {
@@ -315,6 +317,22 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Analyze {
+        #[arg(default_value = "./project")]
+        path: String,
+        #[arg(long, default_value_t = false)]
+        detailed: bool,
+        #[arg(long, default_value_t = false)]
+        report: bool,
+        #[arg(long, default_value_t = false)]
+        design: bool,
+        #[arg(long, default_value = "ja")]
+        lang: String,
+        #[arg(long)]
+        intent: Option<String>,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+    },
+    PhaseAnalyze {
         #[arg(long = "target", default_value = "./project")]
         target: String,
         #[arg(long, default_value_t = 42)]
@@ -535,23 +553,38 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    fn parse_cli(args: Vec<String>) -> Result<Cli, String> {
+        match Cli::try_parse_from(args) {
+            Ok(cli) => Ok(cli),
+            Err(err) => match err.kind() {
+                ErrorKind::DisplayHelp | ErrorKind::DisplayVersion => {
+                    print!("{err}");
+                    std::process::exit(0);
+                }
+                _ => Err(format!("invalid command: {err}")),
+            },
+        }
+    }
+
     let raw_args = args
         .into_iter()
         .map(|arg| arg.into().to_string_lossy().into_owned())
         .collect::<Vec<_>>();
     let known_commands = [
-        "analyze", "explain", "simulate", "clear", "adopt", "reject", "export", "phase9",
+        "analyze",
+        "phase-analyze",
+        "explain",
+        "simulate",
+        "clear",
+        "adopt",
+        "reject",
+        "export",
+        "phase9",
     ];
     if raw_args.len() > 1 && raw_args[1].starts_with('/') {
         let mut normalized = raw_args.clone();
         normalized[1] = normalized[1].trim_start_matches('/').to_string();
-        if normalized[1] == "analyze" && normalized.len() >= 3 && !normalized[2].starts_with('-') {
-            let path = normalized[2].clone();
-            normalized.remove(2);
-            normalized.insert(2, "--target".to_string());
-            normalized.insert(3, path);
-        }
-        let cli = Cli::try_parse_from(normalized).map_err(|e| format!("invalid command: {e}"))?;
+        let cli = parse_cli(normalized)?;
         return run_cli(cli);
     }
     if raw_args.len() == 2 && !known_commands.contains(&raw_args[1].as_str()) {
@@ -563,7 +596,6 @@ where
             if parsed.args.first().map(String::as_str) == Some("analyze")
                 && let Some(path) = fill_missing_args_with_language_core(&raw_input)
             {
-                parsed.args.push("--target".to_string());
                 parsed.args.push(path);
             }
             parsed
@@ -597,19 +629,29 @@ where
                 }
             }
         };
-        let cli = Cli::try_parse_from(
-            std::iter::once(request.program.clone()).chain(request.args.clone()),
-        )
-        .map_err(|e| format!("invalid command: {e}"))?;
+        let cli = parse_cli(
+            std::iter::once(request.program.clone())
+                .chain(request.args.clone())
+                .collect::<Vec<_>>(),
+        )?;
         return run_cli(cli);
     }
-    let cli = Cli::try_parse_from(raw_args).map_err(|e| format!("invalid command: {e}"))?;
+    let cli = parse_cli(raw_args)?;
     run_cli(cli)
 }
 
 fn run_cli(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Analyze {
+            path,
+            detailed,
+            report,
+            design,
+            lang,
+            intent,
+            json,
+        } => run_unified_analyze(path, detailed, report, design, lang, intent, json),
+        Commands::PhaseAnalyze {
             target,
             seed,
             beam_width,
@@ -617,7 +659,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             hv_guided,
             human_coherence,
             dump_analysis,
-        } => run_analyze(
+        } => run_phase_analyze(
             target,
             seed,
             beam_width,
@@ -680,7 +722,70 @@ fn run_cli(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn run_analyze(
+fn run_unified_analyze(
+    path: String,
+    detailed: bool,
+    report: bool,
+    design: bool,
+    lang: String,
+    intent: Option<String>,
+    json: bool,
+) -> Result<(), String> {
+    let mode = if detailed {
+        AnalyzeMode::Detailed
+    } else {
+        AnalyzeMode::Summary
+    };
+    let mut forwarded = vec![path.clone()];
+    if detailed {
+        forwarded.push("--detailed".to_string());
+    }
+    if report {
+        forwarded.push("--report".to_string());
+    }
+    if design {
+        forwarded.push("--design".to_string());
+    }
+    forwarded.push("--lang".to_string());
+    forwarded.push(lang);
+    if let Some(intent) = &intent {
+        forwarded.push("--intent".to_string());
+        forwarded.push(intent.clone());
+    }
+    if json {
+        forwarded.push("--json".to_string());
+    }
+
+    let parsed = project::parse_options(&forwarded)?;
+    let options = AnalyzeOptions {
+        path: path.clone(),
+        mode,
+        report: parsed.report,
+        design: parsed.design,
+        language: parsed.language,
+        intent: parsed.intent,
+        json: parsed.json,
+    };
+    let output = project::execute(&path, options)?;
+    if json {
+        println!("{output}");
+        return Ok(());
+    }
+    render_success(
+        "analyze",
+        json!({
+            "target": path,
+            "output": output
+        }),
+        JsonMeta {
+            command: "analyze",
+            hv_policy: None,
+            deterministic: true,
+        },
+    )
+}
+
+fn run_phase_analyze(
     target: String,
     seed: u64,
     beam_width: usize,

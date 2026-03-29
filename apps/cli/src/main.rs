@@ -19,6 +19,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Analyze(AnalyzeArgs),
+    PhaseAnalyze(PassThroughArgs),
     Simulate(SimulateArgs),
     Phase1(PassThroughArgs),
     Memory(PassThroughArgs),
@@ -28,10 +29,20 @@ enum Commands {
 struct AnalyzeArgs {
     path: PathBuf,
     #[arg(long, default_value_t = false)]
+    detailed: bool,
+    #[arg(long, default_value_t = false)]
+    report: bool,
+    #[arg(long, default_value_t = false)]
+    design: bool,
+    #[arg(long, default_value = "ja")]
+    lang: String,
+    #[arg(long)]
+    intent: Option<String>,
+    #[arg(long, default_value_t = false)]
     json: bool,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     out: Option<PathBuf>,
-    #[arg(long)]
+    #[arg(long, hide = true)]
     report_md: Option<PathBuf>,
 }
 
@@ -81,9 +92,20 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
     match cli.command {
         Some(Commands::Analyze(args)) => design_cli::cli::commands::analyze::run(
             args.path,
+            args.detailed,
+            args.report,
+            args.design,
+            args.lang,
+            args.intent,
             args.json,
             args.out,
             args.report_md,
+        ),
+        Some(Commands::PhaseAnalyze(args)) => design_cli::design_main::run_with_args(
+            std::iter::once(OsString::from("design_cli"))
+                .chain(std::iter::once(OsString::from("phase-analyze")))
+                .chain(args.args)
+                .collect::<Vec<_>>(),
         ),
         Some(Commands::Simulate(args)) => design_cli::cli::commands::simulate::run(args.args),
         Some(Commands::Phase1(args)) => design_cli::cli::commands::phase1::run(args.args),
@@ -142,8 +164,12 @@ fn should_use_legacy_design(args: &[OsString]) -> bool {
         return true;
     }
 
+    if first == "phase-analyze" {
+        return true;
+    }
+
     if first == "analyze" {
-        let has_design_flag = args.iter().skip(2).filter_map(|arg| arg.to_str()).any(|arg| {
+        return args.iter().skip(2).filter_map(|arg| arg.to_str()).any(|arg| {
             matches!(
                 arg,
                 "--beam-width"
@@ -154,15 +180,18 @@ fn should_use_legacy_design(args: &[OsString]) -> bool {
                     | "--target"
             )
         });
-        let second_is_flag = args
-            .get(2)
-            .and_then(|arg| arg.to_str())
-            .is_none_or(|arg| arg.starts_with('-'));
-        return has_design_flag || second_is_flag;
     }
 
     !matches!(
         first,
-        "-h" | "--help" | "-V" | "--version" | "analyze" | "simulate" | "phase1" | "memory"
+        "-h"
+            | "--help"
+            | "-V"
+            | "--version"
+            | "analyze"
+            | "phase-analyze"
+            | "simulate"
+            | "phase1"
+            | "memory"
     ) && !should_use_legacy_app(args)
 }

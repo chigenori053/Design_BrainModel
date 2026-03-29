@@ -1,5 +1,5 @@
 mod code;
-pub(crate) mod project;
+pub mod project;
 
 use crate::command::{CommandHandler, CommandPlugin, CommandRegistry};
 use crate::session::AgentSession;

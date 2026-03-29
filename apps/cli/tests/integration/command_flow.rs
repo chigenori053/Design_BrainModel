@@ -68,7 +68,7 @@ fn hybrid_input_routes_command_and_fills_target() {
 #[cfg(feature = "ci-heavy")]
 #[test]
 fn command_flow_heavy_phase1_commands() {
-    for cmd in ["analyze", "explain", "simulate"] {
+    for cmd in ["phase-analyze", "explain", "simulate"] {
         let (code, out, _) = run(&[cmd, "--beam-width", "1", "--max-steps", "1"]);
         assert_eq!(code, 0, "failed command: {cmd}");
         let out = out.expect("stdout json");

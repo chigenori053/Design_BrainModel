@@ -5,6 +5,11 @@ use crate::app;
 
 pub fn run(
     path: PathBuf,
+    detailed: bool,
+    report: bool,
+    design: bool,
+    lang: String,
+    intent: Option<String>,
     json: bool,
     out: Option<PathBuf>,
     report_md: Option<PathBuf>,
@@ -15,6 +20,21 @@ pub fn run(
         path.into_os_string(),
     ];
 
+    if detailed {
+        forwarded.push(OsString::from("--detailed"));
+    }
+    if report {
+        forwarded.push(OsString::from("--report"));
+    }
+    if design {
+        forwarded.push(OsString::from("--design"));
+    }
+    forwarded.push(OsString::from("--lang"));
+    forwarded.push(OsString::from(lang));
+    if let Some(intent) = intent {
+        forwarded.push(OsString::from("--intent"));
+        forwarded.push(OsString::from(intent));
+    }
     if json {
         forwarded.push(OsString::from("--json"));
     }
