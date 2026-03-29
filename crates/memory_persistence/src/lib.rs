@@ -14,8 +14,8 @@ pub mod similarity;
 
 pub use generalized_memory::GeneralizedMemory;
 pub use optimizer::{
-    DecisionAction, DecisionEngine, DecisionEvidence, DecisionPolicy, IngestResult,
-    SimilarityProfile, UpgradeGate, DUPLICATE_THRESHOLD, UNIQUE_THRESHOLD,
+    DUPLICATE_THRESHOLD, DecisionAction, DecisionEngine, DecisionEvidence, DecisionPolicy,
+    IngestResult, SimilarityProfile, UNIQUE_THRESHOLD, UpgradeGate,
 };
 pub use persistence_store::{IngestAuditEntry, OptimizationStats, PersistentMemoryStore};
 pub use similarity::{combined_similarity, cosine_similarity, jaccard_similarity};

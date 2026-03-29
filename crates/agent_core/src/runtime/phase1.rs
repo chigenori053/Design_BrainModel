@@ -2,6 +2,7 @@ use design_reasoning::{
     DesignFactor, FactorType, ScsInputs, compute_dependency_consistency_metrics, compute_scs_v1_1,
     sanitize_factors,
 };
+use std::collections::BTreeMap;
 
 pub const ENGINE_VERSION: &str = design_reasoning::Phase1Engine::ENGINE_VERSION;
 
@@ -56,6 +57,15 @@ fn run_phase1_variant(
     let mut raw_rows = Vec::new();
     let mut summary_rows = Vec::new();
     let mut delta_hv_window = std::collections::VecDeque::<f64>::new();
+    let mut previous_frontier_hv = 0.0f64;
+    let mut search_controller = None::<crate::runtime::structured_search::SearchController>;
+    let mut simulation_cache = crate::runtime::world_model::SimulationCache::new();
+    let mut learning_engine = crate::runtime::world_model::LearningEngine::new(
+        config.world_model_mode,
+        config.world_model_learning_rate,
+        config.world_model_learning_decay,
+        config.world_model_learning_confidence_gate,
+    );
 
     for depth in 1..=config.max_steps.max(1) {
         let target_field = crate::build_target_field(&field, &shm, &frontier[0], lambda);
@@ -109,12 +119,6 @@ fn run_phase1_variant(
             break;
         }
 
-        let normalized_depth = normalize_phase1_vectors(
-            &candidates
-                .iter()
-                .map(|(_, o, _)| o.clone())
-                .collect::<Vec<_>>(),
-        );
         let mut front_map: std::collections::BTreeMap<
             memory_space::StateId,
             (
@@ -131,46 +135,92 @@ fn run_phase1_variant(
             core_types::ObjectiveVector,
             memory_space::Uuid,
         )> = front_map.into_values().collect();
-        let front_objs = front_entries
-            .iter()
-            .map(|(_, o, _)| o.clone())
-            .collect::<Vec<_>>();
-        let mut order: Vec<usize> = (0..front_entries.len()).collect();
-        if matches!(config.hv_policy, crate::HvPolicy::Legacy) {
-            order.sort_by(|&li, &ri| {
-                crate::scalar_score(&front_objs[ri])
-                    .partial_cmp(&crate::scalar_score(&front_objs[li]))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
-            });
-        } else {
-            let scores = crate::engine::normalization::soft_dominance_scores(
-                &front_objs,
-                crate::SOFT_PARETO_TEMPERATURE,
-            );
-            order.sort_by(|&li, &ri| {
-                scores[ri]
-                    .partial_cmp(&scores[li])
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then_with(|| {
-                        crate::scalar_score(&front_objs[ri])
-                            .partial_cmp(&crate::scalar_score(&front_objs[li]))
-                            .unwrap_or(std::cmp::Ordering::Equal)
-                    })
-                    .then_with(|| front_entries[li].0.id.cmp(&front_entries[ri].0.id))
-            });
-        }
-        let front: Vec<(
-            memory_space::DesignState,
-            core_types::ObjectiveVector,
-            memory_space::Uuid,
-        )> = order
+        let world_mode_entries = front_entries
             .into_iter()
-            .map(|idx| front_entries[idx].clone())
-            .collect();
+            .map(|(state, obj, rid)| {
+                if config.world_model_enabled {
+                    if let Some(simulated) = crate::runtime::world_model::simulate_best_action(
+                        &state,
+                        obj.clone(),
+                        &mut hybrid_vm,
+                        config.world_model_alpha,
+                        config.world_model_beta,
+                        config.world_model_beta_profile,
+                        config.world_model_actions_per_state,
+                        config.world_model_max_depth,
+                        config.intent_profile,
+                        config.world_model_mode,
+                        config.world_model_variance_penalty,
+                        config.world_model_semantic_variance_penalty,
+                        config.world_model_semantic_variance_max_penalty,
+                        config.world_model_confidence_floor,
+                        &mut learning_engine,
+                        search_controller
+                            .as_ref()
+                            .map(|controller| &controller.metrics),
+                        &mut simulation_cache,
+                    ) {
+                        return (
+                            simulated.state,
+                            simulated.objective,
+                            rid,
+                            Some(simulated.delta),
+                        );
+                    }
+                }
+                (state, obj, rid, None)
+            })
+            .collect::<Vec<_>>();
+        let normalized_depth = normalize_phase1_vectors(
+            &world_mode_entries
+                .iter()
+                .map(|(_, o, _, _)| o.clone())
+                .collect::<Vec<_>>(),
+        );
+        let structured_candidates = world_mode_entries
+            .iter()
+            .zip(normalized_depth.iter())
+            .map(|((state, obj, rid, simulation), norm)| {
+                crate::runtime::structured_search::build_search_candidate(
+                    state.clone(),
+                    obj.clone(),
+                    *rid,
+                    *norm,
+                    simulation.clone(),
+                )
+            })
+            .collect::<Vec<_>>();
+        let structured_outcome = crate::runtime::structured_search::select_controlled_frontier(
+            structured_candidates.clone(),
+            search_controller.as_ref(),
+            config.beam_width.max(1).min(world_mode_entries.len()),
+            depth,
+            config.max_steps.max(1),
+        );
 
-        let normalized_front =
-            normalize_phase1_vectors(&front.iter().map(|(_, o, _)| o.clone()).collect::<Vec<_>>());
+        let front = structured_outcome
+            .controller
+            .frontier
+            .iter()
+            .map(|candidate| {
+                (
+                    candidate.state.clone(),
+                    candidate.objective.clone(),
+                    candidate.rule_id,
+                )
+            })
+            .collect::<Vec<_>>();
+        let normalized_front = structured_outcome
+            .controller
+            .frontier
+            .iter()
+            .map(|candidate| candidate.normalized_objective)
+            .collect::<Vec<_>>();
+        let cluster_map = cluster_membership_map(
+            &structured_outcome.controller.clusters,
+            &structured_candidates,
+        );
+        let diversity_scores = frontier_diversity_scores(&structured_outcome.controller.frontier);
         let corr = corr_matrix4(&normalized_front);
         let mean_nn = mean_nn_dist4(&normalized_front);
         let spacing = spacing4(&normalized_front);
@@ -182,12 +232,53 @@ fn run_phase1_variant(
             mean_nn_dist: mean_nn,
             spacing,
             pareto_front_size: front.len(),
+            frontier_hv: structured_outcome.frontier_hv,
+            hv_delta: structured_outcome.hv_delta,
+            beta_used: structured_outcome.beta_used,
+            semantic_variance_mean: structured_outcome
+                .controller
+                .frontier
+                .iter()
+                .filter_map(|candidate| {
+                    candidate
+                        .simulation
+                        .as_ref()
+                        .map(|delta| delta.semantic_variance)
+                })
+                .sum::<f64>()
+                / structured_outcome
+                    .controller
+                    .frontier
+                    .iter()
+                    .filter(|candidate| candidate.simulation.is_some())
+                    .count()
+                    .max(1) as f64,
+            world_model_enabled: config.world_model_enabled,
+            cluster_count: structured_outcome.controller.clusters.len(),
+            cluster_coverage: structured_outcome.cluster_coverage,
+            score_variance: structured_outcome.score_variance,
+            diversity_mean: structured_outcome.diversity_mean,
+            frontier_change_ratio: structured_outcome.frontier_change_ratio,
+            stagnation_steps: structured_outcome.controller.metrics.stagnation_steps,
+            stop_triggered: structured_outcome.stop_triggered,
+            cluster_collapse_flag: structured_outcome.cluster_collapsed,
             collapse_flag,
         });
 
         let beam_take = config.beam_width.max(1).min(front.len());
         let mut id_to_norm: std::collections::BTreeMap<u128, [f64; 4]> =
             std::collections::BTreeMap::new();
+        let simulation_by_state = structured_outcome
+            .controller
+            .frontier
+            .iter()
+            .filter_map(|candidate| {
+                candidate
+                    .simulation
+                    .as_ref()
+                    .map(|simulation| (candidate.state.id.as_u128(), simulation.clone()))
+            })
+            .collect::<BTreeMap<_, _>>();
         for ((state, _, _), norm) in front.iter().zip(normalized_front.iter()) {
             id_to_norm.insert(state.id.as_u128(), *norm);
         }
@@ -196,6 +287,15 @@ fn run_phase1_variant(
                 .get(&state.id.as_u128())
                 .copied()
                 .unwrap_or([0.0; 4]);
+            let cluster_id = cluster_map
+                .get(&state.id.as_u128())
+                .copied()
+                .unwrap_or_default();
+            let diversity_score = diversity_scores
+                .get(&state.id.as_u128())
+                .copied()
+                .unwrap_or(0.0);
+            let simulation = simulation_by_state.get(&state.id.as_u128()).cloned();
             let factors = build_design_factors(state);
             let (factors, sanity) = sanitize_factors(&factors);
             let dep_metrics = compute_dependency_consistency_metrics(&factors);
@@ -217,9 +317,60 @@ fn run_phase1_variant(
                 variant: variant.name().to_string(),
                 depth,
                 beam_index,
+                cluster_id,
                 rule_id: format!("{:032x}", rid.as_u128()),
                 objective_vector_raw: fmt_vec4(&crate::runtime::trace_helpers::obj_to_arr(obj)),
                 objective_vector_norm: fmt_vec4(&norm),
+                diversity_score,
+                action_label: simulation
+                    .as_ref()
+                    .map(|delta| delta.action_label.clone())
+                    .unwrap_or_else(|| "static".to_string()),
+                repair_potential: simulation.as_ref().map(|delta| delta.rp).unwrap_or(0.0),
+                intent_score: simulation
+                    .as_ref()
+                    .map(|delta| delta.intent_score)
+                    .unwrap_or(0.0),
+                confidence: simulation
+                    .as_ref()
+                    .map(|delta| delta.confidence)
+                    .unwrap_or(1.0),
+                variance: simulation
+                    .as_ref()
+                    .map(|delta| delta.variance)
+                    .unwrap_or(0.0),
+                semantic_variance: simulation
+                    .as_ref()
+                    .map(|delta| delta.semantic_variance)
+                    .unwrap_or(0.0),
+                uncertainty: simulation
+                    .as_ref()
+                    .map(|delta| delta.uncertainty)
+                    .unwrap_or(0.0),
+                beta_reliance: simulation
+                    .as_ref()
+                    .map(|delta| delta.beta_reliance)
+                    .unwrap_or(0.0),
+                learning_bias: simulation
+                    .as_ref()
+                    .map(|delta| delta.learning_bias)
+                    .unwrap_or(0.0),
+                final_score: simulation
+                    .as_ref()
+                    .map(|delta| delta.final_score)
+                    .unwrap_or(crate::scalar_score(obj).clamp(0.0, 1.0)),
+                delta_violations: simulation
+                    .as_ref()
+                    .map(|delta| delta.delta_violations)
+                    .unwrap_or(0.0),
+                delta_coupling: simulation
+                    .as_ref()
+                    .map(|delta| delta.delta_coupling)
+                    .unwrap_or(0.0),
+                delta_propagation_score: simulation
+                    .as_ref()
+                    .map(|delta| delta.delta_propagation_score)
+                    .unwrap_or(0.0),
                 completeness,
                 ambiguity_mean,
                 inconsistency,
@@ -250,32 +401,25 @@ fn run_phase1_variant(
             1.0,
         );
         if matches!(config.hv_policy, crate::HvPolicy::Guided) {
-            let select_front = front
-                .iter()
-                .map(|(s, o, _)| (s.clone(), o.clone()))
-                .collect::<Vec<_>>();
-            let select_norms = normalized_front
-                .iter()
-                .map(|v| crate::ObjectiveNorm(*v))
-                .collect::<Vec<_>>();
-            let (selected, current_hv, delta_hv_selected) =
-                crate::engine::pareto::select_beam_hv_guided_norm(
-                    select_front,
-                    select_norms,
-                    beam_take,
-                );
+            let delta_hv_selected =
+                (structured_outcome.frontier_hv - previous_frontier_hv).max(0.0);
             eprintln!(
-                "hv_guided iteration={} current_HV={:.8} delta_HV_selected={:.8} frontier_size={}",
+                "hv_guided iteration={} current_HV={:.8} delta_HV_selected={:.8} frontier_size={} cluster_coverage={:.3}",
                 depth,
-                current_hv,
+                structured_outcome.frontier_hv,
                 delta_hv_selected,
-                selected.len()
+                front.len(),
+                structured_outcome.cluster_coverage
             );
             delta_hv_window.push_back(delta_hv_selected);
             if delta_hv_window.len() > HV_STOP_WINDOW {
                 delta_hv_window.pop_front();
             }
-            frontier = selected.into_iter().map(|(s, _)| s).collect();
+            frontier = front
+                .into_iter()
+                .take(beam_take)
+                .map(|(s, _, _)| s)
+                .collect();
         } else {
             frontier = front
                 .into_iter()
@@ -283,10 +427,15 @@ fn run_phase1_variant(
                 .map(|(s, _, _)| s)
                 .collect();
         }
+        previous_frontier_hv = structured_outcome.frontier_hv;
+        search_controller = Some(structured_outcome.controller.clone());
         if frontier.is_empty() {
             frontier = vec![crate::runtime::trace_helpers::trace_initial_state(
                 config.seed,
             )];
+        }
+        if structured_outcome.stop_triggered {
+            break;
         }
         if matches!(config.hv_policy, crate::HvPolicy::Guided)
             && delta_hv_window.len() == HV_STOP_WINDOW
@@ -350,11 +499,60 @@ fn objective_with_ortho(
     ])
 }
 
+fn cluster_membership_map(
+    clusters: &[crate::runtime::structured_search::Cluster],
+    candidates: &[crate::runtime::structured_search::SearchCandidate],
+) -> BTreeMap<u128, usize> {
+    let mut out = BTreeMap::new();
+    for cluster in clusters {
+        for member in &cluster.members {
+            if let Some(candidate) = candidates.get(*member) {
+                out.insert(candidate.state.id.as_u128(), cluster.id);
+            }
+        }
+    }
+    out
+}
+
+fn frontier_diversity_scores(
+    frontier: &[crate::runtime::structured_search::SearchCandidate],
+) -> BTreeMap<u128, f64> {
+    let mut out = BTreeMap::new();
+    for (idx, candidate) in frontier.iter().enumerate() {
+        let diversity = frontier
+            .iter()
+            .enumerate()
+            .filter(|(other_idx, _)| *other_idx != idx)
+            .map(|(_, other)| {
+                let diffs = [
+                    candidate.feature.coupling - other.feature.coupling,
+                    candidate.feature.propagation_score - other.feature.propagation_score,
+                    candidate.feature.impact - other.feature.impact,
+                    candidate.feature.structural_variance - other.feature.structural_variance,
+                    candidate.feature.cycle_flag - other.feature.cycle_flag,
+                ];
+                diffs.iter().map(|diff| diff * diff).sum::<f64>().sqrt() / 5.0f64.sqrt()
+            })
+            .fold(f64::INFINITY, f64::min);
+        out.insert(
+            candidate.state.id.as_u128(),
+            if diversity.is_finite() {
+                diversity
+            } else {
+                1.0
+            },
+        );
+    }
+    out
+}
+
 fn normalize_phase1_vectors(objs: &[core_types::ObjectiveVector]) -> Vec<[f64; 4]> {
     if objs.is_empty() {
         return Vec::new();
     }
     let eps = 1e-6;
+    let clip = 3.0;
+    let margin = 1e-3;
     let arrs = objs
         .iter()
         .map(crate::runtime::trace_helpers::obj_to_arr)
@@ -371,7 +569,9 @@ fn normalize_phase1_vectors(objs: &[core_types::ObjectiveVector]) -> Vec<[f64; 4
         .map(|v| {
             let mut out = [0.0; 4];
             for i in 0..4 {
-                out[i] = (v[i] - meds[i]) / (mads[i] + eps);
+                let z = ((v[i] - meds[i]) / (mads[i] + eps)).clamp(-clip, clip);
+                let base = ((z + clip) / (2.0 * clip)).clamp(0.0, 1.0);
+                out[i] = (margin + (1.0 - 2.0 * margin) * base).clamp(0.0, 1.0);
             }
             out
         })

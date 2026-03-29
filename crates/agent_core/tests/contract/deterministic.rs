@@ -1,4 +1,6 @@
-use agent_core::{HvPolicy, Phase1Config, run_phase1_matrix};
+use agent_core::{
+    BetaProfile, HvPolicy, IntentProfile, Phase1Config, WorldModelMode, run_phase1_matrix,
+};
 
 const EPS: f64 = 1e-12;
 
@@ -41,6 +43,21 @@ fn run_once(seed: u64, salt: u64) -> (String, f64) {
         max_steps: 1,
         hv_policy: HvPolicy::Legacy,
         seed: seed ^ salt.wrapping_mul(0x9e3779b97f4a7c15),
+        world_model_enabled: true,
+        world_model_alpha: 0.7,
+        world_model_beta: 0.3,
+        world_model_beta_profile: BetaProfile::Balanced,
+        world_model_actions_per_state: 5,
+        world_model_max_depth: 1,
+        intent_profile: IntentProfile::Balanced,
+        world_model_mode: WorldModelMode::Deterministic,
+        world_model_variance_penalty: 0.2,
+        world_model_semantic_variance_penalty: 0.15,
+        world_model_semantic_variance_max_penalty: 0.35,
+        world_model_learning_rate: 0.1,
+        world_model_learning_decay: 0.05,
+        world_model_learning_confidence_gate: 0.55,
+        world_model_confidence_floor: 0.2,
         norm_alpha: 0.1,
         alpha: 3.0,
         temperature: 0.1,

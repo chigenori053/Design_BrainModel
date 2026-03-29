@@ -4,17 +4,256 @@ use design_search_engine::stable_v03::ReasoningTrace;
 use runtime_core::intent_refiner::{CoreSlot, SlotMap};
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{Clarification, Explanation, source_to_message};
+use unified_design_ir::{
+    AppliedFix as DesignAppliedFix, ChangeType as DesignChangeType, ConvergenceStatus,
+    DiffResult as DesignDiffResult, Issue as DesignIssue, IssueReason as DesignIssueReason,
+    IssueSummary as DesignIssueSummary, IssueType as DesignIssueType, Severity as DesignSeverity,
+};
 
 use crate::autonomous_execute::AutonomousExecuteReport;
 use crate::execution_foundation::ExecReport;
 use crate::service::dto::{
-    AnalysisReport, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
+    AnalysisReport, CodeIssue, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
     ValidationReport,
 };
 use integration_layer::{
     EvidenceType, Issue, IssueType, LayerType, NodeRole, PatchOperation, Pattern, PhaseType,
     RefactorAction, RefactorPlanAction, Severity,
 };
+
+pub fn render_dbm_analyze(
+    input: &str,
+    summary: &DesignIssueSummary,
+    issues: &[DesignIssue],
+) -> String {
+    let mut sorted = issues.to_vec();
+    sorted.sort_by(|a, b| {
+        severity_rank(&a.severity)
+            .cmp(&severity_rank(&b.severity))
+            .then(issue_type_rank(&a.issue_type).cmp(&issue_type_rank(&b.issue_type)))
+            .then(a.path.segments.join(".").cmp(&b.path.segments.join(".")))
+    });
+
+    let mut output = String::new();
+    output.push_str("=== DBM Analyze ===\n\n");
+    output.push_str(&format!("Input: {input}\n"));
+    output.push_str(&format_summary(summary));
+    output.push_str("\n---\n");
+    output.push_str("Details:\n");
+
+    if sorted.is_empty() {
+        output.push_str("No issues.\n");
+        return output;
+    }
+
+    for issue in sorted {
+        output.push_str(&format!(
+            "\n[{}] {}\n  Path: {}\n  Reason: {}\n",
+            format_design_severity(&issue.severity),
+            format_issue_type(&issue.issue_type),
+            issue.path.segments.join("."),
+            format_issue_reason(&issue.reason)
+        ));
+    }
+
+    output
+}
+
+pub fn render_dbm_diff(input: &str, diff: &DesignDiffResult) -> String {
+    let mut changes = diff.changes.clone();
+    changes.sort_by(|a, b| {
+        change_type_rank(&a.change_type)
+            .cmp(&change_type_rank(&b.change_type))
+            .then(a.path.segments.join(".").cmp(&b.path.segments.join(".")))
+    });
+
+    let mut output = String::new();
+    output.push_str("=== DBM Diff ===\n\n");
+    output.push_str(&format!("Input: {input}\n\n"));
+    output.push_str("Changes:\n");
+
+    if changes.is_empty() {
+        output.push_str("\nNo changes.\n");
+        return output;
+    }
+
+    for change in changes {
+        let path = change.path.segments.join(".");
+        match change.change_type {
+            DesignChangeType::Added => {
+                output.push_str(&format!(
+                    "\n[ADD]\n  Path: {path}\n  Value: {}\n",
+                    display_json_opt(change.after.as_ref())
+                ));
+            }
+            DesignChangeType::Removed => {
+                output.push_str(&format!(
+                    "\n[REMOVE]\n  Path: {path}\n  Value: {}\n",
+                    display_json_opt(change.before.as_ref())
+                ));
+            }
+            DesignChangeType::Modified => {
+                output.push_str(&format!(
+                    "\n[MODIFY]\n  Path: {path}\n  Before: {}\n  After:  {}\n",
+                    display_json_opt(change.before.as_ref()),
+                    display_json_opt(change.after.as_ref())
+                ));
+            }
+            DesignChangeType::Moved => {
+                output.push_str(&format!("\n[MOVE]\n  Path: {path}\n"));
+            }
+        }
+    }
+
+    output
+}
+
+pub fn render_dbm_step(
+    input: &str,
+    status: &str,
+    applied_fix: Option<&DesignAppliedFix>,
+    summary: &DesignIssueSummary,
+) -> String {
+    let mut output = String::new();
+    output.push_str("=== DBM Step ===\n\n");
+    output.push_str(&format!("Input: {input}\n\n"));
+    output.push_str("Applied Fix:\n");
+    match applied_fix {
+        Some(fix) => {
+            output.push_str(&format!("  Type: {}\n", format_fix_kind(fix)));
+            output.push_str(&format!("  Path: {}\n", fix.path.segments.join(".")));
+        }
+        None => {
+            output.push_str("  Type: None\n");
+            output.push_str("  Path: -\n");
+        }
+    }
+    output.push_str("\nResult:\n");
+    output.push_str(&indent_summary(summary));
+    output.push_str(&format!("\nStatus: {status}\n"));
+    output
+}
+
+pub fn render_dbm_converge(
+    input: &str,
+    status: &ConvergenceStatus,
+    iterations: u64,
+    summary: &DesignIssueSummary,
+    trace_lines: &[String],
+) -> String {
+    let mut output = String::new();
+    output.push_str("=== DBM Converge ===\n\n");
+    output.push_str(&format!("Input: {input}\n"));
+    output.push_str(&format!("Status: {}\n\n", format_converge_status(status)));
+    output.push_str(&format!("Iterations: {iterations}\n\n"));
+    output.push_str("Final State:\n");
+    output.push_str(&indent_summary(summary));
+    output.push_str("\nTrace:\n");
+    if trace_lines.is_empty() {
+        output.push_str("  (none)\n");
+    } else {
+        for line in trace_lines {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+    output
+}
+
+fn format_summary(summary: &DesignIssueSummary) -> String {
+    format!(
+        "\nSummary:\n  Critical: {}\n  High: {}\n  Medium: {}\n  Low: {}\n",
+        summary.critical, summary.high, summary.medium, summary.low
+    )
+}
+
+fn indent_summary(summary: &DesignIssueSummary) -> String {
+    format!(
+        "  Critical: {}\n  High: {}\n  Medium: {}\n  Low: {}\n",
+        summary.critical, summary.high, summary.medium, summary.low
+    )
+}
+
+fn format_design_severity(severity: &DesignSeverity) -> &'static str {
+    match severity {
+        DesignSeverity::Critical => "Critical",
+        DesignSeverity::High => "High",
+        DesignSeverity::Medium => "Medium",
+        DesignSeverity::Low => "Low",
+    }
+}
+
+fn format_issue_type(issue_type: &DesignIssueType) -> &'static str {
+    match issue_type {
+        DesignIssueType::Missing => "Missing",
+        DesignIssueType::Conflict => "Conflict",
+        DesignIssueType::Redundancy => "Redundancy",
+        DesignIssueType::OverSpecification => "OverSpecification",
+        DesignIssueType::UnderSpecification => "UnderSpecification",
+    }
+}
+
+fn format_issue_reason(reason: &DesignIssueReason) -> &'static str {
+    match reason {
+        DesignIssueReason::MissingRequiredField => "MissingRequiredField",
+        DesignIssueReason::ValueConflict => "ValueConflict",
+        DesignIssueReason::DuplicateDefinition => "DuplicateDefinition",
+        DesignIssueReason::ExcessiveComplexity => "ExcessiveComplexity",
+        DesignIssueReason::InsufficientSpecification => "InsufficientSpecification",
+    }
+}
+
+fn format_fix_kind(fix: &DesignAppliedFix) -> &'static str {
+    match fix.action {
+        unified_design_ir::FixAction::Add => "Missing",
+        unified_design_ir::FixAction::Replace => "Conflict",
+        unified_design_ir::FixAction::Remove => "Redundancy",
+        unified_design_ir::FixAction::Normalize => "Normalize",
+    }
+}
+
+fn format_converge_status(status: &ConvergenceStatus) -> &'static str {
+    match status {
+        ConvergenceStatus::Converged => "Converged",
+        ConvergenceStatus::MaxIterationsReached => "MaxIterationsReached",
+        ConvergenceStatus::Deadlock => "Deadlock",
+        ConvergenceStatus::Failed => "Failed",
+    }
+}
+
+fn display_json_opt(value: Option<&serde_json::Value>) -> String {
+    value
+        .map(|value| serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()))
+        .unwrap_or_else(|| "null".to_string())
+}
+
+fn severity_rank(severity: &DesignSeverity) -> u8 {
+    match severity {
+        DesignSeverity::Critical => 0,
+        DesignSeverity::High => 1,
+        DesignSeverity::Medium => 2,
+        DesignSeverity::Low => 3,
+    }
+}
+
+fn issue_type_rank(issue_type: &DesignIssueType) -> u8 {
+    match issue_type {
+        DesignIssueType::Missing => 0,
+        DesignIssueType::Conflict => 1,
+        DesignIssueType::Redundancy => 2,
+        DesignIssueType::OverSpecification => 3,
+        DesignIssueType::UnderSpecification => 4,
+    }
+}
+
+fn change_type_rank(change_type: &DesignChangeType) -> u8 {
+    match change_type {
+        DesignChangeType::Added => 0,
+        DesignChangeType::Removed => 1,
+        DesignChangeType::Modified => 2,
+        DesignChangeType::Moved => 3,
+    }
+}
 
 pub fn render_result<W: Write>(writer: &mut W, result: &RuntimeResult) -> io::Result<()> {
     writeln!(writer, "✔ Project generated")?;
@@ -268,6 +507,7 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
     render_issue_group(writer, "Structural Issues", &report.issues, "Structural")?;
     render_issue_group(writer, "Semantic Issues", &report.issues, "Semantic")?;
     render_issue_group(writer, "Data Flow Issues", &report.issues, "Data Flow")?;
+    render_code_issue_group(writer, &report.code_issues)?;
     writeln!(
         writer,
         "Summary: Critical: {} | High: {} | Medium: {}",
@@ -277,6 +517,52 @@ pub fn render_analysis_report<W: Write>(writer: &mut W, report: &AnalysisReport)
     writeln!(writer, "Next Action:")?;
     writeln!(writer, "{}", report.next_action)?;
     writer.flush()
+}
+
+pub fn render_analysis_report_markdown(report: &AnalysisReport) -> String {
+    let mut out = String::new();
+    out.push_str("# Analyze Report\n\n");
+    out.push_str(&format!("- Root: `{}`\n", report.root));
+    out.push_str(&format!("- Files: `{}`\n", report.total_files));
+    out.push_str(&format!("- Source files: `{}`\n", report.source_files));
+    out.push_str(&format!("- Avg Complexity: `{}`\n", report.avg_complexity));
+    if !report.languages.is_empty() {
+        out.push_str("- Languages:\n");
+        for (language, count) in &report.languages {
+            out.push_str(&format!("  - {}: {}\n", language, count));
+        }
+    }
+    out.push('\n');
+    out.push_str("## Structural Diagnostics\n\n");
+    write_markdown_issue_group(&mut out, "Structural Issues", &report.issues, "Structural");
+    write_markdown_issue_group(&mut out, "Semantic Issues", &report.issues, "Semantic");
+    write_markdown_issue_group(&mut out, "Data Flow Issues", &report.issues, "Data Flow");
+    out.push_str("## Code Diagnostics\n\n");
+    if report.code_issues.is_empty() {
+        out.push_str("- No code-level structural issues detected.\n\n");
+    } else {
+        for issue in &report.code_issues {
+            out.push_str(&format!(
+                "### [{}] {}:{} {}\n\n",
+                issue.severity.to_uppercase(),
+                issue.file,
+                issue.line,
+                issue.title
+            ));
+            out.push_str(&format!("{}\n\n", issue.issue));
+            out.push_str("```text\n");
+            out.push_str(&issue.snippet);
+            out.push_str("\n```\n\n");
+        }
+    }
+    out.push_str("## Summary\n\n");
+    out.push_str(&format!(
+        "- Critical: {}\n- High: {}\n- Medium: {}\n\n",
+        report.summary.critical, report.summary.high, report.summary.medium
+    ));
+    out.push_str("## Next Action\n\n");
+    out.push_str(&format!("`{}`\n", report.next_action));
+    out
 }
 
 fn render_issue_group<W: Write>(
@@ -307,6 +593,54 @@ fn render_issue_group<W: Write>(
         }
     }
     Ok(())
+}
+
+fn render_code_issue_group<W: Write>(writer: &mut W, issues: &[CodeIssue]) -> io::Result<()> {
+    writeln!(writer)?;
+    writeln!(writer, "Code Diagnostics")?;
+    if issues.is_empty() {
+        writeln!(writer, " - none")?;
+        writeln!(writer)?;
+        return Ok(());
+    }
+
+    for issue in issues {
+        writeln!(
+            writer,
+            " - [{}] {}:{} {}",
+            issue.severity.to_uppercase(),
+            issue.file,
+            issue.line,
+            issue.title
+        )?;
+        writeln!(writer, "   {}", issue.issue)?;
+        for line in issue.snippet.lines() {
+            writeln!(writer, "   {}", line)?;
+        }
+    }
+    writeln!(writer)?;
+    Ok(())
+}
+
+fn write_markdown_issue_group(out: &mut String, title: &str, issues: &[Issue], category: &str) {
+    out.push_str(&format!("### {}\n\n", title));
+    let mut matched = issues
+        .iter()
+        .filter(|issue| issue_category(issue) == category)
+        .peekable();
+    if matched.peek().is_none() {
+        out.push_str("- None\n\n");
+        return;
+    }
+
+    for issue in matched {
+        out.push_str(&format!(
+            "- [{}] {}\n",
+            severity_label(&issue.severity),
+            issue.description
+        ));
+    }
+    out.push('\n');
 }
 
 fn issue_hint(issue: &Issue) -> Option<String> {
@@ -981,6 +1315,7 @@ mod tests {
             semantic_layers: vec![],
             data_flow: vec![],
             issues: vec![],
+            code_issues: vec![],
             summary: AnalysisSummary::default(),
             next_action: String::new(),
             root_cause: None,
@@ -1159,6 +1494,107 @@ mod tests {
         assert!(
             output.contains("Layer 1"),
             "output should fall back to numeric layer: {output}"
+        );
+    }
+
+    #[test]
+    fn render_dbm_analyze_is_deterministic() {
+        let issues = vec![
+            DesignIssue {
+                id: unified_design_ir::IssueId { value: "b".into() },
+                issue_type: DesignIssueType::OverSpecification,
+                severity: DesignSeverity::Medium,
+                priority: unified_design_ir::Priority::P2,
+                order: 2,
+                blocks: Vec::new(),
+                path: unified_design_ir::FieldPath {
+                    segments: vec!["interface".into()],
+                },
+                reason: DesignIssueReason::ExcessiveComplexity,
+                evidence: unified_design_ir::IssueEvidence {
+                    before: None,
+                    after: None,
+                    semantic_reason: None,
+                    impact_reason: None,
+                },
+                fix_hint: None,
+            },
+            DesignIssue {
+                id: unified_design_ir::IssueId { value: "a".into() },
+                issue_type: DesignIssueType::Missing,
+                severity: DesignSeverity::Critical,
+                priority: unified_design_ir::Priority::P0,
+                order: 1,
+                blocks: Vec::new(),
+                path: unified_design_ir::FieldPath {
+                    segments: vec!["function".into(), "functions".into()],
+                },
+                reason: DesignIssueReason::MissingRequiredField,
+                evidence: unified_design_ir::IssueEvidence {
+                    before: None,
+                    after: None,
+                    semantic_reason: None,
+                    impact_reason: None,
+                },
+                fix_hint: None,
+            },
+        ];
+        let summary = DesignIssueSummary {
+            total: 2,
+            critical: 1,
+            high: 0,
+            medium: 1,
+            low: 0,
+        };
+
+        let output = render_dbm_analyze("/tmp/design.md", &summary, &issues);
+
+        assert_eq!(
+            output,
+            "=== DBM Analyze ===\n\nInput: /tmp/design.md\n\nSummary:\n  Critical: 1\n  High: 0\n  Medium: 1\n  Low: 0\n\n---\nDetails:\n\n[Critical] Missing\n  Path: function.functions\n  Reason: MissingRequiredField\n\n[Medium] OverSpecification\n  Path: interface\n  Reason: ExcessiveComplexity\n"
+        );
+    }
+
+    #[test]
+    fn render_dbm_diff_is_deterministic() {
+        let diff = DesignDiffResult {
+            changes: vec![
+                unified_design_ir::FieldChange {
+                    path: unified_design_ir::FieldPath {
+                        segments: vec!["context".into(), "use_case".into()],
+                    },
+                    before: Some(serde_json::json!("build application")),
+                    after: Some(serde_json::json!("build CLI tool")),
+                    change_type: DesignChangeType::Modified,
+                },
+                unified_design_ir::FieldChange {
+                    path: unified_design_ir::FieldPath {
+                        segments: vec!["function".into(), "functions".into()],
+                    },
+                    before: None,
+                    after: Some(serde_json::json!(["build"])),
+                    change_type: DesignChangeType::Added,
+                },
+            ],
+            summary: unified_design_ir::DiffSummary {
+                added: 1,
+                removed: 0,
+                modified: 1,
+                net_complexity: 0,
+            },
+            semantic: unified_design_ir::SemanticDiff {
+                is_equivalent: false,
+                reason: unified_design_ir::SemanticReason::ValueMismatch,
+            },
+            impact: unified_design_ir::Impact::Neutral,
+            impact_reason: unified_design_ir::ImpactReason::MixedChange,
+        };
+
+        let output = render_dbm_diff("/tmp/design.md", &diff);
+
+        assert_eq!(
+            output,
+            "=== DBM Diff ===\n\nInput: /tmp/design.md\n\nChanges:\n\n[ADD]\n  Path: function.functions\n  Value: [\"build\"]\n\n[MODIFY]\n  Path: context.use_case\n  Before: \"build application\"\n  After:  \"build CLI tool\"\n"
         );
     }
 }

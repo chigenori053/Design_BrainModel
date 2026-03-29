@@ -35,12 +35,7 @@ pub struct GeneralizedMemory {
 
 impl GeneralizedMemory {
     /// 元記憶から新規の汎化記憶を生成する。
-    pub fn from_record(
-        id: String,
-        text: &str,
-        tags: &[String],
-        embedding: &[f32],
-    ) -> Self {
+    pub fn from_record(id: String, text: &str, tags: &[String], embedding: &[f32]) -> Self {
         let now = epoch_now();
         Self {
             id,
@@ -159,7 +154,11 @@ mod tests {
             &["graphql".to_string()],
             &[0.5, 0.5],
         );
-        mem.upgrade("Add mutations to GraphQL schema", &["graphql".to_string(), "mutation".to_string()], &[0.6, 0.4]);
+        mem.upgrade(
+            "Add mutations to GraphQL schema",
+            &["graphql".to_string(), "mutation".to_string()],
+            &[0.6, 0.4],
+        );
         assert_eq!(mem.version, 2);
         assert_eq!(mem.source_count, 2);
         assert!(mem.abstract_tags.contains(&"mutation".to_string()));
@@ -167,12 +166,8 @@ mod tests {
 
     #[test]
     fn upgrade_updates_centroid() {
-        let mut mem = GeneralizedMemory::from_record(
-            "gm_003".to_string(),
-            "cache layer",
-            &[],
-            &[1.0, 0.0],
-        );
+        let mut mem =
+            GeneralizedMemory::from_record("gm_003".to_string(), "cache layer", &[], &[1.0, 0.0]);
         mem.upgrade("redis cache", &[], &[0.0, 1.0]);
         // centroid should be (1.0 * 1 + 0.0) / 2 = 0.5 for index 0
         assert!((mem.centroid_embedding[0] - 0.5).abs() < 1e-5);

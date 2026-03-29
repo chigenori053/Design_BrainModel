@@ -482,6 +482,11 @@ fn print_help<W: Write>(
     .map_err(|e| e.to_string())?;
     writeln!(
         writer,
+        "  /refactoring <path>             - 解析結果をコードへ適用"
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
         "  /coding <path>                  - コード変更セットを生成"
     )
     .map_err(|e| e.to_string())?;
@@ -494,8 +499,11 @@ fn print_help<W: Write>(
     .map_err(|e| e.to_string())?;
     writeln!(writer, "  /apply <path>                   - 変更を適用")
         .map_err(|e| e.to_string())?;
-    writeln!(writer, "  /run <path>                     - ファイルを実行")
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "  /exec [detect|install|build|test|run] <path> - 実行基盤"
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(
         writer,
         "  /generate [spec|design] <path>  - 仕様/設計書を生成"

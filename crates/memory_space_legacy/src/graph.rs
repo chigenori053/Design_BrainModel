@@ -330,6 +330,101 @@ impl StructuralGraph {
         (var / max_var).clamp(0.0, 1.0)
     }
 
+    pub fn isolated_node_ratio(&self) -> f64 {
+        let n = self.nodes.len();
+        if n == 0 {
+            return 0.0;
+        }
+        let neighbors = self.undirected_neighbors();
+        let isolated = self
+            .nodes
+            .keys()
+            .filter(|node_id| {
+                neighbors
+                    .get(node_id)
+                    .map(|set| set.is_empty())
+                    .unwrap_or(true)
+            })
+            .count();
+        (isolated as f64 / n as f64).clamp(0.0, 1.0)
+    }
+
+    pub fn average_reachable_ratio(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+
+        let adjacency = self.forward_adjacency();
+        let total = self
+            .nodes
+            .keys()
+            .map(|node_id| {
+                let reachable = reachable_count_from(*node_id, &adjacency);
+                reachable as f64 / (n - 1) as f64
+            })
+            .sum::<f64>();
+
+        (total / n as f64).clamp(0.0, 1.0)
+    }
+
+    pub fn longest_path_depth_ratio(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+
+        let order = self.topological_order();
+        if order.is_empty() {
+            return 0.0;
+        }
+
+        let adjacency = self.forward_adjacency();
+        let mut best = BTreeMap::<NodeId, usize>::new();
+        for node_id in &order {
+            let current = best.get(node_id).copied().unwrap_or(0);
+            if let Some(nexts) = adjacency.get(node_id) {
+                for next in nexts {
+                    let candidate = current + 1;
+                    let slot = best.entry(*next).or_insert(0);
+                    *slot = (*slot).max(candidate);
+                }
+            }
+        }
+
+        let longest = best.values().copied().max().unwrap_or(0);
+        (longest as f64 / (n - 1) as f64).clamp(0.0, 1.0)
+    }
+
+    pub fn weak_component_entropy(&self) -> f64 {
+        let components = self.weak_component_sizes();
+        if components.len() <= 1 {
+            return 0.0;
+        }
+        let total = components.iter().sum::<usize>() as f64;
+        if total <= 0.0 {
+            return 0.0;
+        }
+
+        let mut entropy = 0.0;
+        for size in components {
+            let p = size as f64 / total;
+            if p > 0.0 {
+                entropy -= p * p.ln();
+            }
+        }
+        (entropy / (self.nodes.len() as f64).ln()).clamp(0.0, 1.0)
+    }
+
+    pub fn fragmentation_ratio(&self) -> f64 {
+        let n = self.nodes.len();
+        if n < 2 {
+            return 0.0;
+        }
+        let components = self.weak_component_sizes();
+        ((components.len().saturating_sub(1)) as f64 / (n - 1) as f64).clamp(0.0, 1.0)
+    }
+
     fn all_edges_have_valid_endpoints(&self) -> bool {
         self.edges
             .iter()
@@ -357,6 +452,103 @@ impl StructuralGraph {
         }
         neighbors
     }
+
+    fn forward_adjacency(&self) -> BTreeMap<NodeId, Vec<NodeId>> {
+        let mut adjacency: BTreeMap<NodeId, Vec<NodeId>> = self
+            .nodes
+            .keys()
+            .copied()
+            .map(|id| (id, Vec::new()))
+            .collect();
+        for (from, to) in &self.edges {
+            if let Some(nexts) = adjacency.get_mut(from) {
+                nexts.push(*to);
+            }
+        }
+        adjacency
+    }
+
+    fn topological_order(&self) -> Vec<NodeId> {
+        let mut indegree: BTreeMap<NodeId, usize> =
+            self.nodes.keys().copied().map(|id| (id, 0usize)).collect();
+        let adjacency = self.forward_adjacency();
+
+        for nexts in adjacency.values() {
+            for next in nexts {
+                if let Some(value) = indegree.get_mut(next) {
+                    *value += 1;
+                }
+            }
+        }
+
+        let mut queue: VecDeque<NodeId> = indegree
+            .iter()
+            .filter_map(|(id, value)| if *value == 0 { Some(*id) } else { None })
+            .collect();
+        let mut order = Vec::with_capacity(self.nodes.len());
+        while let Some(node_id) = queue.pop_front() {
+            order.push(node_id);
+            if let Some(nexts) = adjacency.get(&node_id) {
+                for next in nexts {
+                    if let Some(value) = indegree.get_mut(next) {
+                        *value -= 1;
+                        if *value == 0 {
+                            queue.push_back(*next);
+                        }
+                    }
+                }
+            }
+        }
+        order
+    }
+
+    fn weak_component_sizes(&self) -> Vec<usize> {
+        let neighbors = self.undirected_neighbors();
+        let mut visited = BTreeSet::<NodeId>::new();
+        let mut sizes = Vec::new();
+
+        for node_id in self.nodes.keys().copied() {
+            if !visited.insert(node_id) {
+                continue;
+            }
+
+            let mut size = 0usize;
+            let mut queue = VecDeque::from([node_id]);
+            while let Some(current) = queue.pop_front() {
+                size += 1;
+                if let Some(nexts) = neighbors.get(&current) {
+                    for next in nexts {
+                        if visited.insert(*next) {
+                            queue.push_back(*next);
+                        }
+                    }
+                }
+            }
+            sizes.push(size);
+        }
+
+        sizes
+    }
+}
+
+fn reachable_count_from(start: NodeId, adjacency: &BTreeMap<NodeId, Vec<NodeId>>) -> usize {
+    let mut visited = BTreeSet::<NodeId>::new();
+    let mut queue = VecDeque::from([start]);
+
+    while let Some(current) = queue.pop_front() {
+        if !visited.insert(current) {
+            continue;
+        }
+        if let Some(nexts) = adjacency.get(&current) {
+            for next in nexts {
+                if !visited.contains(next) {
+                    queue.push_back(*next);
+                }
+            }
+        }
+    }
+
+    visited.len().saturating_sub(1)
 }
 
 fn max_degree_variance_for_simple_graph(n: usize) -> f64 {
@@ -464,6 +656,39 @@ mod tests {
             .with_edge_added(a.id, d.id);
         let v = graph.normalized_degree_variance();
         assert!((0.0..=1.0).contains(&v));
+    }
+
+    #[test]
+    fn average_reachable_ratio_detects_propagation_depth() {
+        let a = sample_node(1, "A");
+        let b = sample_node(2, "B");
+        let c = sample_node(3, "C");
+        let graph = StructuralGraph::default()
+            .with_node_added(a.clone())
+            .with_node_added(b.clone())
+            .with_node_added(c.clone())
+            .with_edge_added(a.id, b.id)
+            .with_edge_added(b.id, c.id);
+
+        let ratio = graph.average_reachable_ratio();
+        assert!(ratio > 0.0);
+        assert!(ratio <= 1.0);
+        assert!(graph.longest_path_depth_ratio() > 0.0);
+    }
+
+    #[test]
+    fn fragmentation_ratio_detects_disconnected_components() {
+        let a = sample_node(1, "A");
+        let b = sample_node(2, "B");
+        let c = sample_node(3, "C");
+        let graph = StructuralGraph::default()
+            .with_node_added(a)
+            .with_node_added(b)
+            .with_node_added(c);
+
+        assert!(graph.fragmentation_ratio() > 0.0);
+        assert!(graph.weak_component_entropy() > 0.0);
+        assert_eq!(graph.isolated_node_ratio(), 1.0);
     }
 
     #[test]

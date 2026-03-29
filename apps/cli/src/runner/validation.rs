@@ -12,7 +12,7 @@ pub(crate) fn validate_resolved_command(command: &str) -> Result<(), RunnerError
         })?;
 
     match file_name {
-        "cargo" | "node" | "python" => Ok(()),
+        "cargo" | "npm" | "node" | "python" | "python3" | "dotnet" | "git" => Ok(()),
         _ => Err(RunnerError::ValidationError(format!(
             "command is not allowed by runner policy: {file_name}"
         ))),
@@ -34,6 +34,14 @@ pub(crate) fn validate_args(args: &[String]) -> Result<(), RunnerError> {
         if arg == ".." || arg.starts_with("../") || arg.contains("/../") {
             return Err(RunnerError::ValidationError(format!(
                 "argument contains forbidden parent path traversal: {arg}"
+            )));
+        }
+        if matches!(
+            arg.as_str(),
+            "--hard" | "--force" | "--amend" | "rebase" | "clean"
+        ) {
+            return Err(RunnerError::ValidationError(format!(
+                "argument matches forbidden git pattern: {arg}"
             )));
         }
     }

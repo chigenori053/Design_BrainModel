@@ -10,16 +10,20 @@ pub enum ExecutionTarget {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AllowedCommand {
     Cargo,
+    Npm,
     Node,
     Python,
+    DotNet,
 }
 
 impl AllowedCommand {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Cargo => "cargo",
+            Self::Npm => "npm",
             Self::Node => "node",
             Self::Python => "python",
+            Self::DotNet => "dotnet",
         }
     }
 }

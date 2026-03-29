@@ -8,6 +8,10 @@ impl CommandPlugin for RefactorPlugin {
         let mut cmd = CommandHandler::new("refactor");
         cmd.set_default(execute);
         registry.register(cmd);
+
+        let mut refactoring_cmd = CommandHandler::new("refactoring");
+        refactoring_cmd.set_default(execute_refactoring);
+        registry.register(refactoring_cmd);
     }
 }
 
@@ -27,6 +31,25 @@ fn execute(args: &[String], session: &mut AgentSession) -> Result<Output, Comman
         .map_err(CommandError::ExecutionError)
 }
 
+/// /refactoring [path]
+///
+/// analyze/refactor の結果からコード変更を実際に適用する。
+fn execute_refactoring(
+    args: &[String],
+    session: &mut AgentSession,
+) -> Result<Output, CommandError> {
+    let path = args
+        .first()
+        .map(|s| s.as_str())
+        .unwrap_or_else(|| session.context.last_path_or_default())
+        .to_string();
+    session.context.set_last_path(&path);
+    session.context.last_command = Some("refactoring".to_string());
+    crate::nl_executor::run_design_command("refactoring", &[path])
+        .map(Output::text)
+        .map_err(CommandError::ExecutionError)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -41,6 +64,7 @@ mod tests {
     fn refactor_is_registered() {
         let registry = build_registry();
         assert!(registry.command_names().contains(&"refactor"));
+        assert!(registry.command_names().contains(&"refactoring"));
     }
 
     #[test]
@@ -49,5 +73,16 @@ mod tests {
         let _ = execute(&["src/lib.rs".to_string()], &mut session);
         assert_eq!(session.context.last_path, Some("src/lib.rs".to_string()));
         assert_eq!(session.context.last_command, Some("refactor".to_string()));
+    }
+
+    #[test]
+    fn refactoring_stores_last_path_in_session() {
+        let mut session = AgentSession::new();
+        let _ = execute_refactoring(&["src/lib.rs".to_string()], &mut session);
+        assert_eq!(session.context.last_path, Some("src/lib.rs".to_string()));
+        assert_eq!(
+            session.context.last_command,
+            Some("refactoring".to_string())
+        );
     }
 }

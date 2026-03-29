@@ -4,8 +4,10 @@ pub mod lifecycle;
 pub mod orchestrator;
 pub mod phase1;
 pub mod registry;
+pub(crate) mod structured_search;
 pub mod trace;
 pub(crate) mod trace_helpers;
+pub(crate) mod world_model;
 
 pub use dispatcher::Dispatcher;
 pub use lifecycle::{AgentLifecycle, NoopLifecycle};

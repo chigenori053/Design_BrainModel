@@ -26,9 +26,9 @@ use crate::coding::{
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
 use crate::r#loop::run_loop;
 use crate::renderer::{
-    render_analysis_report, render_autonomous_execute_report, render_coding_report,
-    render_design_report, render_exec_report, render_refactor_report, render_result,
-    render_rules_report, render_run_report, render_validation_report,
+    render_analysis_report, render_analysis_report_markdown, render_autonomous_execute_report,
+    render_coding_report, render_design_report, render_exec_report, render_refactor_report,
+    render_result, render_rules_report, render_run_report, render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -39,8 +39,8 @@ use crate::runner::{
 use crate::service::{
     CodingReport, RefactorReport, RuleReport, RulesReport, RunReport, RunSandbox, RunTelemetry,
     ValidatedRuleReport, analysis_to_system_input, analyze_path, build_design_report,
-    build_validation_report, design_graph_from_analysis, enrich_analysis_report,
-    path_contains_parent_component,
+    build_refactoring_report, build_validation_report, design_graph_from_analysis,
+    enrich_analysis_report, path_contains_parent_component,
 };
 
 #[derive(Parser, Debug)]
@@ -54,6 +54,7 @@ struct Cli {
 enum Commands {
     Generate(GenerateArgs),
     Analyze(AnalyzeArgs),
+    Refactoring(RefactoringArgs),
     Design(PathArgs),
     Validate(PathArgs),
     Refactor(PathArgs),
@@ -163,11 +164,33 @@ pub struct AnalyzeArgs {
     /// Save a structured operational log (JSON) to this path.
     #[arg(long)]
     pub out: Option<PathBuf>,
+    /// Write the diagnostic report as Markdown to this path.
+    #[arg(long)]
+    pub report_md: Option<PathBuf>,
 }
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct PathArgs {
     pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RefactoringArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub dry_run: bool,
+    #[arg(long, default_value_t = false)]
+    pub no_build: bool,
+    #[arg(long, default_value_t = false)]
+    pub backup: bool,
+    #[arg(long, default_value_t = false)]
+    pub format: bool,
+    #[arg(long, default_value_t = false)]
+    pub safe: bool,
+    #[arg(long, default_value_t = false)]
+    pub auto_commit: bool,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -301,6 +324,7 @@ fn dispatch(cli: Cli) -> Result<(), String> {
     match cli.command {
         Some(Commands::Generate(args)) => execute_generate(&build_runtime(), args, "command"),
         Some(Commands::Analyze(args)) => execute_analyze_with_log(args),
+        Some(Commands::Refactoring(args)) => execute_refactoring(args),
         Some(Commands::Design(args)) => execute_design(args),
         Some(Commands::Validate(args)) => execute_validate(args),
         Some(Commands::Refactor(args)) => execute_refactor(args),
@@ -463,6 +487,10 @@ fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
     }
     let design_graph = design_graph_from_analysis(&report);
     let report = enrich_analysis_report(report, diagnostic_analysis(&design_graph));
+    if let Some(path) = &args.report_md {
+        fs::write(path, render_analysis_report_markdown(&report))
+            .map_err(|err| format!("failed to write markdown report {}: {err}", path.display()))?;
+    }
     if report_json(args.json, &report)? {
         return Ok(());
     }
@@ -499,6 +527,26 @@ fn execute_refactor(args: PathArgs) -> Result<(), String> {
         return Ok(());
     }
     render_refactor_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+}
+
+fn execute_refactoring(args: RefactoringArgs) -> Result<(), String> {
+    let report = build_refactoring_report(
+        &args.path,
+        args.dry_run,
+        &CodingOptions {
+            apply: !args.dry_run,
+            check: true,
+            no_build: args.no_build,
+            backup: args.backup,
+            format: args.format,
+            safe_mode: args.safe,
+            auto_commit: args.auto_commit,
+        },
+    )?;
+    if report_json(args.json, &report)? {
+        return Ok(());
+    }
+    render_coding_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
 #[derive(Debug, Clone, Copy)]

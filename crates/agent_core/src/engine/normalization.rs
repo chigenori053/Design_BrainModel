@@ -2,9 +2,13 @@ use core_types::ObjectiveVector;
 use memory_space::DesignState;
 
 use crate::GlobalRobustStats;
-use crate::normalization;
 
 pub const EPSILON_JITTER: f64 = 1e-6;
+const ZSCORE_EPSILON: f64 = 1e-6;
+const STD_THRESHOLD: f64 = 1e-6;
+const ZSCORE_CLIP: f64 = 3.0;
+const CORRELATION_THRESHOLD: f64 = 0.8;
+const NORMALIZED_MARGIN: f64 = 1e-3;
 
 pub fn epsilon_jitter(value: f64, state_id: u64, idx: u64) -> f64 {
     let mut x = state_id ^ idx.wrapping_mul(0x9e3779b97f4a7c15);
@@ -98,17 +102,16 @@ pub fn normalize_by_depth_candidates(
         .collect::<Vec<_>>();
 
     let n = candidates.len();
-    let mut structs = Vec::with_capacity(n);
-    let mut fields = Vec::with_capacity(n);
-    let mut risks = Vec::with_capacity(n);
-    let mut costs = Vec::with_capacity(n);
-
+    let mut matrix = Vec::<[f64; 4]>::with_capacity(n);
     for (_, obj) in &candidates {
-        structs.push(obj.f_struct);
-        fields.push(obj.f_field);
-        risks.push(obj.f_risk);
-        costs.push(obj.f_shape);
+        matrix.push([obj.f_struct, obj.f_field, obj.f_risk, obj.f_shape]);
     }
+    decorrelate_high_correlation(&mut matrix);
+
+    let structs = matrix.iter().map(|row| row[0]).collect::<Vec<_>>();
+    let fields = matrix.iter().map(|row| row[1]).collect::<Vec<_>>();
+    let risks = matrix.iter().map(|row| row[2]).collect::<Vec<_>>();
+    let costs = matrix.iter().map(|row| row[3]).collect::<Vec<_>>();
 
     let med_s = median(structs.clone());
     let med_f = median(fields.clone());
@@ -130,15 +133,19 @@ pub fn normalize_by_depth_candidates(
     let std_r = compute_std(&risks, mean_r);
     let std_c = compute_std(&costs, mean_c);
 
-    let eps_mad = 1e-12;
-    let active = [true; 4];
+    let active = [
+        std_s >= STD_THRESHOLD,
+        std_f >= STD_THRESHOLD,
+        std_r >= STD_THRESHOLD,
+        std_c >= STD_THRESHOLD,
+    ];
     let weak = [false; 4];
     let weights = [1.0; 4];
     let mad = [mad_s, mad_f, mad_r, mad_c];
     let median = [med_s, med_f, med_r, med_c];
     let mean = [mean_s, mean_f, mean_r, mean_c];
     let std_dev = [std_s, std_f, std_r, std_c];
-    let mad_zero_count = mad.iter().filter(|&&m| m <= eps_mad).count();
+    let mad_zero_count = std_dev.iter().filter(|&&s| s < STD_THRESHOLD).count();
 
     let stats = GlobalRobustStats {
         median,
@@ -152,43 +159,16 @@ pub fn normalize_by_depth_candidates(
         alpha_used: alpha,
     };
 
-    let normalized_raw = candidates
+    let normalized = candidates
         .into_iter()
-        .map(|(state, obj)| {
-            let mut f = [0.0; 4];
-            let raw = [obj.f_struct, obj.f_field, obj.f_risk, obj.f_shape];
-            for i in 0..4 {
-                f[i] = (raw[i] - median[i]) / (mad[i] + eps_mad);
-            }
-            (state, f)
-        })
-        .collect::<Vec<_>>();
-
-    let mut dim_values = [Vec::new(), Vec::new(), Vec::new(), Vec::new()];
-    for (_, vals) in &normalized_raw {
-        for i in 0..4 {
-            dim_values[i].push(vals[i]);
-        }
-    }
-    let dim_scaled = [
-        normalization::depth::normalize_by_depth(&dim_values[0], 0),
-        normalization::depth::normalize_by_depth(&dim_values[1], 0),
-        normalization::depth::normalize_by_depth(&dim_values[2], 0),
-        normalization::depth::normalize_by_depth(&dim_values[3], 0),
-    ];
-
-    let normalized = normalized_raw
-        .into_iter()
-        .enumerate()
-        .map(|(idx, (state, _))| {
-            let mut out = [0.0; 4];
-            for i in 0..4 {
-                out[i] = if idx < dim_scaled[i].len() && dim_scaled[i][idx].is_finite() {
-                    dim_scaled[i][idx].clamp(0.0, 1.0)
-                } else {
-                    0.5
-                };
-            }
+        .zip(matrix)
+        .map(|((state, _), row)| {
+            let out = [
+                zscore_to_unit(row[0], mean_s, std_s),
+                zscore_to_unit(row[1], mean_f, std_f),
+                zscore_to_unit(row[2], mean_r, std_r),
+                zscore_to_unit(row[3], mean_c, std_c),
+            ];
             (
                 state,
                 ObjectiveVector {
@@ -226,6 +206,85 @@ fn compute_std(values: &[f64], mean: f64) -> f64 {
     }
     let var = values.iter().map(|v| (v - mean).powi(2)).sum::<f64>() / (values.len() - 1) as f64;
     var.sqrt()
+}
+
+fn zscore_to_unit(value: f64, mean: f64, std: f64) -> f64 {
+    if !value.is_finite() {
+        return 0.5;
+    }
+    let z = if std < STD_THRESHOLD {
+        0.0
+    } else {
+        ((value - mean) / (std + ZSCORE_EPSILON)).clamp(-ZSCORE_CLIP, ZSCORE_CLIP)
+    };
+    let base = ((z + ZSCORE_CLIP) / (2.0 * ZSCORE_CLIP)).clamp(0.0, 1.0);
+    (NORMALIZED_MARGIN + (1.0 - 2.0 * NORMALIZED_MARGIN) * base).clamp(0.0, 1.0)
+}
+
+fn decorrelate_high_correlation(matrix: &mut [[f64; 4]]) {
+    for anchor in 0..4 {
+        for target in (anchor + 1)..4 {
+            let corr = pearson_corr(matrix, anchor, target);
+            if corr.abs() <= CORRELATION_THRESHOLD {
+                continue;
+            }
+            let mean_anchor = column_mean(matrix, anchor);
+            let mean_target = column_mean(matrix, target);
+            let var_anchor = column_variance(matrix, anchor, mean_anchor);
+            if var_anchor < STD_THRESHOLD {
+                continue;
+            }
+            let covariance = matrix
+                .iter()
+                .map(|row| (row[anchor] - mean_anchor) * (row[target] - mean_target))
+                .sum::<f64>()
+                / matrix.len() as f64;
+            let beta = covariance / var_anchor;
+            for row in matrix.iter_mut() {
+                row[target] = (row[target] - mean_target) - beta * (row[anchor] - mean_anchor);
+            }
+        }
+    }
+}
+
+fn column_mean(matrix: &[[f64; 4]], idx: usize) -> f64 {
+    if matrix.is_empty() {
+        return 0.0;
+    }
+    matrix.iter().map(|row| row[idx]).sum::<f64>() / matrix.len() as f64
+}
+
+fn column_variance(matrix: &[[f64; 4]], idx: usize, mean: f64) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    matrix
+        .iter()
+        .map(|row| {
+            let delta = row[idx] - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / matrix.len() as f64
+}
+
+fn pearson_corr(matrix: &[[f64; 4]], a: usize, b: usize) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    let mean_a = column_mean(matrix, a);
+    let mean_b = column_mean(matrix, b);
+    let var_a = column_variance(matrix, a, mean_a);
+    let var_b = column_variance(matrix, b, mean_b);
+    if var_a < STD_THRESHOLD || var_b < STD_THRESHOLD {
+        return 0.0;
+    }
+    let covariance = matrix
+        .iter()
+        .map(|row| (row[a] - mean_a) * (row[b] - mean_b))
+        .sum::<f64>()
+        / matrix.len() as f64;
+    (covariance / ((var_a.sqrt() * var_b.sqrt()) + ZSCORE_EPSILON)).clamp(-1.0, 1.0)
 }
 
 fn median(mut v: Vec<f64>) -> f64 {

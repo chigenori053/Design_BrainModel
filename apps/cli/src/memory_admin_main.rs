@@ -141,7 +141,8 @@ impl AppState {
     fn new(store: PersistentMemoryStore, store_path: Option<PathBuf>) -> Self {
         let status_msg = match &store_path {
             Some(p) => format!("Loaded from {}. s=save  q=quit(auto-save)", p.display()),
-            None => "No store file. Changes are in-memory only. Use --store <path> to persist.".to_string(),
+            None => "No store file. Changes are in-memory only. Use --store <path> to persist."
+                .to_string(),
         };
         Self {
             store,
@@ -250,31 +251,28 @@ fn handle_key(state: &mut AppState, key: event::KeyEvent) -> bool {
                 state.modal = ModalDialog::None;
             }
         }
-        ModalDialog::None => {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => return true,
-                KeyCode::Tab => state.active_tab = state.active_tab.next(),
-                KeyCode::BackTab => state.active_tab = state.active_tab.prev(),
-                KeyCode::Up | KeyCode::Char('k') => handle_up(state),
-                KeyCode::Down | KeyCode::Char('j') => handle_down(state),
-                KeyCode::Enter => handle_enter(state),
-                KeyCode::Char('/') => {
-                    state.active_tab = Tab::Search;
-                    state.search_input_mode = true;
-                    state.status_msg = "Type query then Enter...".to_string();
-                }
-                KeyCode::Char('s') => {
-                    state.save_to_file();
-                }
-                KeyCode::Char('p') => {
-                    state.modal = ModalDialog::PruneConfirm;
-                    state.status_msg =
-                        "Prune stale memories (v1, recall=0)? [r] confirm [Esc] cancel"
-                            .to_string();
-                }
-                _ => {}
+        ModalDialog::None => match key.code {
+            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Tab => state.active_tab = state.active_tab.next(),
+            KeyCode::BackTab => state.active_tab = state.active_tab.prev(),
+            KeyCode::Up | KeyCode::Char('k') => handle_up(state),
+            KeyCode::Down | KeyCode::Char('j') => handle_down(state),
+            KeyCode::Enter => handle_enter(state),
+            KeyCode::Char('/') => {
+                state.active_tab = Tab::Search;
+                state.search_input_mode = true;
+                state.status_msg = "Type query then Enter...".to_string();
             }
-        }
+            KeyCode::Char('s') => {
+                state.save_to_file();
+            }
+            KeyCode::Char('p') => {
+                state.modal = ModalDialog::PruneConfirm;
+                state.status_msg =
+                    "Prune stale memories (v1, recall=0)? [r] confirm [Esc] cancel".to_string();
+            }
+            _ => {}
+        },
     }
     false
 }
@@ -349,9 +347,9 @@ fn render(frame: &mut Frame, state: &AppState) {
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(3),  // タブバー
-            Constraint::Min(0),     // コンテンツ
-            Constraint::Length(1),  // ステータスバー
+            Constraint::Length(3), // タブバー
+            Constraint::Min(0),    // コンテンツ
+            Constraint::Length(1), // ステータスバー
         ])
         .split(area);
 
@@ -379,7 +377,11 @@ fn render_tab_bar(frame: &mut Frame, state: &AppState, area: Rect) {
     let bar_text = labels.join("│");
     frame.render_widget(
         Paragraph::new(bar_text)
-            .block(Block::default().borders(Borders::ALL).title(" memory_admin "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" memory_admin "),
+            )
             .style(Style::default().fg(Color::Cyan)),
         area,
     );
@@ -426,9 +428,8 @@ fn render_stats_panel(frame: &mut Frame, stats: &OptimizationStats, area: Rect) 
     let upg_bar = progress_bar(upgraded_pct / 100.0, bar_w);
     let skip_bar = progress_bar(skipped_pct / 100.0, bar_w);
 
-    let bars = format!(
-        "\n\n  Stored    {store_bar}\n  Upgraded  {upg_bar}\n  Skipped   {skip_bar}",
-    );
+    let bars =
+        format!("\n\n  Stored    {store_bar}\n  Upgraded  {upg_bar}\n  Skipped   {skip_bar}",);
 
     frame.render_widget(
         Paragraph::new(format!("{text}{bars}"))
@@ -451,7 +452,11 @@ fn render_policy_panel(frame: &mut Frame, policy: &DecisionPolicy, area: Rect) {
     );
     frame.render_widget(
         Paragraph::new(text)
-            .block(Block::default().borders(Borders::ALL).title(" Decision Policy "))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Decision Policy "),
+            )
             .wrap(Wrap { trim: false }),
         area,
     );
@@ -487,7 +492,9 @@ fn render_memory_list(frame: &mut Frame, state: &AppState, area: Rect) {
                 m.source_count
             );
             let style = if is_sel {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default().fg(Color::Gray)
             };
@@ -536,7 +543,11 @@ fn format_memory_detail(m: &GeneralizedMemory) -> String {
             .take(4)
             .map(|v| format!("{v:.3}"))
             .collect();
-        let suffix = if m.centroid_embedding.len() > 4 { "…" } else { "" };
+        let suffix = if m.centroid_embedding.len() > 4 {
+            "…"
+        } else {
+            ""
+        };
         format!("[{}{}]", preview.join(", "), suffix)
     };
     format!(
@@ -572,13 +583,7 @@ fn render_audit(frame: &mut Frame, state: &AppState, area: Rect) {
                     ("SKIPPED ", Color::DarkGray)
                 }
             };
-            let reason_short = entry
-                .evidence
-                .reason
-                .split('.')
-                .next()
-                .unwrap_or("")
-                .trim();
+            let reason_short = entry.evidence.reason.split('.').next().unwrap_or("").trim();
             let text = format!(
                 " {} │ src={:<12} │ {}",
                 tag,
@@ -591,8 +596,7 @@ fn render_audit(frame: &mut Frame, state: &AppState, area: Rect) {
 
     let title = format!(" Audit Log ({} entries) ", log.len());
     frame.render_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title)),
+        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
         area,
     );
 }
@@ -613,13 +617,12 @@ fn render_search(frame: &mut Frame, state: &AppState, area: Rect) {
     };
     let cursor = if state.search_input_mode { "█" } else { "" };
     frame.render_widget(
-        Paragraph::new(format!("{}{}", state.search_query, cursor))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" Search Query (press / to edit) ")
-                    .border_style(input_style),
-            ),
+        Paragraph::new(format!("{}{}", state.search_query, cursor)).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Search Query (press / to edit) ")
+                .border_style(input_style),
+        ),
         rows[0],
     );
 
@@ -641,7 +644,9 @@ fn render_search(frame: &mut Frame, state: &AppState, area: Rect) {
                 truncate(summary, 50)
             );
             let style = if is_sel {
-                Style::default().fg(Color::Yellow).add_modifier(Modifier::BOLD)
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD)
             } else {
                 Style::default()
             };
@@ -657,8 +662,7 @@ fn render_search(frame: &mut Frame, state: &AppState, area: Rect) {
         Some(state.search_list_idx)
     });
     frame.render_stateful_widget(
-        List::new(items)
-            .block(Block::default().borders(Borders::ALL).title(title)),
+        List::new(items).block(Block::default().borders(Borders::ALL).title(title)),
         rows[1],
         &mut list_state,
     );
@@ -739,9 +743,8 @@ fn render_status_bar(frame: &mut Frame, state: &AppState, area: Rect) {
         Some(p) => format!(" [{}]", p.display()),
         None => " [no file]".to_string(),
     };
-    let help = format!(
-        "  Tab switch   ↑↓ nav   / search   Enter detail   {save_hint}p prune   q quit"
-    );
+    let help =
+        format!("  Tab switch   ↑↓ nav   / search   Enter detail   {save_hint}p prune   q quit");
     let left_raw = format!("{dirty_marker}{}{path_label}", state.status_msg);
     let max_left = (area.width as usize).saturating_sub(help.len());
     let left = truncate(&left_raw, max_left);
@@ -783,16 +786,66 @@ fn build_demo_store() -> PersistentMemoryStore {
     let mut store = PersistentMemoryStore::new();
 
     let records: &[(&str, &str, &[&str], &[f32])] = &[
-        ("r001", "Design a RESTful API with JWT authentication", &["api", "rest", "jwt"], &[0.9, 0.1, 0.0, 0.0]),
-        ("r002", "Add rate limiting to REST API endpoints", &["api", "rest", "rate-limit"], &[0.88, 0.12, 0.0, 0.0]),
-        ("r003", "Implement OAuth2 flow for REST API", &["api", "rest", "oauth2", "auth"], &[0.85, 0.15, 0.0, 0.0]),
-        ("r004", "Design a PostgreSQL schema for user management", &["db", "sql", "postgres", "users"], &[0.0, 0.0, 0.9, 0.1]),
-        ("r005", "Add indexes to PostgreSQL tables for performance", &["db", "sql", "postgres", "index"], &[0.0, 0.0, 0.88, 0.12]),
-        ("r006", "Design a React component library with Storybook", &["frontend", "react", "ui", "storybook"], &[0.0, 0.8, 0.0, 0.2]),
-        ("r007", "Add TypeScript types to React components", &["frontend", "react", "typescript"], &[0.0, 0.82, 0.0, 0.18]),
-        ("r008", "Deploy microservices to Kubernetes", &["infra", "k8s", "deploy", "microservice"], &[0.5, 0.0, 0.0, 0.5]),
-        ("r009", "Completely different concept about ML pipelines", &["ml", "pipeline", "training"], &[0.0, 0.0, 0.0, 1.0]),
-        ("r010", "Another ML concept: feature engineering", &["ml", "features", "preprocessing"], &[0.0, 0.0, 0.05, 0.95]),
+        (
+            "r001",
+            "Design a RESTful API with JWT authentication",
+            &["api", "rest", "jwt"],
+            &[0.9, 0.1, 0.0, 0.0],
+        ),
+        (
+            "r002",
+            "Add rate limiting to REST API endpoints",
+            &["api", "rest", "rate-limit"],
+            &[0.88, 0.12, 0.0, 0.0],
+        ),
+        (
+            "r003",
+            "Implement OAuth2 flow for REST API",
+            &["api", "rest", "oauth2", "auth"],
+            &[0.85, 0.15, 0.0, 0.0],
+        ),
+        (
+            "r004",
+            "Design a PostgreSQL schema for user management",
+            &["db", "sql", "postgres", "users"],
+            &[0.0, 0.0, 0.9, 0.1],
+        ),
+        (
+            "r005",
+            "Add indexes to PostgreSQL tables for performance",
+            &["db", "sql", "postgres", "index"],
+            &[0.0, 0.0, 0.88, 0.12],
+        ),
+        (
+            "r006",
+            "Design a React component library with Storybook",
+            &["frontend", "react", "ui", "storybook"],
+            &[0.0, 0.8, 0.0, 0.2],
+        ),
+        (
+            "r007",
+            "Add TypeScript types to React components",
+            &["frontend", "react", "typescript"],
+            &[0.0, 0.82, 0.0, 0.18],
+        ),
+        (
+            "r008",
+            "Deploy microservices to Kubernetes",
+            &["infra", "k8s", "deploy", "microservice"],
+            &[0.5, 0.0, 0.0, 0.5],
+        ),
+        (
+            "r009",
+            "Completely different concept about ML pipelines",
+            &["ml", "pipeline", "training"],
+            &[0.0, 0.0, 0.0, 1.0],
+        ),
+        (
+            "r010",
+            "Another ML concept: feature engineering",
+            &["ml", "features", "preprocessing"],
+            &[0.0, 0.0, 0.05, 0.95],
+        ),
     ];
 
     for (id, text, tags, embed) in records {
@@ -873,27 +926,29 @@ fn main() {
 
     // ストアの初期化: --store が指定されていればファイルからロード
     let store = match &args.store {
-        Some(path) if !args.demo => {
-            match PersistentMemoryStore::load_or_new(path) {
-                Ok(s) => {
-                    eprintln!(
-                        "memory_admin: {} memories loaded from {}.",
-                        s.memory_count(),
-                        path.display()
-                    );
-                    s
-                }
-                Err(e) => {
-                    eprintln!("Failed to load store from {}: {e}", path.display());
-                    std::process::exit(1);
-                }
+        Some(path) if !args.demo => match PersistentMemoryStore::load_or_new(path) {
+            Ok(s) => {
+                eprintln!(
+                    "memory_admin: {} memories loaded from {}.",
+                    s.memory_count(),
+                    path.display()
+                );
+                s
             }
-        }
+            Err(e) => {
+                eprintln!("Failed to load store from {}: {e}", path.display());
+                std::process::exit(1);
+            }
+        },
         _ => {
             if args.demo {
                 eprintln!("Loading demo data...");
             }
-            let s = if args.demo { build_demo_store() } else { PersistentMemoryStore::new() };
+            let s = if args.demo {
+                build_demo_store()
+            } else {
+                PersistentMemoryStore::new()
+            };
             eprintln!("memory_admin: {} memories in store.", s.memory_count());
             s
         }

@@ -24,19 +24,23 @@ mod git_integration;
 mod remote_integration;
 
 use diagnostics::{
-    DebugEngine, FixGenerator, apply_text_patch, classify_error_line, default_tasks,
-    execute_with_incident_recorder, extract_error_lines, has_progressed, matches_any,
-    normalize_fix_chain_step, push_command, split_command,
+    DebugEngine, FixGenerator, apply_text_patch, default_tasks, execute_with_incident_recorder,
+    has_progressed, matches_any, normalize_fix_chain_step, push_command, split_command,
 };
+use git_integration::finalize_git_integration;
+pub use git_integration::{DiffStats, GitAction, GitIntegrationReport};
+use remote_integration::finalize_remote_integration;
+pub use remote_integration::{RemoteAction, RemoteIntegrationReport};
+
+#[cfg(test)]
+use diagnostics::{classify_error_line, extract_error_lines};
+#[cfg(test)]
 use git_integration::{
     CommitDescriptor, GitExecutor, GitIntegration, PreCommitValidator, commit_message, diff_stats,
-    finalize_git_integration, git_command, is_auto_fix_branch,
+    git_command, is_auto_fix_branch,
 };
-pub use git_integration::{DiffStats, GitAction, GitIntegrationReport};
-use remote_integration::{
-    AuthValidator, BranchManager, RemoteGuard, RemoteIntegration, finalize_remote_integration,
-};
-pub use remote_integration::{RemoteAction, RemoteIntegrationReport};
+#[cfg(test)]
+use remote_integration::{AuthValidator, BranchManager, RemoteGuard, RemoteIntegration};
 
 pub const MAX_RETRY: usize = 3;
 pub const CONFIDENCE_THRESHOLD: f32 = 0.6;

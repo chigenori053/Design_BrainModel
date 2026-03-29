@@ -113,8 +113,7 @@ impl UpgradeGate {
     /// 両条件を満たす場合のみ Upgrade を許可し、
     /// 満たさない場合はコンセプト乖離として新規保存する。
     pub fn allows(&self, profile: &SimilarityProfile) -> bool {
-        profile.embed_cosine >= self.min_embed_cosine
-            && profile.tag_jaccard >= self.min_tag_jaccard
+        profile.embed_cosine >= self.min_embed_cosine && profile.tag_jaccard >= self.min_tag_jaccard
     }
 }
 
@@ -270,8 +269,13 @@ impl DecisionEngine {
             .iter()
             .enumerate()
             .map(|(idx, mem)| {
-                let profile =
-                    SimilarityProfile::compute(mem, new_tags, new_embedding, new_text, &self.policy);
+                let profile = SimilarityProfile::compute(
+                    mem,
+                    new_tags,
+                    new_embedding,
+                    new_text,
+                    &self.policy,
+                );
                 (idx, profile)
             })
             .max_by(|a, b| {
@@ -288,7 +292,9 @@ impl DecisionEngine {
         if score >= self.policy.duplicate_threshold {
             // 重複
             return (
-                DecisionAction::Skip { matched_idx: best_idx },
+                DecisionAction::Skip {
+                    matched_idx: best_idx,
+                },
                 DecisionEvidence {
                     best_match_idx: Some(best_idx),
                     best_match_id: Some(best_id),
@@ -327,7 +333,9 @@ impl DecisionEngine {
         // アップグレードゾーン: UpgradeGate で追加検証
         if self.policy.upgrade_gate.allows(&best_profile) {
             (
-                DecisionAction::Upgrade { target_idx: best_idx },
+                DecisionAction::Upgrade {
+                    target_idx: best_idx,
+                },
                 DecisionEvidence {
                     best_match_idx: Some(best_idx),
                     best_match_id: Some(best_id),
@@ -400,7 +408,11 @@ pub fn text_word_overlap(a: &str, b: &str) -> f32 {
     }
     let intersection = words_a.intersection(&words_b).count() as f32;
     let union = words_a.union(&words_b).count() as f32;
-    if union == 0.0 { 0.0 } else { intersection / union }
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 /// 既存記憶の中からデフォルトポリシーで最も類似するエントリを探す。

@@ -13,7 +13,11 @@ pub fn jaccard_similarity(a: &[String], b: &[String]) -> f32 {
     let b_set: BTreeSet<String> = b.iter().map(|s| s.to_ascii_lowercase()).collect();
     let intersection = a_set.intersection(&b_set).count() as f32;
     let union = a_set.union(&b_set).count() as f32;
-    if union == 0.0 { 0.0 } else { intersection / union }
+    if union == 0.0 {
+        0.0
+    } else {
+        intersection / union
+    }
 }
 
 /// ベクトルのコサイン類似度を計算する。

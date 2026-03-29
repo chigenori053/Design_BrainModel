@@ -344,12 +344,71 @@ pub enum HvPolicy {
     Guided,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntentProfile {
+    Balanced,
+    Maintainability,
+    Performance,
+    LowRisk,
+    Refactor,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorldModelMode {
+    Deterministic,
+    Probabilistic,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BetaProfile {
+    Conservative,
+    Balanced,
+    Aggressive,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum IntentMetric {
+    Maintainability,
+    Performance,
+    Risk,
+    RefactorEase,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IntentActionPolicy {
+    Prefer,
+    Avoid,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum IntentRule {
+    Maximize(IntentMetric),
+    Minimize(IntentMetric),
+    Constraint(IntentMetric, f64),
+    ActionPolicy(IntentActionPolicy, IntentMetric),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Phase1Config {
     pub beam_width: usize,
     pub max_steps: usize,
     pub hv_policy: HvPolicy,
     pub seed: u64,
+    pub world_model_enabled: bool,
+    pub world_model_alpha: f64,
+    pub world_model_beta: f64,
+    pub world_model_beta_profile: BetaProfile,
+    pub world_model_actions_per_state: usize,
+    pub world_model_max_depth: usize,
+    pub intent_profile: IntentProfile,
+    pub world_model_mode: WorldModelMode,
+    pub world_model_variance_penalty: f64,
+    pub world_model_semantic_variance_penalty: f64,
+    pub world_model_semantic_variance_max_penalty: f64,
+    pub world_model_learning_rate: f64,
+    pub world_model_learning_decay: f64,
+    pub world_model_learning_confidence_gate: f64,
+    pub world_model_confidence_floor: f64,
     pub norm_alpha: f64,
     pub alpha: f64,
     pub temperature: f64,
@@ -362,7 +421,19 @@ pub struct Phase1Config {
 
 impl Phase1Config {
     pub fn is_valid(&self) -> bool {
-        self.beam_width > 0 && self.max_steps > 0
+        self.beam_width > 0
+            && self.max_steps > 0
+            && self.world_model_actions_per_state > 0
+            && self.world_model_max_depth > 0
+            && self.world_model_alpha >= 0.0
+            && self.world_model_beta >= 0.0
+            && self.world_model_variance_penalty >= 0.0
+            && self.world_model_semantic_variance_penalty >= 0.0
+            && self.world_model_semantic_variance_max_penalty >= 0.0
+            && (0.0..=1.0).contains(&self.world_model_learning_rate)
+            && (0.0..=1.0).contains(&self.world_model_learning_decay)
+            && (0.0..=1.0).contains(&self.world_model_learning_confidence_gate)
+            && (0.0..=1.0).contains(&self.world_model_confidence_floor)
     }
 }
 
@@ -371,9 +442,24 @@ pub struct Phase1RawRow {
     pub variant: String,
     pub depth: usize,
     pub beam_index: usize,
+    pub cluster_id: usize,
     pub rule_id: String,
     pub objective_vector_raw: String,
     pub objective_vector_norm: String,
+    pub diversity_score: f64,
+    pub action_label: String,
+    pub repair_potential: f64,
+    pub intent_score: f64,
+    pub confidence: f64,
+    pub variance: f64,
+    pub semantic_variance: f64,
+    pub uncertainty: f64,
+    pub beta_reliance: f64,
+    pub learning_bias: f64,
+    pub final_score: f64,
+    pub delta_violations: f64,
+    pub delta_coupling: f64,
+    pub delta_propagation_score: f64,
     pub completeness: f64,
     pub ambiguity_mean: f64,
     pub inconsistency: f64,
@@ -399,7 +485,36 @@ pub struct Phase1SummaryRow {
     pub mean_nn_dist: f64,
     pub spacing: f64,
     pub pareto_front_size: usize,
+    pub frontier_hv: f64,
+    pub hv_delta: f64,
+    pub beta_used: f64,
+    pub semantic_variance_mean: f64,
+    pub world_model_enabled: bool,
+    pub cluster_count: usize,
+    pub cluster_coverage: f64,
+    pub score_variance: f64,
+    pub diversity_mean: f64,
+    pub frontier_change_ratio: f64,
+    pub stagnation_steps: usize,
+    pub stop_triggered: bool,
+    pub cluster_collapse_flag: bool,
     pub collapse_flag: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExplanationFactor {
+    pub label: String,
+    pub impact: f64,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateExplanation {
+    pub summary: String,
+    pub top_factors: Vec<ExplanationFactor>,
+    pub intent_impact: f64,
+    pub risk: f64,
+    pub confidence: f64,
+    pub action_reason: String,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -806,4 +921,57 @@ pub fn profile_modulation(stability_index: f64) -> f64 {
 
 pub fn run_phase1_matrix(config: Phase1Config) -> (Vec<Phase1RawRow>, Vec<Phase1SummaryRow>) {
     runtime::phase1::run_phase1_matrix(config)
+}
+
+pub fn load_intent_template(name: &str) -> Option<IntentProfile> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "maintainability" | "maintain" => Some(IntentProfile::Maintainability),
+        "performance" | "perf" => Some(IntentProfile::Performance),
+        "safety" | "safe" => Some(IntentProfile::LowRisk),
+        "minimal change" | "minimal_change" | "minimal-change" => Some(IntentProfile::Balanced),
+        "refactor priority" | "refactor_priority" | "refactor-priority" | "refactor" => {
+            Some(IntentProfile::Refactor)
+        }
+        "balanced" => Some(IntentProfile::Balanced),
+        _ => None,
+    }
+}
+
+pub fn explain_phase1_candidate(candidate: &Phase1RawRow) -> CandidateExplanation {
+    let mut top_factors = Vec::new();
+    if candidate.delta_coupling.abs() > 0.0 {
+        top_factors.push(ExplanationFactor {
+            label: "Improves coupling".to_string(),
+            impact: -candidate.delta_coupling,
+        });
+    }
+    top_factors.push(ExplanationFactor {
+        label: "Matches intent".to_string(),
+        impact: candidate.intent_score,
+    });
+    top_factors.push(ExplanationFactor {
+        label: "Confidence".to_string(),
+        impact: candidate.confidence,
+    });
+    top_factors.push(ExplanationFactor {
+        label: "Semantic risk".to_string(),
+        impact: -candidate.semantic_variance,
+    });
+    top_factors.sort_by(|lhs, rhs| rhs.impact.total_cmp(&lhs.impact));
+    top_factors.truncate(4);
+
+    CandidateExplanation {
+        summary: format!(
+            "Candidate selected because intent={:.2}, confidence={:.2}, risk={:.2}, final_score={:.2}",
+            candidate.intent_score,
+            candidate.confidence,
+            candidate.semantic_variance,
+            candidate.final_score
+        ),
+        top_factors,
+        intent_impact: candidate.intent_score,
+        risk: candidate.semantic_variance,
+        confidence: candidate.confidence,
+        action_reason: candidate.action_label.clone(),
+    }
 }

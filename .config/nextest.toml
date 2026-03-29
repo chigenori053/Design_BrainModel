@@ -1,0 +1,22 @@
+# cargo-nextest 設定
+# 各テストを独立プロセスで実行 → テスト完了後にOSがリソースを完全回収
+# インストール: cargo install cargo-nextest
+
+[profile.default]
+# 10 CPU 中 4並列で実行（CPUを枯渇させない）
+test-threads = 4
+# スローテスト検出
+slow-timeout = { period = "60s", terminate-after = 3 }
+# リーク検出のタイムアウト
+leak-timeout = "5s"
+
+[profile.ci]
+# CI環境では2並列（安定性重視）
+test-threads = 2
+slow-timeout = { period = "120s", terminate-after = 2 }
+leak-timeout = "10s"
+
+[profile.serial]
+# 完全直列実行（デバッグ・リソース最小化時）
+test-threads = 1
+slow-timeout = { period = "180s", terminate-after = 1 }

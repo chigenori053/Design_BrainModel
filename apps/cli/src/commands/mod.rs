@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod coding;
+pub mod design;
 pub mod exec;
 pub mod generate;
 pub mod memory;
@@ -23,6 +24,7 @@ pub fn register_defaults(registry: &mut CommandRegistry) {
     exec::ExecPlugin.register(registry);
     rules::RulesPlugin.register(registry);
     memory::MemoryPlugin.register(registry);
+    design::DesignPlugin.register(registry);
 }
 
 use crate::command::CommandPlugin;
@@ -42,13 +44,18 @@ mod tests {
         assert!(names.contains(&"system"), "system should be registered");
         assert!(names.contains(&"validate"), "validate should be registered");
         assert!(names.contains(&"refactor"), "refactor should be registered");
+        assert!(
+            names.contains(&"refactoring"),
+            "refactoring should be registered"
+        );
         assert!(names.contains(&"coding"), "coding should be registered");
         assert!(names.contains(&"diff"), "diff should be registered");
         assert!(names.contains(&"check"), "check should be registered");
         assert!(names.contains(&"apply"), "apply should be registered");
-        assert!(names.contains(&"run"), "run should be registered");
+        assert!(names.contains(&"exec"), "exec should be registered");
         assert!(names.contains(&"rules"), "rules should be registered");
         assert!(names.contains(&"memory"), "memory should be registered");
+        assert!(names.contains(&"design"), "design should be registered");
     }
 
     #[test]

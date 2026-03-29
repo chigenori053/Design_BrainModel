@@ -1,6 +1,6 @@
 use std::fs;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -27,6 +27,40 @@ fn temp_project_dir(name: &str) -> PathBuf {
     dir
 }
 
+fn fixture_project_dir(name: &str) -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join(name)
+}
+
+fn copy_dir_recursive(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("create dir");
+    for entry in fs::read_dir(src).expect("read dir") {
+        let entry = entry.expect("dir entry");
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir_recursive(&src_path, &dst_path);
+        } else {
+            fs::copy(&src_path, &dst_path).expect("copy file");
+        }
+    }
+}
+
+fn temp_fixture_copy(name: &str, fixture: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!(
+        "design_cli_fixture_{}_{}",
+        name,
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("time")
+            .as_nanos()
+    ));
+    copy_dir_recursive(&fixture_project_dir(fixture), &dir);
+    dir
+}
+
 fn temp_sleep_project_dir(name: &str) -> PathBuf {
     let dir = temp_project_dir(name);
     fs::write(
@@ -45,6 +79,23 @@ fn temp_coding_project_dir(name: &str) -> PathBuf {
         "use crate::debug;\npub fn render() { debug::log(); }\n",
     )
     .expect("write renderer");
+    dir
+}
+
+fn temp_dto_leak_project_dir(name: &str) -> PathBuf {
+    let dir = temp_project_dir(name);
+    fs::create_dir_all(dir.join("src/service")).expect("create service");
+    fs::create_dir_all(dir.join("src/world")).expect("create world");
+    fs::write(
+        dir.join("src/service/dto.rs"),
+        "use crate::world::WorldState;\n\npub struct AnalyzeResultDTO {\n    pub world: WorldState,\n}\n",
+    )
+    .expect("write dto");
+    fs::write(
+        dir.join("src/world/mod.rs"),
+        "pub struct WorldState {\n    pub value: String,\n}\n",
+    )
+    .expect("write world");
     dir
 }
 
@@ -457,6 +508,54 @@ fn apply_command_can_auto_commit() {
 }
 
 #[test]
+fn refactoring_command_applies_analyzed_changes() {
+    let dir = temp_fixture_copy("refactoring_apply", "architecture_layer_violation");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "refactoring",
+            dir.to_str().expect("utf8 path"),
+            "--no-build",
+            "--json",
+        ])
+        .output()
+        .expect("run refactoring");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["status"], "applied");
+    assert_eq!(stdout["execution"]["applied"], true);
+    assert!(stdout["execution"]["files_changed"].as_u64().unwrap_or(0) > 0);
+    assert!(dir.join("src/renderer_world_interface.rs").exists());
+}
+
+#[test]
+fn refactoring_dry_run_checks_without_modifying_workspace() {
+    let dir = temp_coding_project_dir("refactoring_dry_run");
+    let renderer_before = fs::read_to_string(dir.join("src/renderer.rs")).expect("read before");
+
+    let out = Command::new(cli_bin())
+        .args([
+            "refactoring",
+            dir.to_str().expect("utf8 path"),
+            "--dry-run",
+            "--no-build",
+            "--json",
+        ])
+        .output()
+        .expect("run refactoring dry-run");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    assert_eq!(stdout["execution"]["checked"], true);
+    assert_eq!(stdout["execution"]["applied"], false);
+    assert_eq!(
+        fs::read_to_string(dir.join("src/renderer.rs")).expect("read after"),
+        renderer_before
+    );
+}
+
+#[test]
 fn execute_command_can_auto_commit_single_file_fix() {
     let dir = temp_node_execute_project_dir("execute_commit");
     init_git_repo(&dir);
@@ -546,7 +645,7 @@ fn analyze_no_refactor_output() {
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).expect("utf8");
     assert!(stdout.contains("Next Action:"));
-    assert!(stdout.contains("cli refactor"));
+    assert!(stdout.contains("cli refactoring"));
     assert!(!stdout.contains("Introduce Interface"));
     assert!(!stdout.contains("Split Module"));
     assert!(!stdout.contains("Move Dependency"));
@@ -625,7 +724,7 @@ fn next_action_only_refactor_command() {
 
     assert_eq!(out.status.code(), Some(0));
     let stdout = String::from_utf8(out.stdout).expect("utf8");
-    assert!(stdout.contains(&format!("cli refactor {}", dir.display())));
+    assert!(stdout.contains(&format!("cli refactoring {}", dir.display())));
     assert!(!stdout.contains("Fix this"));
     assert!(!stdout.contains("fix by"));
 }
@@ -644,10 +743,54 @@ fn cli_analyze_pure_mode() {
     assert!(stdout["summary"].is_object());
     assert_eq!(
         stdout["next_action"],
-        format!("cli refactor {}", dir.display())
+        format!("cli refactoring {}", dir.display())
     );
     assert!(stdout.get("plan").is_none());
     assert!(stdout.get("simulation").is_none());
+}
+
+#[test]
+fn cli_analyze_json_includes_code_diagnostics() {
+    let dir = temp_dto_leak_project_dir("analyze_code_diagnostics");
+    let out = Command::new(cli_bin())
+        .args(["analyze", dir.to_str().expect("utf8 path"), "--json"])
+        .output()
+        .expect("run analyze json");
+
+    assert_eq!(out.status.code(), Some(0));
+    let stdout: Value = serde_json::from_slice(&out.stdout).expect("json stdout");
+    let code_issues = stdout["code_issues"].as_array().expect("code_issues array");
+    assert!(!code_issues.is_empty(), "expected code issues in {stdout}");
+    assert_eq!(code_issues[0]["category"], "BoundaryLeak");
+    assert_eq!(code_issues[0]["severity"], "high");
+    assert!(
+        code_issues[0]["snippet"]
+            .as_str()
+            .expect("snippet")
+            .contains("use crate::world::WorldState;")
+    );
+}
+
+#[test]
+fn cli_analyze_writes_markdown_report() {
+    let dir = temp_dto_leak_project_dir("analyze_markdown_report");
+    let report_path = dir.join("analysis-report.md");
+    let out = Command::new(cli_bin())
+        .args([
+            "analyze",
+            dir.to_str().expect("utf8 path"),
+            "--report-md",
+            report_path.to_str().expect("utf8 path"),
+        ])
+        .output()
+        .expect("run analyze with markdown");
+
+    assert_eq!(out.status.code(), Some(0));
+    let report = fs::read_to_string(&report_path).expect("read markdown report");
+    assert!(report.contains("# Analyze Report"));
+    assert!(report.contains("## Code Diagnostics"));
+    assert!(report.contains("DTO depends on internal module"));
+    assert!(report.contains("use crate::world::WorldState;"));
 }
 
 #[test]

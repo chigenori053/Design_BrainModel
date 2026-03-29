@@ -58,3 +58,4 @@ world_model_core = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = "3.4"
 ratatui = { workspace = true }
+serde_yaml = "0.9"

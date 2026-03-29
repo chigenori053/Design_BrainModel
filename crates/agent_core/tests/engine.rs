@@ -4,3 +4,5 @@ mod diversity;
 mod hypervolume;
 #[path = "engine/pareto.rs"]
 mod pareto;
+#[path = "engine/structured_search.rs"]
+mod structured_search;

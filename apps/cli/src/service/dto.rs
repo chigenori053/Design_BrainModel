@@ -53,6 +53,7 @@ pub struct AnalysisReport {
     pub semantic_layers: Vec<SemanticLayer>,
     pub data_flow: Vec<DataFlowEdgeReport>,
     pub issues: Vec<Issue>,
+    pub code_issues: Vec<CodeIssue>,
     pub summary: AnalysisSummary,
     pub next_action: String,
     pub root_cause: Option<RootCause>,
@@ -128,6 +129,17 @@ pub struct DataFlowEdgeReport {
     pub from: String,
     pub to: String,
     pub weight: f32,
+}
+
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct CodeIssue {
+    pub severity: String,
+    pub category: String,
+    pub file: String,
+    pub line: usize,
+    pub title: String,
+    pub issue: String,
+    pub snippet: String,
 }
 
 #[derive(Debug, Clone, Serialize)]

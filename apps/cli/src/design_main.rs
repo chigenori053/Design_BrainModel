@@ -4,7 +4,10 @@ use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
-use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
+use agent_core::{
+    BetaProfile, HvPolicy, IntentProfile, Phase1Config, SoftTraceParams, TraceRunConfig,
+    WorldModelMode, run_phase1_matrix,
+};
 use analysis_tools::{CaseData, compute_correlation};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
@@ -30,6 +33,276 @@ use world_model_core::{
 const CLI_VERSION: &str = "0.1.0";
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
 const PARETO_EPS: f64 = 1e-12;
+const NORMALIZE_EPS: f64 = 1e-6;
+const NORMALIZE_STD_THRESHOLD: f64 = 1e-6;
+const NORMALIZE_CLIP: f64 = 3.0;
+const CORRELATION_THRESHOLD: f64 = 0.8;
+const NORMALIZED_MARGIN: f64 = 1e-3;
+const INTENT_CONFIDENCE_THRESHOLD: f32 = 0.6;
+const MULTI_INTENT_SCORE_GAP_DELTA: f32 = 0.12;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputType {
+    NaturalLanguage,
+    Command,
+}
+
+fn detect_input_type(input: &str) -> InputType {
+    if input.trim_start().starts_with('/') {
+        InputType::Command
+    } else {
+        InputType::NaturalLanguage
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct CommandRequest {
+    program: String,
+    args: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Unit {
+    token: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Concept {
+    key: String,
+    value: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct IntentNode {
+    intent: IntentType,
+    score: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Relation {
+    from: String,
+    to: String,
+    label: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct LanguageOutput {
+    semantic_units: Vec<Unit>,
+    concepts: Vec<Concept>,
+    intent_nodes: Vec<IntentNode>,
+    relations: Vec<Relation>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IntentType {
+    AnalyzeProject,
+    GenerateCode,
+    Refactor,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Ambiguity {
+    MissingTarget,
+    MultipleIntent,
+    LowConfidence,
+}
+
+impl std::fmt::Display for Ambiguity {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Ambiguity::MissingTarget => {
+                write!(
+                    f,
+                    "対象が指定されていません。\n解析するパスを指定してください。"
+                )
+            }
+            Ambiguity::MultipleIntent => {
+                write!(
+                    f,
+                    "意図が曖昧です。選択してください:\n1. analyze\n2. refactor"
+                )
+            }
+            Ambiguity::LowConfidence => write!(f, "入力を理解できませんでした。"),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct Context {
+    default_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct ResolvedIntent {
+    intent: IntentType,
+    confidence: f32,
+    arguments: std::collections::HashMap<String, Value>,
+}
+
+fn language_parse(input: &str) -> LanguageOutput {
+    let lower = input.to_lowercase();
+    let semantic_units = input
+        .split_whitespace()
+        .map(|token| Unit {
+            token: token.to_string(),
+        })
+        .collect::<Vec<_>>();
+
+    let mut concepts = Vec::new();
+    if input.contains("このプロジェクト") || lower.contains("this project") {
+        concepts.push(Concept {
+            key: "target".to_string(),
+            value: "./project".to_string(),
+        });
+    } else if input.contains("これ") || lower.contains("this") {
+        concepts.push(Concept {
+            key: "target".to_string(),
+            value: "./project".to_string(),
+        });
+    }
+
+    let mut intent_nodes = Vec::new();
+    if input.contains("解析") || lower.contains("analyze") {
+        intent_nodes.push(IntentNode {
+            intent: IntentType::AnalyzeProject,
+            score: if concepts.iter().any(|c| c.key == "target") {
+                0.95
+            } else {
+                0.78
+            },
+        });
+    }
+    if input.contains("生成") || lower.contains("generate") {
+        intent_nodes.push(IntentNode {
+            intent: IntentType::GenerateCode,
+            score: 0.72,
+        });
+    }
+    if input.contains("リファクタ") || lower.contains("refactor") || input.contains("見て") {
+        intent_nodes.push(IntentNode {
+            intent: IntentType::Refactor,
+            score: if input.contains("見て") { 0.56 } else { 0.68 },
+        });
+    }
+    if intent_nodes.is_empty() {
+        intent_nodes.push(IntentNode {
+            intent: IntentType::Unknown,
+            score: 0.0,
+        });
+    }
+
+    LanguageOutput {
+        semantic_units,
+        concepts,
+        intent_nodes,
+        relations: Vec::new(),
+    }
+}
+
+fn resolve_intent(
+    intent_nodes: Vec<IntentNode>,
+    context: Context,
+) -> Result<ResolvedIntent, Ambiguity> {
+    let mut nodes = intent_nodes
+        .into_iter()
+        .filter(|node| node.intent != IntentType::Unknown)
+        .collect::<Vec<_>>();
+    if nodes.is_empty() {
+        return Err(Ambiguity::LowConfidence);
+    }
+    nodes.sort_by(|a, b| b.score.total_cmp(&a.score));
+    let top = nodes[0].clone();
+    if nodes.len() > 1 {
+        let second = nodes[1].score;
+        if (top.score - second) < MULTI_INTENT_SCORE_GAP_DELTA {
+            return Err(Ambiguity::MultipleIntent);
+        }
+    }
+    if top.score < INTENT_CONFIDENCE_THRESHOLD {
+        return Err(Ambiguity::LowConfidence);
+    }
+
+    let mut arguments = std::collections::HashMap::new();
+    if top.intent == IntentType::AnalyzeProject {
+        if !context.default_path.trim().is_empty() {
+            arguments.insert("path".to_string(), Value::String(context.default_path));
+        }
+    }
+    Ok(ResolvedIntent {
+        intent: top.intent,
+        confidence: top.score,
+        arguments,
+    })
+}
+
+fn map_intent_to_command(intent: ResolvedIntent) -> Result<CommandRequest, Ambiguity> {
+    match intent.intent {
+        IntentType::AnalyzeProject => {
+            let path = intent
+                .arguments
+                .get("path")
+                .and_then(|v| v.as_str())
+                .map(ToString::to_string)
+                .ok_or(Ambiguity::MissingTarget)?;
+            Ok(CommandRequest {
+                program: "design".to_string(),
+                args: vec!["analyze".to_string(), "--target".to_string(), path],
+            })
+        }
+        IntentType::GenerateCode => Ok(CommandRequest {
+            program: "design".to_string(),
+            args: vec!["simulate".to_string()],
+        }),
+        IntentType::Refactor => Ok(CommandRequest {
+            program: "design".to_string(),
+            args: vec!["explain".to_string()],
+        }),
+        IntentType::Unknown => Err(Ambiguity::LowConfidence),
+    }
+}
+
+fn command_parse(input: &str) -> CommandRequest {
+    let tokens = input
+        .split_whitespace()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let mut args = Vec::new();
+    for (i, token) in tokens.iter().enumerate() {
+        if i == 0 {
+            args.push(token.trim_start_matches('/').to_string());
+        } else {
+            args.push(token.clone());
+        }
+    }
+    CommandRequest {
+        program: "design".to_string(),
+        args,
+    }
+}
+
+fn extract_command_from_hybrid_input(input: &str) -> Option<String> {
+    input
+        .split_whitespace()
+        .find(|token| token.starts_with('/'))
+        .map(|token| token.to_string())
+}
+
+fn fill_missing_args_with_language_core(input: &str) -> Option<String> {
+    let output = language_parse(input);
+    output
+        .concepts
+        .iter()
+        .find(|c| c.key == "target")
+        .map(|c| c.value.clone())
+        .or_else(|| {
+            if input.contains("これ") {
+                Some("./project".to_string())
+            } else {
+                None
+            }
+        })
+}
 
 #[derive(Parser, Debug)]
 #[command(name = "design", about = "Phase1 CLI", disable_version_flag = true)]
@@ -41,6 +314,8 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Analyze {
+        #[arg(long = "target", default_value = "./project")]
+        target: String,
         #[arg(long, default_value_t = 42)]
         seed: u64,
         #[arg(long = "beam-width", default_value_t = 5)]
@@ -251,9 +526,79 @@ fn main() {
 }
 
 fn run() -> Result<(), String> {
-    let cli = Cli::try_parse().map_err(|e| format!("invalid command: {e}"))?;
+    let raw_args = std::env::args().collect::<Vec<_>>();
+    let known_commands = [
+        "analyze", "explain", "simulate", "clear", "adopt", "reject", "export", "phase9",
+    ];
+    if raw_args.len() > 1 && raw_args[1].starts_with('/') {
+        let mut normalized = raw_args.clone();
+        normalized[1] = normalized[1].trim_start_matches('/').to_string();
+        if normalized[1] == "analyze" && normalized.len() >= 3 && !normalized[2].starts_with('-') {
+            let path = normalized[2].clone();
+            normalized.remove(2);
+            normalized.insert(2, "--target".to_string());
+            normalized.insert(3, path);
+        }
+        let cli = Cli::try_parse_from(normalized).map_err(|e| format!("invalid command: {e}"))?;
+        return run_cli(cli);
+    }
+    if raw_args.len() == 2 && !known_commands.contains(&raw_args[1].as_str()) {
+        let raw_input = raw_args[1].trim().to_string();
+        let request = if raw_input.contains('/') {
+            let extracted =
+                extract_command_from_hybrid_input(&raw_input).unwrap_or_else(|| raw_input.clone());
+            let mut parsed = command_parse(&extracted);
+            if parsed.args.first().map(String::as_str) == Some("analyze")
+                && let Some(path) = fill_missing_args_with_language_core(&raw_input)
+            {
+                parsed.args.push("--target".to_string());
+                parsed.args.push(path);
+            }
+            parsed
+        } else {
+            match detect_input_type(&raw_input) {
+                InputType::Command => command_parse(&raw_input),
+                InputType::NaturalLanguage => {
+                    let language_output = language_parse(&raw_input);
+                    let context = Context {
+                        default_path: language_output
+                            .concepts
+                            .iter()
+                            .find(|c| c.key == "target")
+                            .map(|c| c.value.clone())
+                            .unwrap_or_default(),
+                    };
+                    let resolved = resolve_intent(language_output.intent_nodes, context)
+                        .map_err(|e| e.to_string())?;
+                    let command =
+                        map_intent_to_command(resolved.clone()).map_err(|e| e.to_string())?;
+                    if resolved.intent == IntentType::AnalyzeProject {
+                        eprintln!("✔ Intent: ANALYZE_PROJECT");
+                        let path = command
+                            .args
+                            .last()
+                            .cloned()
+                            .unwrap_or_else(|| "./project".to_string());
+                        eprintln!("✔ Command: analyze {path}");
+                    }
+                    command
+                }
+            }
+        };
+        let cli = Cli::try_parse_from(
+            std::iter::once(request.program.clone()).chain(request.args.clone()),
+        )
+        .map_err(|e| format!("invalid command: {e}"))?;
+        return run_cli(cli);
+    }
+    let cli = Cli::try_parse_from(raw_args).map_err(|e| format!("invalid command: {e}"))?;
+    run_cli(cli)
+}
+
+fn run_cli(cli: Cli) -> Result<(), String> {
     match cli.command {
         Commands::Analyze {
+            target,
             seed,
             beam_width,
             max_steps,
@@ -261,6 +606,7 @@ fn run() -> Result<(), String> {
             human_coherence,
             dump_analysis,
         } => run_analyze(
+            target,
             seed,
             beam_width,
             max_steps,
@@ -323,6 +669,7 @@ fn run() -> Result<(), String> {
 }
 
 fn run_analyze(
+    target: String,
     seed: u64,
     beam_width: usize,
     max_steps: usize,
@@ -340,7 +687,10 @@ fn run_analyze(
     )?;
     render_success(
         "analyze",
-        payload,
+        json!({
+            "target": target,
+            "result": payload
+        }),
         JsonMeta {
             command: "analyze",
             hv_policy: Some(if hv_guided { "Guided" } else { "Legacy" }),
@@ -673,6 +1023,21 @@ fn run_engine_with_policy(
             HvPolicy::Legacy
         },
         seed,
+        world_model_enabled: true,
+        world_model_alpha: 0.7,
+        world_model_beta: 0.3,
+        world_model_beta_profile: BetaProfile::Balanced,
+        world_model_actions_per_state: 5,
+        world_model_max_depth: 1,
+        intent_profile: IntentProfile::Balanced,
+        world_model_mode: WorldModelMode::Deterministic,
+        world_model_variance_penalty: 0.2,
+        world_model_semantic_variance_penalty: 0.15,
+        world_model_semantic_variance_max_penalty: 0.35,
+        world_model_learning_rate: 0.1,
+        world_model_learning_decay: 0.05,
+        world_model_learning_confidence_gate: 0.55,
+        world_model_confidence_floor: 0.2,
         norm_alpha: 0.1,
         alpha: 3.0,
         temperature: 0.1,
@@ -1417,35 +1782,120 @@ fn normalize_objective_cases(mut cases: Vec<ObjectiveCase>) -> Result<Vec<Object
     if cases.is_empty() {
         return Ok(cases);
     }
-    let mut mins = [f64::INFINITY; 4];
-    let mut maxs = [f64::NEG_INFINITY; 4];
+    let mut matrix = Vec::<[f64; 4]>::with_capacity(cases.len());
     for case in &cases {
+        let row = case.objective.raw;
         for i in 0..4 {
-            let value = case.objective.raw[i];
+            let value = row[i];
             if !value.is_finite() {
                 return Err(format!(
                     "objective raw value must be finite: case_id={} index={} value={value}",
                     case.case_id, i
                 ));
             }
-            mins[i] = mins[i].min(value);
-            maxs[i] = maxs[i].max(value);
         }
+        matrix.push(row);
     }
 
-    for case in &mut cases {
+    decorrelate_high_correlation_rows(&mut matrix);
+    let (means, stds) = column_stats_rows(&matrix);
+
+    for (case, row) in cases.iter_mut().zip(matrix.iter()) {
         let mut normalized = [0.0; 4];
         for i in 0..4 {
-            normalized[i] = if (maxs[i] - mins[i]).abs() > PARETO_EPS {
-                (case.objective.raw[i] - mins[i]) / (maxs[i] - mins[i])
-            } else {
+            normalized[i] = if stds[i] < NORMALIZE_STD_THRESHOLD {
                 0.5
+            } else {
+                let z = ((row[i] - means[i]) / (stds[i] + NORMALIZE_EPS))
+                    .clamp(-NORMALIZE_CLIP, NORMALIZE_CLIP);
+                normalize_to_unit_interval(z)
             };
         }
         case.objective.normalized = normalized;
         case.objective.clamped = normalized.map(clamp01);
     }
     Ok(cases)
+}
+
+fn decorrelate_high_correlation_rows(matrix: &mut [[f64; 4]]) {
+    for anchor in 0..4 {
+        for target in (anchor + 1)..4 {
+            let corr = pearson_corr_rows(matrix, anchor, target);
+            if corr.abs() <= CORRELATION_THRESHOLD {
+                continue;
+            }
+            let mean_anchor = column_mean_rows(matrix, anchor);
+            let mean_target = column_mean_rows(matrix, target);
+            let var_anchor = column_variance_rows(matrix, anchor, mean_anchor);
+            if var_anchor < NORMALIZE_STD_THRESHOLD {
+                continue;
+            }
+            let covariance = matrix
+                .iter()
+                .map(|row| (row[anchor] - mean_anchor) * (row[target] - mean_target))
+                .sum::<f64>()
+                / matrix.len() as f64;
+            let beta = covariance / var_anchor;
+            for row in matrix.iter_mut() {
+                row[target] = (row[target] - mean_target) - beta * (row[anchor] - mean_anchor);
+            }
+        }
+    }
+}
+
+fn column_stats_rows(matrix: &[[f64; 4]]) -> ([f64; 4], [f64; 4]) {
+    let mut means = [0.0; 4];
+    let mut stds = [0.0; 4];
+    for idx in 0..4 {
+        means[idx] = column_mean_rows(matrix, idx);
+        stds[idx] = column_variance_rows(matrix, idx, means[idx]).sqrt();
+    }
+    (means, stds)
+}
+
+fn column_mean_rows(matrix: &[[f64; 4]], idx: usize) -> f64 {
+    if matrix.is_empty() {
+        return 0.0;
+    }
+    matrix.iter().map(|row| row[idx]).sum::<f64>() / matrix.len() as f64
+}
+
+fn column_variance_rows(matrix: &[[f64; 4]], idx: usize, mean: f64) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    matrix
+        .iter()
+        .map(|row| {
+            let delta = row[idx] - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / matrix.len() as f64
+}
+
+fn pearson_corr_rows(matrix: &[[f64; 4]], a: usize, b: usize) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    let mean_a = column_mean_rows(matrix, a);
+    let mean_b = column_mean_rows(matrix, b);
+    let var_a = column_variance_rows(matrix, a, mean_a);
+    let var_b = column_variance_rows(matrix, b, mean_b);
+    if var_a < NORMALIZE_STD_THRESHOLD || var_b < NORMALIZE_STD_THRESHOLD {
+        return 0.0;
+    }
+    let covariance = matrix
+        .iter()
+        .map(|row| (row[a] - mean_a) * (row[b] - mean_b))
+        .sum::<f64>()
+        / matrix.len() as f64;
+    (covariance / ((var_a.sqrt() * var_b.sqrt()) + NORMALIZE_EPS)).clamp(-1.0, 1.0)
+}
+
+fn normalize_to_unit_interval(z: f64) -> f64 {
+    let base = ((z + NORMALIZE_CLIP) / (2.0 * NORMALIZE_CLIP)).clamp(0.0, 1.0);
+    (NORMALIZED_MARGIN + (1.0 - 2.0 * NORMALIZED_MARGIN) * base).clamp(0.0, 1.0)
 }
 
 fn legacy_objective_to_v11(legacy: LegacyObjectiveVector) -> ObjectiveVectorV1_1 {
@@ -1639,42 +2089,7 @@ fn hypervolume_4d_from_origin(frontier: &[ObjectiveCase]) -> f64 {
     for case in frontier {
         points.push(case.objective.clamped);
     }
-    round6(hypervolume_recursive(&points, 4))
-}
-
-fn hypervolume_recursive(points: &[[f64; 4]], dim: usize) -> f64 {
-    if points.is_empty() {
-        return 0.0;
-    }
-    if dim == 1 {
-        return points
-            .iter()
-            .map(|p| p[0])
-            .fold(0.0, |acc, v| if v > acc { v } else { acc });
-    }
-    let axis = 4 - dim;
-    let mut coords = points.iter().map(|p| p[axis]).collect::<Vec<_>>();
-    coords.sort_by(|a, b| a.total_cmp(b));
-    coords.dedup_by(|a, b| (*a - *b).abs() <= PARETO_EPS);
-
-    let mut prev = 0.0;
-    let mut volume = 0.0;
-    for c in coords {
-        let width = c - prev;
-        if width > PARETO_EPS {
-            let mut projected = Vec::<[f64; 4]>::new();
-            for p in points {
-                if p[axis] + PARETO_EPS >= c {
-                    let mut q = [0.0; 4];
-                    q[..(dim - 1)].copy_from_slice(&p[(axis + 1)..(axis + dim)]);
-                    projected.push(q);
-                }
-            }
-            volume += width * hypervolume_recursive(&projected, dim - 1);
-        }
-        prev = c;
-    }
-    volume
+    round6(agent_core::hv_4d_from_origin_normalized(&points))
 }
 
 fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
@@ -1723,6 +2138,45 @@ mod objective_vector_tests {
             assert_eq!(case.objective.normalized, [0.5; 4]);
             assert_eq!(case.objective.clamped, [0.5; 4]);
         }
+    }
+
+    #[test]
+    fn normalization_is_deterministic_and_finite() {
+        let input = vec![
+            mk_case("A", [0.2, 0.3, 0.8, 0.1]),
+            mk_case("B", [0.7, 0.5, 0.1, 0.6]),
+            mk_case("C", [0.4, 0.9, 0.2, 0.4]),
+        ];
+        let first = normalize(input.clone());
+        let second = normalize(input);
+        assert_eq!(
+            first
+                .iter()
+                .map(|case| case.objective.clamped)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|case| case.objective.clamped)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            first
+                .iter()
+                .flat_map(|case| case.objective.clamped)
+                .all(f64::is_finite)
+        );
+    }
+
+    #[test]
+    fn hypervolume_is_positive_for_non_degenerate_frontier() {
+        let cases = normalize(vec![
+            mk_case("A", [0.2, 0.6, 0.4, 0.7]),
+            mk_case("B", [0.7, 0.3, 0.8, 0.2]),
+            mk_case("C", [0.5, 0.8, 0.3, 0.4]),
+        ]);
+        let front = pareto_frontier_by_case_id(&cases);
+        let hv = hypervolume_4d_from_origin(&front);
+        assert!(hv > 0.0, "expected positive hypervolume, got {hv}");
     }
 
     #[test]

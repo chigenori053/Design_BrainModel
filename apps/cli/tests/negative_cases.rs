@@ -92,4 +92,14 @@ fn test_detect_dto_leak() {
             && types.iter().any(|ty| ty == "WorldState"),
         "expected DTO leak in fixture, got {types:?}"
     );
+
+    let result = analyze_fixture("architecture_dto_leak");
+    assert!(
+        result
+            .code_issues
+            .iter()
+            .any(|issue| issue.category == "BoundaryLeak" && issue.file.ends_with("dto.rs")),
+        "expected BoundaryLeak code issue, got {:?}",
+        result.code_issues
+    );
 }

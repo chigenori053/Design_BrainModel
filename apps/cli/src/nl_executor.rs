@@ -15,11 +15,12 @@ use std::path::PathBuf;
 /// | generate, design, [path] | design design <path> |
 /// | validate, _, [path] | design validate <path> |
 /// | refactor, _, [path] | design refactor <path> |
+/// | refactoring, _, [path] | design refactoring <path> |
 /// | coding, _, [path] | design coding <path> |
 /// | diff, _, [path] | design diff <path> |
 /// | check, _, [path] | design check <path> |
 /// | apply, _, [path] | design apply <path> --apply |
-/// | exec, _, [path] | design run <path> |
+/// | exec, build\|test\|run\|install\|detect, [path] | design exec <sub> <path> |
 /// | rules, list, [] | design rules list |
 /// | rules, inspect, [id] | design rules inspect <id> |
 /// | rules, validate, [id] | design rules validate <id> |
@@ -74,6 +75,10 @@ fn map_invocation_to_cli(
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
             Ok(("refactor".to_string(), vec![path]))
         }
+        "refactoring" => {
+            let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
+            Ok(("refactoring".to_string(), vec![path]))
+        }
         "coding" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
             Ok(("coding".to_string(), vec![path]))
@@ -91,8 +96,9 @@ fn map_invocation_to_cli(
             Ok(("apply".to_string(), vec![path, "--apply".to_string()]))
         }
         "exec" => {
+            let sub = subcommand.unwrap_or("run").to_string();
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
-            Ok(("run".to_string(), vec![path]))
+            Ok(("exec".to_string(), vec![sub, path]))
         }
         "rules" => {
             let sub = subcommand.unwrap_or("list");
@@ -217,6 +223,14 @@ mod tests {
     }
 
     #[test]
+    fn map_refactoring_to_refactoring_cli() {
+        let (cmd, args) =
+            map_invocation_to_cli("refactoring", None, &["src/".to_string()]).unwrap();
+        assert_eq!(cmd, "refactoring");
+        assert_eq!(args, vec!["src/"]);
+    }
+
+    #[test]
     fn map_refactor_to_refactor_cli() {
         let (cmd, args) = map_invocation_to_cli("refactor", None, &[".".to_string()]).unwrap();
         assert_eq!(cmd, "refactor");
@@ -224,10 +238,10 @@ mod tests {
     }
 
     #[test]
-    fn map_exec_to_run_cli() {
-        let (cmd, args) = map_invocation_to_cli("exec", None, &["main.rs".to_string()]).unwrap();
-        assert_eq!(cmd, "run");
-        assert_eq!(args, vec!["main.rs"]);
+    fn map_exec_to_exec_cli() {
+        let (cmd, args) = map_invocation_to_cli("exec", Some("build"), &[".".to_string()]).unwrap();
+        assert_eq!(cmd, "exec");
+        assert_eq!(args, vec!["build", "."]);
     }
 
     #[test]

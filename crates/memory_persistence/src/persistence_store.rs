@@ -99,11 +99,7 @@ impl PersistentMemoryStore {
     pub fn ingest(&mut self, record: &MemoryRecord) -> IngestResult {
         self.stats.total_ingested += 1;
 
-        let record_tags: Vec<String> = record
-            .tags
-            .iter()
-            .map(|t| t.to_ascii_lowercase())
-            .collect();
+        let record_tags: Vec<String> = record.tags.iter().map(|t| t.to_ascii_lowercase()).collect();
         let record_embedding: Vec<f32> = record.embedding.clone().unwrap_or_default();
 
         let (action, evidence) = self.engine.decide(
@@ -128,11 +124,7 @@ impl PersistentMemoryStore {
             }
 
             DecisionAction::Upgrade { target_idx } => {
-                self.memories[target_idx].upgrade(
-                    &record.text,
-                    &record_tags,
-                    &record_embedding,
-                );
+                self.memories[target_idx].upgrade(&record.text, &record_tags, &record_embedding);
                 let id = self.memories[target_idx].id.clone();
                 let version = self.memories[target_idx].version;
                 self.stats.total_upgraded += 1;
@@ -141,13 +133,12 @@ impl PersistentMemoryStore {
 
             DecisionAction::Skip { matched_idx } => {
                 let matched_id = self.memories[matched_idx].id.clone();
-                let similarity = evidence
-                    .profile
-                    .as_ref()
-                    .map(|p| p.combined)
-                    .unwrap_or(1.0);
+                let similarity = evidence.profile.as_ref().map(|p| p.combined).unwrap_or(1.0);
                 self.stats.total_skipped += 1;
-                IngestResult::Skipped { matched_id, similarity }
+                IngestResult::Skipped {
+                    matched_id,
+                    similarity,
+                }
             }
         };
 
@@ -247,10 +238,7 @@ impl PersistentMemoryStore {
                 let summary_lower = mem.summary.to_ascii_lowercase();
                 let overlap = q_terms
                     .iter()
-                    .filter(|t| {
-                        mem.abstract_tags.contains(t)
-                            || summary_lower.contains(t.as_str())
-                    })
+                    .filter(|t| mem.abstract_tags.contains(t) || summary_lower.contains(t.as_str()))
                     .count() as f32;
                 (mem, overlap / q_terms.len() as f32)
             })
@@ -423,7 +411,12 @@ mod tests {
     #[test]
     fn similar_record_upgrades_existing() {
         let mut store = PersistentMemoryStore::new();
-        let r1 = record("r1", "Design a REST API", &["api", "rest"], &[1.0, 0.0, 0.0]);
+        let r1 = record(
+            "r1",
+            "Design a REST API",
+            &["api", "rest"],
+            &[1.0, 0.0, 0.0],
+        );
         let r2 = record(
             "r2",
             "Add auth to REST API",
@@ -486,7 +479,12 @@ mod tests {
 
         // ストアを構築して保存
         let mut store = PersistentMemoryStore::new();
-        store.ingest(&record("r1", "REST API design", &["api", "rest"], &[1.0, 0.0]));
+        store.ingest(&record(
+            "r1",
+            "REST API design",
+            &["api", "rest"],
+            &[1.0, 0.0],
+        ));
         store.ingest(&record("r2", "DB schema", &["db", "sql"], &[0.0, 1.0]));
         store.save(&tmp).expect("save failed");
 
@@ -495,7 +493,10 @@ mod tests {
         assert_eq!(loaded.memory_count(), store.memory_count());
         assert_eq!(loaded.stats().total_stored, store.stats().total_stored);
         assert_eq!(loaded.list()[0].id, store.list()[0].id);
-        assert_eq!(loaded.list()[0].abstract_tags, store.list()[0].abstract_tags);
+        assert_eq!(
+            loaded.list()[0].abstract_tags,
+            store.list()[0].abstract_tags
+        );
         assert_eq!(loaded.audit_log().len(), store.audit_log().len());
 
         let _ = std::fs::remove_file(tmp);

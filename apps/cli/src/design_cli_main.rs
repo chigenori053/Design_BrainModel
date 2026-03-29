@@ -7,21 +7,43 @@
 
 use std::collections::BTreeSet;
 use std::io::{BufRead, Write};
+use std::path::PathBuf;
 
-use agent_core::{HvPolicy, Phase1Config, run_phase1_matrix};
+use agent_core::{
+    BetaProfile, HvPolicy, IntentProfile, Phase1Config, WorldModelMode, run_phase1_matrix,
+};
 use clap::Parser;
+use design_cli::commands::design::{
+    detect_issues_for, list_history_snapshots, load_baseline, load_design_doc, load_versions,
+    make_initial_version, resolve_root, save_baseline, save_design_doc, save_version_snapshot,
+};
+use design_cli::renderer::{
+    render_dbm_analyze, render_dbm_converge, render_dbm_diff, render_dbm_step,
+};
 use design_search_engine::{
-    BeamSearchController, SearchConfig as DesignSearchConfig, SearchController as _, rank_candidates,
+    BeamSearchController, SearchConfig as DesignSearchConfig, SearchController as _,
+    rank_candidates,
 };
 use runtime_core::{ModalityInput, RuntimeStage};
-use runtime_vm::{ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter};
+use runtime_vm::{
+    ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter,
+};
+use unified_design_ir::{
+    ConvergenceInput, DesignHistory, DesignVersion, FixInput, IssueSummary, VersionId,
+    apply_next_fix, converge, diff_versions, is_converged,
+};
 use world_model_core::{
-    ConsistencyEvaluator, DeltaConsistencyEvaluator, DeterministicWorldModel,
-    HypothesisGenerator, SimpleHypothesisGenerator, WorldModel,
+    ConsistencyEvaluator, DeltaConsistencyEvaluator, DeterministicWorldModel, HypothesisGenerator,
+    SimpleHypothesisGenerator, WorldModel,
 };
 
 const VERSION: &str = "0.1.0";
 const PARETO_EPS: f64 = 1e-12;
+const NORMALIZE_EPS: f64 = 1e-6;
+const NORMALIZE_STD_THRESHOLD: f64 = 1e-6;
+const NORMALIZE_CLIP: f64 = 3.0;
+const CORRELATION_THRESHOLD: f64 = 0.8;
+const NORMALIZED_MARGIN: f64 = 1e-3;
 const INTENT_THRESHOLD: f32 = 0.60;
 const INTENT_GAP: f32 = 0.12;
 
@@ -106,6 +128,14 @@ fn main() {
     })
     .expect("Ctrl-C ハンドラの設定に失敗しました");
 
+    if let Some(result) = try_run_converge_command(std::env::args().collect()) {
+        if let Err(err) = result {
+            eprintln!("[dbm] Converge failed: {err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     let args = Args::parse();
     let working_dir = args.path.clone().unwrap_or_else(|| ".".to_string());
 
@@ -121,6 +151,199 @@ fn main() {
     if let Err(e) = run_session(&mut session) {
         eprintln!("[dbm] Fatal: {e}");
         std::process::exit(1);
+    }
+}
+
+fn try_run_converge_command(args: Vec<String>) -> Option<Result<(), String>> {
+    match args.get(1).map(String::as_str) {
+        Some("converge") => Some(run_converge(args.get(2).map(PathBuf::from))),
+        Some("step") => Some(run_step(args.get(2).map(PathBuf::from))),
+        Some("analyze") => Some(run_analyze(args.get(2).map(PathBuf::from))),
+        Some("diff") => Some(run_diff(args.get(2).map(PathBuf::from))),
+        _ => None,
+    }
+}
+
+fn run_converge(root_arg: Option<PathBuf>) -> Result<(), String> {
+    let root = resolve_root(root_arg.as_deref().and_then(|path| path.to_str()));
+    let (initial, history) = load_versions(&root)?;
+    let result = converge(ConvergenceInput { initial, history });
+    save_design_doc(&root, &result.final_version.design)?;
+    save_baseline(&root, &result.final_version)?;
+    save_version_snapshot(&root, &result.final_version)?;
+    let final_summary = result
+        .trace
+        .last()
+        .map(|trace| trace.issue_snapshot.clone())
+        .unwrap_or_default();
+    let trace_lines = result
+        .trace
+        .iter()
+        .enumerate()
+        .map(|(index, trace)| {
+            let fix = trace
+                .applied_fix
+                .as_ref()
+                .map(|fix| {
+                    format!(
+                        "{} -> {}",
+                        format_fix_kind(fix),
+                        fix.path.segments.join(".")
+                    )
+                })
+                .unwrap_or_else(|| "None".to_string());
+            format!("[{}] Fix: {}", index + 1, fix)
+        })
+        .collect::<Vec<_>>();
+    print!(
+        "{}",
+        render_dbm_converge(
+            &root.join("design.md").display().to_string(),
+            &result.status,
+            result.iterations,
+            &final_summary,
+            &trace_lines,
+        )
+    );
+
+    Ok(())
+}
+
+fn run_step(root_arg: Option<PathBuf>) -> Result<(), String> {
+    let root = resolve_root(root_arg.as_deref().and_then(|path| path.to_str()));
+    let (current, history) = load_versions(&root)?;
+    let issues = detect_issues_for(&history, &current)?;
+
+    if is_converged(&issues) {
+        print!(
+            "{}",
+            render_dbm_step(
+                &root.join("design.md").display().to_string(),
+                "Converged",
+                None,
+                &issues.summary,
+            )
+        );
+        return Ok(());
+    }
+
+    let history_before_fix = history.clone();
+    let fix_result = apply_next_fix(FixInput {
+        history,
+        current,
+        issues: issues.issues,
+    });
+
+    if !fix_result.report.success {
+        print!(
+            "{}",
+            render_dbm_step(
+                &root.join("design.md").display().to_string(),
+                "Failed",
+                fix_result.applied.as_ref(),
+                &IssueSummary::default(),
+            )
+        );
+        return Ok(());
+    }
+
+    let next = &fix_result.next_version;
+    let remaining_summary = detect_remaining_summary(&history_before_fix, next)?;
+    save_design_doc(&root, &next.design)?;
+    save_baseline(&root, next)?;
+    save_version_snapshot(&root, next)?;
+    let status = if remaining_summary.critical == 0 && remaining_summary.high == 0 {
+        "Converged"
+    } else {
+        "In Progress"
+    };
+    print!(
+        "{}",
+        render_dbm_step(
+            &root.join("design.md").display().to_string(),
+            status,
+            fix_result.applied.as_ref(),
+            &remaining_summary,
+        )
+    );
+    Ok(())
+}
+
+fn run_analyze(root_arg: Option<PathBuf>) -> Result<(), String> {
+    let root = resolve_root(root_arg.as_deref().and_then(|path| path.to_str()));
+    let (current, history) = load_versions(&root)?;
+    let issues = detect_issues_for(&history, &current)?;
+    print!(
+        "{}",
+        render_dbm_analyze(
+            &root.join("design.md").display().to_string(),
+            &issues.summary,
+            &issues.issues,
+        )
+    );
+    Ok(())
+}
+
+fn run_diff(root_arg: Option<PathBuf>) -> Result<(), String> {
+    let root = resolve_root(root_arg.as_deref().and_then(|path| path.to_str()));
+    let snapshots = list_history_snapshots(&root);
+
+    let (before, after) = if snapshots.len() >= 2 {
+        (
+            snapshots[snapshots.len() - 2].clone(),
+            snapshots[snapshots.len() - 1].clone(),
+        )
+    } else {
+        let doc = load_design_doc(&root)?;
+        let stage = doc.stage.clone();
+        let before = load_baseline(&root)
+            .filter(|version| version.stage == stage)
+            .unwrap_or_else(|| {
+                make_initial_version(design_cli::commands::design::default_baseline_for_stage(
+                    &stage,
+                ))
+                .0
+            });
+        let (after, _) = make_initial_version(doc);
+        (before, after)
+    };
+
+    let diff_result =
+        diff_versions(&before, &after).map_err(|err| format!("Diff error: {err:?}"))?;
+    print!(
+        "{}",
+        render_dbm_diff(&root.join("design.md").display().to_string(), &diff_result)
+    );
+    Ok(())
+}
+
+fn format_version_id(version_id: &VersionId) -> String {
+    format!("seq={}, hash={}", version_id.seq, version_id.hash)
+}
+
+fn detect_remaining_summary(
+    history: &DesignHistory,
+    next: &DesignVersion,
+) -> Result<IssueSummary, String> {
+    let mut updated_history = history.clone();
+    if updated_history
+        .versions
+        .iter()
+        .all(|version| version.id != next.id)
+    {
+        updated_history.versions.push(next.clone());
+    }
+    updated_history.head = next.id.clone();
+    updated_history.next_seq = next.id.seq + 1;
+    detect_issues_for(&updated_history, next).map(|issues| issues.summary)
+}
+
+fn format_fix_kind(fix: &unified_design_ir::AppliedFix) -> &'static str {
+    match fix.action {
+        unified_design_ir::FixAction::Add => "Missing",
+        unified_design_ir::FixAction::Replace => "Conflict",
+        unified_design_ir::FixAction::Remove => "Redundancy",
+        unified_design_ir::FixAction::Normalize => "Normalize",
     }
 }
 
@@ -175,10 +398,13 @@ fn print_banner<W: Write>(out: &mut W, session: &Session) -> Result<(), String> 
     let sep = "─".repeat(w);
 
     writeln!(out, "\n╭{sep}╮").map_err(|e| e.to_string())?;
-    writeln!(out, "│  DBM  Design Brain Model  v{VERSION:<33}│")
-        .map_err(|e| e.to_string())?;
-    writeln!(out, "│  Working directory: {:<42}│", truncate(&session.working_dir, 42))
-        .map_err(|e| e.to_string())?;
+    writeln!(out, "│  DBM  Design Brain Model  v{VERSION:<33}│").map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "│  Working directory: {:<42}│",
+        truncate(&session.working_dir, 42)
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(out, "╰{sep}╯").map_err(|e| e.to_string())?;
     writeln!(out).map_err(|e| e.to_string())?;
     writeln!(
@@ -208,8 +434,11 @@ fn handle_natural_language<W: Write>(
     let result: Result<(), String> = match candidate.intent {
         Intent::Analyze { path } => {
             let target = path.unwrap_or_else(|| session.working_dir.clone());
-            writeln!(out, "\n  ✔ Intent: ANALYZE  ({score_pct}% confidence) → {target}")
-                .map_err(|e| e.to_string())?;
+            writeln!(
+                out,
+                "\n  ✔ Intent: ANALYZE  ({score_pct}% confidence) → {target}"
+            )
+            .map_err(|e| e.to_string())?;
             do_analyze(&target, session, out)
         }
         Intent::Simulate => {
@@ -247,8 +476,7 @@ fn handle_natural_language<W: Write>(
                 "\n  ? 入力を理解できませんでした (confidence: {score_pct}%)"
             )
             .map_err(|e| e.to_string())?;
-            writeln!(out, "    /help でコマンド一覧を確認してください。")
-                .map_err(|e| e.to_string())
+            writeln!(out, "    /help でコマンド一覧を確認してください。").map_err(|e| e.to_string())
         }
     };
 
@@ -260,11 +488,7 @@ fn handle_natural_language<W: Write>(
 
 // ── Slash commands ────────────────────────────────────────────────────────────
 
-fn handle_slash<W: Write>(
-    input: &str,
-    session: &mut Session,
-    out: &mut W,
-) -> Result<bool, String> {
+fn handle_slash<W: Write>(input: &str, session: &mut Session, out: &mut W) -> Result<bool, String> {
     let tokens: Vec<&str> = input.split_whitespace().collect();
     let cmd = tokens[0].trim_start_matches('/');
     let rest = &tokens[1..];
@@ -331,8 +555,7 @@ fn handle_slash<W: Write>(
                         .map_err(|e| e.to_string()),
                 }
             } else {
-                writeln!(out, "\n  beam_width = {}", session.beam_width)
-                    .map_err(|e| e.to_string())
+                writeln!(out, "\n  beam_width = {}", session.beam_width).map_err(|e| e.to_string())
             }
         }
 
@@ -378,7 +601,8 @@ fn print_help<W: Write>(out: &mut W) -> Result<(), String> {
 }
 
 fn print_status<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
-    writeln!(out, "\n  ── セッション状態 ──────────────────────────────").map_err(|e| e.to_string())?;
+    writeln!(out, "\n  ── セッション状態 ──────────────────────────────")
+        .map_err(|e| e.to_string())?;
     writeln!(out, "  Working dir  : {}", session.working_dir).map_err(|e| e.to_string())?;
     writeln!(out, "  Seed         : {}", session.seed).map_err(|e| e.to_string())?;
     writeln!(out, "  Beam width   : {}", session.beam_width).map_err(|e| e.to_string())?;
@@ -534,9 +758,7 @@ fn detect_intent(input: &str) -> IntentCandidate {
 fn extract_path_token(input: &str) -> Option<String> {
     input
         .split_whitespace()
-        .find(|t| {
-            t.starts_with('.') || t.starts_with('/') || (t.contains('/') && !t.contains(':'))
-        })
+        .find(|t| t.starts_with('.') || t.starts_with('/') || (t.contains('/') && !t.contains(':')))
         .map(|s| s.to_string())
 }
 
@@ -551,15 +773,17 @@ fn do_analyze<W: Write>(path: &str, session: &Session, out: &mut W) -> Result<()
     .map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())?;
 
-    let (cases, frontier, hv, hash) = run_phase1_analysis(session)?;
+    let (rows, cases, frontier, hv, hash) = run_phase1_analysis(session)?;
 
     let w = 54usize;
     writeln!(out, "\n  ┌── Phase1 解析結果 {}", "─".repeat(w - 18)).map_err(|e| e.to_string())?;
     writeln!(out, "  │  対象パス    : {}", truncate(path, 38)).map_err(|e| e.to_string())?;
     writeln!(out, "  │  候補ケース数: {}", cases.len()).map_err(|e| e.to_string())?;
+    writeln!(out, "  │  解析行数    : {}", rows.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │  フロンティア: {} ケース", frontier.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │  超体積 (HV) : {:.6}", hv).map_err(|e| e.to_string())?;
-    writeln!(out, "  │  Hash        : {}", &hash[..16.min(hash.len())]).map_err(|e| e.to_string())?;
+    writeln!(out, "  │  Hash        : {}", &hash[..16.min(hash.len())])
+        .map_err(|e| e.to_string())?;
     writeln!(out, "  └{}", "─".repeat(w)).map_err(|e| e.to_string())?;
 
     writeln!(out, "\n  フロンティア上位5件 (SI / CS / RP / ER):").map_err(|e| e.to_string())?;
@@ -589,11 +813,12 @@ fn do_simulate<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())?;
 
-    let (cases, frontier, hv, _) = run_phase1_analysis(session)?;
+    let (_, cases, frontier, hv, _) = run_phase1_analysis(session)?;
     let mean = objective_mean(&frontier);
 
     let w = 54usize;
-    writeln!(out, "\n  ┌── シミュレーション結果 {}", "─".repeat(w - 22)).map_err(|e| e.to_string())?;
+    writeln!(out, "\n  ┌── シミュレーション結果 {}", "─".repeat(w - 22))
+        .map_err(|e| e.to_string())?;
     writeln!(out, "  │  探索ステップ: {}", cases.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │  フロンティア: {} ケース", frontier.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │  超体積 (HV) : {:.6}", hv).map_err(|e| e.to_string())?;
@@ -601,9 +826,14 @@ fn do_simulate<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
 
     if let Some(best) = frontier.first() {
         let o = best.objective.clamped;
-        writeln!(out, "\n  最良候補: {}", truncate(&best.case_id, 40)).map_err(|e| e.to_string())?;
-        writeln!(out, "    SI={:.3}  CS={:.3}  RP={:.3}  ER={:.3}", o[0], o[1], o[2], o[3])
+        writeln!(out, "\n  最良候補: {}", truncate(&best.case_id, 40))
             .map_err(|e| e.to_string())?;
+        writeln!(
+            out,
+            "    SI={:.3}  CS={:.3}  RP={:.3}  ER={:.3}",
+            o[0], o[1], o[2], o[3]
+        )
+        .map_err(|e| e.to_string())?;
     }
 
     writeln!(
@@ -625,7 +855,7 @@ fn do_explain<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     out.flush().map_err(|e| e.to_string())?;
 
-    let (cases, frontier, hv, hash) = run_phase1_analysis(session)?;
+    let (rows, cases, frontier, hv, hash) = run_phase1_analysis(session)?;
     let mean = objective_mean(&frontier);
 
     let w = 54usize;
@@ -640,9 +870,11 @@ fn do_explain<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
     writeln!(out, "  │").map_err(|e| e.to_string())?;
     writeln!(out, "  │  探索結果:").map_err(|e| e.to_string())?;
     writeln!(out, "  │    候補数       : {}", cases.len()).map_err(|e| e.to_string())?;
+    writeln!(out, "  │    評価行数     : {}", rows.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │    フロンティア : {} ケース", frontier.len()).map_err(|e| e.to_string())?;
     writeln!(out, "  │    超体積 (HV)  : {:.6}", hv).map_err(|e| e.to_string())?;
-    writeln!(out, "  │    Hash         : {}", &hash[..16.min(hash.len())]).map_err(|e| e.to_string())?;
+    writeln!(out, "  │    Hash         : {}", &hash[..16.min(hash.len())])
+        .map_err(|e| e.to_string())?;
     writeln!(out, "  │").map_err(|e| e.to_string())?;
     writeln!(
         out,
@@ -650,6 +882,34 @@ fn do_explain<W: Write>(session: &Session, out: &mut W) -> Result<(), String> {
         mean[0], mean[1], mean[2], mean[3]
     )
     .map_err(|e| e.to_string())?;
+    if let Some(best_row) = rows
+        .iter()
+        .filter(|row| row.variant == "Base")
+        .max_by(|lhs, rhs| lhs.final_score.total_cmp(&rhs.final_score))
+    {
+        let explanation = agent_core::explain_phase1_candidate(best_row);
+        writeln!(out, "  │").map_err(|e| e.to_string())?;
+        writeln!(out, "  │  Why Selected:").map_err(|e| e.to_string())?;
+        writeln!(out, "  │    {}", truncate(&explanation.summary, 44))
+            .map_err(|e| e.to_string())?;
+        for factor in explanation.top_factors.iter().take(4) {
+            writeln!(
+                out,
+                "  │    - {} ({:+.2})",
+                truncate(&factor.label, 28),
+                factor.impact
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        writeln!(
+            out,
+            "  │    action={} confidence={:.2} risk={:.2}",
+            truncate(&explanation.action_reason, 18),
+            explanation.confidence,
+            explanation.risk
+        )
+        .map_err(|e| e.to_string())?;
+    }
     writeln!(out, "  └{}", "─".repeat(w)).map_err(|e| e.to_string())?;
 
     Ok(())
@@ -694,11 +954,8 @@ fn do_phase9<W: Write>(text: String, _session: &Session, out: &mut W) -> Result<
 
     let search_controller = BeamSearchController::default();
     let search_config = DesignSearchConfig::default();
-    let search_states = search_controller.search(
-        current_state,
-        ctx.recall_result.as_ref(),
-        &search_config,
-    );
+    let search_states =
+        search_controller.search(current_state, ctx.recall_result.as_ref(), &search_config);
     let ranked = rank_candidates(search_states.clone());
     let best_score = ranked.first().map(|c| c.score).unwrap_or(0.0);
 
@@ -717,8 +974,12 @@ fn do_phase9<W: Write>(text: String, _session: &Session, out: &mut W) -> Result<
     };
 
     let w = 54usize;
-    writeln!(out, "\n  ┌── Phase9-D アーキテクチャ報告 {}", "─".repeat(w - 30))
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        out,
+        "\n  ┌── Phase9-D アーキテクチャ報告 {}",
+        "─".repeat(w - 30)
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(out, "  │  入力文字列   : {}", truncate(&text, 38)).map_err(|e| e.to_string())?;
     writeln!(out, "  │  Request ID   : {}", ctx.request_id.0).map_err(|e| e.to_string())?;
     writeln!(out, "  │  ステージ     : {stage_str}").map_err(|e| e.to_string())?;
@@ -742,12 +1003,36 @@ fn do_phase9<W: Write>(text: String, _session: &Session, out: &mut W) -> Result<
 
 fn run_phase1_analysis(
     session: &Session,
-) -> Result<(Vec<ObjCase>, Vec<ObjCase>, f64, String), String> {
+) -> Result<
+    (
+        Vec<agent_core::Phase1RawRow>,
+        Vec<ObjCase>,
+        Vec<ObjCase>,
+        f64,
+        String,
+    ),
+    String,
+> {
     let cfg = Phase1Config {
         beam_width: session.beam_width,
         max_steps: session.max_steps,
         hv_policy: HvPolicy::Legacy,
         seed: session.seed,
+        world_model_enabled: true,
+        world_model_alpha: 0.7,
+        world_model_beta: 0.3,
+        world_model_beta_profile: BetaProfile::Balanced,
+        world_model_actions_per_state: 5,
+        world_model_max_depth: 1,
+        intent_profile: IntentProfile::Balanced,
+        world_model_mode: WorldModelMode::Deterministic,
+        world_model_variance_penalty: 0.2,
+        world_model_semantic_variance_penalty: 0.15,
+        world_model_semantic_variance_max_penalty: 0.35,
+        world_model_learning_rate: 0.1,
+        world_model_learning_decay: 0.05,
+        world_model_learning_confidence_gate: 0.55,
+        world_model_confidence_floor: 0.2,
         norm_alpha: 0.1,
         alpha: 3.0,
         temperature: 0.1,
@@ -758,7 +1043,9 @@ fn run_phase1_analysis(
         lambda_ema: 0.4,
     };
     if !cfg.is_valid() {
-        return Err("Phase1Config が無効です (beam_width / max_steps を確認してください)".to_string());
+        return Err(
+            "Phase1Config が無効です (beam_width / max_steps を確認してください)".to_string(),
+        );
     }
 
     let (rows, _) = run_phase1_matrix(cfg);
@@ -773,7 +1060,11 @@ fn run_phase1_analysis(
         raw_cases.push(ObjCase {
             case_id: format!("{}-{:04}-{:04}", row.variant, row.depth, row.beam_index),
             category: row.variant.clone(),
-            objective: ObjectiveVec { raw, normalized: raw, clamped: raw },
+            objective: ObjectiveVec {
+                raw,
+                normalized: raw,
+                clamped: raw,
+            },
         });
     }
 
@@ -782,7 +1073,7 @@ fn run_phase1_analysis(
     let hv = hypervolume_4d(&frontier);
     let hash = frontier_hash(&frontier);
 
-    Ok((cases, frontier, hv, hash))
+    Ok((rows, cases, frontier, hv, hash))
 }
 
 // ── Math utilities ────────────────────────────────────────────────────────────
@@ -811,31 +1102,118 @@ fn normalize_cases(mut cases: Vec<ObjCase>) -> Result<Vec<ObjCase>, String> {
     if cases.is_empty() {
         return Ok(cases);
     }
-    let mut mins = [f64::INFINITY; 4];
-    let mut maxs = [f64::NEG_INFINITY; 4];
+    let mut matrix = Vec::<[f64; 4]>::with_capacity(cases.len());
     for c in &cases {
-        for i in 0..4 {
-            let v = c.objective.raw[i];
-            if !v.is_finite() {
+        let row = c.objective.raw;
+        for (i, value) in row.into_iter().enumerate() {
+            if !value.is_finite() {
                 return Err(format!("非有限値: case_id={} dim={i}", c.case_id));
             }
-            mins[i] = mins[i].min(v);
-            maxs[i] = maxs[i].max(v);
         }
+        matrix.push(row);
     }
-    for c in &mut cases {
-        let mut norm = [0.0f64; 4];
+
+    decorrelate_high_correlation(&mut matrix);
+    let (means, stds) = column_stats(&matrix);
+    for (case, row) in cases.iter_mut().zip(matrix.iter()) {
+        let mut norm = [0.5f64; 4];
         for i in 0..4 {
-            norm[i] = if (maxs[i] - mins[i]).abs() > PARETO_EPS {
-                (c.objective.raw[i] - mins[i]) / (maxs[i] - mins[i])
+            let z = if stds[i] < NORMALIZE_STD_THRESHOLD {
+                0.0
             } else {
-                0.5
+                ((row[i] - means[i]) / (stds[i] + NORMALIZE_EPS))
+                    .clamp(-NORMALIZE_CLIP, NORMALIZE_CLIP)
             };
+            norm[i] = normalize_to_unit_interval(z);
         }
-        c.objective.normalized = norm;
-        c.objective.clamped = norm.map(clamp01);
+        case.objective.normalized = norm;
+        case.objective.clamped = norm.map(clamp01);
     }
     Ok(cases)
+}
+
+fn decorrelate_high_correlation(matrix: &mut [[f64; 4]]) {
+    for anchor in 0..4 {
+        for target in (anchor + 1)..4 {
+            let corr = pearson_corr(matrix, anchor, target);
+            if corr.abs() <= CORRELATION_THRESHOLD {
+                continue;
+            }
+
+            let mean_anchor = column_mean(matrix, anchor);
+            let mean_target = column_mean(matrix, target);
+            let var_anchor = column_variance(matrix, anchor, mean_anchor);
+            if var_anchor < NORMALIZE_STD_THRESHOLD {
+                continue;
+            }
+
+            let covariance = matrix
+                .iter()
+                .map(|row| (row[anchor] - mean_anchor) * (row[target] - mean_target))
+                .sum::<f64>()
+                / matrix.len() as f64;
+            let beta = covariance / var_anchor;
+            for row in matrix.iter_mut() {
+                row[target] = (row[target] - mean_target) - beta * (row[anchor] - mean_anchor);
+            }
+        }
+    }
+}
+
+fn column_stats(matrix: &[[f64; 4]]) -> ([f64; 4], [f64; 4]) {
+    let mut means = [0.0; 4];
+    let mut stds = [0.0; 4];
+    for i in 0..4 {
+        means[i] = column_mean(matrix, i);
+        stds[i] = column_variance(matrix, i, means[i]).sqrt();
+    }
+    (means, stds)
+}
+
+fn column_mean(matrix: &[[f64; 4]], idx: usize) -> f64 {
+    if matrix.is_empty() {
+        return 0.0;
+    }
+    matrix.iter().map(|row| row[idx]).sum::<f64>() / matrix.len() as f64
+}
+
+fn column_variance(matrix: &[[f64; 4]], idx: usize, mean: f64) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    matrix
+        .iter()
+        .map(|row| {
+            let delta = row[idx] - mean;
+            delta * delta
+        })
+        .sum::<f64>()
+        / matrix.len() as f64
+}
+
+fn pearson_corr(matrix: &[[f64; 4]], a: usize, b: usize) -> f64 {
+    if matrix.len() < 2 {
+        return 0.0;
+    }
+    let mean_a = column_mean(matrix, a);
+    let mean_b = column_mean(matrix, b);
+    let var_a = column_variance(matrix, a, mean_a);
+    let var_b = column_variance(matrix, b, mean_b);
+    if var_a < NORMALIZE_STD_THRESHOLD || var_b < NORMALIZE_STD_THRESHOLD {
+        return 0.0;
+    }
+
+    let covariance = matrix
+        .iter()
+        .map(|row| (row[a] - mean_a) * (row[b] - mean_b))
+        .sum::<f64>()
+        / matrix.len() as f64;
+    (covariance / ((var_a.sqrt() * var_b.sqrt()) + NORMALIZE_EPS)).clamp(-1.0, 1.0)
+}
+
+fn normalize_to_unit_interval(z: f64) -> f64 {
+    let base = ((z + NORMALIZE_CLIP) / (2.0 * NORMALIZE_CLIP)).clamp(0.0, 1.0);
+    (NORMALIZED_MARGIN + (1.0 - 2.0 * NORMALIZED_MARGIN) * base).clamp(0.0, 1.0)
 }
 
 fn dominates(a: &ObjectiveVec, b: &ObjectiveVec) -> bool {
@@ -890,40 +1268,7 @@ fn fnv1a(hash: &mut u64, bytes: &[u8]) {
 
 fn hypervolume_4d(frontier: &[ObjCase]) -> f64 {
     let points: Vec<[f64; 4]> = frontier.iter().map(|c| c.objective.clamped).collect();
-    round6(hv_recursive(&points, 4))
-}
-
-fn hv_recursive(points: &[[f64; 4]], dim: usize) -> f64 {
-    if points.is_empty() {
-        return 0.0;
-    }
-    if dim == 1 {
-        return points.iter().map(|p| p[0]).fold(0.0_f64, f64::max);
-    }
-    let axis = 4 - dim;
-    let mut coords: Vec<f64> = points.iter().map(|p| p[axis]).collect();
-    coords.sort_by(|a, b| a.total_cmp(b));
-    coords.dedup_by(|a, b| (*a - *b).abs() <= PARETO_EPS);
-
-    let mut prev = 0.0;
-    let mut volume = 0.0;
-    for c in coords {
-        let width = c - prev;
-        if width > PARETO_EPS {
-            let projected: Vec<[f64; 4]> = points
-                .iter()
-                .filter(|p| p[axis] + PARETO_EPS >= c)
-                .map(|p| {
-                    let mut q = [0.0f64; 4];
-                    q[..(dim - 1)].copy_from_slice(&p[(axis + 1)..(axis + dim)]);
-                    q
-                })
-                .collect();
-            volume += width * hv_recursive(&projected, dim - 1);
-        }
-        prev = c;
-    }
-    volume
+    round6(agent_core::hv_4d_from_origin_normalized(&points))
 }
 
 fn objective_mean(frontier: &[ObjCase]) -> [f64; 4] {
@@ -948,5 +1293,102 @@ fn truncate(s: &str, max: usize) -> String {
         s.to_string()
     } else {
         chars[..max.saturating_sub(2)].iter().collect::<String>() + ".."
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mk_case(case_id: &str, raw: [f64; 4]) -> ObjCase {
+        ObjCase {
+            case_id: case_id.to_string(),
+            category: "test".to_string(),
+            objective: ObjectiveVec {
+                raw,
+                normalized: raw,
+                clamped: raw,
+            },
+        }
+    }
+
+    #[test]
+    fn equal_dimensions_normalize_to_half_without_nan() {
+        let cases = normalize_cases(vec![
+            mk_case("A", [0.2, 0.2, 0.2, 0.2]),
+            mk_case("B", [0.2, 0.2, 0.2, 0.2]),
+        ])
+        .expect("normalize");
+
+        for case in cases {
+            assert_eq!(case.objective.normalized, [0.5; 4]);
+            assert!(case.objective.clamped.into_iter().all(f64::is_finite));
+        }
+    }
+
+    #[test]
+    fn normalization_preserves_variance_for_distinct_cases() {
+        let cases = normalize_cases(vec![
+            mk_case("A", [0.1, 0.1, 0.8, 0.2]),
+            mk_case("B", [0.8, 0.2, 0.2, 0.7]),
+            mk_case("C", [0.3, 0.9, 0.3, 0.4]),
+            mk_case("D", [0.6, 0.4, 0.7, 0.9]),
+        ])
+        .expect("normalize");
+
+        let mut variances = [0.0; 4];
+        let means = {
+            let mut out = [0.0; 4];
+            for case in &cases {
+                for (i, value) in case.objective.clamped.iter().enumerate() {
+                    out[i] += *value;
+                }
+            }
+            out.map(|v| v / cases.len() as f64)
+        };
+        for case in &cases {
+            for i in 0..4 {
+                let delta = case.objective.clamped[i] - means[i];
+                variances[i] += delta * delta;
+            }
+        }
+        for variance in variances {
+            assert!(variance > 0.0);
+        }
+    }
+
+    #[test]
+    fn hypervolume_is_positive_for_non_degenerate_frontier() {
+        let frontier = vec![
+            mk_case("A", [0.2, 0.6, 0.4, 0.7]),
+            mk_case("B", [0.7, 0.3, 0.8, 0.2]),
+            mk_case("C", [0.5, 0.8, 0.3, 0.4]),
+        ];
+        let normalized = normalize_cases(frontier).expect("normalize");
+        let front = pareto_frontier(&normalized);
+        let hv = hypervolume_4d(&front);
+        assert!(hv > 0.0, "expected positive HV, got {hv}");
+    }
+
+    #[test]
+    fn normalization_is_deterministic() {
+        let input = vec![
+            mk_case("A", [0.3, 0.2, 0.4, 0.9]),
+            mk_case("B", [0.4, 0.8, 0.1, 0.2]),
+            mk_case("C", [0.9, 0.1, 0.7, 0.3]),
+        ];
+
+        let first = normalize_cases(input.clone()).expect("first");
+        let second = normalize_cases(input).expect("second");
+        assert_eq!(
+            first
+                .iter()
+                .map(|case| case.objective.clamped)
+                .collect::<Vec<_>>(),
+            second
+                .iter()
+                .map(|case| case.objective.clamped)
+                .collect::<Vec<_>>()
+        );
     }
 }

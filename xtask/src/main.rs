@@ -4,7 +4,7 @@ use std::process::{Command, ExitCode};
 fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     match args.next().as_deref() {
-        Some("test") => run_test_suite(args.collect()),
+        Some("test") => run_suite(args.collect()),
         _ => {
             eprintln!("usage: cargo xtest <category>");
             eprintln!(
@@ -15,7 +15,7 @@ fn main() -> ExitCode {
     }
 }
 
-fn run_test_suite(args: Vec<String>) -> ExitCode {
+fn run_suite(args: Vec<String>) -> ExitCode {
     let Some(category) = args.first().map(String::as_str) else {
         eprintln!("missing category");
         return ExitCode::from(2);
@@ -89,37 +89,44 @@ fn run_spec(spec: &TestSpec) -> bool {
     }
 }
 
-fn cargo_test_args(args: &[&'static str]) -> Vec<&'static str> {
-    let mut full = vec!["test"];
-    full.extend_from_slice(args);
-    full.extend_from_slice(&["--", "--test-threads=1"]);
-    full
-}
-
-fn cargo_test_ignored_args(args: &[&'static str]) -> Vec<&'static str> {
-    let mut full = vec!["test"];
-    full.extend_from_slice(args);
-    full.extend_from_slice(&["--", "--ignored", "--test-threads=1"]);
-    full
-}
-
 fn spec(name: &'static str, args: Vec<&'static str>) -> TestSpec {
     TestSpec { name, args }
+}
+
+/// cargo nextest run 用引数を構築
+/// 各テストを独立プロセスで実行し、完了後にリソースをOSに返却
+/// 並列数は .config/nextest.toml の profile.default で管理
+fn nextest(args: &[&'static str]) -> Vec<&'static str> {
+    let mut full = vec!["nextest", "run"];
+    full.extend_from_slice(args);
+    full
+}
+
+fn nextest_release(args: &[&'static str]) -> Vec<&'static str> {
+    let mut full = vec!["nextest", "run", "--release"];
+    full.extend_from_slice(args);
+    full
+}
+
+fn nextest_ignored(args: &[&'static str]) -> Vec<&'static str> {
+    let mut full = vec!["nextest", "run", "--run-ignored", "ignored-only"];
+    full.extend_from_slice(args);
+    full
 }
 
 fn architecture_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "design_cli architecture_enforcement",
-            cargo_test_args(&["-p", "design_cli", "--test", "architecture_enforcement"]),
+            nextest(&["-p", "design_cli", "--test", "architecture_enforcement"]),
         ),
         spec(
             "design_cli negative_cases",
-            cargo_test_args(&["-p", "design_cli", "--test", "negative_cases"]),
+            nextest(&["-p", "design_cli", "--test", "negative_cases"]),
         ),
         spec(
             "design_cli reasoning_engine",
-            cargo_test_args(&["-p", "design_cli", "--test", "reasoning_engine"]),
+            nextest(&["-p", "design_cli", "--test", "reasoning_engine"]),
         ),
     ]
 }
@@ -128,11 +135,11 @@ fn invariants_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "architecture_domain invariants",
-            cargo_test_args(&["-p", "architecture_domain", "--test", "invariants"]),
+            nextest(&["-p", "architecture_domain", "--test", "invariants"]),
         ),
         spec(
             "design_search_engine invariants",
-            cargo_test_args(&["-p", "design_search_engine", "--test", "invariants"]),
+            nextest(&["-p", "design_search_engine", "--test", "invariants"]),
         ),
     ]
 }
@@ -141,15 +148,15 @@ fn engine_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "design_search_engine engine",
-            cargo_test_args(&["-p", "design_search_engine", "--test", "engine"]),
+            nextest(&["-p", "design_search_engine", "--test", "engine"]),
         ),
         spec(
             "evaluation_engine engine",
-            cargo_test_args(&["-p", "evaluation_engine", "--test", "engine"]),
+            nextest(&["-p", "evaluation_engine", "--test", "engine"]),
         ),
         spec(
             "memory_graph memory",
-            cargo_test_args(&["-p", "memory_graph", "--test", "memory"]),
+            nextest(&["-p", "memory_graph", "--test", "memory"]),
         ),
     ]
 }
@@ -158,19 +165,19 @@ fn knowledge_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "knowledge_engine retrieval",
-            cargo_test_args(&["-p", "knowledge_engine", "--test", "knowledge_retrieval"]),
+            nextest(&["-p", "knowledge_engine", "--test", "knowledge_retrieval"]),
         ),
         spec(
             "knowledge_engine parsing",
-            cargo_test_args(&["-p", "knowledge_engine", "--test", "knowledge_parsing"]),
+            nextest(&["-p", "knowledge_engine", "--test", "knowledge_parsing"]),
         ),
         spec(
             "knowledge_engine validation",
-            cargo_test_args(&["-p", "knowledge_engine", "--test", "knowledge_validation"]),
+            nextest(&["-p", "knowledge_engine", "--test", "knowledge_validation"]),
         ),
         spec(
             "knowledge_engine reasoning integration",
-            cargo_test_args(&[
+            nextest(&[
                 "-p",
                 "knowledge_engine",
                 "--test",
@@ -179,7 +186,7 @@ fn knowledge_specs() -> Vec<TestSpec> {
         ),
         spec(
             "knowledge_engine search impact",
-            cargo_test_args(&[
+            nextest(&[
                 "-p",
                 "knowledge_engine",
                 "--test",
@@ -193,11 +200,11 @@ fn contract_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "contract audit tests",
-            cargo_test_args(&["-p", "contract_audit_tests"]),
+            nextest(&["-p", "contract_audit_tests"]),
         ),
         spec(
             "pipeline contract tests",
-            cargo_test_args(&["-p", "pipeline_tests"]),
+            nextest(&["-p", "pipeline_tests"]),
         ),
     ]
 }
@@ -206,15 +213,15 @@ fn determinism_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "design_search_engine determinism",
-            cargo_test_args(&["-p", "design_search_engine", "--test", "determinism"]),
+            nextest(&["-p", "design_search_engine", "--test", "determinism"]),
         ),
         spec(
             "ai_context determinism",
-            cargo_test_args(&["-p", "ai_context", "--test", "determinism"]),
+            nextest(&["-p", "ai_context", "--test", "determinism"]),
         ),
         spec(
             "runtime_vm determinism",
-            cargo_test_args(&["-p", "runtime_vm", "--test", "determinism"]),
+            nextest(&["-p", "runtime_vm", "--test", "determinism"]),
         ),
     ]
 }
@@ -223,11 +230,11 @@ fn integration_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "runtime_vm integration",
-            cargo_test_args(&["-p", "runtime_vm", "--test", "integration"]),
+            nextest(&["-p", "runtime_vm", "--test", "integration"]),
         ),
         spec(
             "phase1_integration_tests concept pipeline",
-            cargo_test_args(&[
+            nextest(&[
                 "-p",
                 "phase1_integration_tests",
                 "--test",
@@ -236,7 +243,7 @@ fn integration_specs() -> Vec<TestSpec> {
         ),
         spec(
             "phase1_integration_tests canonicalization",
-            cargo_test_args(&[
+            nextest(&[
                 "-p",
                 "phase1_integration_tests",
                 "--test",
@@ -245,7 +252,7 @@ fn integration_specs() -> Vec<TestSpec> {
         ),
         spec(
             "phase1_integration_tests reasoning pipeline",
-            cargo_test_args(&[
+            nextest(&[
                 "-p",
                 "phase1_integration_tests",
                 "--test",
@@ -258,7 +265,7 @@ fn integration_specs() -> Vec<TestSpec> {
 fn runtime_heavy_specs() -> Vec<TestSpec> {
     vec![spec(
         "runtime_vm ignored tests",
-        cargo_test_ignored_args(&["-p", "runtime_vm"]),
+        nextest_ignored(&["-p", "runtime_vm"]),
     )]
 }
 
@@ -266,16 +273,15 @@ fn stress_specs() -> Vec<TestSpec> {
     vec![
         spec(
             "reasoning_agent scaling",
-            cargo_test_args(&["-p", "reasoning_agent", "--test", "scaling", "--release"]),
+            nextest_release(&["-p", "reasoning_agent", "--test", "scaling"]),
         ),
         spec(
             "agent_core heavy",
-            cargo_test_args(&[
+            nextest_release(&[
                 "-p",
                 "agent_core",
                 "--test",
                 "heavy",
-                "--release",
                 "--features",
                 "ci-heavy",
             ]),
@@ -286,6 +292,6 @@ fn stress_specs() -> Vec<TestSpec> {
 fn experiments_specs() -> Vec<TestSpec> {
     vec![spec(
         "design_search_engine experiments",
-        cargo_test_ignored_args(&["-p", "design_search_engine", "--test", "experiments"]),
+        nextest_ignored(&["-p", "design_search_engine", "--test", "experiments"]),
     )]
 }

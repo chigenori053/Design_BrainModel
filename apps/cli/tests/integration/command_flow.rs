@@ -29,6 +29,42 @@ fn command_flow_basic() {
     assert_eq!(out["data"]["exported"], true);
 }
 
+#[test]
+fn natural_language_routes_to_analyze_with_target() {
+    let (code, out, _) = run(&["このプロジェクトを解析して"]);
+    assert_eq!(code, 0);
+    let out = out.expect("stdout json");
+    assert_eq!(out["schema_version"], "v1");
+    assert_eq!(out["data"]["target"], "./project");
+}
+
+#[test]
+fn slash_command_is_accepted() {
+    let (code, out, _) = run(&["/analyze", "./project"]);
+    assert_eq!(code, 0);
+    let out = out.expect("stdout json");
+    assert_eq!(out["schema_version"], "v1");
+    assert_eq!(out["meta"]["command"], "analyze");
+}
+
+#[test]
+fn natural_language_missing_target_returns_error() {
+    let (code, _, err) = run(&["解析して"]);
+    assert_eq!(code, 2);
+    let err = err.expect("stderr json");
+    let message = err["error"]["message"].as_str().unwrap_or_default();
+    assert!(message.contains("対象が指定されていません"));
+}
+
+#[test]
+fn hybrid_input_routes_command_and_fills_target() {
+    let (code, out, _) = run(&["これを /analyze して"]);
+    assert_eq!(code, 0);
+    let out = out.expect("stdout json");
+    assert_eq!(out["schema_version"], "v1");
+    assert_eq!(out["data"]["target"], "./project");
+}
+
 #[cfg(feature = "ci-heavy")]
 #[test]
 fn command_flow_heavy_phase1_commands() {

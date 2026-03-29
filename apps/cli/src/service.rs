@@ -2,6 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::coding::{CodingOptions, execute_code_change_set, generate_code_change_set};
 use crate::dbm::ProjectAnalysisResult;
 use crate::world;
 use integration_layer::{
@@ -51,6 +52,25 @@ pub fn build_validation_report(path: &Path) -> Result<ValidationReport, String> 
             .extend(integration.issues.into_iter().map(|issue| issue.message));
     }
     Ok(report)
+}
+
+pub fn build_refactoring_report(
+    path: &Path,
+    dry_run: bool,
+    options: &CodingOptions,
+) -> Result<CodingReport, String> {
+    let analysis = analyze_path(path)?;
+    let design_graph = design_graph_from_analysis(&analysis);
+    let structural = structural_analysis(&design_graph);
+    let changes = generate_code_change_set(path, &structural.code_patches)?;
+    let execution = execute_code_change_set(path, &changes, options)?;
+    Ok(CodingReport {
+        root: path.display().to_string(),
+        dry_run,
+        execution,
+        patches: structural.code_patches,
+        changes,
+    })
 }
 
 pub fn analysis_to_system_input(analysis: &AnalysisReport) -> SystemInput {
@@ -134,7 +154,7 @@ pub fn enrich_analysis_report(
         .collect();
     analysis.issues = issues;
     analysis.summary = summary;
-    analysis.next_action = format!("cli refactor {}", analysis.root);
+    analysis.next_action = format!("cli refactoring {}", analysis.root);
     analysis.root_cause = root_cause;
     analysis.refactor_plan = refactor_plan;
     analysis
@@ -326,6 +346,7 @@ fn build_analysis_report(
     let manifests = collect_manifests(root)?;
     let top_level_entries = collect_top_level_entries(root)?;
     let architecture_hints = infer_architecture_hints(project, &manifests, &top_level_entries);
+    let code_issues = analyze_code_issues(root, project);
 
     Ok(AnalysisReport {
         root: root.display().to_string(),
@@ -363,11 +384,155 @@ fn build_analysis_report(
         semantic_layers: Vec::new(),
         data_flow: Vec::new(),
         issues: Vec::new(),
+        code_issues,
         summary: AnalysisSummary::default(),
         next_action: String::new(),
         root_cause: None,
         refactor_plan: Vec::new(),
     })
+}
+
+fn analyze_code_issues(root: &Path, project: &ProjectAnalysisResult) -> Vec<CodeIssue> {
+    let mut issues = Vec::new();
+
+    for file in &project.files {
+        let path = root.join(&file.path);
+        let Ok(content) = fs::read_to_string(&path) else {
+            continue;
+        };
+        let lines: Vec<&str> = content.lines().collect();
+        let lower_path = file.path.to_ascii_lowercase();
+
+        for (index, line) in lines.iter().enumerate() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let line_no = index + 1;
+
+            if is_dto_file(&lower_path) && is_boundary_leak_import(trimmed) {
+                issues.push(CodeIssue {
+                    severity: "high".to_string(),
+                    category: "BoundaryLeak".to_string(),
+                    file: file.path.clone(),
+                    line: line_no,
+                    title: "DTO depends on internal module".to_string(),
+                    issue: format!(
+                        "DTO file imports `{}`. Transport objects should stay isolated from internal runtime or world modules.",
+                        trimmed
+                    ),
+                    snippet: snippet_for_line(&lines, index),
+                });
+            }
+
+            if is_wildcard_import(trimmed) {
+                issues.push(CodeIssue {
+                    severity: "medium".to_string(),
+                    category: "WildcardImport".to_string(),
+                    file: file.path.clone(),
+                    line: line_no,
+                    title: "Wildcard import obscures dependency surface".to_string(),
+                    issue: "Wildcard import makes the dependency boundary implicit and increases the chance of accidental coupling.".to_string(),
+                    snippet: snippet_for_line(&lines, index),
+                });
+            }
+
+            if is_deep_relative_import(trimmed) {
+                issues.push(CodeIssue {
+                    severity: "medium".to_string(),
+                    category: "DeepRelativeImport".to_string(),
+                    file: file.path.clone(),
+                    line: line_no,
+                    title: "Deep relative import crosses local boundaries".to_string(),
+                    issue: "Import walks up multiple parent scopes. That usually signals a brittle module boundary or a misplaced file.".to_string(),
+                    snippet: snippet_for_line(&lines, index),
+                });
+            }
+
+            if trimmed.contains("TODO") || trimmed.contains("FIXME") {
+                issues.push(CodeIssue {
+                    severity: "low".to_string(),
+                    category: "DeferredWork".to_string(),
+                    file: file.path.clone(),
+                    line: line_no,
+                    title: "Deferred work marker remains in code".to_string(),
+                    issue: "TODO/FIXME marker is still present in source. If it represents a real design gap, it should be tracked outside the implementation or resolved.".to_string(),
+                    snippet: snippet_for_line(&lines, index),
+                });
+            }
+        }
+    }
+
+    issues.sort_by(|lhs, rhs| {
+        severity_rank(&lhs.severity)
+            .cmp(&severity_rank(&rhs.severity))
+            .then(lhs.file.cmp(&rhs.file))
+            .then(lhs.line.cmp(&rhs.line))
+            .then(lhs.category.cmp(&rhs.category))
+    });
+    issues
+}
+
+fn severity_rank(severity: &str) -> u8 {
+    match severity {
+        "critical" => 0,
+        "high" => 1,
+        "medium" => 2,
+        "low" => 3,
+        _ => 4,
+    }
+}
+
+fn is_dto_file(path: &str) -> bool {
+    path.ends_with("/dto.rs")
+        || path.ends_with("\\dto.rs")
+        || path.ends_with("/dto.ts")
+        || path.ends_with("\\dto.ts")
+        || path.ends_with("/dto.py")
+        || path.ends_with("\\dto.py")
+        || path.ends_with("_dto.rs")
+        || path.ends_with("_dto.ts")
+        || path.ends_with("_dto.py")
+}
+
+fn is_boundary_leak_import(trimmed: &str) -> bool {
+    const INTERNAL_MODULES: [&str; 6] = [
+        "crate::world",
+        "crate::app",
+        "crate::renderer",
+        "crate::debug",
+        "crate::loop",
+        "crate::ui",
+    ];
+
+    (trimmed.starts_with("use ") || trimmed.starts_with("import ") || trimmed.starts_with("from "))
+        && INTERNAL_MODULES
+            .iter()
+            .any(|module| trimmed.contains(module))
+}
+
+fn is_wildcard_import(trimmed: &str) -> bool {
+    trimmed.contains("::*")
+        || trimmed.contains(" import *")
+        || (trimmed.starts_with("from ") && trimmed.ends_with(" import *"))
+}
+
+fn is_deep_relative_import(trimmed: &str) -> bool {
+    trimmed.contains("super::super")
+        || trimmed.contains("super::super::")
+        || trimmed.contains("../../")
+        || trimmed.contains("../..")
+}
+
+fn snippet_for_line(lines: &[&str], line_index: usize) -> String {
+    let start = line_index.saturating_sub(1);
+    let end = usize::min(line_index + 2, lines.len());
+    lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(offset, line)| format!("{:>4} | {}", start + offset + 1, line))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn collect_manifests(root: &Path) -> Result<Vec<String>, String> {

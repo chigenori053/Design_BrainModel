@@ -1565,6 +1565,36 @@ pub struct StructuralEvaluator {
     pub max_edges: usize,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FeatureVector {
+    pub si: f64,
+    pub cs: f64,
+    pub rp: f64,
+    pub er: f64,
+    pub violation_intensity: f64,
+    pub violation_distribution: f64,
+    pub propagation_score: f64,
+    pub impact: f64,
+    pub structural_variance: f64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum ViolationKind {
+    DenseCoupling,
+    HubDominance,
+    Isolation,
+    CategoryCollapse,
+    Fragmentation,
+    Propagation,
+    StructuralImbalance,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViolationSample {
+    kind: ViolationKind,
+    severity: f64,
+}
+
 impl Default for StructuralEvaluator {
     fn default() -> Self {
         Self {
@@ -1581,15 +1611,14 @@ impl StructuralEvaluator {
             max_edges,
         }
     }
-}
 
-impl Evaluator for StructuralEvaluator {
-    fn evaluate(&self, state: &DesignState) -> ObjectiveVector {
+    pub fn extract_features(&self, state: &DesignState) -> FeatureVector {
         let graph = &state.graph;
         let nodes = graph.nodes().len();
         let edges = graph.edges().len();
 
         let node_ratio = ratio(nodes, self.max_nodes);
+        let edge_ratio_to_budget = ratio(edges, self.max_edges);
         let max_possible_edges = nodes.saturating_mul(nodes.saturating_sub(1)) / 2;
         let edge_density = if max_possible_edges == 0 {
             0.0
@@ -1597,36 +1626,128 @@ impl Evaluator for StructuralEvaluator {
             ratio(edges, max_possible_edges)
         };
 
-        let dag_penalty = if graph.is_dag() { 0.0 } else { 1.0 };
-        let normalized_complexity =
-            clamp01(0.45 * node_ratio + 0.45 * edge_density + 0.10 * dag_penalty);
         let degree_mass_entropy = graph.normalized_degree_mass_entropy();
         let degree_entropy = graph.normalized_degree_entropy();
-        let field_base = if let Some(category_entropy) = graph.normalized_category_entropy() {
-            0.75 * category_entropy + 0.25 * degree_mass_entropy
+        let category_entropy = graph.normalized_category_entropy().unwrap_or(0.0);
+        let category_presence = if graph.normalized_category_entropy().is_some() {
+            1.0
         } else {
-            0.65 * degree_mass_entropy + 0.35 * degree_entropy
-        };
-        let f_field = clamp01(field_base.sqrt());
-
-        let risk_raw = 0.25 * graph.normalized_degree_variance()
-            + 0.20 * graph.normalized_max_degree()
-            + 0.15 * graph.normalized_degree_gini()
-            + 0.20 * edge_density
-            + 0.20 * field_base;
-        let f_risk = sigmoid(6.0 * (clamp01(risk_raw) - 0.5));
-        let f_shape = if nodes < 3 {
             0.0
-        } else {
-            let clustering = graph.average_clustering_coefficient();
-            clamp01(clustering)
         };
+        let max_degree = graph.normalized_max_degree();
+        let degree_gini = graph.normalized_degree_gini();
+        let structural_variance = sanitize_unit(graph.normalized_degree_variance());
+        let propagation_score = sanitize_unit(graph.average_reachable_ratio());
+        let depth = sanitize_unit(graph.longest_path_depth_ratio());
+        let fragmentation_ratio = sanitize_unit(graph.fragmentation_ratio());
+        let isolated_ratio = sanitize_unit(graph.isolated_node_ratio());
+        let dag_penalty = if graph.is_dag() { 0.0 } else { 1.0 };
+        let coupling = clamp01(0.45 * edge_density + 0.35 * max_degree + 0.20 * degree_gini);
+        let impact = sanitize_unit(depth * coupling);
+
+        let violations = self.collect_violations(
+            edge_density,
+            max_degree,
+            degree_gini,
+            isolated_ratio,
+            category_entropy,
+            category_presence,
+            fragmentation_ratio,
+            propagation_score,
+            impact,
+            structural_variance,
+        );
+        let violation_intensity = mean_square_severity(&violations);
+        let violation_distribution = violation_entropy(&violations);
+
+        // Spec 6.3 adds violation entropy into CS, but the objective is maximized in this system.
+        // We therefore apply entropy as an extra penalty term so "more/different violations"
+        // reduces CS instead of rewarding bad candidates.
+        let cs_penalty =
+            clamp01(0.7 * violation_intensity + 0.3 * violation_intensity * violation_distribution);
+        let cs = clamp01(1.0 - cs_penalty);
+
+        let si = clamp01(
+            0.28 * (1.0 - node_ratio)
+                + 0.18 * (1.0 - edge_density)
+                + 0.18 * (1.0 - impact)
+                + 0.14 * (1.0 - isolated_ratio)
+                + 0.12 * (1.0 - dag_penalty)
+                + 0.10 * (0.5 * degree_mass_entropy + 0.5 * degree_entropy),
+        );
+        let rp = clamp01(1.0 - impact);
+        let er = clamp01(
+            0.35 * propagation_score
+                + 0.30 * structural_variance
+                + 0.20 * category_entropy
+                + 0.15 * (1.0 - edge_ratio_to_budget),
+        );
+
+        FeatureVector {
+            si: sanitize_unit(si),
+            cs: sanitize_unit(cs),
+            rp: sanitize_unit(rp),
+            er: sanitize_unit(er),
+            violation_intensity: sanitize_unit(violation_intensity),
+            violation_distribution: sanitize_unit(violation_distribution),
+            propagation_score,
+            impact,
+            structural_variance,
+        }
+    }
+
+    fn collect_violations(
+        &self,
+        edge_density: f64,
+        max_degree: f64,
+        degree_gini: f64,
+        isolated_ratio: f64,
+        category_entropy: f64,
+        category_presence: f64,
+        fragmentation_ratio: f64,
+        propagation_score: f64,
+        impact: f64,
+        structural_variance: f64,
+    ) -> Vec<ViolationSample> {
+        [
+            (
+                ViolationKind::DenseCoupling,
+                clamp01(0.6 * edge_density + 0.4 * impact),
+            ),
+            (
+                ViolationKind::HubDominance,
+                clamp01(0.55 * max_degree + 0.45 * degree_gini),
+            ),
+            (ViolationKind::Isolation, isolated_ratio),
+            (
+                ViolationKind::CategoryCollapse,
+                clamp01((1.0 - category_entropy) * (0.5 + 0.5 * (1.0 - category_presence))),
+            ),
+            (ViolationKind::Fragmentation, fragmentation_ratio),
+            (
+                ViolationKind::Propagation,
+                clamp01(propagation_score * impact),
+            ),
+            (ViolationKind::StructuralImbalance, structural_variance),
+        ]
+        .into_iter()
+        .filter_map(|(kind, severity)| {
+            let severity = sanitize_unit(severity);
+            (severity > 1e-9).then_some(ViolationSample { kind, severity })
+        })
+        .collect()
+    }
+}
+
+impl Evaluator for StructuralEvaluator {
+    fn evaluate(&self, state: &DesignState) -> ObjectiveVector {
+        let features = self.extract_features(state);
 
         ObjectiveVector {
-            f_struct: 1.0 - normalized_complexity,
-            f_field,
-            f_risk,
-            f_shape,
+            f_struct: features.si,
+            f_field: features.cs,
+            f_risk: features.rp,
+            f_shape: features.er,
         }
         .clamped()
     }
@@ -1657,8 +1778,49 @@ fn clamp01(value: f64) -> f64 {
     value.clamp(0.0, 1.0)
 }
 
-fn sigmoid(x: f64) -> f64 {
-    1.0 / (1.0 + (-x).exp())
+fn sanitize_unit(value: f64) -> f64 {
+    if value.is_finite() {
+        value.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn mean_square_severity(violations: &[ViolationSample]) -> f64 {
+    if violations.is_empty() {
+        return 0.0;
+    }
+    let total = violations
+        .iter()
+        .map(|sample| sample.severity * sample.severity)
+        .sum::<f64>();
+    sanitize_unit(total / violations.len() as f64)
+}
+
+fn violation_entropy(violations: &[ViolationSample]) -> f64 {
+    if violations.len() <= 1 {
+        return 0.0;
+    }
+
+    let mut totals = BTreeMap::<ViolationKind, f64>::new();
+    for sample in violations {
+        *totals.entry(sample.kind).or_insert(0.0) += sample.severity.max(0.0);
+    }
+
+    let total = totals.values().sum::<f64>();
+    if total <= 1e-12 {
+        return 0.0;
+    }
+
+    let mut entropy = 0.0;
+    for weight in totals.values().copied() {
+        let p = weight / total;
+        if p > 0.0 {
+            entropy -= p * p.ln();
+        }
+    }
+
+    sanitize_unit(entropy / (totals.len() as f64).ln())
 }
 
 #[cfg(feature = "experimental")]
@@ -1735,6 +1897,53 @@ mod tests {
         let simple_obj = evaluator.evaluate(&simple);
         let complex_obj = evaluator.evaluate(&complex);
         assert!(simple_obj.f_struct > complex_obj.f_struct);
+    }
+
+    #[test]
+    fn extracted_features_are_finite_and_bounded() {
+        let evaluator = StructuralEvaluator::new(10, 20);
+        let state = state_with_graph(4, &[(1, 2), (2, 3), (2, 4)]);
+        let features = evaluator.extract_features(&state);
+
+        for value in [
+            features.si,
+            features.cs,
+            features.rp,
+            features.er,
+            features.violation_intensity,
+            features.violation_distribution,
+            features.propagation_score,
+            features.impact,
+            features.structural_variance,
+        ] {
+            assert!(value.is_finite());
+            assert!((0.0..=1.0).contains(&value));
+        }
+    }
+
+    #[test]
+    fn cs_varies_across_structurally_distinct_candidates() {
+        let evaluator = StructuralEvaluator::new(10, 20);
+        let chain = state_with_graph(4, &[(1, 2), (2, 3), (3, 4)]);
+        let star = state_with_graph(4, &[(1, 2), (1, 3), (1, 4)]);
+        let sparse = state_with_graph(4, &[(1, 2)]);
+
+        let values = [
+            evaluator.extract_features(&chain).cs,
+            evaluator.extract_features(&star).cs,
+            evaluator.extract_features(&sparse).cs,
+        ];
+        let mean = values.iter().sum::<f64>() / values.len() as f64;
+        let variance = values
+            .iter()
+            .map(|value| {
+                let delta = *value - mean;
+                delta * delta
+            })
+            .sum::<f64>()
+            / values.len() as f64;
+
+        assert!(variance > 0.0, "expected CS variance, got {variance}");
     }
 
     #[test]

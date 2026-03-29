@@ -111,8 +111,9 @@ pub fn build_command(target: &ExecutionTarget) -> (String, Vec<String>) {
 }
 
 pub fn fixed_env() -> Vec<(String, String)> {
+    let path = std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".to_string());
     let mut env = vec![
-        ("PATH".to_string(), "/usr/bin:/bin".to_string()),
+        ("PATH".to_string(), path),
         ("LANG".to_string(), "C".to_string()),
         ("TZ".to_string(), "UTC".to_string()),
     ];

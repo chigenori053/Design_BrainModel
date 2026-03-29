@@ -9,10 +9,12 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use crate::command::{Command, parse_command};
 use crate::input::{InputState, read_input};
 use crate::renderer::{
-    render_analysis_report, render_design_report, render_question, render_result,
-    render_validation_report,
+    render_analysis_report, render_coding_report, render_design_report, render_question,
+    render_result, render_validation_report,
 };
-use crate::service::{analyze_path, build_design_report, build_validation_report};
+use crate::service::{
+    analyze_path, build_design_report, build_refactoring_report, build_validation_report,
+};
 use crate::session::{ChatSession, merge_slots};
 use crate::state::State;
 
@@ -109,6 +111,25 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
             render_analysis_report(writer, &report)?;
             Ok(true)
         }
+        "/refactoring" => {
+            let path = parts.next().unwrap_or(".");
+            let report = build_refactoring_report(
+                &PathBuf::from(path),
+                false,
+                &crate::coding::CodingOptions {
+                    apply: true,
+                    check: true,
+                    no_build: false,
+                    backup: false,
+                    format: false,
+                    safe_mode: false,
+                    auto_commit: false,
+                },
+            )
+            .map_err(|err| io::Error::other(format!("refactoring failed: {err}")))?;
+            render_coding_report(writer, &report)?;
+            Ok(true)
+        }
         "/design" => {
             let path = parts.next().unwrap_or(".");
             let report = build_design_report(&PathBuf::from(path))
@@ -126,7 +147,7 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
         "/help" => {
             writeln!(
                 writer,
-                "Slash commands: /analyze [path], /design [path], /validate [path], /reset, /quit"
+                "Slash commands: /analyze [path], /refactoring [path], /design [path], /validate [path], /reset, /quit"
             )?;
             writer.flush()?;
             Ok(true)

@@ -132,6 +132,8 @@ pub struct ArchitectureIrNode {
     pub id: String,
     pub name: String,
     pub kind: ArchitectureNodeKind,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -182,6 +184,8 @@ pub struct LayerViolation {
     pub to: String,
     pub from_level: usize,
     pub to_level: usize,
+    pub from_layer_name: String,
+    pub to_layer_name: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
@@ -649,6 +653,7 @@ pub fn architecture_ir_from_design(graph: &DesignGraph) -> ArchitectureIr {
             id: stable_node_id(&node.name),
             name: node.name.clone(),
             kind: architecture_node_kind(&node.kind),
+            file_path: None,
         })
         .collect::<Vec<_>>();
     nodes.sort_by(|lhs, rhs| lhs.id.cmp(&rhs.id).then_with(|| lhs.name.cmp(&rhs.name)));
@@ -695,7 +700,7 @@ pub fn diagnostic_analysis(graph: &DesignGraph) -> DiagnosticAnalysis {
     let ir = architecture_ir_from_design(graph);
     let cycle_report = cycle_report(&ir);
     let layer_model = infer_layers(&ir);
-    let violations = layer_violations(&ir, &layer_model);
+    let mut violations = layer_violations(&ir, &layer_model);
     let mut integrity = validate_round_trip_design(graph);
     for cycle in &cycle_report.cycles {
         if cycle.size >= 2 {
@@ -739,6 +744,7 @@ pub fn diagnostic_analysis(graph: &DesignGraph) -> DiagnosticAnalysis {
         violations: violations.len(),
     };
     let semantic_layers = semantic_layers(&layer_model, &ir, &violations);
+    enrich_violations_with_layer_names(&mut violations, &semantic_layers);
     let roles = infer_roles(&ir, &layer_model);
     let patterns = detect_patterns(&ir, &cycle_report, &violations);
     let data_flow = data_flow_graph(&ir);
@@ -1249,6 +1255,8 @@ pub fn layer_violations(ir: &ArchitectureIr, model: &LayerModel) -> Vec<LayerVio
                 to,
                 from_level,
                 to_level,
+                from_layer_name: String::new(),
+                to_layer_name: String::new(),
             })
         })
         .collect::<Vec<_>>();
@@ -1260,6 +1268,38 @@ pub fn layer_violations(ir: &ArchitectureIr, model: &LayerModel) -> Vec<LayerVio
             .then_with(|| lhs.to_level.cmp(&rhs.to_level))
     });
     violations
+}
+
+fn layer_type_name(layer_type: &LayerType) -> &'static str {
+    match layer_type {
+        LayerType::CoreLayer => "CoreLayer",
+        LayerType::DomainLayer => "DomainLayer",
+        LayerType::ApplicationLayer => "ApplicationLayer",
+        LayerType::InterfaceLayer => "InterfaceLayer",
+        LayerType::InfrastructureLayer => "InfrastructureLayer",
+    }
+}
+
+fn enrich_violations_with_layer_names(
+    violations: &mut Vec<LayerViolation>,
+    semantic_layers: &[SemanticLayer],
+) {
+    let level_to_name: BTreeMap<usize, &'static str> = semantic_layers
+        .iter()
+        .map(|sl| (sl.level, layer_type_name(&sl.layer_type)))
+        .collect();
+    for violation in violations.iter_mut() {
+        violation.from_layer_name = level_to_name
+            .get(&violation.from_level)
+            .copied()
+            .unwrap_or("")
+            .to_string();
+        violation.to_layer_name = level_to_name
+            .get(&violation.to_level)
+            .copied()
+            .unwrap_or("")
+            .to_string();
+    }
 }
 
 pub fn infer_roles(ir: &ArchitectureIr, model: &LayerModel) -> Vec<RoleAssignment> {
@@ -1836,11 +1876,7 @@ fn resolve_conflicts(actions: Vec<RefactorPlanAction>) -> Vec<RefactorPlanAction
     let mut resolved = Vec::new();
     for action in actions {
         let conflicted = match &action {
-            RefactorPlanAction::MoveDependency {
-                from,
-                to,
-                via: None,
-            } => {
+            RefactorPlanAction::MoveDependency { from, to, .. } => {
                 let pair = canonical_pair(from, to);
                 cycle_pairs.contains(&pair) || bidirectional_pairs.contains(&pair)
             }
@@ -1881,6 +1917,7 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                             id: interface_id.clone(),
                             name: interface_name.clone(),
                             kind: ArchitectureNodeKind::Module,
+                            file_path: None,
                         });
                     }
                     let id_to_name = new_ir
@@ -1889,14 +1926,15 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                         .map(|node| (node.id.clone(), node.name.clone()))
                         .collect::<BTreeMap<_, _>>();
                     new_ir.edges.retain(|edge| {
-                    let from = id_to_name.get(&edge.from);
-                    let to = id_to_name.get(&edge.to);
-                    !matches!(
-                        (from.map(String::as_str), to.map(String::as_str)),
-                        (Some(a), Some(b))
-                            if (a == between.0 && b == between.1) || (a == between.1 && b == between.0)
-                    )
-                });
+                        let from = id_to_name.get(&edge.from);
+                        let to = id_to_name.get(&edge.to);
+                        !matches!(
+                            (from.map(String::as_str), to.map(String::as_str)),
+                            (Some(a), Some(b))
+                                if (a == between.0 && b == between.1)
+                                    || (a == between.1 && b == between.0)
+                        )
+                    });
                     for endpoint in [between.0.clone(), between.1.clone()] {
                         if let Some(endpoint_id) = new_ir
                             .nodes
@@ -1944,6 +1982,7 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                                 id: split_id.clone(),
                                 name: split_name,
                                 kind: source.kind,
+                                file_path: None,
                             });
                         }
                         if let Some(first_edge) = new_ir
@@ -1982,6 +2021,7 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                                     id: via_id.clone(),
                                     name: via.clone(),
                                     kind: ArchitectureNodeKind::Module,
+                                    file_path: None,
                                 });
                             }
                             new_ir.edges.push(ArchitectureIrEdge {
@@ -2005,6 +2045,7 @@ pub fn simulate_refactor(ir: &ArchitectureIr, plan: &RefactorPlan) -> Simulation
                             id: extracted_id.clone(),
                             name: extracted,
                             kind: ArchitectureNodeKind::Module,
+                            file_path: None,
                         });
                     }
                 }
@@ -2126,6 +2167,15 @@ fn generate_issues(
     }
 
     for node in orphan_nodes(ir) {
+        let file_path_suffix = ir
+            .nodes
+            .iter()
+            .find(|n| n.name == node)
+            .and_then(|n| n.file_path.as_deref())
+            .map(|p| format!(" ({})", p))
+            .unwrap_or_default();
+        let desc =
+            format!("Node is isolated from the dependency graph: `{node}`{file_path_suffix}");
         issues.push(Issue {
             id: issue_id(
                 IssueType::OrphanNode,
@@ -2138,7 +2188,7 @@ fn generate_issues(
             kind: IssueType::OrphanNode,
             severity: Severity::Low,
             scope: IssueScope::Node(node),
-            description: "Node is isolated from the dependency graph".to_string(),
+            description: desc,
             evidence: vec![Evidence {
                 kind: EvidenceType::Metric,
                 value: "connected_edges:0".to_string(),
@@ -2152,6 +2202,7 @@ fn generate_issues(
                 let inbound = *fan_in.get(node).unwrap_or(&0);
                 let outbound = *fan_out.get(node).unwrap_or(&0);
                 let total = inbound + outbound;
+                const CONCENTRATION_THRESHOLD: usize = 3;
                 issues.push(Issue {
                     id: issue_id(
                         IssueType::GodObject,
@@ -2168,31 +2219,36 @@ fn generate_issues(
                         Severity::Medium
                     },
                     scope: IssueScope::Node(node.clone()),
-                    description: "Responsibility concentration detected".to_string(),
+                    description: format!(
+                        "Responsibility concentration: `{node}` has {inbound} incoming dependencies (threshold: {CONCENTRATION_THRESHOLD})"
+                    ),
                     evidence: vec![Evidence {
                         kind: EvidenceType::Metric,
                         value: format!("fan_in:{inbound};fan_out:{outbound}"),
                     }],
                 });
             }
-            Pattern::Hub { node } => issues.push(Issue {
-                id: issue_id(
-                    IssueType::Hub,
-                    &IssueScope::Node(node.clone()),
-                    &[Evidence {
+            Pattern::Hub { node } => {
+                let hub_fan_in = *fan_in.get(node).unwrap_or(&0);
+                issues.push(Issue {
+                    id: issue_id(
+                        IssueType::Hub,
+                        &IssueScope::Node(node.clone()),
+                        &[Evidence {
+                            kind: EvidenceType::Pattern,
+                            value: "hub".to_string(),
+                        }],
+                    ),
+                    kind: IssueType::Hub,
+                    severity: Severity::Medium,
+                    scope: IssueScope::Node(node.clone()),
+                    description: format!("Dependency hub: `{node}` ({hub_fan_in} dependents)"),
+                    evidence: vec![Evidence {
                         kind: EvidenceType::Pattern,
-                        value: "hub".to_string(),
+                        value: format!("fan_in:{hub_fan_in}"),
                     }],
-                ),
-                kind: IssueType::Hub,
-                severity: Severity::Medium,
-                scope: IssueScope::Node(node.clone()),
-                description: "Dependency hub observed".to_string(),
-                evidence: vec![Evidence {
-                    kind: EvidenceType::Pattern,
-                    value: "hub".to_string(),
-                }],
-            }),
+                });
+            }
             Pattern::Cyclic { .. } | Pattern::Layered => {}
         }
     }
@@ -2232,26 +2288,41 @@ fn generate_issues(
         let Some(to) = node_name_by_id(ir, &edge.to) else {
             continue;
         };
-        if matches!(role_map.get(&from), Some(NodeRole::Presentation))
-            && matches!(role_map.get(&to), Some(NodeRole::Core))
-        {
+        let from_role = role_map.get(&from).unwrap_or(&NodeRole::Unknown);
+        let to_role = role_map.get(&to).unwrap_or(&NodeRole::Unknown);
+        if is_invalid_role_dependency(from_role, to_role) {
+            let role_pair = format!(
+                "{}->{}",
+                format_node_role(from_role),
+                format_node_role(to_role)
+            );
             issues.push(Issue {
                 id: issue_id(
                     IssueType::RoleMismatch,
                     &IssueScope::Edge(from.clone(), to.clone()),
                     &[Evidence {
                         kind: EvidenceType::Role,
-                        value: "Presentation->Core".to_string(),
+                        value: role_pair.clone(),
                     }],
                 ),
                 kind: IssueType::RoleMismatch,
                 severity: Severity::Medium,
                 scope: IssueScope::Edge(from.clone(), to.clone()),
-                description: "Role boundary mismatch observed".to_string(),
-                evidence: vec![Evidence {
-                    kind: EvidenceType::Role,
-                    value: "Presentation->Core".to_string(),
-                }],
+                description: format!(
+                    "Role boundary mismatch: `{from}` ({}) depends on `{to}` ({})",
+                    format_node_role(from_role),
+                    format_node_role(to_role)
+                ),
+                evidence: vec![
+                    Evidence {
+                        kind: EvidenceType::Role,
+                        value: role_pair,
+                    },
+                    Evidence {
+                        kind: EvidenceType::Edge,
+                        value: format!("{from}->{to}"),
+                    },
+                ],
             });
         }
     }
@@ -2282,6 +2353,29 @@ fn role_rank(role: &NodeRole) -> u8 {
         NodeRole::Test => 6,
         NodeRole::Unknown => 7,
     }
+}
+
+fn format_node_role(role: &NodeRole) -> &'static str {
+    match role {
+        NodeRole::Core => "Core",
+        NodeRole::Service => "Service",
+        NodeRole::Infrastructure => "Infrastructure",
+        NodeRole::Interface => "Interface",
+        NodeRole::Presentation => "Presentation",
+        NodeRole::Utility => "Utility",
+        NodeRole::Test => "Test",
+        NodeRole::Unknown => "Unknown",
+    }
+}
+
+fn is_invalid_role_dependency(from: &NodeRole, to: &NodeRole) -> bool {
+    matches!(
+        (from, to),
+        (NodeRole::Presentation, NodeRole::Core)
+            | (NodeRole::Presentation, NodeRole::Utility)
+            | (NodeRole::Utility, NodeRole::Presentation)
+            | (NodeRole::Utility, NodeRole::Interface)
+    )
 }
 
 fn fan_in_map(ir: &ArchitectureIr) -> BTreeMap<String, usize> {
@@ -3174,6 +3268,13 @@ mod tests {
                     if (from == "debug" && to == "renderer") || (from == "renderer" && to == "debug")
             )
         }));
+        assert!(!actions.actions.iter().any(|action| {
+            matches!(
+                action,
+                RefactorPlanAction::MoveDependency { from, to, via: Some(_) }
+                    if (from == "debug" && to == "renderer") || (from == "renderer" && to == "debug")
+            )
+        }));
     }
 
     #[test]
@@ -3292,7 +3393,14 @@ mod tests {
     fn plan_improves_metrics() {
         let analysis = structural_analysis(&cyclic_graph_with_orphan());
         assert!(analysis.simulation.delta.cycle_count <= 0);
-        assert!(analysis.simulation.delta.layer_violations <= 0);
+        assert!(
+            analysis.simulation.delta.layer_violations <= 0,
+            "before={:?} after={:?} delta={:?} actions={:?}",
+            analysis.simulation.before,
+            analysis.simulation.after,
+            analysis.simulation.delta,
+            analysis.refactor_plan.phases
+        );
         assert!(analysis.simulation.delta.coupling_score_milli <= 0);
     }
 
@@ -3348,5 +3456,219 @@ mod tests {
             .map(|phase| phase.actions.len())
             .sum::<usize>();
         assert_eq!(analysis.code_patches.len(), action_count);
+    }
+
+    // ── P3: LayerViolation semantic layer names ──────────────────────────────
+
+    #[test]
+    fn layer_violation_has_semantic_layer_names() {
+        let analysis = diagnostic_analysis(&cyclic_graph_with_orphan());
+        assert!(
+            !analysis.violations.is_empty(),
+            "expected violations in cyclic graph"
+        );
+        for violation in &analysis.violations {
+            assert!(
+                !violation.from_layer_name.is_empty(),
+                "from_layer_name should be populated, got empty for {} (level {})",
+                violation.from,
+                violation.from_level
+            );
+            assert!(
+                !violation.to_layer_name.is_empty(),
+                "to_layer_name should be populated, got empty for {} (level {})",
+                violation.to,
+                violation.to_level
+            );
+        }
+    }
+
+    #[test]
+    fn layer_violation_same_layer_names_are_equal() {
+        let analysis = diagnostic_analysis(&cyclic_graph_with_orphan());
+        let same_layer = analysis
+            .violations
+            .iter()
+            .filter(|v| v.from_level == v.to_level)
+            .collect::<Vec<_>>();
+        assert!(!same_layer.is_empty(), "expected same-layer violations");
+        for v in same_layer {
+            assert_eq!(
+                v.from_layer_name, v.to_layer_name,
+                "same-level violations should have equal layer names"
+            );
+        }
+    }
+
+    // ── P1: OrphanNode description with file path ────────────────────────────
+
+    #[test]
+    fn orphan_node_description_contains_node_name() {
+        let analysis = diagnostic_analysis(&cyclic_graph_with_orphan());
+        let orphan = analysis
+            .issues
+            .iter()
+            .find(|issue| issue.kind == IssueType::OrphanNode)
+            .expect("orphan issue");
+        assert!(
+            orphan.description.contains('`'),
+            "description should contain backtick-quoted node name: {}",
+            orphan.description
+        );
+    }
+
+    #[test]
+    fn orphan_node_description_includes_file_path_when_set() {
+        // Build a graph with an orphan node that has a file_path on its IR node
+        let graph = DesignGraphBuilder::new()
+            .add_node(DesignNode {
+                id: DesignNodeId("isolated".to_string()),
+                name: "isolated".to_string(),
+                kind: DesignNodeKind::Module,
+                metadata: Default::default(),
+            })
+            .build();
+        let mut ir = architecture_ir_from_design(&graph);
+        // Manually attach a file_path to simulate a real project analysis
+        if let Some(node) = ir.nodes.iter_mut().find(|n| n.name == "isolated") {
+            node.file_path = Some("src/isolated.rs".to_string());
+        }
+        let cycle_report = cycle_report(&ir);
+        let layer_model = infer_layers(&ir);
+        let mut violations = layer_violations(&ir, &layer_model);
+        let semantic = semantic_layers(&layer_model, &ir, &violations);
+        enrich_violations_with_layer_names(&mut violations, &semantic);
+        let data_flow = data_flow_graph(&ir);
+        let integrity = validate_round_trip_design(&graph);
+        let semantic_insights = SemanticInsights {
+            roles: infer_roles(&ir, &layer_model),
+            layers: semantic,
+            patterns: detect_patterns(&ir, &cycle_report, &violations),
+            suggestions: Vec::new(),
+        };
+        let issues = generate_issues(
+            &ir,
+            &cycle_report,
+            &violations,
+            &semantic_insights,
+            &data_flow,
+            &integrity,
+        );
+        let orphan = issues
+            .iter()
+            .find(|issue| issue.kind == IssueType::OrphanNode)
+            .expect("orphan issue");
+        assert!(
+            orphan.description.contains("(src/isolated.rs)"),
+            "description should include file path: {}",
+            orphan.description
+        );
+    }
+
+    #[test]
+    fn orphan_node_description_no_path_when_absent() {
+        let analysis = diagnostic_analysis(&cyclic_graph_with_orphan());
+        let orphan = analysis
+            .issues
+            .iter()
+            .find(|issue| issue.kind == IssueType::OrphanNode)
+            .expect("orphan issue");
+        // DesignGraph nodes have no file_path, so none should appear in parentheses
+        assert!(
+            !orphan.description.contains(".rs)"),
+            "description should not contain file path when absent: {}",
+            orphan.description
+        );
+    }
+
+    // ── P4: Cycle-free architecture after fix ────────────────────────────────
+
+    fn acyclic_graph_after_fix() -> DesignGraph {
+        // renderer -> debug dependency removed; debug now depends on renderer one-way
+        DesignGraphBuilder::new()
+            .add_node(DesignNode {
+                id: DesignNodeId("debug".to_string()),
+                name: "debug".to_string(),
+                kind: DesignNodeKind::Module,
+                metadata: Default::default(),
+            })
+            .add_node(DesignNode {
+                id: DesignNodeId("renderer".to_string()),
+                name: "renderer".to_string(),
+                kind: DesignNodeKind::Module,
+                metadata: Default::default(),
+            })
+            .add_node(DesignNode {
+                id: DesignNodeId("world".to_string()),
+                name: "world".to_string(),
+                kind: DesignNodeKind::Module,
+                metadata: Default::default(),
+            })
+            .add_edge(DesignEdge {
+                source: DesignNodeId("debug".to_string()),
+                target: DesignNodeId("renderer".to_string()),
+                relation: DesignRelation::DependsOn,
+            })
+            .add_edge(DesignEdge {
+                source: DesignNodeId("debug".to_string()),
+                target: DesignNodeId("world".to_string()),
+                relation: DesignRelation::DependsOn,
+            })
+            .add_edge(DesignEdge {
+                source: DesignNodeId("renderer".to_string()),
+                target: DesignNodeId("world".to_string()),
+                relation: DesignRelation::DependsOn,
+            })
+            .build()
+    }
+
+    #[test]
+    fn acyclic_graph_after_fix_has_no_cycles() {
+        let analysis = structural_analysis(&acyclic_graph_after_fix());
+        assert!(
+            !analysis.cycle_report.has_cycle,
+            "expected no cycles after fix, got: {:?}",
+            analysis.cycle_report.cycles
+        );
+        assert!(analysis.cycle_report.cycles.is_empty());
+    }
+
+    #[test]
+    fn acyclic_graph_after_fix_has_no_violations() {
+        let analysis = structural_analysis(&acyclic_graph_after_fix());
+        assert!(
+            analysis.violations.is_empty(),
+            "expected no violations after fix, got: {:?}",
+            analysis.violations
+        );
+    }
+
+    #[test]
+    fn acyclic_graph_after_fix_layers_are_ordered() {
+        let analysis = structural_analysis(&acyclic_graph_after_fix());
+        let level_of = analysis
+            .layer_model
+            .layers
+            .iter()
+            .flat_map(|layer| {
+                layer
+                    .nodes
+                    .iter()
+                    .cloned()
+                    .map(move |node| (node, layer.level))
+            })
+            .collect::<BTreeMap<_, _>>();
+        // world should be at lowest level (0), renderer above, debug at top
+        let world_level = level_of.get("world").copied().unwrap_or(999);
+        let renderer_level = level_of.get("renderer").copied().unwrap_or(999);
+        let debug_level = level_of.get("debug").copied().unwrap_or(999);
+        assert!(
+            world_level < renderer_level,
+            "world ({world_level}) should be below renderer ({renderer_level})"
+        );
+        assert!(
+            renderer_level < debug_level,
+            "renderer ({renderer_level}) should be below debug ({debug_level})"
+        );
     }
 }
