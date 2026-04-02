@@ -1,0 +1,4 @@
+この循環依存を見て
+presentation layer 側だけ直して
+GUIで差分を見せて
+commitしてPR作って

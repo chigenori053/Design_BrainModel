@@ -16,6 +16,8 @@ use std::path::PathBuf;
 /// | validate, _, [path] | design validate <path> |
 /// | refactor, _, [path] | design refactor <path> |
 /// | refactoring, _, [path] | design refactoring <path> |
+/// | structure, 2d, [path] | design structure view <path> --2d |
+/// | structure, 3d, [path] | design structure view <path> --3d |
 /// | coding, _, [path] | design coding <path> |
 /// | diff, _, [path] | design diff <path> |
 /// | check, _, [path] | design check <path> |
@@ -43,9 +45,10 @@ fn map_invocation_to_cli(
 ) -> Result<(String, Vec<String>), String> {
     match name {
         "analyze" => {
-            // design analyze <path>  (code/project サブコマンドは CLI が自動判別)
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
-            Ok(("analyze".to_string(), vec![path]))
+            let mut cli_args = vec![path];
+            cli_args.extend(args.iter().skip(1).cloned());
+            Ok(("analyze".to_string(), cli_args))
         }
         "generate" => match subcommand {
             Some("spec") => {
@@ -69,7 +72,9 @@ fn map_invocation_to_cli(
         },
         "validate" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
-            Ok(("validate".to_string(), vec![path]))
+            let mut cli_args = vec![path];
+            cli_args.extend(args.iter().skip(1).cloned());
+            Ok(("validate".to_string(), cli_args))
         }
         "refactor" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
@@ -79,9 +84,31 @@ fn map_invocation_to_cli(
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
             Ok(("refactoring".to_string(), vec![path]))
         }
+        "structure" => {
+            let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
+            match subcommand {
+                Some("view") | Some("edit") | Some("dispatch") | Some("undo") | Some("redo") | Some("session") => {
+                    let mut cli_args = vec![subcommand.unwrap_or("view").to_string(), path];
+                    cli_args.extend(args.iter().skip(1).cloned());
+                    Ok(("structure".to_string(), cli_args))
+                }
+                _ => {
+                    let mode = match subcommand.unwrap_or("2d") {
+                        "3d" => "--3d",
+                        _ => "--2d",
+                    };
+                    Ok((
+                        "structure".to_string(),
+                        vec!["view".to_string(), path, mode.to_string()],
+                    ))
+                }
+            }
+        }
         "coding" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
-            Ok(("coding".to_string(), vec![path]))
+            let mut cli_args = vec![path];
+            cli_args.extend(args.iter().skip(1).cloned());
+            Ok(("coding".to_string(), cli_args))
         }
         "diff" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
@@ -131,6 +158,11 @@ fn map_invocation_to_cli(
             cli_args.extend_from_slice(args);
             Ok(("memory".to_string(), cli_args))
         }
+        "run" => {
+            let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
+            Ok(("run".to_string(), vec![path]))
+        }
+        "execute" => Ok(("execute".to_string(), args.to_vec())),
         _ => Err(format!("不明なコマンド: {name}")),
     }
 }
@@ -235,6 +267,14 @@ mod tests {
         let (cmd, args) = map_invocation_to_cli("refactor", None, &[".".to_string()]).unwrap();
         assert_eq!(cmd, "refactor");
         assert_eq!(args, vec!["."]);
+    }
+
+    #[test]
+    fn map_structure_to_structure_cli() {
+        let (cmd, args) =
+            map_invocation_to_cli("structure", Some("3d"), &[".".to_string()]).unwrap();
+        assert_eq!(cmd, "structure");
+        assert_eq!(args, vec!["view", ".", "--3d"]);
     }
 
     #[test]

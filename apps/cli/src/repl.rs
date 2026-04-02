@@ -5,19 +5,24 @@
 /// - 入力は Command と Agent（自然言語）の2種類
 /// - 自然言語入力は即時自動実行（/run 不要）
 /// - panic禁止・すべてResultで処理・不正入力でも継続
-/// - 全入力を session.history に記録する
+/// - user input のみを session.history に記録する
+/// - REPL output は session.transcript に記録する
 use std::io::{BufRead, Write};
 
 use crate::command::{CommandRegistry, Output};
 use crate::commands::register_defaults;
 use crate::executor::Executor;
-use crate::input::{InputState, read_input};
-use crate::plan::{PlanStatus, StepStatus};
+use crate::input::{InputState, read_input_with_label};
+use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
+use crate::nl::goal::{detect_goal, goal_label};
+use crate::nl::planner_v2::{plan_input as plan_nl_input_v2, update_conversation_after_plan};
+use crate::nl::session::ConversationState;
+use crate::nl::{execute_plan as execute_nl_plan, render_plan_summary};
+use crate::plan::PlanStatus;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
 use crate::session::AgentSession;
 use crate::state::State;
-use std::time::Instant;
 
 /// REPLを起動して入力ループを実行する
 ///
@@ -28,6 +33,7 @@ where
     W: Write,
 {
     let mut session = AgentSession::new();
+    let mut conversation = ConversationState::default();
     let mut registry = CommandRegistry::new();
     let mut planner_mode = PlannerMode::default();
     register_defaults(&mut registry);
@@ -35,7 +41,13 @@ where
     print_banner(writer)?;
 
     loop {
-        let input = match read_input(reader, writer, session.state).map_err(|e| e.to_string())? {
+        let input = match read_input_with_label(
+            reader,
+            writer,
+            session.state,
+            conversation.prompt_label(),
+        )
+        .map_err(|e| e.to_string())? {
             InputState::Eof => break,
             InputState::Line(line) => line,
         };
@@ -46,7 +58,14 @@ where
 
         session.record(&input);
 
-        let should_exit = dispatch(&input, &mut session, &registry, &mut planner_mode, writer)?;
+        let should_exit = dispatch(
+            &input,
+            &mut session,
+            &mut conversation,
+            &registry,
+            &mut planner_mode,
+            writer,
+        )?;
         writer.flush().map_err(|e| e.to_string())?;
 
         if should_exit {
@@ -63,6 +82,7 @@ where
 fn dispatch<W: Write>(
     input: &str,
     session: &mut AgentSession,
+    conversation: &mut ConversationState,
     registry: &CommandRegistry,
     planner_mode: &mut PlannerMode,
     writer: &mut W,
@@ -77,12 +97,13 @@ fn dispatch<W: Write>(
             subcommand.as_deref(),
             &args,
             session,
+            conversation,
             registry,
             planner_mode,
             writer,
         ),
         Route::Agent(text) => {
-            handle_agent(&text, session, *planner_mode, writer)?;
+            handle_agent(&text, session, conversation, registry, *planner_mode, writer)?;
             Ok(false)
         }
     }
@@ -97,6 +118,7 @@ fn handle_command<W: Write>(
     subcommand: Option<&str>,
     args: &[String],
     session: &mut AgentSession,
+    conversation: &mut ConversationState,
     registry: &CommandRegistry,
     planner_mode: &mut PlannerMode,
     writer: &mut W,
@@ -136,6 +158,7 @@ fn handle_command<W: Write>(
             session.context.last_path = None;
             session.context.last_command = None;
             session.current_plan = None;
+            *conversation = ConversationState::default();
             session.state = State::Idle;
             writeln!(writer, "コンテキストをクリアしました。").map_err(|e| e.to_string())?;
             return Ok(false);
@@ -268,93 +291,118 @@ fn handle_planner_command<W: Write>(
 fn handle_agent<W: Write>(
     input: &str,
     session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    registry: &CommandRegistry,
     planner_mode: PlannerMode,
     writer: &mut W,
 ) -> Result<(), String> {
     session.context.push(input);
     session.state = State::Planning;
 
+    if let Some(goal) = detect_goal(input) {
+        conversation.autonomous_label = Some(format!("autonomous:{}", goal_label(goal)));
+        emit_output(
+            session,
+            writer,
+            &format!("[autonomous mode] goal={}", goal_label(goal)),
+        )?;
+
+        if cfg!(test) {
+            session.state = State::Completed;
+            emit_output(session, writer, "[test] planner-only mode")?;
+            conversation.autonomous_label = None;
+            return Ok(());
+        }
+
+        session.state = State::Running;
+        let result = run_goal_loop(goal, session, conversation, AutonomousLoop::default());
+        for output in result.outputs {
+            if !output.trim().is_empty() {
+                emit_output(session, writer, &output)?;
+            }
+        }
+        session.state = if result.completed {
+            State::Completed
+        } else {
+            State::Error
+        };
+        conversation.autonomous_label = None;
+        if result.completed {
+            print_follow_up_suggestions(input, session, writer)?;
+        }
+        return Ok(());
+    }
+
+    if let Some(command_plan) = plan_nl_input_v2(input, session, conversation) {
+        let planner_summary = render_plan_summary(&command_plan);
+        emit_output(session, writer, &planner_summary)?;
+        update_conversation_after_plan(input, &command_plan, conversation);
+
+        if cfg!(test) {
+            session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+            session.state = State::Completed;
+            emit_output(session, writer, "[test] planner-only mode")?;
+            return Ok(());
+        }
+
+        session.state = State::Running;
+        for output in execute_nl_plan(&command_plan, conversation) {
+            if !output.trim().is_empty() {
+                emit_output(session, writer, &output)?;
+            }
+        }
+        session.state = State::Completed;
+        session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+        conversation.autonomous_label = None;
+        print_follow_up_suggestions(input, session, writer)?;
+        return Ok(());
+    }
+
     let mut plan = create_plan(input, session, planner_mode);
 
     // プランナーラベルとステップ数を表示
-    writeln!(
-        writer,
+    let planner_summary = format!(
         "[planner: {}] {} ステップ",
         planner_mode.as_str(),
         plan.steps.len(),
-    )
-    .map_err(|e| e.to_string())?;
+    );
+    emit_output(session, writer, &planner_summary)?;
 
-    // 各ステップを即時実行
+    if cfg!(test) {
+        plan.status = PlanStatus::Completed;
+        session.state = State::Completed;
+        session.current_plan = Some(plan);
+        emit_output(session, writer, "[test] planner-only mode")?;
+        return Ok(());
+    }
+
+    // 各ステップを in-process 実行する。REPL 自身を再起動するサブプロセス経路は使わない。
     session.state = State::Running;
-    let mut all_ok = true;
-
-    for step in plan.steps.iter_mut() {
-        // intent / target を表示
-        if let Some(cmd) = &step.command {
-            let target = cmd.args.first().map(|s| s.as_str()).unwrap_or(".");
-            writeln!(writer, "> [intent: {}, target: {}]", cmd.name, target)
-                .map_err(|e| e.to_string())?;
-        }
-        writeln!(writer, "▶ {}", step.description).map_err(|e| e.to_string())?;
-        writer.flush().map_err(|e| e.to_string())?;
-
-        step.status = StepStatus::Running;
-        let start = Instant::now();
-
-        let cmd_opt = step.command.clone();
-        if let Some(cmd) = cmd_opt {
-            match crate::nl_executor::execute_plan_step(
-                &cmd.name,
-                cmd.subcommand.as_deref(),
-                &cmd.args,
-            ) {
-                Ok(output) => {
-                    let elapsed = start.elapsed().as_millis();
-                    let trimmed = output.trim_end();
-                    if !trimmed.is_empty() {
-                        writeln!(writer, "{trimmed}").map_err(|e| e.to_string())?;
-                    }
-                    writeln!(
-                        writer,
-                        "Done. ({cmd_name} - {elapsed}ms)",
-                        cmd_name = cmd.name
-                    )
-                    .map_err(|e| e.to_string())?;
-                    step.status = StepStatus::Done;
-                    // パスコンテキストを保存
-                    if let Some(path) = cmd.args.first() {
-                        session.context.set_last_path(path);
-                    }
-                    session.context.last_command = Some(cmd.name.clone());
-                }
-                Err(e) => {
-                    writeln!(writer, "[エラー] {}", e.trim()).map_err(|e| e.to_string())?;
-                    step.status = StepStatus::Failed;
-                    all_ok = false;
-                    break;
-                }
-            }
-        } else {
-            step.status = StepStatus::Done;
+    let executor = Executor::new();
+    for output in executor.execute(&mut plan, session, registry) {
+        if !output.trim().is_empty() {
+            emit_output(session, writer, &output)?;
         }
     }
 
-    if all_ok {
-        plan.status = PlanStatus::Completed;
+    if plan.status == PlanStatus::Completed {
         session.state = State::Completed;
-        print_follow_up_suggestions(input, writer)?;
+        print_follow_up_suggestions(input, session, writer)?;
     } else {
-        plan.status = PlanStatus::Failed;
         session.state = State::Error;
     }
 
     session.current_plan = Some(plan);
+    conversation.autonomous_label = None;
     Ok(())
 }
 
 /// 実行後のコンテキスト対応次ステップ提案
-fn print_follow_up_suggestions<W: Write>(input: &str, writer: &mut W) -> Result<(), String> {
+fn print_follow_up_suggestions<W: Write>(
+    input: &str,
+    session: &mut AgentSession,
+    writer: &mut W,
+) -> Result<(), String> {
     let lower = input.to_lowercase();
 
     let suggestions: &[&str] = if lower.contains("project") || lower.contains("プロジェクト")
@@ -381,13 +429,22 @@ fn print_follow_up_suggestions<W: Write>(input: &str, writer: &mut W) -> Result<
     };
 
     if !suggestions.is_empty() {
-        writeln!(writer, "").map_err(|e| e.to_string())?;
-        writeln!(writer, "💡 次のステップ:").map_err(|e| e.to_string())?;
+        emit_output(session, writer, "")?;
+        emit_output(session, writer, "💡 次のステップ:")?;
         for s in suggestions {
-            writeln!(writer, "   {s}").map_err(|e| e.to_string())?;
+            emit_output(session, writer, &format!("   {s}"))?;
         }
     }
     Ok(())
+}
+
+fn emit_output<W: Write>(
+    session: &mut AgentSession,
+    writer: &mut W,
+    line: &str,
+) -> Result<(), String> {
+    session.record_output(line);
+    writeln!(writer, "{line}").map_err(|e| e.to_string())
 }
 
 /// DBM_CLI バナーを表示する
@@ -410,10 +467,10 @@ fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
     .map_err(|e| e.to_string())?;
     writeln!(writer, "").map_err(|e| e.to_string())?;
     writeln!(writer, "  自然言語の例:").map_err(|e| e.to_string())?;
-    writeln!(writer, "    src/ のコードを解析して").map_err(|e| e.to_string())?;
-    writeln!(writer, "    このアーキテクチャを検証して").map_err(|e| e.to_string())?;
-    writeln!(writer, "    リファクタリング案を提案して").map_err(|e| e.to_string())?;
-    writeln!(writer, "    さっきの場所を設計して   ← 前回パスを自動使用")
+    writeln!(writer, "    このプロジェクト全体を解析して").map_err(|e| e.to_string())?;
+    writeln!(writer, "    GUIで構造を開いて問題ノードを見せて").map_err(|e| e.to_string())?;
+    writeln!(writer, "    Rust unsafe を減らして cargo check して").map_err(|e| e.to_string())?;
+    writeln!(writer, "    さっきの場所を安全に修正して   ← 前回パスを自動使用")
         .map_err(|e| e.to_string())?;
     writeln!(writer, "").map_err(|e| e.to_string())?;
     writeln!(writer, "  コマンドの例:").map_err(|e| e.to_string())?;
@@ -442,16 +499,18 @@ fn print_help<W: Write>(
         "── 自然言語（入力 → 即時実行）──────────────────────────────"
     )
     .map_err(|e| e.to_string())?;
-    writeln!(writer, "  src/ のコードを解析して        → analyze").map_err(|e| e.to_string())?;
-    writeln!(writer, "  アーキテクチャを検証して       → validate").map_err(|e| e.to_string())?;
-    writeln!(writer, "  リファクタリング案を出して     → refactor").map_err(|e| e.to_string())?;
-    writeln!(writer, "  設計書を作成して               → design").map_err(|e| e.to_string())?;
-    writeln!(writer, "  仕様書を作成して               → generate spec")
+    writeln!(writer, "  このプロジェクトを解析して     → design_cli analyze .")
         .map_err(|e| e.to_string())?;
-    writeln!(writer, "  変更を適用して                 → coding").map_err(|e| e.to_string())?;
     writeln!(
         writer,
-        "  プロジェクト全体を解析して     → analyze + design（2段）"
+        "  この循環依存を安全に直して     → design_cli analyze . → coding . --safe --check"
+    )
+    .map_err(|e| e.to_string())?;
+    writeln!(writer, "  GUIで構造を開いて             → design_cli structure view .")
+        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "  unsafeを減らしてcargo check   → analyze → coding --safe --check → validate"
     )
     .map_err(|e| e.to_string())?;
     writeln!(
@@ -561,6 +620,7 @@ mod tests {
     fn run_with_session(input: &str) -> (String, AgentSession, Result<(), String>) {
         let mut writer = Vec::new();
         let mut session = AgentSession::new();
+        let mut conversation = ConversationState::default();
         let mut registry = CommandRegistry::new();
         let mut planner_mode = PlannerMode::default();
         register_defaults(&mut registry);
@@ -573,6 +633,7 @@ mod tests {
             let _ = dispatch(
                 line,
                 &mut session,
+                &mut conversation,
                 &registry,
                 &mut planner_mode,
                 &mut writer,
@@ -592,6 +653,7 @@ mod tests {
     ) -> (String, AgentSession, Result<(), String>) {
         let mut writer = Vec::new();
         let mut session = AgentSession::new();
+        let mut conversation = ConversationState::default();
         let mut registry = CommandRegistry::new();
         let mut planner_mode = mode;
         register_defaults(&mut registry);
@@ -604,6 +666,7 @@ mod tests {
             let _ = dispatch(
                 line,
                 &mut session,
+                &mut conversation,
                 &registry,
                 &mut planner_mode,
                 &mut writer,
@@ -664,10 +727,11 @@ mod tests {
 
     #[test]
     fn agent_input_accumulates_in_history() {
-        let (_, session, _) = run_with_session("input1\ninput2\n");
-        // 両入力がセッション history に記録される
-        assert!(session.history.contains(&"input1".to_string()));
-        assert!(session.history.contains(&"input2".to_string()));
+        let (_, session, _) = run_with_session("input1\n");
+        assert_eq!(session.history.len(), 1);
+        assert_eq!(session.history[0], "input1");
+        assert_eq!(session.state, State::Completed);
+        assert!(session.current_plan.is_some());
     }
 
     #[test]
@@ -683,6 +747,25 @@ mod tests {
     fn agent_updates_session_context() {
         let (_, session, _) = run_with_session("some agent input\n");
         assert_eq!(session.context.history, vec!["some agent input"]);
+    }
+
+    #[test]
+    fn agent_output_accumulates_in_transcript() {
+        let (_, session, _) = run_with_session("some agent input\n");
+        assert!(session.transcript.len() >= 2);
+        assert!(session
+            .transcript
+            .iter()
+            .any(|line| line.contains("[planner:")));
+        assert!(session
+            .transcript
+            .iter()
+            .any(|line| line.contains("[test] planner-only mode")));
+        assert_eq!(session.state, State::Completed);
+        assert_eq!(
+            session.current_plan.as_ref().map(|plan| plan.status),
+            Some(PlanStatus::Completed)
+        );
     }
 
     #[test]
