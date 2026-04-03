@@ -1,0 +1,15 @@
+[package]
+name = "viewer_gui"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "dbm_viewer"
+path = "src/main.rs"
+
+[dependencies]
+design_cli = { workspace = true }
+viewer_core = { workspace = true }
+clap = { version = "4", features = ["derive"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
