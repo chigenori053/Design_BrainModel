@@ -27,7 +27,8 @@ impl Task {
 /// CLIを状態機械として扱う。Phase2以降でPlannerとExecutorに接続される。
 ///
 /// # 拡張ポイント
-/// - `history` : 全入力の履歴（Phase1でCommand履歴フィルタリングに使用）
+/// - `history` : ユーザー入力の履歴（Phase1でCommand履歴フィルタリングに使用）
+/// - `transcript` : REPL が出力した応答ログ
 /// - `tasks`   : タスクリスト（Phase4で本格実装）
 #[derive(Clone, Debug, Default)]
 pub struct AgentSession {
@@ -39,8 +40,10 @@ pub struct AgentSession {
     pub mode: Mode,
     /// セッションコンテキスト（スロット・推論情報）
     pub context: Context,
-    /// 入力履歴（Agent/Command 問わず全入力を記録）
+    /// 入力履歴（user input only）
     pub history: Vec<String>,
+    /// 出力履歴（agent/system output）
+    pub transcript: Vec<String>,
     /// タスクリスト（Phase4で使用）
     pub tasks: Vec<Task>,
 }
@@ -53,6 +56,11 @@ impl AgentSession {
     /// 入力を履歴に記録する
     pub fn record(&mut self, input: &str) {
         self.history.push(input.to_string());
+    }
+
+    /// 出力を transcript に記録する
+    pub fn record_output(&mut self, output: impl Into<String>) {
+        self.transcript.push(output.into());
     }
 }
 

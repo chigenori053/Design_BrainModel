@@ -240,6 +240,7 @@ pub(super) fn execute_with_incident_recorder(
         output_meta: result.output_meta,
         stderr_meta: result.stderr_meta,
         sandbox_mode: Some(result.sandbox_mode),
+        telemetry: Some(result.telemetry),
         deterministic: true,
     })
 }

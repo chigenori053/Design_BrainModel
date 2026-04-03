@@ -36,7 +36,6 @@ fn run(args: &[&str]) -> (i32, String, String) {
     let exe = env!("CARGO_BIN_EXE_design_cli");
     let out = Command::new(exe)
         .env("DBM_VIEWER_SKIP_OPEN", "1")
-        .env("DBM_VIEWER_BIN", "/tmp/dbm_viewer")
         .args(args)
         .output()
         .expect("run design");
@@ -63,8 +62,8 @@ fn gui_render_3d_uses_native_launcher() {
     let (code, stdout, _) = run(&["structure", "view", dir.to_str().unwrap(), "--3d", "--json"]);
     assert_eq!(code, 0);
     assert!(stdout.contains("\"mode\": \"3d\""));
-    assert!(stdout.contains("dbm_viewer"));
-    assert!(stdout.contains("--mode 3d"));
+    assert!(stdout.contains("embedded://viewer_core"));
+    assert!(stdout.contains("mode=3d"));
 }
 
 #[test]

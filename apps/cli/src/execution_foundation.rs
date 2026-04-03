@@ -8,7 +8,7 @@ use crate::runner::{
     ExecutionConfig, OutputMode, SandboxPolicy, TimeoutConfig, create_sandbox, fixed_env,
     resolve_command, run as run_command,
 };
-use crate::runner::{OutputMeta, SandboxMode};
+use crate::runner::{OutputMeta, SandboxMode, Telemetry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
 pub enum ProjectType {
@@ -108,6 +108,7 @@ pub struct ExecReport {
     pub output_meta: OutputMeta,
     pub stderr_meta: OutputMeta,
     pub sandbox_mode: Option<SandboxMode>,
+    pub telemetry: Option<Telemetry>,
     pub deterministic: bool,
 }
 
@@ -153,6 +154,7 @@ impl ExecutionFoundation {
                     original_size: 0,
                 },
                 sandbox_mode: None,
+                telemetry: None,
                 deterministic: true,
             });
         }
@@ -254,6 +256,7 @@ fn execute_command(
         output_meta: result.output_meta,
         stderr_meta: result.stderr_meta,
         sandbox_mode: Some(result.sandbox_mode),
+        telemetry: Some(result.telemetry),
         deterministic: true,
     })
 }

@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
 
 jobs:
-  nightly:
-    name: Nightly CI
+  design_cli_nightly:
+    name: DBM Nightly Gate
     runs-on: ubuntu-latest
 
     steps:
@@ -17,8 +17,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: release suite
-        run: bash scripts/run_ci_test_suite.sh all --release
+      - name: design_cli nightly gate
+        run: bash scripts/run_dbm_test_suite.sh nightly
 
       - name: experimental tests
         run: bash scripts/run_ci_test_suite.sh experiments

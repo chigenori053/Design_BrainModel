@@ -4,6 +4,7 @@ pub mod design;
 pub mod exec;
 pub mod generate;
 pub mod memory;
+pub mod path_resolver;
 pub mod refactor;
 pub mod rules;
 pub mod system;

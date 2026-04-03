@@ -1,5 +1,7 @@
 #[path = "integration/command_flow.rs"]
 mod command_flow;
+#[path = "integration/coding_apply_path_resolution.rs"]
+mod coding_apply_path_resolution;
 #[path = "integration/gui_viewer.rs"]
 mod gui_viewer;
 #[path = "integration/nl_autonomous_loop.rs"]

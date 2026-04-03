@@ -120,8 +120,8 @@ jobs:
       - name: hypervolume monotonicity
         run: cargo test -p agent_core --test engine pareto --locked -- --test-threads=1
 
-  tier3_integration:
-    name: Tier3 Integration
+  design_cli_pr_gate:
+    name: DBM PR Gate
     needs: [tier2_math]
     runs-on: ubuntu-latest
 
@@ -132,12 +132,12 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
 
-      - name: integration suite
-        run: bash scripts/run_ci_test_suite.sh integration
+      - name: design_cli pr gate
+        run: bash scripts/run_dbm_test_suite.sh pr
 
   tier4_stress:
     name: Tier4 Stress Scaling
-    needs: [tier3_integration]
+    needs: [design_cli_pr_gate]
     runs-on: ubuntu-latest
 
     steps:

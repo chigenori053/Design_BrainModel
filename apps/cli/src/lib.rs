@@ -27,6 +27,7 @@ pub mod router;
 pub mod runner;
 pub mod service;
 pub mod session;
+pub mod source_index;
 pub mod state;
 pub mod test_support;
 pub mod tui;

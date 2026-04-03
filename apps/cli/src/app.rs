@@ -20,16 +20,22 @@ use serde::Serialize;
 use serde_json::json;
 
 use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
-use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::coding::{
-    CodingOptions, execute_code_change_set, generate_code_change_set, load_patches_from_json,
+    CodingOptions, execute_code_change_set, generate_code_change_set_with_target,
+    load_patches_from_json,
 };
+use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
 use crate::r#loop::run_loop;
+use crate::refactor::{
+    RefactorApplyReport, RefactorPreviewReport, RefactorRuntimeOptions, preview_report,
+    resolve_target,
+};
 use crate::renderer::{
     render_analysis_report_markdown, render_autonomous_execute_report, render_coding_report,
-    render_design_report, render_exec_report, render_refactor_report, render_result,
-    render_rules_report, render_run_report, render_validation_report,
+    render_design_report, render_exec_report, render_refactor_apply_report,
+    render_refactor_preview_report, render_result, render_rules_report, render_run_report,
+    render_validation_report,
 };
 use crate::repl::run_repl;
 use crate::runner::{
@@ -38,10 +44,15 @@ use crate::runner::{
     resolve_command, run as run_command,
 };
 use crate::service::{
-    CodingReport, RefactorReport, RuleReport, RulesReport, RunReport, RunSandbox, RunTelemetry,
+    CodingReport, RuleReport, RulesReport, RunReport, RunSandbox, RunTelemetry,
     ValidatedRuleReport, analysis_to_system_input, analyze_path, build_design_report,
-    build_refactoring_report, build_validation_report, design_graph_from_analysis,
-    enrich_analysis_report, path_contains_parent_component,
+    build_validation_report, design_graph_from_analysis, enrich_analysis_report,
+    path_contains_parent_component,
+};
+use crate::viewer::{
+    StructureViewReport, ViewMode, attach_session, dispatch_gui_action, edit_session,
+    export_structure_view, export_structure_view_from_plan, gui_action_path, launch_native_viewer,
+    redo_session, structure_ir_path, undo_session,
 };
 
 #[derive(Parser, Debug)]
@@ -58,7 +69,7 @@ enum Commands {
     Refactoring(RefactoringArgs),
     Design(PathArgs),
     Validate(PathArgs),
-    Refactor(PathArgs),
+    Refactor(RefactorArgs),
     Coding(CodingArgs),
     Diff(CodingArgs),
     Check(CodingArgs),
@@ -68,8 +79,9 @@ enum Commands {
     Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
-    /// Launch the interactive TUI viewer for a saved UI payload JSON.
+    /// Launch the interactive TUI for a saved UI payload JSON.
     Tui(TuiArgs),
+    Structure(StructureArgs),
     Rules(RulesArgs),
     /// Memory management commands.
     Memory(MemoryArgs),
@@ -149,7 +161,7 @@ pub struct GenerateArgs {
     pub framework: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
-    /// Export UI payload JSON to this path and open the TUI viewer.
+    /// Export UI payload JSON to this path and open the TUI.
     #[arg(long)]
     pub tui: Option<PathBuf>,
     /// Save a structured operational log (JSON) to this path.
@@ -190,6 +202,12 @@ pub struct PathArgs {
 #[derive(clap::Args, Debug, Clone)]
 pub struct RefactoringArgs {
     pub path: PathBuf,
+    #[arg(long)]
+    pub target: Option<String>,
+    #[arg(long)]
+    pub node: Option<String>,
+    #[arg(long)]
+    pub file: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     pub dry_run: bool,
     #[arg(long, default_value_t = false)]
@@ -207,10 +225,25 @@ pub struct RefactoringArgs {
 }
 
 #[derive(clap::Args, Debug, Clone)]
+pub struct RefactorArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub target: Option<String>,
+    #[arg(long)]
+    pub node: Option<String>,
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
 pub struct CodingArgs {
     pub path: Option<PathBuf>,
     #[arg(long)]
     pub input: Option<PathBuf>,
+    #[arg(long)]
+    pub target: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     pub apply: bool,
     #[arg(long, default_value_t = false)]
@@ -294,6 +327,67 @@ pub struct TuiArgs {
     pub file: Option<PathBuf>,
 }
 
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureArgs {
+    #[command(subcommand)]
+    pub command: StructureCommands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum StructureCommands {
+    /// Export IR and launch the Native GUI Viewer.
+    View(StructureViewArgs),
+    /// Attach or resume a GUI Viewer edit session.
+    Edit(StructureEditArgs),
+    Session(StructureSessionArgs),
+    /// Dispatch a GUI action event into the CLI runtime.
+    Dispatch(StructureDispatchArgs),
+    Undo(PathArgs),
+    Redo(PathArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureViewArgs {
+    pub path: PathBuf,
+    #[arg(long = "2d", default_value_t = false)]
+    pub two_d: bool,
+    #[arg(long = "3d", default_value_t = false)]
+    pub three_d: bool,
+    #[arg(long)]
+    pub target: Option<String>,
+    #[arg(long)]
+    pub node: Option<String>,
+    #[arg(long)]
+    pub file: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureDispatchArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub event: Option<PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureEditArgs {
+    pub path: PathBuf,
+    #[arg(long = "3d", default_value_t = false)]
+    pub three_d: bool,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureSessionArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
 #[derive(Debug, Serialize)]
 pub struct GenerateReport {
     pub mode: &'static str,
@@ -349,6 +443,7 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
         Some(Commands::Tui(args)) => execute_tui(args),
+        Some(Commands::Structure(args)) => execute_structure(args),
         Some(Commands::Rules(args)) => execute_rules(args),
         Some(Commands::Memory(args)) => execute_memory(args),
         None => {
@@ -562,40 +657,218 @@ fn execute_validate(args: PathArgs) -> Result<(), String> {
     render_validation_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
-fn execute_refactor(args: PathArgs) -> Result<(), String> {
+fn execute_refactor(args: RefactorArgs) -> Result<(), String> {
     let analysis = analyze_path(&args.path)?;
-    let design_graph = design_graph_from_analysis(&analysis);
-    let structural = structural_analysis(&design_graph);
-    let report = RefactorReport {
-        root: analysis.root,
-        plan: structural.refactor_plan,
-        patches: structural.code_patches,
-        simulation: structural.simulation,
+    let target = resolve_target(
+        &analysis,
+        args.target.as_deref(),
+        args.node.as_deref(),
+        args.file.as_deref(),
+    );
+    let report: RefactorPreviewReport = preview_report(&args.path, Some(target))?;
+    if report_json(args.json, &report)? {
+        return Ok(());
+    }
+    render_refactor_preview_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+}
+
+fn execute_refactoring(args: RefactoringArgs) -> Result<(), String> {
+    let analysis = analyze_path(&args.path)?;
+    let target = resolve_target(
+        &analysis,
+        args.target.as_deref(),
+        args.node.as_deref(),
+        args.file.as_deref(),
+    );
+    let preview = preview_report(&args.path, Some(target))?;
+    let report: RefactorApplyReport = if args.dry_run {
+        RefactorApplyReport {
+            root: preview.root.clone(),
+            plan: preview.plan.clone(),
+            preview: preview.preview.clone(),
+            validation: preview.validation.clone(),
+            apply: crate::refactor::ApplyResult {
+                applied: false,
+                build_ok: false,
+                rolled_back: false,
+                changed_files: Vec::new(),
+                commit_id: None,
+            },
+        }
+    } else {
+        crate::refactor::build_apply_report(
+            &preview.plan,
+            &RefactorRuntimeOptions {
+                auto_commit: args.auto_commit,
+                no_build: args.no_build,
+                backup: args.backup,
+                format: args.format,
+            },
+        )?
     };
     if report_json(args.json, &report)? {
         return Ok(());
     }
-    render_refactor_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+    render_refactor_apply_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
 }
 
-fn execute_refactoring(args: RefactoringArgs) -> Result<(), String> {
-    let report = build_refactoring_report(
-        &args.path,
-        args.dry_run,
-        &CodingOptions {
-            apply: !args.dry_run,
-            check: true,
-            no_build: args.no_build,
-            backup: args.backup,
-            format: args.format,
-            safe_mode: args.safe,
-            auto_commit: args.auto_commit,
-        },
-    )?;
+fn execute_structure(args: StructureArgs) -> Result<(), String> {
+    match args.command {
+        StructureCommands::View(args) => execute_structure_view(args),
+        StructureCommands::Edit(args) => execute_structure_edit(args),
+        StructureCommands::Session(args) => execute_structure_session(args),
+        StructureCommands::Dispatch(args) => execute_structure_dispatch(args),
+        StructureCommands::Undo(args) => execute_structure_undo(args),
+        StructureCommands::Redo(args) => execute_structure_redo(args),
+    }
+}
+
+fn execute_structure_view(args: StructureViewArgs) -> Result<(), String> {
+    let mode = if args.three_d {
+        ViewMode::ThreeD
+    } else {
+        let _ = args.two_d;
+        ViewMode::TwoD
+    };
+    let ir = if args.target.is_some() || args.node.is_some() || args.file.is_some() {
+        let analysis = analyze_path(&args.path)?;
+        let target = resolve_target(
+            &analysis,
+            args.target.as_deref(),
+            args.node.as_deref(),
+            args.file.as_deref(),
+        );
+        let preview = preview_report(&args.path, Some(target))?;
+        export_structure_view_from_plan(&args.path, &preview.plan)?
+    } else {
+        export_structure_view(&args.path)?
+    };
+    let ir_path = structure_ir_path(&args.path);
+    let launch = launch_native_viewer(mode, &args.path, &ir_path)?;
+    let report = StructureViewReport {
+        root: args.path.display().to_string(),
+        mode,
+        ir_path: ir_path.display().to_string(),
+        launch_url: launch.url,
+        launched: launch.launched,
+        viewer_loop: launch.telemetry,
+        ir,
+    };
     if report_json(args.json, &report)? {
         return Ok(());
     }
-    render_coding_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+    writeln!(io::stdout().lock(), "GUI Viewer").map_err(|err| err.to_string())?;
+    writeln!(io::stdout().lock(), "Root: {}", report.root).map_err(|err| err.to_string())?;
+    writeln!(io::stdout().lock(), "Mode: {:?}", report.mode).map_err(|err| err.to_string())?;
+    writeln!(io::stdout().lock(), "IR: {}", report.ir_path).map_err(|err| err.to_string())?;
+    writeln!(
+        io::stdout().lock(),
+        "GUI Viewer: {}",
+        if report.launched {
+            "launched"
+        } else {
+            "not launched"
+        }
+    )
+    .map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn execute_structure_dispatch(args: StructureDispatchArgs) -> Result<(), String> {
+    let event_path = args.event.unwrap_or_else(|| gui_action_path(&args.path));
+    let raw = fs::read_to_string(&event_path)
+        .map_err(|err| format!("failed to read {}: {err}", event_path.display()))?;
+    let event =
+        serde_json::from_str(&raw).map_err(|err| format!("invalid GUI event JSON: {err}"))?;
+    let (command, ir) = dispatch_gui_action(&args.path, event)?;
+    let report = serde_json::json!({
+        "root": args.path.display().to_string(),
+        "event_path": event_path.display().to_string(),
+        "command": command,
+        "viewer_loop": crate::viewer::ViewerLoopTelemetry::default(),
+        "ir": ir,
+    });
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_edit(args: StructureEditArgs) -> Result<(), String> {
+    let mode = if args.three_d {
+        ViewMode::ThreeD
+    } else {
+        ViewMode::TwoD
+    };
+    let report = edit_session(&args.path, mode)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_session(args: StructureSessionArgs) -> Result<(), String> {
+    let session = attach_session(&args.path)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&session).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_undo(args: PathArgs) -> Result<(), String> {
+    let report = undo_session(&args.path)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_redo(args: PathArgs) -> Result<(), String> {
+    let report = redo_session(&args.path)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -638,7 +911,7 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
         let structural = structural_analysis(&design_graph);
         (path, structural.code_patches)
     };
-    let changes = generate_code_change_set(&root, &patches)?;
+    let changes = generate_code_change_set_with_target(&root, &patches, args.target.as_deref())?;
     let execution = execute_code_change_set(
         &root,
         &changes,
@@ -1004,6 +1277,7 @@ fn to_run_report(
             stdout_size: result.telemetry.stdout_size,
             stderr_size: result.telemetry.stderr_size,
             memory_usage_kb: result.telemetry.memory_usage_kb,
+            cpu_release: result.telemetry.cpu_release,
         },
         sandbox: RunSandbox {
             max_execution_time_ms: timeout.timeout_ms,

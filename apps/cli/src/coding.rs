@@ -8,6 +8,8 @@ use integration_layer::{CodePatch, PatchOperation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::source_index::ModuleSourceIndex;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeType {
     CreateFile,
@@ -188,9 +190,19 @@ pub fn generate_code_change_set(
     root: &Path,
     patches: &[CodePatch],
 ) -> Result<CodeChangeSet, String> {
+    generate_code_change_set_with_target(root, patches, None)
+}
+
+pub fn generate_code_change_set_with_target(
+    root: &Path,
+    patches: &[CodePatch],
+    target_override: Option<&Path>,
+) -> Result<CodeChangeSet, String> {
     let mut drafts = BTreeMap::<String, FileDraft>::new();
+    let source_index = ModuleSourceIndex::build(root).unwrap_or_default();
+    let target_override = resolve_target_override(root, target_override)?;
     for edit in patches_to_edits(patches) {
-        apply_edit(root, &mut drafts, edit)?;
+        apply_edit(root, &mut drafts, edit, &source_index, target_override.as_deref())?;
     }
 
     let mut changes = drafts
@@ -586,33 +598,50 @@ fn apply_edit(
     root: &Path,
     drafts: &mut BTreeMap<String, FileDraft>,
     edit: Edit,
+    source_index: &ModuleSourceIndex,
+    target_override: Option<&Path>,
 ) -> Result<(), String> {
     match edit {
-        Edit::CreateInterface { name, .. } => {
-            let file_name = format!("src/{}.rs", snake_case(&name));
-            let draft = load_or_create_draft(root, drafts, &file_name, true)?;
+        Edit::CreateInterface { name, between } => {
+            let file_path =
+                source_index.generated_path(root, &between.0, &format!("{}.rs", snake_case(&name)));
+            let file_key = normalize_relative(root, &root.join(&file_path))?;
+            let draft = load_or_create_draft(root, drafts, &file_key, true)?;
             draft.content = format!(
                 "pub trait {} {{\n    // TODO: define required methods\n}}\n",
                 name
             );
         }
         Edit::ReplaceDependency { from, to, via } => {
-            let path = resolve_module_file(root, &from);
-            let file_key = normalize_relative(root, &path)?;
+            let file_key = if let Some(path) = target_override {
+                normalize_relative(root, path)?
+            } else {
+                let path = source_index
+                    .resolve(&from)?
+                    .ok_or_else(|| format!("unable to resolve source path for module {from}"))?;
+                path.display().to_string()
+            };
             let draft = load_or_create_draft(root, drafts, &file_key, false)?;
             draft.content = update_dependency_content(&draft.content, &to, via.as_deref());
         }
-        Edit::SplitModule { targets, .. } => {
+        Edit::SplitModule { module, targets } => {
             for target in targets {
-                let file_name = format!("src/{}.rs", snake_case(&target));
-                let draft = load_or_create_draft(root, drafts, &file_name, true)?;
+                let file_path = source_index.generated_path(
+                    root,
+                    &module,
+                    &format!("{}.rs", snake_case(&target)),
+                );
+                let file_key = normalize_relative(root, &root.join(&file_path))?;
+                let draft = load_or_create_draft(root, drafts, &file_key, true)?;
                 draft.content =
                     format!("pub struct {} {{\n    // TODO\n}}\n", pascal_case(&target));
             }
         }
-        Edit::ExtractComponent { name, .. } => {
-            let file_name = format!("src/{}.rs", snake_case(&name));
-            let draft = load_or_create_draft(root, drafts, &file_name, true)?;
+        Edit::ExtractComponent { from, name } => {
+            let file_path =
+                source_index.generated_path(root, &from, &format!("{}.rs", snake_case(&name)));
+            let file_key = normalize_relative(root, &root.join(&file_path))?;
+            let draft = load_or_create_draft(root, drafts, &file_key, true)?;
             draft.content = format!("pub struct {} {{\n    // TODO\n}}\n", pascal_case(&name));
         }
     }
@@ -964,16 +993,19 @@ fn restore_workspace(backups: Vec<BackupEntry>) -> Result<(), String> {
     Ok(())
 }
 
-fn resolve_module_file(root: &Path, module: &str) -> PathBuf {
-    let direct = root.join("src").join(format!("{module}.rs"));
-    if direct.exists() {
-        return direct;
+fn resolve_target_override(root: &Path, target_override: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let Some(path) = target_override else {
+        return Ok(None);
+    };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    if !absolute.exists() {
+        return Err(format!("target file does not exist: {}", absolute.display()));
     }
-    let nested = root.join("src").join(module).join("mod.rs");
-    if nested.exists() {
-        return nested;
-    }
-    direct
+    Ok(Some(absolute))
 }
 
 fn update_dependency_content(content: &str, target: &str, via: Option<&str>) -> String {
@@ -1048,6 +1080,7 @@ mod tests {
         CodePatch, MetricsDelta, PatchOperation, PhaseType, PlanSummary, RefactorPhase,
         RefactorPlan, RefactorPlanAction,
     };
+    use std::path::Path;
 
     fn temp_dir(name: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -1148,6 +1181,66 @@ mod tests {
                 .replacement
                 .contains("use crate::renderer_world_interface;")
         );
+    }
+
+    #[test]
+    fn target_override_is_used_for_replace_dependency() {
+        let root = temp_dir("target_override");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("create cli src");
+        fs::write(
+            root.join("apps/cli/src/app.rs"),
+            "use crate::world;\nfn app() {}\n",
+        )
+        .expect("write app");
+        let patches = vec![CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::MoveDependency {
+                from: "missing_module".to_string(),
+                to: "world".to_string(),
+                via: Some("app_world_interface".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: "missing_module".to_string(),
+                to: "world".to_string(),
+                via: Some("app_world_interface".to_string()),
+            }],
+            description: "move".to_string(),
+        }];
+
+        let change_set = generate_code_change_set_with_target(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/app.rs")),
+        )
+        .expect("change set");
+        assert_eq!(change_set.changes[0].file_path, "apps/cli/src/app.rs");
+    }
+
+    #[test]
+    fn invalid_target_override_fails_before_apply() {
+        let root = temp_dir("invalid_target_override");
+        let patches = vec![CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::MoveDependency {
+                from: "renderer".to_string(),
+                to: "world".to_string(),
+                via: Some("renderer_world_interface".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: "renderer".to_string(),
+                to: "world".to_string(),
+                via: Some("renderer_world_interface".to_string()),
+            }],
+            description: "move".to_string(),
+        }];
+
+        let error = generate_code_change_set_with_target(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/missing.rs")),
+        )
+        .expect_err("missing target should fail");
+        assert!(error.contains("target file does not exist"));
     }
 
     #[test]

@@ -82,8 +82,10 @@ members = [
     "crates/tensor_ir",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
+    "crates/viewer_core",
     "apps/cli",
     "apps/gui",
+    "apps/viewer_gui",
     "apps/desktop",
     "apps/server",
     "apps/lsp",
@@ -155,6 +157,7 @@ unified_design_ir = { path = "crates/unified_design_ir" }
 design_reasoning = { path = "crates/design_reasoning" }
 reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }
+viewer_core = { path = "crates/viewer_core" }
 design_cli = { path = "apps/cli" }
 world_model_core = { path = "crates/core/world_model_core" }
 design_domain = { path = "crates/domain/design_domain" }

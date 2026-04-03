@@ -20,6 +20,7 @@ use crate::autonomous_execute::AutonomousExecuteReport;
 use crate::commands::analyze::project::UnifiedAnalyzeResult;
 use crate::commands::design::analyze::AnalysisResult as DbmAnalysisResult;
 use crate::execution_foundation::ExecReport;
+use crate::refactor::{RefactorApplyReport, RefactorPreviewReport};
 use crate::service::dto::{
     AnalysisReport, CodeIssue, CodingReport, DesignReport, RefactorReport, RulesReport, RunReport,
     ValidationReport,
@@ -957,6 +958,15 @@ pub fn render_run_report<W: Write>(writer: &mut W, report: &RunReport) -> io::Re
         " - stdout_size={} stderr_size={} timed_out={}",
         report.telemetry.stdout_size, report.telemetry.stderr_size, report.sandbox.timed_out
     )?;
+    writeln!(
+        writer,
+        " - cpu_idle_recovery={}ms threads={}->{} children_after={} zombie_detected={}",
+        report.telemetry.cpu_release.cpu_idle_recovery_ms,
+        report.telemetry.cpu_release.baseline_threads,
+        report.telemetry.cpu_release.final_threads,
+        report.telemetry.cpu_release.child_processes_after,
+        report.telemetry.cpu_release.zombie_detected
+    )?;
     if !report.stdout.is_empty() {
         writeln!(writer, "Stdout:")?;
         writeln!(writer, "{}", report.stdout)?;
@@ -976,6 +986,17 @@ pub fn render_exec_report<W: Write>(writer: &mut W, report: &ExecReport) -> io::
     writeln!(writer, "Status: {}", report.status)?;
     writeln!(writer, "Exit code: {}", report.exit_code)?;
     writeln!(writer, "Duration: {} ms", report.duration_ms)?;
+    if let Some(telemetry) = &report.telemetry {
+        writeln!(
+            writer,
+            "CPU Release: idle={}ms threads={}->{} children_after={} zombie_detected={}",
+            telemetry.cpu_release.cpu_idle_recovery_ms,
+            telemetry.cpu_release.baseline_threads,
+            telemetry.cpu_release.final_threads,
+            telemetry.cpu_release.child_processes_after,
+            telemetry.cpu_release.zombie_detected
+        )?;
+    }
     if let Some(command) = &report.command {
         writeln!(writer, "Command: {} {}", command, report.args.join(" "))?;
     }
@@ -1152,6 +1173,64 @@ pub fn render_refactor_report<W: Write>(writer: &mut W, report: &RefactorReport)
         f32::from(report.simulation.before.coupling_score_milli) / 1000.0,
         f32::from(report.simulation.after.coupling_score_milli) / 1000.0
     )?;
+    writer.flush()
+}
+
+pub fn render_refactor_preview_report<W: Write>(
+    writer: &mut W,
+    report: &RefactorPreviewReport,
+) -> io::Result<()> {
+    writeln!(writer, "Refactor Preview")?;
+    writeln!(writer, "Root: {}", report.root)?;
+    writeln!(writer, "Confidence: {:.2}", report.plan.confidence)?;
+    writeln!(writer, "Validation: {}", report.validation.valid)?;
+    for issue in &report.validation.issues {
+        writeln!(writer, "- validation issue: {issue}")?;
+    }
+    writeln!(writer)?;
+    writeln!(writer, "Preview:")?;
+    writeln!(writer, "{}", report.preview.cli_text_preview)?;
+    if let Some(edge) = &report.preview.removed_cycle_edge {
+        writeln!(writer)?;
+        writeln!(writer, "Removed edge: {} -> {}", edge.from, edge.to)?;
+    }
+    if !report.preview.moved_files.is_empty() {
+        writeln!(writer)?;
+        writeln!(writer, "Moved files:")?;
+        for moved in &report.preview.moved_files {
+            writeln!(writer, "- {moved}")?;
+        }
+    }
+    writer.flush()
+}
+
+pub fn render_refactor_apply_report<W: Write>(
+    writer: &mut W,
+    report: &RefactorApplyReport,
+) -> io::Result<()> {
+    render_refactor_preview_report(
+        writer,
+        &RefactorPreviewReport {
+            root: report.root.clone(),
+            plan: report.plan.clone(),
+            preview: report.preview.clone(),
+            validation: report.validation.clone(),
+        },
+    )?;
+    writeln!(writer)?;
+    writeln!(writer, "Apply:")?;
+    writeln!(writer, "  applied: {}", report.apply.applied)?;
+    writeln!(writer, "  build_ok: {}", report.apply.build_ok)?;
+    writeln!(writer, "  rolled_back: {}", report.apply.rolled_back)?;
+    if !report.apply.changed_files.is_empty() {
+        writeln!(writer, "  changed_files:")?;
+        for path in &report.apply.changed_files {
+            writeln!(writer, "  - {}", path.display())?;
+        }
+    }
+    if let Some(commit_id) = &report.apply.commit_id {
+        writeln!(writer, "  commit: {commit_id}")?;
+    }
     writer.flush()
 }
 
@@ -1361,6 +1440,7 @@ mod tests {
             top_level_entries: vec![],
             architecture_hints: vec![],
             modules: vec![],
+            graph_nodes: vec![],
             dependencies: vec![],
             todo_files: 0,
             cycles: CycleReport {

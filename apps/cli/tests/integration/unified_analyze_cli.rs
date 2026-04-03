@@ -14,7 +14,14 @@ fn run_raw(args: &[&str]) -> (i32, String, String) {
 fn analyze_help_exposes_unified_flags_and_hides_legacy_flags() {
     let (code, stdout, _) = run_raw(&["analyze", "--help"]);
     assert_eq!(code, 0, "stdout: {stdout}");
-    for flag in ["--detailed", "--report", "--design", "--lang", "--intent", "--json"] {
+    for flag in [
+        "--detailed",
+        "--report",
+        "--design",
+        "--lang",
+        "--intent",
+        "--json",
+    ] {
         assert!(stdout.contains(flag), "missing {flag} in {stdout}");
     }
     for legacy in ["--target", "--seed", "--beam-width"] {

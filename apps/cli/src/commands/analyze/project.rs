@@ -430,7 +430,11 @@ mod tests {
         let h = handler();
         let mut session = AgentSession::new();
         let out = (h.execute)(&[".".to_string()], &mut session).unwrap();
-        assert!(out.message.contains("DBM Analyze Report"), "got: {}", out.message);
+        assert!(
+            out.message.contains("DBM Analyze Report"),
+            "got: {}",
+            out.message
+        );
         assert!(out.message.contains("Target: ."), "got: {}", out.message);
         assert!(out.message.contains("Top Issue:"), "got: {}", out.message);
     }

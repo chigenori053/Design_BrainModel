@@ -176,6 +176,20 @@ Ready-to-use requirement files for `arch_gen /generate @<file>`:
 
 ---
 
+## Native GUI Viewer
+
+Phase C uses the Native GUI Viewer as the canonical visualization plane.
+
+```bash
+cargo build -p viewer_gui --bin dbm_viewer
+cargo run -p design_cli -- structure view . --2d
+cargo run -p design_cli -- structure view . --3d
+```
+
+The shared IR path remains `.dbm/structure_view.json`, and GUI actions round-trip through `.dbm/gui_action.json`.
+
+---
+
 ## License / ライセンス
 
 See the LICENSE file for details.

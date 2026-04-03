@@ -3,10 +3,11 @@ use std::collections::BTreeMap;
 use integration_layer::{
     CycleReport, Issue, LayerModel, LayerViolation, Pattern, RoleAssignment, SemanticLayer,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::coding::{CodeChangeSet, CodingExecutionResult};
-use crate::runner::{MemoryUsage, OutputMeta, SandboxMode};
+use crate::runner::{CpuReleaseTelemetry, MemoryUsage, OutputMeta, SandboxMode};
+use crate::source_index::QualifiedModuleId;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AnalyzeResultDTO {
@@ -44,6 +45,7 @@ pub struct AnalysisReport {
     pub top_level_entries: Vec<String>,
     pub architecture_hints: Vec<String>,
     pub modules: Vec<AnalysisModule>,
+    pub graph_nodes: Vec<ModuleNode>,
     pub dependencies: Vec<AnalysisDependency>,
     pub todo_files: usize,
     pub cycles: CycleReport,
@@ -71,6 +73,14 @@ pub struct AnalysisSummary {
 pub struct AnalysisModule {
     pub name: String,
     pub file_count: usize,
+    pub source_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ModuleNode {
+    pub qualified_id: QualifiedModuleId,
+    pub logical_name: String,
+    pub source_path: Option<std::path::PathBuf>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -167,6 +177,7 @@ pub struct RunTelemetry {
     pub stdout_size: usize,
     pub stderr_size: usize,
     pub memory_usage_kb: MemoryUsage,
+    pub cpu_release: CpuReleaseTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize)]

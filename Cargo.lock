@@ -1258,6 +1258,17 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f27ae1dd37df86211c42e150270f82743308803d90a6f6e6651cd730d5e1732f"
 
 [[package]]
+name = "d3d12"
+version = "22.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bdbd1f579714e3c809ebd822c81ef148b1ceaeb3d535352afc73fd0c4c6a0017"
+dependencies = [
+ "bitflags 2.11.0",
+ "libloading",
+ "winapi",
+]
+
+[[package]]
 name = "darling"
 version = "0.23.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1328,6 +1339,7 @@ dependencies = [
  "fs_extra",
  "hybrid_vm",
  "integration_layer",
+ "language_core",
  "memory_persistence",
  "memory_space_phase14",
  "ratatui",
@@ -1340,6 +1352,7 @@ dependencies = [
  "sha2",
  "unified_design_ir",
  "uuid",
+ "viewer_core",
  "wait-timeout",
  "world_model_core",
 ]
@@ -4064,6 +4077,12 @@ dependencies = [
 ]
 
 [[package]]
+name = "range-alloc"
+version = "0.1.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ca45419789ae5a7899559e9512e58ca889e41f04f1f2445e9f4b290ceccd1d08"
+
+[[package]]
 name = "ratatui"
 version = "0.29.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5357,6 +5376,28 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
+name = "viewer_core"
+version = "0.1.0"
+dependencies = [
+ "eframe",
+ "egui",
+ "serde",
+ "serde_json",
+ "wgpu",
+]
+
+[[package]]
+name = "viewer_gui"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "design_cli",
+ "serde",
+ "serde_json",
+ "viewer_core",
+]
+
+[[package]]
 name = "wait-timeout"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5704,6 +5745,7 @@ dependencies = [
  "document-features",
  "js-sys",
  "log",
+ "naga",
  "parking_lot",
  "profiling",
  "raw-window-handle",
@@ -5751,9 +5793,12 @@ dependencies = [
  "android_system_properties",
  "arrayvec",
  "ash",
+ "bit-set 0.6.0",
  "bitflags 2.11.0",
+ "block",
  "cfg_aliases 0.1.1",
  "core-graphics-types",
+ "d3d12",
  "glow 0.13.1",
  "glutin_wgl_sys",
  "gpu-alloc",
@@ -5772,6 +5817,7 @@ dependencies = [
  "once_cell",
  "parking_lot",
  "profiling",
+ "range-alloc",
  "raw-window-handle",
  "renderdoc-sys",
  "rustc-hash 1.1.0",

@@ -221,17 +221,31 @@ impl PushController {
                 ));
             }
         }
-        let output = git_command()
-            .args(&args)
-            .current_dir(root)
-            .output()
-            .map_err(|err| format!("failed to run git {}: {err}", args.join(" ")))?;
-        if output.status.success() {
-            Ok(())
-        } else {
-            Err(String::from_utf8_lossy(&output.stderr).trim().to_string())
+        for attempt in 0..5 {
+            let output = git_command()
+                .args(&args)
+                .current_dir(root)
+                .output()
+                .map_err(|err| format!("failed to run git {}: {err}", args.join(" ")))?;
+            if output.status.success() {
+                return Ok(());
+            }
+
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            if is_transient_git_resource_failure(&stderr) && attempt < 4 {
+                std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1) as u64));
+                continue;
+            }
+            return Err(stderr);
         }
+        Err("git push exhausted retries".to_string())
     }
+}
+
+fn is_transient_git_resource_failure(stderr: &str) -> bool {
+    stderr.contains("Resource temporarily unavailable")
+        || stderr.contains("cannot fork")
+        || stderr.contains("pack-objects failed")
 }
 
 struct PRManager;

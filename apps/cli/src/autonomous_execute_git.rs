@@ -442,10 +442,7 @@ impl GitExecutor {
     }
 
     pub(super) fn rollback_last_commit(root: &Path) -> Result<(), String> {
-        let output = git_command()
-            .args(["reset", "HEAD~1"])
-            .current_dir(root)
-            .output()
+        let output = git_output_with_retry(root, ["reset", "HEAD~1"])
             .map_err(|err| format!("failed to rollback last commit: {err}"))?;
         if output.status.success() {
             Ok(())
@@ -696,12 +693,47 @@ fn is_explicit_single_file(path: &str) -> bool {
 
 pub(super) fn git_command() -> Command {
     let mut command = Command::new("git");
-    command.args(["-c", "diff.external=", "-c", "core.pager=cat"]);
+    command.args([
+        "-c",
+        "diff.external=",
+        "-c",
+        "core.pager=cat",
+        "-c",
+        "gc.auto=0",
+        "-c",
+        "maintenance.auto=false",
+    ]);
     command.env_remove("GIT_EXTERNAL_DIFF");
     command.env_remove("GIT_DIFF_OPTS");
     command.env("GIT_PAGER", "cat");
     command.env("PAGER", "cat");
     command
+}
+
+fn git_output_with_retry<const N: usize>(
+    root: &Path,
+    args: [&str; N],
+) -> Result<std::process::Output, std::io::Error> {
+    let mut last_error = None;
+    for attempt in 0..5 {
+        let output = git_command().args(args).current_dir(root).output();
+        match output {
+            Ok(output) => return Ok(output),
+            Err(err)
+                if matches!(
+                    err.kind(),
+                    std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy
+                ) || err.raw_os_error() == Some(35) =>
+            {
+                last_error = Some(err);
+                std::thread::sleep(std::time::Duration::from_millis(
+                    50 * (attempt + 1) as u64,
+                ));
+            }
+            Err(err) => return Err(err),
+        }
+    }
+    Err(last_error.expect("git retry should capture an error"))
 }
 
 pub(super) fn is_protected_branch(branch: &str) -> bool {

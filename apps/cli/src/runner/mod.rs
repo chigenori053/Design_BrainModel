@@ -7,9 +7,9 @@ mod validation;
 pub use resolver::{CommandResolver, resolve_command, set_command_override};
 pub use sandbox::{build_command, create_sandbox, detect_target, fixed_env};
 pub use types::{
-    AllowedCommand, ExecutionConfig, ExecutionResult, ExecutionTarget, ExitStatus, MemoryUsage,
-    OutputMeta, OutputMode, RunnerError, RunnerResult, SandboxGuard, SandboxInstance, SandboxKey,
-    SandboxMode, SandboxPolicy, Telemetry, TimeoutConfig,
+    AllowedCommand, CpuReleaseTelemetry, ExecutionConfig, ExecutionResult, ExecutionTarget,
+    ExitStatus, MemoryUsage, OutputMeta, OutputMode, RunnerError, RunnerResult, SandboxGuard,
+    SandboxInstance, SandboxKey, SandboxMode, SandboxPolicy, Telemetry, TimeoutConfig,
 };
 
 use std::path::Path;

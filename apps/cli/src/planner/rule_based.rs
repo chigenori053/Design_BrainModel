@@ -110,11 +110,46 @@ impl RuleBasedPlanner {
             || lower.contains("改善")
             || lower.contains("整理")
             || lower.contains("restructure")
+            || lower.contains("循環")
+            || lower.contains("layer violation")
+            || lower.contains("層違反")
         {
             return vec![Step::new(
                 0,
                 format!("Refactor: {target}"),
-                Some(CommandInvocation::new("refactor", None, &[target.as_str()])),
+                Some(CommandInvocation::new(
+                    if lower.contains("切る")
+                        || lower.contains("直す")
+                        || lower.contains("apply")
+                        || lower.contains("適用")
+                    {
+                        "refactoring"
+                    } else {
+                        "refactor"
+                    },
+                    None,
+                    &[target.as_str()],
+                )),
+            )];
+        }
+
+        if lower.contains("structure")
+            || lower.contains("viewer")
+            || lower.contains("graph")
+            || lower.contains("見せて")
+            || lower.contains("構造")
+            || lower.contains("立体")
+        {
+            let args = vec![target.as_str()];
+            let subcommand = if lower.contains("立体") || lower.contains("3d") {
+                Some("3d")
+            } else {
+                Some("2d")
+            };
+            return vec![Step::new(
+                0,
+                format!("View structure: {target}"),
+                Some(CommandInvocation::new("structure", subcommand, &args)),
             )];
         }
 

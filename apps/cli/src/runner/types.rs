@@ -96,13 +96,23 @@ impl Serialize for MemoryUsage {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct CpuReleaseTelemetry {
+    pub baseline_threads: usize,
+    pub final_threads: usize,
+    pub child_processes_after: usize,
+    pub cpu_idle_recovery_ms: u64,
+    pub zombie_detected: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct Telemetry {
     pub duration_ms: u128,
     pub exit_code: i32,
     pub stdout_size: usize,
     pub stderr_size: usize,
     pub memory_usage_kb: MemoryUsage,
+    pub cpu_release: CpuReleaseTelemetry,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]

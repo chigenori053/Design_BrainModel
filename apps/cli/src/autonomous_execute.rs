@@ -811,41 +811,22 @@ mod tests {
         .expect("write cargo");
         fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("write source");
 
-        let init = git_command()
-            .args(["init"])
-            .current_dir(&root)
-            .output()
-            .expect("git init");
+        let init = git_output(["init"], Some(&root)).expect("git init");
         assert!(init.status.success(), "git init failed");
 
         for (key, value) in [("user.email", "dbm@example.com"), ("user.name", "DBM")] {
-            let config = git_command()
-                .args(["config", key, value])
-                .current_dir(&root)
-                .output()
-                .expect("git config");
+            let config = git_output(["config", key, value], Some(&root)).expect("git config");
             assert!(config.status.success(), "git config failed");
         }
 
-        let add = git_command()
-            .args(["add", "."])
-            .current_dir(&root)
-            .output()
-            .expect("git add");
+        let add = git_output(["add", "."], Some(&root)).expect("git add");
         assert!(add.status.success(), "git add failed");
 
-        let commit = git_command()
-            .args(["commit", "-m", "initial"])
-            .current_dir(&root)
-            .output()
-            .expect("git commit");
+        let commit = git_output(["commit", "-m", "initial"], Some(&root)).expect("git commit");
         assert!(commit.status.success(), "git commit failed");
 
-        let branch = git_command()
-            .args(["checkout", "-b", "feature/test"])
-            .current_dir(&root)
-            .output()
-            .expect("git checkout");
+        let branch =
+            git_output(["checkout", "-b", "feature/test"], Some(&root)).expect("git checkout");
         assert!(branch.status.success(), "git checkout failed");
         root
     }
@@ -882,24 +863,55 @@ mod tests {
             .expect("time")
             .as_nanos();
         let bare = std::env::temp_dir().join(format!("dbm_autonomous_remote_{name}_{unique}.git"));
-        let init = git_command()
-            .args(["init", "--bare", bare.to_str().expect("utf8 bare path")])
-            .output()
-            .expect("git init bare");
+        let init = git_output(
+            ["init", "--bare", bare.to_str().expect("utf8 bare path")],
+            None,
+        )
+        .expect("git init bare");
         assert!(init.status.success(), "git init bare failed");
 
-        let remote = git_command()
-            .args([
+        let remote = git_output(
+            [
                 "remote",
                 "add",
                 "origin",
                 bare.to_str().expect("utf8 bare path"),
-            ])
-            .current_dir(repo)
-            .output()
-            .expect("git remote add");
+            ],
+            Some(repo),
+        )
+        .expect("git remote add");
         assert!(remote.status.success(), "git remote add failed");
         bare
+    }
+
+    fn git_output<const N: usize>(
+        args: [&str; N],
+        current_dir: Option<&Path>,
+    ) -> Result<std::process::Output, std::io::Error> {
+        let mut last_error = None;
+        for attempt in 0..5 {
+            let mut command = git_command();
+            command.args(args);
+            if let Some(dir) = current_dir {
+                command.current_dir(dir);
+            }
+            match command.output() {
+                Ok(output) => return Ok(output),
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::ResourceBusy
+                    ) || err.raw_os_error() == Some(35) =>
+                {
+                    last_error = Some(err);
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        50 * (attempt + 1) as u64,
+                    ));
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(last_error.expect("git retry should capture an error"))
     }
 
     fn write_fake_gh(status_ok: bool) -> PathBuf {
@@ -992,6 +1004,7 @@ mod tests {
                 original_size: stderr.len(),
             },
             sandbox_mode: Some(SandboxMode::Reuse),
+            telemetry: None,
             deterministic: true,
         }
     }

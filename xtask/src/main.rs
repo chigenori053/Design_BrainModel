@@ -8,7 +8,7 @@ fn main() -> ExitCode {
         _ => {
             eprintln!("usage: cargo xtest <category>");
             eprintln!(
-                "categories: fast, architecture, invariants, engine, knowledge-engine, contract, determinism, integration, runtime-heavy, stress, experiments, all"
+                "categories: fast, architecture, invariants, engine, knowledge-engine, contract, determinism, integration, long-run, runtime-heavy, stress, experiments, all"
             );
             ExitCode::from(2)
         }
@@ -38,6 +38,7 @@ fn run_suite(args: Vec<String>) -> ExitCode {
         "contract" => contract_specs(),
         "determinism" => determinism_specs(),
         "integration" => integration_specs(),
+        "long-run" => long_run_specs(),
         "runtime-heavy" => runtime_heavy_specs(),
         "stress" => stress_specs(),
         "experiments" => experiments_specs(),
@@ -49,6 +50,7 @@ fn run_suite(args: Vec<String>) -> ExitCode {
             contract_specs(),
             determinism_specs(),
             integration_specs(),
+            long_run_specs(),
             runtime_heavy_specs(),
             stress_specs(),
             experiments_specs(),
@@ -267,6 +269,33 @@ fn runtime_heavy_specs() -> Vec<TestSpec> {
         "runtime_vm ignored tests",
         nextest_ignored(&["-p", "runtime_vm"]),
     )]
+}
+
+fn long_run_specs() -> Vec<TestSpec> {
+    vec![
+        spec(
+            "agent_core engine long-run",
+            nextest_ignored(&["-p", "agent_core", "--test", "engine"]),
+        ),
+        spec(
+            "knowledge_lifecycle long-run",
+            nextest_ignored(&[
+                "-p",
+                "knowledge_lifecycle",
+                "--test",
+                "knowledge_lifecycle_long_run",
+            ]),
+        ),
+        spec(
+            "knowledge_lifecycle long-run simulation",
+            nextest_ignored(&[
+                "-p",
+                "knowledge_lifecycle",
+                "--test",
+                "lifecycle_long_run_simulation",
+            ]),
+        ),
+    ]
 }
 
 fn stress_specs() -> Vec<TestSpec> {

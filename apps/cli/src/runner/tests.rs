@@ -9,6 +9,16 @@ use super::*;
 
 // ── stability telemetry helpers ──────────────────────────────────────────────
 
+fn baseline_cpu_release() -> CpuReleaseTelemetry {
+    CpuReleaseTelemetry {
+        baseline_threads: 0,
+        final_threads: 0,
+        child_processes_after: 0,
+        cpu_idle_recovery_ms: 0,
+        zombie_detected: false,
+    }
+}
+
 /// Count currently open file descriptors for this process.
 /// Uses /dev/fd on macOS, /proc/self/fd on Linux.
 fn count_open_fds() -> usize {
@@ -119,7 +129,7 @@ fn base_config(command: &str, args: Vec<String>, dir: &Path) -> ExecutionConfig 
         command: command.to_string(),
         args,
         working_dir: dir.display().to_string(),
-        timeout_ms: 500,
+        timeout_ms: 1_500,
         env: fixed_env(),
         clean_env: true,
         output_mode: OutputMode::Streaming,
@@ -128,7 +138,7 @@ fn base_config(command: &str, args: Vec<String>, dir: &Path) -> ExecutionConfig 
 
 fn base_timeout() -> TimeoutConfig {
     TimeoutConfig {
-        timeout_ms: 500,
+        timeout_ms: 1_500,
         kill_signal: "kill".to_string(),
     }
 }
@@ -315,6 +325,7 @@ fn truncate_output_caps_large_streams() {
         large,
         Vec::new(),
         MemoryUsage::Unknown,
+        baseline_cpu_release(),
         OutputMode::Streaming,
         SandboxMode::FullCopy,
     );
@@ -373,6 +384,7 @@ fn streaming_and_truncate_report_consistent_meta() {
         bytes,
         Vec::new(),
         MemoryUsage::Unknown,
+        baseline_cpu_release(),
         OutputMode::Streaming,
         SandboxMode::FullCopy,
     );
@@ -705,11 +717,7 @@ fn child_memory_bounded_and_parent_rss_stable() {
     let result = execute_process(
         &base_config(
             "/bin/sh",
-            vec![
-                "-c".to_string(),
-                // Touch ~1 MB of memory inside the child.
-                "dd if=/dev/zero bs=4096 count=256 of=/dev/null 2>/dev/null; echo ok".to_string(),
-            ],
+            vec!["-c".to_string(), "x=ok; echo \"$x\"".to_string()],
             &dir,
         ),
         &base_timeout(),

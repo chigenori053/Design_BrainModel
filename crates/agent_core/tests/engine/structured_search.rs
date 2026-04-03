@@ -571,6 +571,7 @@ fn phase46_explainability_includes_top_factors() {
 }
 
 #[test]
+#[ignore = "long-run stability test; run via cargo xtest long-run or cargo test -p agent_core --test engine -- --ignored"]
 fn phase46_long_run_remains_stable_for_2000_steps() {
     let (_, summaries) = run_phase1_matrix(Phase1Config {
         max_steps: 25,

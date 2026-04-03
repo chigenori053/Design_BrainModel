@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
-use std::ffi::OsString;
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
@@ -31,7 +31,7 @@ use world_model_core::{
     SimpleHypothesisGenerator, WorldModel,
 };
 
-use design_cli::commands::analyze::project::{self, AnalyzeMode, AnalyzeOptions};
+use crate::commands::analyze::project::{self, AnalyzeMode, AnalyzeOptions};
 
 const CLI_VERSION: &str = env!("CARGO_PKG_VERSION");
 const RUNTIME_BINDING: &str = "ACTION_LAYER_V1";
@@ -101,6 +101,7 @@ enum IntentType {
     AnalyzeProject,
     GenerateCode,
     Refactor,
+    ViewStructure,
     Unknown,
 }
 
@@ -188,6 +189,20 @@ fn language_parse(input: &str) -> LanguageOutput {
             score: if input.contains("見て") { 0.56 } else { 0.68 },
         });
     }
+    if input.contains("構造")
+        || lower.contains("structure")
+        || lower.contains("viewer")
+        || input.contains("立体")
+    {
+        intent_nodes.push(IntentNode {
+            intent: IntentType::ViewStructure,
+            score: if input.contains("立体") || lower.contains("3d") {
+                0.9
+            } else {
+                0.82
+            },
+        });
+    }
     if intent_nodes.is_empty() {
         intent_nodes.push(IntentNode {
             intent: IntentType::Unknown,
@@ -260,6 +275,24 @@ fn map_intent_to_command(intent: ResolvedIntent) -> Result<CommandRequest, Ambig
         IntentType::Refactor => Ok(CommandRequest {
             program: "design".to_string(),
             args: vec!["explain".to_string()],
+        }),
+        IntentType::ViewStructure => Ok(CommandRequest {
+            program: "design_cli".to_string(),
+            args: vec![
+                "structure".to_string(),
+                "view".to_string(),
+                intent
+                    .arguments
+                    .get("path")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or(".")
+                    .to_string(),
+                if intent.confidence >= 0.88 {
+                    "--3d".to_string()
+                } else {
+                    "--2d".to_string()
+                },
+            ],
         }),
         IntentType::Unknown => Err(Ambiguity::LowConfidence),
     }

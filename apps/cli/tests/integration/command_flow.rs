@@ -64,15 +64,3 @@ fn hybrid_input_routes_command_and_fills_target() {
     assert_eq!(out["schema_version"], "v1");
     assert_eq!(out["data"]["target"], "./project");
 }
-
-#[cfg(feature = "ci-heavy")]
-#[test]
-fn command_flow_heavy_phase1_commands() {
-    for cmd in ["phase-analyze", "explain", "simulate"] {
-        let (code, out, _) = run(&[cmd, "--beam-width", "1", "--max-steps", "1"]);
-        assert_eq!(code, 0, "failed command: {cmd}");
-        let out = out.expect("stdout json");
-        assert_eq!(out["schema_version"], "v1");
-        assert!(out["data"].is_object());
-    }
-}

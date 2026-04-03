@@ -45,6 +45,12 @@ run_integration() {
   run_cargo_test -p phase1_integration_tests --test reasoning_pipeline --locked
 }
 
+run_long_run() {
+  run_cargo_test_ignored -p agent_core --test engine --locked
+  run_cargo_test_ignored -p knowledge_lifecycle --test knowledge_lifecycle_long_run --locked
+  run_cargo_test_ignored -p knowledge_lifecycle --test lifecycle_long_run_simulation --locked
+}
+
 run_experiments() {
   run_cargo_test_ignored -p design_search_engine --test experiments --locked
 }
@@ -64,6 +70,9 @@ case "${category}" in
     ;;
   integration)
     run_integration
+    ;;
+  long-run)
+    run_long_run
     ;;
   experiments)
     run_experiments

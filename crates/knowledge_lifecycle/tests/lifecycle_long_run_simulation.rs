@@ -6,6 +6,7 @@ use knowledge_engine::{
 use knowledge_lifecycle::{KnowledgeLifecycleConfig, KnowledgeLifecycleEngine};
 
 #[test]
+#[ignore = "long-run lifecycle simulation; run via cargo xtest long-run or cargo test -p knowledge_lifecycle --test lifecycle_long_run_simulation -- --ignored"]
 fn lifecycle_remains_stable_over_1000_cycles() {
     let mut graph = KnowledgeGraph {
         entities: vec![

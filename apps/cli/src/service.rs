@@ -4,6 +4,7 @@ use std::path::{Path, PathBuf};
 
 use crate::coding::{CodingOptions, execute_code_change_set, generate_code_change_set};
 use crate::dbm::ProjectAnalysisResult;
+use crate::source_index::ModuleSourceIndex;
 use crate::world;
 use integration_layer::{
     CycleReport, DiagnosticAnalysis, Issue, LayerModel, Severity, StructuralAnalysis, SystemInput,
@@ -363,8 +364,15 @@ fn build_analysis_report(
             .map(|module| AnalysisModule {
                 name: module.name.clone(),
                 file_count: module.files.len(),
+                source_path: module
+                    .files
+                    .iter()
+                    .min()
+                    .cloned()
+                    .unwrap_or_default(),
             })
             .collect(),
+        graph_nodes: build_graph_nodes(root, project),
         dependencies: project
             .dependencies
             .iter()
@@ -390,6 +398,66 @@ fn build_analysis_report(
         root_cause: None,
         refactor_plan: Vec::new(),
     })
+}
+
+fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<ModuleNode> {
+    let mut graph_nodes = BTreeMap::<String, ModuleNode>::new();
+    let index = ModuleSourceIndex::build(root).unwrap_or_default();
+
+    for (qualified_id, source_path) in index.all_bindings() {
+        let logical_name = qualified_id
+            .module_path
+            .split("::")
+            .last()
+            .unwrap_or(&qualified_id.module_path)
+            .to_string();
+        graph_nodes.insert(
+            logical_name.clone(),
+            ModuleNode {
+                qualified_id,
+                logical_name,
+                source_path: Some(source_path),
+            },
+        );
+    }
+
+    let mut logical_names = BTreeSet::new();
+    for module in &project.modules {
+        logical_names.insert(module.name.clone());
+    }
+    for dependency in &project.dependencies {
+        logical_names.insert(dependency.from.clone());
+        logical_names.insert(dependency.to.clone());
+    }
+
+    logical_names
+        .into_iter()
+        .for_each(|logical_name| {
+            if graph_nodes.contains_key(&logical_name) {
+                return;
+            }
+            if let Some((qualified_id, source_path)) = index.bind_graph_node(&logical_name) {
+                graph_nodes.insert(logical_name.clone(), ModuleNode {
+                    qualified_id,
+                    logical_name,
+                    source_path: Some(source_path),
+                });
+            } else {
+                graph_nodes.insert(logical_name.clone(), ModuleNode {
+                    qualified_id: crate::source_index::QualifiedModuleId {
+                        crate_name: root
+                            .file_name()
+                            .and_then(|name| name.to_str())
+                            .unwrap_or("unknown")
+                            .replace('-', "_"),
+                        module_path: logical_name.replace('-', "_"),
+                    },
+                    logical_name,
+                    source_path: None,
+                });
+            }
+        });
+    graph_nodes.into_values().collect()
 }
 
 fn analyze_code_issues(root: &Path, project: &ProjectAnalysisResult) -> Vec<CodeIssue> {

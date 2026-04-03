@@ -6,6 +6,7 @@ use knowledge_engine::{
 use knowledge_lifecycle::{KnowledgeLifecycleConfig, KnowledgeLifecycleEngine};
 
 #[test]
+#[ignore = "long-run lifecycle test; run via cargo xtest long-run or cargo test -p knowledge_lifecycle --test knowledge_lifecycle_long_run -- --ignored"]
 fn long_run_lifecycle_stays_within_revision_thresholds() {
     let mut relations = Vec::new();
     for source in 1..=5 {

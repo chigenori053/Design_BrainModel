@@ -1,69 +1,54 @@
 # Testing Guide
 
-## Phase1 fast suite (local)
+## DBM PR Gate
 
-Run the default deterministic path. This excludes heavy tests by default:
+Use the PR gate for the default local smoke path and pull request validation:
 
 ```bash
-cargo test-fast
-cargo test-architecture
-time cargo test -p runtime_vm -- --test-threads=1
-time cargo test -p agent_core -- --test-threads=1
-time cargo test -p design_cli -- --test-threads=1
+bash scripts/run_dbm_test_suite.sh pr
 ```
 
-Fast tests should stay in the default `#[test]` set:
+This gate runs:
 
-- unit
-- architecture / boundary enforcement
-- contract tests
-- minimum integration coverage
+- `contract`
+- `integration`
+- `resource_release`
+- `safety`
+- targeted git / gh safety unit tests
 
-## Heavy tests
+## DBM Nightly Gate
 
-Heavy tests are isolated behind `#[ignore]`.
-
-- long-running integration
-- memory growth / stress
-- quality / reasoning suites
-
-Run heavy tests explicitly:
+Use nightly for exhaustive coverage and cross-workspace validation:
 
 ```bash
-cargo test-runtime-heavy
-cargo test-stress
-cargo test -p runtime_vm -- --ignored --test-threads=1
-cargo test -p agent_core --test heavy --release --features ci-heavy -- --test-threads=1
+bash scripts/run_dbm_test_suite.sh nightly
 ```
 
-## Split categories
+This gate adds:
 
-Use split execution when a single `cargo test` is too expensive:
+- `nightly_exhaustive`
+- `regression`
+- `cargo test --workspace -- --test-threads=1`
+
+## DBM Release Gate
+
+Use release gate before tags or GitHub Release publication:
 
 ```bash
-cargo test-architecture
-cargo test-invariants
-cargo test-engine
-cargo test-knowledge
-cargo test-contract
-cargo test-determinism
-cargo test-integration
-cargo test-all-split
+bash scripts/run_dbm_test_suite.sh release
 ```
 
-Or route through one entrypoint:
+This gate runs:
+
+- `cargo test --workspace --release`
+- strict contract checks
+- rollback regression
+- git / gh remote dry-run representative coverage
+
+## Slow Test Measurement
+
+To extract slow `design_cli` tests for consolidation work:
 
 ```bash
-cargo xtest fast
-cargo xtest runtime-heavy
-cargo xtest experiments
-```
-
-## Full CI suite
-
-CI runs fast tests first, then ignored heavy tests, both single-threaded:
-
-```bash
-cargo test --workspace -- --test-threads=1
-cargo test --workspace -- --ignored --test-threads=1
+bash scripts/measure_design_cli_tests.sh
 ```
