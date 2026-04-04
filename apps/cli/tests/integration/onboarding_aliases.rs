@@ -2,7 +2,10 @@ use std::process::Command;
 
 fn run(args: &[&str]) -> (i32, String, String) {
     let exe = env!("CARGO_BIN_EXE_design_cli");
-    let out = Command::new(exe).args(args).output().expect("run design_cli");
+    let out = Command::new(exe)
+        .args(args)
+        .output()
+        .expect("run design_cli");
     let code = out.status.code().unwrap_or(-1);
     let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
     let stderr = String::from_utf8_lossy(&out.stderr).into_owned();

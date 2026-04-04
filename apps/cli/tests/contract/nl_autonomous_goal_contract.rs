@@ -6,8 +6,14 @@ use design_cli::session::AgentSession;
 
 #[test]
 fn goal_detection_works() {
-    assert_eq!(detect_goal("この循環依存をゼロにして"), Some(GoalType::EliminateCycles));
-    assert_eq!(detect_goal("unsafe を減らして"), Some(GoalType::ReduceUnsafe));
+    assert_eq!(
+        detect_goal("この循環依存をゼロにして"),
+        Some(GoalType::EliminateCycles)
+    );
+    assert_eq!(
+        detect_goal("unsafe を減らして"),
+        Some(GoalType::ReduceUnsafe)
+    );
 }
 
 #[test]
@@ -38,7 +44,12 @@ fn max_iteration_stop_works() {
         },
     );
     assert!(!result.completed);
-    assert!(result.outputs.iter().any(|line| line.contains("max iterations exceeded")));
+    assert!(
+        result
+            .outputs
+            .iter()
+            .any(|line| line.contains("max iterations exceeded"))
+    );
 }
 
 #[test]

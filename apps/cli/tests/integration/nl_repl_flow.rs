@@ -52,7 +52,7 @@ fn repl_executes_natural_language_analysis_flow() {
     let (code, stdout, stderr) = run_repl(&dir, "このプロジェクト全体を解析して\n/exit\n");
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stdout.contains("DBM >"), "stdout: {stdout}");
-    assert!(stdout.contains("[planner: nl] 1 steps"), "stdout: {stdout}");
+    assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
     assert!(
         stdout.contains("design_cli analyze ."),
         "expected canonical analyze command in output: {stdout}"
@@ -64,7 +64,7 @@ fn repl_executes_natural_language_structure_flow() {
     let dir = temp_project("structure");
     let (code, stdout, stderr) = run_repl(&dir, "GUIで構造を開いて\n/exit\n");
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[planner: nl] 1 steps"), "stdout: {stdout}");
+    assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
     assert!(
         stdout.contains("design_cli structure view ."),
         "expected canonical structure command in output: {stdout}"

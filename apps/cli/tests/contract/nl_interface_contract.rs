@@ -8,9 +8,18 @@ use design_cli::session::AgentSession;
 
 #[test]
 fn nl_intent_routes_analysis_and_structure_and_coding() {
-    assert_eq!(primary_intent("このプロジェクトを解析して"), IntentType::Analyze);
-    assert_eq!(primary_intent("GUIで構造を開いて"), IntentType::StructureView);
-    assert_eq!(primary_intent("unsafeを減らして cargo check"), IntentType::Coding);
+    assert_eq!(
+        primary_intent("このプロジェクトを解析して"),
+        IntentType::Analyze
+    );
+    assert_eq!(
+        primary_intent("GUIで構造を開いて"),
+        IntentType::StructureView
+    );
+    assert_eq!(
+        primary_intent("unsafeを減らして cargo check"),
+        IntentType::Coding
+    );
 }
 
 #[test]

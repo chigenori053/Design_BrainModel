@@ -28,7 +28,10 @@ fn viewer_undo_maps_from_conversation_state() {
         ..ConversationState::default()
     };
     let plan = plan_input("1つ戻して", &session, &conversation).expect("plan");
-    assert_eq!(plan.steps, vec![PlannedStep::StructureUndo(PathBuf::from("."))]);
+    assert_eq!(
+        plan.steps,
+        vec![PlannedStep::StructureUndo(PathBuf::from("."))]
+    );
 }
 
 #[test]
@@ -50,6 +53,9 @@ fn git_steps_default_to_dry_run_safe_workflow() {
         .expect("followup plan");
     assert_eq!(
         followup.steps,
-        vec![PlannedStep::Coding(PathBuf::from("."), CodingOptions::default())]
+        vec![PlannedStep::Coding(
+            PathBuf::from("."),
+            CodingOptions::default()
+        )]
     );
 }

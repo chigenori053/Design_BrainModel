@@ -7,20 +7,15 @@ fn temp_project(name: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    let dir = std::env::temp_dir().join(format!("design_cli_nl_multiturn_{name}_{unique}"));
+    let dir = std::env::temp_dir().join(format!("design_cli_continuation_v2_{name}_{unique}"));
     fs::create_dir_all(dir.join("src")).expect("create src");
     fs::write(
         dir.join("Cargo.toml"),
-        "[package]\nname = \"nl_multiturn\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "[package]\nname = \"continuation_v2\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("write cargo");
-    fs::write(
-        dir.join("src/lib.rs"),
-        "pub mod presentation;\npub mod renderer;\npub fn run() {}\n",
-    )
-    .expect("write lib");
-    fs::write(dir.join("src/presentation.rs"), "pub fn present() {}\n").expect("presentation");
-    fs::write(dir.join("src/renderer.rs"), "pub fn render() {}\n").expect("renderer");
+    fs::write(dir.join("src/lib.rs"), "pub mod coding;\n").expect("write lib");
+    fs::write(dir.join("src/coding.rs"), "pub fn code() {}\n").expect("write coding");
     dir
 }
 
@@ -53,31 +48,27 @@ fn run_repl(dir: &std::path::Path, input: &str) -> (i32, String, String) {
 }
 
 #[test]
-fn repl_multiturn_inherits_context_and_emits_git_dry_run_flow() {
-    let dir = temp_project("conversation");
+fn continuation_prompt_uses_v2_and_reuses_target_for_coding() {
+    let dir = temp_project("coding");
     let input = "\
-この循環依存を見て
-presentation layer 側だけ直して
-GUIで差分を見せて
-commitしてPR作って
+src/coding.rs を改善して
+trait + registry に抽象化して
 /exit
 ";
     let (code, stdout, stderr) = run_repl(&dir, input);
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[planner: nl_v2]"), "stdout: {stdout}");
-    assert!(stdout.contains("DBM[presentation] >"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("design_cli structure dispatch . --event <generated diff>"),
+    assert_eq!(
+        stdout.matches("[planner: nl_v2] 1 steps").count(),
+        2,
         "stdout: {stdout}"
     );
+    assert!(stdout.contains("DBM[coding.rs] >"), "stdout: {stdout}");
     assert!(
-        stdout.contains("design_cli execute \"commit changes\" --path . --dry-run --json"),
+        stdout
+            .matches("design_cli coding . --target src/coding.rs --safe --check")
+            .count()
+            >= 2,
         "stdout: {stdout}"
     );
-    assert!(
-        stdout.contains(
-            "design_cli execute \"push and create pr\" --path . --dry-run --auto-remote --json"
-        ),
-        "stdout: {stdout}"
-    );
+    assert!(!stdout.contains("path is not a directory"), "stdout: {stdout}");
 }

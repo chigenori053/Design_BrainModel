@@ -1,22 +1,50 @@
-#[path = "integration/command_flow.rs"]
-mod command_flow;
 #[path = "integration/coding_apply_path_resolution.rs"]
 mod coding_apply_path_resolution;
+#[path = "integration/canonical_patch_stream.rs"]
+mod canonical_patch_stream;
+#[path = "integration/cli_json_canonical_wiring.rs"]
+mod cli_json_canonical_wiring;
+#[path = "integration/cli_planner_snapshot_unification.rs"]
+mod cli_planner_snapshot_unification;
+#[path = "integration/narrow_semantic_cluster_matching.rs"]
+mod narrow_semantic_cluster_matching;
+#[path = "integration/repl_file_target_routing.rs"]
+mod repl_file_target_routing;
+#[path = "integration/coding_target_scope.rs"]
+mod coding_target_scope;
+#[path = "integration/coding_target_semantic_pruning.rs"]
+mod coding_target_semantic_pruning;
+#[path = "integration/coding_import_rebinding.rs"]
+mod coding_import_rebinding;
+#[path = "integration/command_flow.rs"]
+mod command_flow;
 #[path = "integration/gui_viewer.rs"]
 mod gui_viewer;
 #[path = "integration/nl_autonomous_loop.rs"]
 mod nl_autonomous_loop;
-#[path = "integration/nl_repl_flow.rs"]
-mod nl_repl_flow;
 #[path = "integration/nl_multiturn_repl.rs"]
 mod nl_multiturn_repl;
+#[path = "integration/nl_repl_flow.rs"]
+mod nl_repl_flow;
 #[path = "integration/onboarding_aliases.rs"]
 mod onboarding_aliases;
 #[path = "integration/phase_analyze_cli.rs"]
 mod phase_analyze_cli;
 #[path = "integration/refactor_runtime.rs"]
 mod refactor_runtime;
+#[path = "integration/repl_apply_resolution.rs"]
+mod repl_apply_resolution;
+#[path = "integration/repl_continuation_v2_wiring.rs"]
+mod repl_continuation_v2_wiring;
+#[path = "integration/repl_followup_apply_promotion.rs"]
+mod repl_followup_apply_promotion;
+#[path = "integration/repl_deterministic_v2_wiring.rs"]
+mod repl_deterministic_v2_wiring;
+#[path = "integration/repl_semantic_cluster_narrowing.rs"]
+mod repl_semantic_cluster_narrowing;
 #[path = "integration/structure_session.rs"]
 mod structure_session;
 #[path = "integration/unified_analyze_cli.rs"]
 mod unified_analyze_cli;
+#[path = "integration/workspace_symbol_rebinding.rs"]
+mod workspace_symbol_rebinding;

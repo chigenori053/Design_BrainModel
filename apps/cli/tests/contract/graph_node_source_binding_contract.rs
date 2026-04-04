@@ -15,11 +15,7 @@ fn temp_project(name: &str) -> std::path::PathBuf {
         "[package]\nname = \"graph_binding\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
-    fs::write(
-        dir.join("src/lib.rs"),
-        "pub mod runtime;\n",
-    )
-    .expect("lib");
+    fs::write(dir.join("src/lib.rs"), "pub mod runtime;\n").expect("lib");
     fs::write(
         dir.join("src/runtime/mod.rs"),
         "pub mod controller;\npub mod replay;\npub mod determinism;\n",
@@ -30,11 +26,7 @@ fn temp_project(name: &str) -> std::path::PathBuf {
         "use crate::runtime::determinism;\npub fn run() { determinism::check(); }\n",
     )
     .expect("controller");
-    fs::write(
-        dir.join("src/runtime/replay.rs"),
-        "pub fn replay() {}\n",
-    )
-    .expect("replay");
+    fs::write(dir.join("src/runtime/replay.rs"), "pub fn replay() {}\n").expect("replay");
     fs::write(
         dir.join("src/runtime/determinism.rs"),
         "pub fn check() {}\n",
@@ -53,7 +45,10 @@ fn logical_determinism_node_binds_to_primary_source_path() {
         .find(|node| node.logical_name == "determinism")
         .expect("determinism graph node");
     assert_eq!(
-        determinism.source_path.as_ref().map(|path| path.display().to_string()),
+        determinism
+            .source_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
         Some("src/runtime/determinism.rs".to_string())
     );
 }

@@ -65,7 +65,10 @@ fn goal_driven_autonomous_loop_runs_and_stops_on_convergence() {
     let dir = temp_project("goal");
     let (code, stdout, stderr) = run_repl(&dir, "この循環依存をゼロにして\n/exit\n");
     assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[autonomous mode] goal=cycles"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("[autonomous mode] goal=cycles"),
+        "stdout: {stdout}"
+    );
     assert!(stdout.contains("iteration 1/5"), "stdout: {stdout}");
     assert!(stdout.contains("cycles 1 -> 0"), "stdout: {stdout}");
     assert!(stdout.contains("goal reached"), "stdout: {stdout}");
