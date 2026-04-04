@@ -26,10 +26,11 @@ pub struct ResolvedTarget {
     pub scope: Option<String>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodingOptions {
     pub safe: bool,
     pub check: bool,
+    pub request: Option<String>,
 }
 
 impl Default for CodingOptions {
@@ -37,6 +38,7 @@ impl Default for CodingOptions {
         Self {
             safe: true,
             check: true,
+            request: None,
         }
     }
 }
@@ -56,6 +58,9 @@ pub enum PlannedStep {
     Memory(PathBuf),
     GitCommit(PathBuf),
     GitPR(PathBuf),
+    /// R1: previous coding dry-run transaction を apply へ昇格するステップ。
+    /// generic planner を bypass し、前回 checked && !applied の transaction を再利用する。
+    ApplyPreviousCodingStep,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]

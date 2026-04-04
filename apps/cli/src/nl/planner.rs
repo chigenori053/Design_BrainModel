@@ -55,7 +55,10 @@ pub fn plan_input(input: &str, session: &AgentSession) -> Option<CommandPlan> {
     }
 
     if wants_coding(&lower) {
-        steps.push(PlannedStep::Coding(target.path.clone(), CodingOptions::default()));
+        steps.push(PlannedStep::Coding(
+            target.path.clone(),
+            CodingOptions::default(),
+        ));
     }
 
     if wants_validate(&lower) {
@@ -205,6 +208,14 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
                     ],
                 }),
             ),
+            PlannedStep::ApplyPreviousCodingStep => (
+                "Apply previous coding transaction".to_string(),
+                Some(CommandInvocation {
+                    name: "coding".to_string(),
+                    subcommand: None,
+                    args: vec!["--apply".to_string()],
+                }),
+            ),
         };
         steps.push(Step::new(index, description, command));
     }
@@ -237,7 +248,8 @@ mod tests {
                 PathBuf::from("."),
                 CodingOptions {
                     safe: true,
-                    check: true
+                    check: true,
+                    request: None,
                 }
             )]
         );
