@@ -52,7 +52,7 @@ impl NlChatPanel {
         Self {
             history: vec![ChatMessage {
                 role: ChatRole::Assistant,
-                content: "こんにちは！構造マップについて何でも質問してください。\n例: 「循環依存を見せて」「プレビューして」「適用して」「元に戻して」".to_string(),
+                content: "Hello! Ask anything about the structure map.\nExamples: show cycles / preview refactor / apply / undo".to_string(),
             }],
             input: String::new(),
             pending: false,
@@ -97,7 +97,7 @@ impl NlChatPanel {
             let response = ui.add(
                 egui::TextEdit::singleline(&mut self.input)
                     .desired_width(input_width)
-                    .hint_text("メッセージを入力…")
+                    .hint_text("Enter message...")
                     .font(TextStyle::Body),
             );
 

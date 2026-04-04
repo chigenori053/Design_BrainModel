@@ -5,7 +5,8 @@ use eframe::egui::{self, Color32, RichText};
 
 use crate::ir_loader::IrTracker;
 use crate::model::{
-    DispatchAction, DispatchNl, SourcePathResolver, StructureViewIR, ValidationOverlay, ViewMode,
+    DispatchAction, DispatchNl, SourceBinding, SourcePathResolver, StructureViewIR,
+    ValidationOverlay, ViewMode,
 };
 use crate::nl_chat::{LocalCommand, NlChatPanel};
 
@@ -35,23 +36,13 @@ pub struct ViewerApp {
 }
 
 impl ViewerApp {
-    pub fn new(_cc: &eframe::CreationContext<'_>, config: ViewerAppConfig) -> Self {
+    pub fn new(cc: &eframe::CreationContext<'_>, config: ViewerAppConfig) -> Self {
+        // macOS のシステムフォントから日本語グリフをロードする（文字化け対策）
+        setup_cjk_font(&cc.egui_ctx);
         let mut tracker = IrTracker::new(config.ir_path.clone());
         let ir = tracker
             .load_initial()
-            .unwrap_or_else(|_err| StructureViewIR {
-                version: 2,
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                preview: None,
-                snapshots: Vec::new(),
-                history: Vec::new(),
-                risk_overlay: Vec::new(),
-                selection: Default::default(),
-                candidates: Vec::new(),
-                heatmap: Vec::new(),
-                design_sync: Default::default(),
-            });
+            .unwrap_or_else(|_err| StructureViewIR::default());
         let selected_node = ir.selection.selected_nodes.first().cloned();
         let mode = config.mode;
         Self {
@@ -91,27 +82,21 @@ impl ViewerApp {
         }
     }
 
-    fn source_path(&self) -> Option<PathBuf> {
+    fn source_binding(&self) -> Option<SourceBinding> {
         let node = self.selected_node.as_ref()?;
-        (self.config.source_path_for_node)(node)
-    }
-
-    fn open_source(path: &std::path::Path) -> Result<(), String> {
-        let status = if cfg!(target_os = "macos") {
-            std::process::Command::new("open").arg(path).status()
-        } else if cfg!(target_os = "windows") {
-            std::process::Command::new("cmd")
-                .args(["/C", "start", "", &path.display().to_string()])
-                .status()
-        } else {
-            std::process::Command::new("xdg-open").arg(path).status()
-        }
-        .map_err(|err| format!("failed to open {}: {err}", path.display()))?;
-        if status.success() {
-            Ok(())
-        } else {
-            Err(format!("source jump failed for {}", path.display()))
-        }
+        self.ir
+            .scene_3d
+            .as_ref()
+            .and_then(|scene| scene.graph.nodes.iter().find(|item| item.id == *node))
+            .and_then(|item| item.source_binding.clone())
+            .or_else(|| {
+                (self.config.source_path_for_node)(node).map(|path| SourceBinding {
+                    file: path,
+                    line_start: 1,
+                    line_end: 1,
+                    symbol: Some(node.clone()),
+                })
+            })
     }
 
     /// ステータスバー: サイクル数・違反数・ノード/エッジ数を表示
@@ -168,8 +153,6 @@ impl ViewerApp {
             }
         });
     }
-
-
 }
 
 impl eframe::App for ViewerApp {
@@ -205,11 +188,13 @@ impl eframe::App for ViewerApp {
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         let cycle_count = self.ir.edges.iter().filter(|e| e.cycle).count();
-                        let viol_count = self
-                            .config
-                            .diagnostics
-                            .layer_violations
-                            .max(self.ir.risk_overlay.iter().filter(|r| r.level == "error").count());
+                        let viol_count = self.config.diagnostics.layer_violations.max(
+                            self.ir
+                                .risk_overlay
+                                .iter()
+                                .filter(|r| r.level == "error")
+                                .count(),
+                        );
 
                         if cycle_count > 0 {
                             ui.label(
@@ -243,10 +228,12 @@ impl eframe::App for ViewerApp {
                 self.render_status_bar(ui);
             });
 
-        // ── NLチャットパネル（右固定） ─────────────────────────
+        // ── NLチャットパネル（右・リサイズ可） ─────────────────
         egui::SidePanel::right("nl_chat")
-            .resizable(false)
-            .exact_width(320.0)
+            .resizable(true)
+            .default_width(320.0)
+            .min_width(200.0)
+            .max_width(640.0)
             .show(ctx, |ui| {
                 ui.add_space(6.0);
                 ui.label(
@@ -257,9 +244,9 @@ impl eframe::App for ViewerApp {
                 ui.separator();
 
                 let dispatch_nl = self.config.dispatch_nl.clone();
-                let local_cmd = self
-                    .nl_chat
-                    .render(ui, self.selected_node.as_deref(), &dispatch_nl);
+                let local_cmd =
+                    self.nl_chat
+                        .render(ui, self.selected_node.as_deref(), &dispatch_nl);
 
                 if let Some(cmd) = local_cmd {
                     match cmd {
@@ -303,7 +290,7 @@ impl eframe::App for ViewerApp {
                         .iter()
                         .filter(|e| (e.from == node.id || e.to == node.id) && e.cycle)
                         .count();
-                    let source_path = self.source_path();
+                    let source_binding = self.source_binding();
                     let mut close = false;
                     let mut open_src = false;
 
@@ -314,9 +301,12 @@ impl eframe::App for ViewerApp {
                         .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-340.0, 42.0))
                         .show(ctx, |ui| {
                             ui.label(
-                                RichText::new(format!("layer: {}  role: {}", node.layer, node.role))
-                                    .small()
-                                    .color(Color32::GRAY),
+                                RichText::new(format!(
+                                    "layer: {}  role: {}",
+                                    node.layer, node.role
+                                ))
+                                .small()
+                                .color(Color32::GRAY),
                             );
                             ui.label(format!("in: {incoming}  out: {outgoing}"));
                             if cycles > 0 {
@@ -327,7 +317,7 @@ impl eframe::App for ViewerApp {
                             }
                             ui.add_space(4.0);
                             ui.horizontal(|ui| {
-                                if source_path.is_some() && ui.small_button("Source").clicked() {
+                                if source_binding.is_some() && ui.small_button("Source").clicked() {
                                     open_src = true;
                                 }
                                 if ui.small_button("✕").clicked() {
@@ -337,8 +327,10 @@ impl eframe::App for ViewerApp {
                         });
 
                     if open_src {
-                        if let Some(path) = source_path {
-                            if let Err(e) = Self::open_source(&path) {
+                        if let Some(binding) = source_binding {
+                            if let Err(e) =
+                                crate::source_jump::open_source(&binding, Some(&self.config.root))
+                            {
                                 self.status = e;
                             }
                         }
@@ -351,4 +343,52 @@ impl eframe::App for ViewerApp {
             }
         }
     }
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CJK フォントセットアップ（文字化け対策）
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// システムフォントから日本語グリフを egui に追加する。
+/// フォントが見つからない場合は何もしない（graceful fallback）。
+fn setup_cjk_font(ctx: &egui::Context) {
+    let font_bytes = load_system_cjk_font();
+    let Some(bytes) = font_bytes else { return };
+
+    let mut fonts = egui::FontDefinitions::default();
+    fonts
+        .font_data
+        .insert("cjk_system".to_owned(), egui::FontData::from_owned(bytes));
+
+    // Proportional フォントの末尾に追加（既存フォントがグリフを持たない場合のフォールバック）
+    fonts
+        .families
+        .entry(egui::FontFamily::Proportional)
+        .or_default()
+        .push("cjk_system".to_owned());
+
+    ctx.set_fonts(fonts);
+}
+
+/// OS ごとのシステム CJK フォントパスを試してバイト列を返す
+fn load_system_cjk_font() -> Option<Vec<u8>> {
+    let candidates: &[&str] = &[
+        // macOS
+        "/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc",
+        "/System/Library/Fonts/Hiragino Sans GB.ttc",
+        "/Library/Fonts/Arial Unicode MS.ttf",
+        // Linux
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJKjp-Regular.otf",
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
+        // Windows
+        "C:/Windows/Fonts/msgothic.ttc",
+        "C:/Windows/Fonts/meiryo.ttc",
+    ];
+    for path in candidates {
+        if let Ok(bytes) = std::fs::read(path) {
+            return Some(bytes);
+        }
+    }
+    None
 }

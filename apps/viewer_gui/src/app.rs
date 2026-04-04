@@ -35,19 +35,7 @@ impl ViewerApp {
         let mut tracker = IrTracker::new(config.ir_path.clone());
         let ir = tracker
             .load_initial()
-            .unwrap_or_else(|_err| StructureViewIR {
-                version: 2,
-                nodes: Vec::new(),
-                edges: Vec::new(),
-                preview: None,
-                snapshots: Vec::new(),
-                history: Vec::new(),
-                risk_overlay: Vec::new(),
-                selection: Default::default(),
-                candidates: Vec::new(),
-                heatmap: Vec::new(),
-                design_sync: Default::default(),
-            });
+            .unwrap_or_else(|_err| StructureViewIR::default());
         let selected_node = ir.selection.selected_nodes.first().cloned();
         let mode = config.mode;
         Self {

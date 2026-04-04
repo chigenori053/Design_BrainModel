@@ -4,10 +4,14 @@ use std::path::Path;
 
 use crate::refactor::RefactorPlan;
 use crate::service::{AnalysisReport, analyze_path};
+use crate::source_index::ModuleSourceIndex;
 
 use super::{
-    ChangedEdge, DesignSyncStatus, HeatmapDelta, PreviewEdge, PreviewGraph, PreviewOverlay,
-    StructureViewIR, ViewEdge, ViewNode, ViewerSelection, structure_ir_path,
+    CameraMode, CameraPreset3D, CandidateMove3D, ChangedEdge, Cluster3D, DesignSyncStatus, Edge3D,
+    EdgeDelta, GraphDeltaAnimation, GraphSnapshot3D, HeatmapDelta, LayerPlane3D, Node3D,
+    NodeMoveDelta, PreviewEdge, PreviewGraph, PreviewOverlay, RefactorOverlay3D, RuntimePath3D,
+    RuntimePathKind, SemanticGraph3D, Structure3DIr, StructureViewIR, TelemetryOverlay3D,
+    Timeline3D, Vec3, ViewEdge, ViewNode, ViewerOverlays3D, ViewerSelection, structure_ir_path,
 };
 
 pub fn export_structure_view(root: &Path) -> Result<StructureViewIR, String> {
@@ -34,13 +38,29 @@ pub fn build_structure_view_ir(
     let centrality = node_centrality(analysis);
     let layers = node_layers(analysis);
     let roles = node_roles(analysis);
+    let runtime_depths = runtime_depths(analysis);
+    let source_bindings = source_bindings(analysis);
+    let scene_3d = build_scene_3d(
+        analysis,
+        plan,
+        &centrality,
+        &layers,
+        &roles,
+        &runtime_depths,
+        &source_bindings,
+    );
+    let scene_nodes = scene_3d
+        .graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node))
+        .collect::<BTreeMap<_, _>>();
     let mut nodes = analysis
         .modules
         .iter()
-        .enumerate()
-        .map(|(index, module)| {
-            let layer = layers.get(&module.name).copied().unwrap_or(index % 3);
-            let central = centrality.get(&module.name).copied().unwrap_or_default() as f32;
+        .map(|module| {
+            let layer = layers.get(&module.name).copied().unwrap_or_default();
+            let scene = scene_nodes.get(&module.name).copied();
             ViewNode {
                 id: module.name.clone(),
                 label: module.name.clone(),
@@ -49,9 +69,9 @@ pub fn build_structure_view_ir(
                     .get(&module.name)
                     .cloned()
                     .unwrap_or_else(|| "module".to_string()),
-                x: (index % 4) as f32 * 220.0 + layer as f32 * 18.0,
-                y: central * 70.0 + 80.0,
-                z: layer as f32 * 140.0,
+                x: scene.map(|node| node.position.x).unwrap_or_default(),
+                y: scene.map(|node| node.position.y).unwrap_or_default(),
+                z: scene.map(|node| node.position.z).unwrap_or_default(),
             }
         })
         .collect::<Vec<_>>();
@@ -59,15 +79,20 @@ pub fn build_structure_view_ir(
         let inferred = infer_modules_from_dependencies(analysis);
         nodes = inferred
             .into_iter()
-            .enumerate()
-            .map(|(index, name)| ViewNode {
-                id: name.clone(),
-                label: name.clone(),
-                layer: index % 3,
-                role: "module".to_string(),
-                x: (index % 4) as f32 * 220.0,
-                y: 120.0,
-                z: (index % 3) as f32 * 140.0,
+            .map(|name| {
+                let scene = scene_nodes.get(&name).copied();
+                ViewNode {
+                    id: name.clone(),
+                    label: name.clone(),
+                    layer: layers.get(&name).copied().unwrap_or_default(),
+                    role: roles
+                        .get(&name)
+                        .cloned()
+                        .unwrap_or_else(|| "module".to_string()),
+                    x: scene.map(|node| node.position.x).unwrap_or_default(),
+                    y: scene.map(|node| node.position.y).unwrap_or_default(),
+                    z: scene.map(|node| node.position.z).unwrap_or_default(),
+                }
             })
             .collect();
     }
@@ -96,6 +121,321 @@ pub fn build_structure_view_ir(
         candidates: Vec::new(),
         heatmap: plan.map(build_heatmap).unwrap_or_default(),
         design_sync: DesignSyncStatus::default(),
+        scene_3d: Some(scene_3d),
+    }
+}
+
+fn build_scene_3d(
+    analysis: &AnalysisReport,
+    plan: Option<&RefactorPlan>,
+    centrality: &BTreeMap<String, usize>,
+    layers: &BTreeMap<String, usize>,
+    roles: &BTreeMap<String, String>,
+    runtime_depths: &BTreeMap<String, usize>,
+    source_bindings: &BTreeMap<String, super::SourceBinding>,
+) -> Structure3DIr {
+    let graph = build_semantic_graph_3d(
+        analysis,
+        centrality,
+        layers,
+        roles,
+        runtime_depths,
+        source_bindings,
+    );
+    let runtime_paths = build_runtime_paths(analysis, plan, &graph);
+    let overlays = build_overlays_3d(analysis, plan, &graph, &runtime_paths);
+    let timeline = build_timeline_3d(plan, &graph);
+    let camera = CameraPreset3D {
+        focus_cluster: overlays
+            .refactor
+            .as_ref()
+            .and_then(|overlay| overlay.selected_nodes.first().cloned()),
+        mode: if overlays.refactor.is_some() {
+            CameraMode::RefactorPreview
+        } else if !runtime_paths.is_empty() {
+            CameraMode::RuntimeFlow
+        } else {
+            CameraMode::Architectural
+        },
+    };
+    Structure3DIr {
+        graph,
+        runtime_paths,
+        overlays,
+        timeline,
+        camera,
+    }
+}
+
+fn build_semantic_graph_3d(
+    analysis: &AnalysisReport,
+    centrality: &BTreeMap<String, usize>,
+    layers: &BTreeMap<String, usize>,
+    roles: &BTreeMap<String, String>,
+    runtime_depths: &BTreeMap<String, usize>,
+    source_bindings: &BTreeMap<String, super::SourceBinding>,
+) -> SemanticGraph3D {
+    let node_names = infer_modules_from_dependencies(analysis);
+    let max_centrality = centrality.values().copied().max().unwrap_or(1) as f32;
+    let nodes = node_names
+        .iter()
+        .enumerate()
+        .map(|(_index, name)| {
+            let role = roles
+                .get(name)
+                .cloned()
+                .unwrap_or_else(|| infer_role(name, layers.get(name).copied().unwrap_or_default()));
+            let importance_raw = centrality.get(name).copied().unwrap_or_default() as f32;
+            let importance = (importance_raw / max_centrality).clamp(0.05, 1.0);
+            let heat = node_heat(name, analysis, importance);
+            let semantic_lane = layers.get(name).copied().unwrap_or_default();
+            let position = Vec3 {
+                x: semantic_axis_x(semantic_lane),
+                y: deterministic_importance_y(name, semantic_lane, &role, importance),
+                z: deterministic_runtime_z(
+                    name,
+                    semantic_lane,
+                    &role,
+                    runtime_depths.get(name).copied().unwrap_or_default(),
+                ),
+            };
+            Node3D {
+                id: name.clone(),
+                label: name.clone(),
+                kind: role,
+                position,
+                size: 14.0 + importance * 16.0,
+                importance,
+                heat,
+                source_binding: source_bindings.get(name).cloned(),
+            }
+        })
+        .collect::<Vec<_>>();
+    let edges = analysis
+        .dependencies
+        .iter()
+        .map(|dependency| Edge3D {
+            from: dependency.from.clone(),
+            to: dependency.to.clone(),
+            weight: edge_weight(analysis, &dependency.from, &dependency.to),
+            edge_kind: "depends_on".to_string(),
+            violation: analysis.violations.iter().any(|violation| {
+                violation.from == dependency.from && violation.to == dependency.to
+            }),
+        })
+        .collect::<Vec<_>>();
+    let layers_3d = layer_planes();
+    let clusters = build_clusters(&nodes);
+    SemanticGraph3D {
+        nodes,
+        edges,
+        clusters,
+        layers: layers_3d,
+    }
+}
+
+fn build_runtime_paths(
+    analysis: &AnalysisReport,
+    plan: Option<&RefactorPlan>,
+    graph: &SemanticGraph3D,
+) -> Vec<RuntimePath3D> {
+    let positions = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.position))
+        .collect::<BTreeMap<_, _>>();
+    let mut paths = Vec::new();
+    let execution_points = analysis
+        .data_flow
+        .iter()
+        .filter_map(|edge| positions.get(&edge.from).copied())
+        .chain(
+            analysis
+                .data_flow
+                .last()
+                .and_then(|edge| positions.get(&edge.to).copied()),
+        )
+        .collect::<Vec<_>>();
+    if execution_points.len() >= 2 {
+        paths.push(RuntimePath3D {
+            id: "execution".to_string(),
+            points: execution_points,
+            path_kind: RuntimePathKind::Execution,
+            animated: true,
+        });
+    }
+    let validation_points = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.violation)
+        .flat_map(|edge| {
+            [
+                positions.get(&edge.from).copied(),
+                positions.get(&edge.to).copied(),
+            ]
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    if validation_points.len() >= 2 {
+        paths.push(RuntimePath3D {
+            id: "validation".to_string(),
+            points: validation_points,
+            path_kind: RuntimePathKind::Validation,
+            animated: true,
+        });
+    }
+    let rollback_points = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.violation)
+        .rev()
+        .flat_map(|edge| {
+            [
+                positions.get(&edge.to).copied(),
+                positions.get(&edge.from).copied(),
+            ]
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    if rollback_points.len() >= 2 {
+        paths.push(RuntimePath3D {
+            id: "rollback".to_string(),
+            points: rollback_points,
+            path_kind: RuntimePathKind::Rollback,
+            animated: true,
+        });
+    }
+    if let Some(plan) = plan {
+        let preview_points = plan
+            .removed_edges
+            .iter()
+            .flat_map(|edge| {
+                [
+                    positions.get(&edge.from).copied(),
+                    positions.get(&edge.to).copied(),
+                ]
+            })
+            .flatten()
+            .collect::<Vec<_>>();
+        if preview_points.len() >= 2 {
+            paths.push(RuntimePath3D {
+                id: "refactor-preview".to_string(),
+                points: preview_points,
+                path_kind: RuntimePathKind::RefactorPreview,
+                animated: true,
+            });
+        }
+    }
+    let memory_release_points = analysis
+        .dependencies
+        .iter()
+        .rev()
+        .take(3)
+        .flat_map(|edge| {
+            [
+                positions.get(&edge.to).copied(),
+                positions.get(&edge.from).copied(),
+            ]
+        })
+        .flatten()
+        .collect::<Vec<_>>();
+    if memory_release_points.len() >= 2 {
+        paths.push(RuntimePath3D {
+            id: "memory-release".to_string(),
+            points: memory_release_points,
+            path_kind: RuntimePathKind::MemoryRelease,
+            animated: true,
+        });
+    }
+    paths
+}
+
+fn build_overlays_3d(
+    analysis: &AnalysisReport,
+    plan: Option<&RefactorPlan>,
+    graph: &SemanticGraph3D,
+    runtime_paths: &[RuntimePath3D],
+) -> ViewerOverlays3D {
+    let positions = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.position))
+        .collect::<BTreeMap<_, _>>();
+    let refactor = plan.map(|plan| RefactorOverlay3D {
+        selected_nodes: plan.after_graph.nodes.iter().take(4).cloned().collect(),
+        candidate_moves: plan
+            .moved_files
+            .iter()
+            .filter_map(|(from, to)| {
+                let from_name = from.file_stem()?.to_str()?.to_string();
+                let to_name = to.file_stem()?.to_str()?.to_string();
+                let start = positions.get(&from_name).copied().unwrap_or_default();
+                let mut end = positions.get(&to_name).copied().unwrap_or(start);
+                end.x += 6.0;
+                Some(CandidateMove3D {
+                    node_id: from_name,
+                    from: start,
+                    to: end,
+                    reason: format!("candidate move -> {}", to.display()),
+                })
+            })
+            .collect(),
+        predicted_cycle_reduction: analysis
+            .cycles
+            .cycles
+            .len()
+            .saturating_sub(plan.removed_edges.len()),
+    });
+    let telemetry = Some(TelemetryOverlay3D {
+        hot_path_count: runtime_paths
+            .iter()
+            .filter(|path| matches!(path.path_kind, RuntimePathKind::Execution))
+            .count(),
+        rollback_count: runtime_paths
+            .iter()
+            .filter(|path| matches!(path.path_kind, RuntimePathKind::Rollback))
+            .count(),
+        memory_release_count: runtime_paths
+            .iter()
+            .filter(|path| matches!(path.path_kind, RuntimePathKind::MemoryRelease))
+            .count(),
+    });
+    ViewerOverlays3D {
+        refactor,
+        telemetry,
+        source_jump: graph.nodes.iter().any(|node| node.source_binding.is_some()),
+        design_sync: true,
+    }
+}
+
+fn build_timeline_3d(plan: Option<&RefactorPlan>, graph: &SemanticGraph3D) -> Timeline3D {
+    let mut snapshots = vec![GraphSnapshot3D {
+        label: "before".to_string(),
+        tick: 0,
+        animation: GraphDeltaAnimation::default(),
+    }];
+    if let Some(plan) = plan {
+        let preview_animation = build_delta_animation(graph, plan);
+        snapshots.push(GraphSnapshot3D {
+            label: "preview".to_string(),
+            tick: 1,
+            animation: preview_animation.clone(),
+        });
+        snapshots.push(GraphSnapshot3D {
+            label: "apply".to_string(),
+            tick: 2,
+            animation: preview_animation.clone(),
+        });
+        snapshots.push(GraphSnapshot3D {
+            label: "rollback".to_string(),
+            tick: 3,
+            animation: reverse_delta_animation(&preview_animation),
+        });
+    }
+    Timeline3D {
+        snapshots,
+        current_tick: 0,
+        autoplay: plan.is_some(),
     }
 }
 
@@ -224,8 +564,288 @@ fn node_roles(analysis: &AnalysisReport) -> BTreeMap<String, String> {
     analysis
         .roles
         .iter()
-        .map(|role| (role.node_name.clone(), format!("{:?}", role.score)))
+        .map(|role| (role.node_name.clone(), format!("{:?}", role.role)))
         .collect()
+}
+
+fn source_bindings(analysis: &AnalysisReport) -> BTreeMap<String, super::SourceBinding> {
+    let root = Path::new(&analysis.root);
+    let index = ModuleSourceIndex::build(root).unwrap_or_default();
+    analysis
+        .graph_nodes
+        .iter()
+        .filter_map(|node| {
+            index
+                .exact_binding(root, &node.logical_name)
+                .map(|binding| super::SourceBinding {
+                    file: binding.file,
+                    line_start: binding.line_start,
+                    line_end: binding.line_end,
+                    symbol: binding.symbol,
+                })
+                .or_else(|| {
+                    node.source_path.as_ref().map(|path| super::SourceBinding {
+                        file: path.clone(),
+                        line_start: 1,
+                        line_end: 1,
+                        symbol: Some(node.logical_name.clone()),
+                    })
+                })
+                .map(|binding| (node.logical_name.clone(), binding))
+        })
+        .collect()
+}
+
+fn runtime_depths(analysis: &AnalysisReport) -> BTreeMap<String, usize> {
+    let mut depth = BTreeMap::new();
+    let nodes = infer_modules_from_dependencies(analysis);
+    for dependency in &analysis.dependencies {
+        depth.entry(dependency.from.clone()).or_insert(0);
+        depth.entry(dependency.to.clone()).or_insert(0);
+    }
+    for _ in 0..nodes.len().max(1) {
+        let mut updated = false;
+        for dependency in &analysis.dependencies {
+            let next_depth = depth.get(&dependency.from).copied().unwrap_or_default() + 1;
+            let entry = depth.entry(dependency.to.clone()).or_insert(0);
+            if next_depth > *entry {
+                *entry = next_depth.min(nodes.len());
+                updated = true;
+            }
+        }
+        if !updated {
+            break;
+        }
+    }
+    depth
+}
+
+fn semantic_axis_x(layer: usize) -> f32 {
+    match layer {
+        0 => 0.0,
+        1 => 10.0,
+        2 => 20.0,
+        3 => 30.0,
+        _ => 10.0 * layer as f32,
+    }
+}
+
+fn infer_role(name: &str, layer: usize) -> String {
+    let lower = name.to_ascii_lowercase();
+    if lower.contains("core") {
+        "Core".to_string()
+    } else if lower.contains("ui") || lower.contains("api") || lower.contains("interface") {
+        "Interface".to_string()
+    } else if lower.contains("db") || lower.contains("infra") || lower.contains("store") {
+        "Infrastructure".to_string()
+    } else if layer == 0 {
+        "Core".to_string()
+    } else if layer <= 1 {
+        "Application".to_string()
+    } else {
+        "Interface".to_string()
+    }
+}
+
+fn edge_weight(analysis: &AnalysisReport, from: &str, to: &str) -> f32 {
+    analysis
+        .data_flow
+        .iter()
+        .find(|edge| edge.from == from && edge.to == to)
+        .map(|edge| edge.weight)
+        .unwrap_or(1.0)
+}
+
+fn node_heat(name: &str, analysis: &AnalysisReport, importance: f32) -> f32 {
+    let data_flow_boost = analysis
+        .data_flow
+        .iter()
+        .filter(|edge| edge.from == name || edge.to == name)
+        .map(|edge| edge.weight)
+        .sum::<f32>();
+    (importance + data_flow_boost * 0.25).clamp(0.0, 1.0)
+}
+
+fn layer_planes() -> Vec<LayerPlane3D> {
+    vec![
+        LayerPlane3D {
+            level: 0,
+            label: "Core".to_string(),
+            axis_x: 0.0,
+            color: "blue".to_string(),
+        },
+        LayerPlane3D {
+            level: 1,
+            label: "Application".to_string(),
+            axis_x: 10.0,
+            color: "yellow".to_string(),
+        },
+        LayerPlane3D {
+            level: 2,
+            label: "Interface".to_string(),
+            axis_x: 20.0,
+            color: "white".to_string(),
+        },
+        LayerPlane3D {
+            level: 3,
+            label: "Infrastructure".to_string(),
+            axis_x: 30.0,
+            color: "green".to_string(),
+        },
+    ]
+}
+
+fn build_clusters(nodes: &[Node3D]) -> Vec<Cluster3D> {
+    let mut groups = BTreeMap::<String, Vec<String>>::new();
+    for node in nodes {
+        groups
+            .entry(node.kind.clone())
+            .or_default()
+            .push(node.id.clone());
+    }
+    groups
+        .into_iter()
+        .map(|(label, nodes)| Cluster3D {
+            id: label.to_ascii_lowercase(),
+            label: label.clone(),
+            nodes,
+            color: cluster_color(&label).to_string(),
+        })
+        .collect()
+}
+
+fn cluster_color(label: &str) -> &'static str {
+    let lower = label.to_ascii_lowercase();
+    if lower.contains("core") {
+        "blue"
+    } else if lower.contains("infra") {
+        "red"
+    } else if lower.contains("interface") {
+        "white"
+    } else {
+        "green"
+    }
+}
+
+fn stable_spread(seed_parts: &[&str], scale: f32) -> f32 {
+    let mut hash = 1469598103934665603_u64;
+    for part in seed_parts {
+        for byte in part.bytes() {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(1099511628211);
+        }
+        hash ^= 255;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    let unit = (hash % 10_000) as f32 / 10_000.0;
+    (unit - 0.5) * scale
+}
+
+fn deterministic_importance_y(
+    name: &str,
+    semantic_layer: usize,
+    runtime_role: &str,
+    importance: f32,
+) -> f32 {
+    120.0
+        + importance * 520.0
+        + stable_spread(
+            &[name, &semantic_layer.to_string(), runtime_role, "y"],
+            14.0,
+        )
+}
+
+fn deterministic_runtime_z(
+    name: &str,
+    semantic_layer: usize,
+    runtime_role: &str,
+    runtime_depth: usize,
+) -> f32 {
+    runtime_depth as f32 * 110.0
+        + stable_spread(
+            &[name, &semantic_layer.to_string(), runtime_role, "z"],
+            18.0,
+        )
+}
+
+fn build_delta_animation(graph: &SemanticGraph3D, plan: &RefactorPlan) -> GraphDeltaAnimation {
+    let positions = graph
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.position))
+        .collect::<BTreeMap<_, _>>();
+    GraphDeltaAnimation {
+        moved_nodes: plan
+            .moved_files
+            .iter()
+            .filter_map(|(from, to)| {
+                let node_id = from.file_stem()?.to_str()?.to_string();
+                let before = positions.get(&node_id).copied()?;
+                let mut after = before;
+                after.x += 10.0;
+                after.z += 24.0;
+                after.y += 18.0;
+                if let Some(target_name) = to.file_stem().and_then(|stem| stem.to_str()) {
+                    if let Some(target) = positions.get(target_name).copied() {
+                        after.x = target.x;
+                    }
+                }
+                Some(NodeMoveDelta {
+                    node_id,
+                    before,
+                    after,
+                })
+            })
+            .collect(),
+        added_edges: plan
+            .after_graph
+            .edges
+            .iter()
+            .filter(|edge| {
+                !plan
+                    .before_graph
+                    .edges
+                    .iter()
+                    .any(|before| before.from == edge.from && before.to == edge.to)
+            })
+            .map(|edge| EdgeDelta {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                kind: "depends_on".to_string(),
+                violation_before: false,
+                violation_after: false,
+            })
+            .collect(),
+        removed_edges: plan
+            .removed_edges
+            .iter()
+            .map(|edge| EdgeDelta {
+                from: edge.from.clone(),
+                to: edge.to.clone(),
+                kind: "depends_on".to_string(),
+                violation_before: true,
+                violation_after: false,
+            })
+            .collect(),
+        duration_ms: 900,
+    }
+}
+
+fn reverse_delta_animation(animation: &GraphDeltaAnimation) -> GraphDeltaAnimation {
+    GraphDeltaAnimation {
+        moved_nodes: animation
+            .moved_nodes
+            .iter()
+            .map(|delta| NodeMoveDelta {
+                node_id: delta.node_id.clone(),
+                before: delta.after,
+                after: delta.before,
+            })
+            .collect(),
+        added_edges: animation.removed_edges.clone(),
+        removed_edges: animation.added_edges.clone(),
+        duration_ms: animation.duration_ms,
+    }
 }
 
 fn cycle_pairs(analysis: &AnalysisReport) -> BTreeSet<(String, String)> {
@@ -378,5 +998,31 @@ mod tests {
         let ir = build_structure_view_ir(&analysis, Some(&plan));
         write_ir(&root, &ir).expect("write");
         assert!(structure_ir_path(&root).exists());
+    }
+
+    #[test]
+    fn stable_3d_coordinates() {
+        let analysis = sample_analysis("/tmp/sample");
+        let left = build_structure_view_ir(&analysis, None);
+        let right = build_structure_view_ir(&analysis, None);
+        let left_nodes = left
+            .scene_3d
+            .as_ref()
+            .expect("left scene")
+            .graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.position))
+            .collect::<BTreeMap<_, _>>();
+        let right_nodes = right
+            .scene_3d
+            .as_ref()
+            .expect("right scene")
+            .graph
+            .nodes
+            .iter()
+            .map(|node| (node.id.clone(), node.position))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(left_nodes, right_nodes);
     }
 }

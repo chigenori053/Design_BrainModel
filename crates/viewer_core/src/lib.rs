@@ -1,8 +1,17 @@
+pub mod animation;
 pub mod app;
+pub mod benchmark;
+pub mod camera;
+pub mod delta_store;
 pub mod graph_2d;
 pub mod ir_loader;
 pub mod model;
 pub mod native;
 pub mod nl_chat;
 pub mod preview;
+pub mod projection_3d;
+pub mod render_3d;
+pub mod replay_export;
+pub mod source_jump;
 pub mod space_3d;
+pub mod timeline;

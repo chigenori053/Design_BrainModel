@@ -27,15 +27,24 @@ pub struct NlDispatchResult {
 
 impl NlDispatchResult {
     fn text(response: impl Into<String>) -> Self {
-        Self { response: response.into(), ir_updated: false }
+        Self {
+            response: response.into(),
+            ir_updated: false,
+        }
     }
 
     fn text_with_ir(response: impl Into<String>) -> Self {
-        Self { response: response.into(), ir_updated: true }
+        Self {
+            response: response.into(),
+            ir_updated: true,
+        }
     }
 
     fn local(cmd: impl Into<String>) -> Self {
-        Self { response: format!("__local:{}", cmd.into()), ir_updated: false }
+        Self {
+            response: format!("__local:{}", cmd.into()),
+            ir_updated: false,
+        }
     }
 }
 
@@ -44,36 +53,30 @@ pub fn dispatch_nl(ctx: &NlContext) -> NlDispatchResult {
     let action = resolve_action(&ctx.prompt);
 
     match action {
-        Some(ViewerAction::HighlightCycles) => {
-            describe_cycles(&ctx.root)
-        }
-        Some(ViewerAction::ShowViolations) => {
-            describe_violations(&ctx.root)
-        }
-        Some(ViewerAction::DescribeNode) => {
-            describe_node(&ctx.root, ctx.selected_node.as_deref())
-        }
-        Some(ViewerAction::PreviewRefactor) => {
-            execute_refactor(&ctx.root, &ctx.prompt, ctx.selected_node.as_deref(), GuiActionMode::Preview)
-        }
-        Some(ViewerAction::ApplyRefactor) => {
-            execute_refactor(&ctx.root, &ctx.prompt, ctx.selected_node.as_deref(), GuiActionMode::Apply)
-        }
-        Some(ViewerAction::UndoLastAction) => {
-            match undo_session(&ctx.root) {
-                Ok(_) => NlDispatchResult::text_with_ir("前回の操作を取り消しました。"),
-                Err(e) => NlDispatchResult::text(format!("Undo failed: {e}")),
-            }
-        }
-        Some(ViewerAction::RedoLastAction) => {
-            match redo_session(&ctx.root) {
-                Ok(_) => NlDispatchResult::text_with_ir("操作をやり直しました。"),
-                Err(e) => NlDispatchResult::text(format!("Redo failed: {e}")),
-            }
-        }
-        Some(ViewerAction::ShowRiskOverlay) => {
-            describe_risk(&ctx.root)
-        }
+        Some(ViewerAction::HighlightCycles) => describe_cycles(&ctx.root),
+        Some(ViewerAction::ShowViolations) => describe_violations(&ctx.root),
+        Some(ViewerAction::DescribeNode) => describe_node(&ctx.root, ctx.selected_node.as_deref()),
+        Some(ViewerAction::PreviewRefactor) => execute_refactor(
+            &ctx.root,
+            &ctx.prompt,
+            ctx.selected_node.as_deref(),
+            GuiActionMode::Preview,
+        ),
+        Some(ViewerAction::ApplyRefactor) => execute_refactor(
+            &ctx.root,
+            &ctx.prompt,
+            ctx.selected_node.as_deref(),
+            GuiActionMode::Apply,
+        ),
+        Some(ViewerAction::UndoLastAction) => match undo_session(&ctx.root) {
+            Ok(_) => NlDispatchResult::text_with_ir("前回の操作を取り消しました。"),
+            Err(e) => NlDispatchResult::text(format!("Undo failed: {e}")),
+        },
+        Some(ViewerAction::RedoLastAction) => match redo_session(&ctx.root) {
+            Ok(_) => NlDispatchResult::text_with_ir("操作をやり直しました。"),
+            Err(e) => NlDispatchResult::text(format!("Redo failed: {e}")),
+        },
+        Some(ViewerAction::ShowRiskOverlay) => describe_risk(&ctx.root),
         Some(ViewerAction::SwitchMode2D) => NlDispatchResult::local("switch_2d"),
         Some(ViewerAction::SwitchMode3D) => NlDispatchResult::local("switch_3d"),
         Some(ViewerAction::SearchNode) => {
@@ -101,7 +104,11 @@ fn load_ir(root: &Path) -> Option<StructureViewIR> {
 fn describe_cycles(root: &Path) -> NlDispatchResult {
     let ir = match load_ir(root) {
         Some(ir) => ir,
-        None => return NlDispatchResult::text("構造IRが見つかりません。先に analyze を実行してください。"),
+        None => {
+            return NlDispatchResult::text(
+                "構造IRが見つかりません。先に analyze を実行してください。",
+            );
+        }
     };
     let cycles: Vec<_> = ir.edges.iter().filter(|e| e.cycle).collect();
     if cycles.is_empty() {
@@ -117,7 +124,11 @@ fn describe_cycles(root: &Path) -> NlDispatchResult {
 fn describe_violations(root: &Path) -> NlDispatchResult {
     let ir = match load_ir(root) {
         Some(ir) => ir,
-        None => return NlDispatchResult::text("構造IRが見つかりません。先に analyze を実行してください。"),
+        None => {
+            return NlDispatchResult::text(
+                "構造IRが見つかりません。先に analyze を実行してください。",
+            );
+        }
     };
     let risk_violations: Vec<_> = ir
         .risk_overlay
@@ -137,22 +148,41 @@ fn describe_violations(root: &Path) -> NlDispatchResult {
 fn describe_node(root: &Path, selected: Option<&str>) -> NlDispatchResult {
     let node_id = match selected {
         Some(n) => n,
-        None => return NlDispatchResult::text("ノードが選択されていません。マップ上のノードをクリックしてから説明を要求してください。"),
+        None => {
+            return NlDispatchResult::text(
+                "ノードが選択されていません。マップ上のノードをクリックしてから説明を要求してください。",
+            );
+        }
     };
     let ir = match load_ir(root) {
         Some(ir) => ir,
-        None => return NlDispatchResult::text("構造IRが見つかりません。先に analyze を実行してください。"),
+        None => {
+            return NlDispatchResult::text(
+                "構造IRが見つかりません。先に analyze を実行してください。",
+            );
+        }
     };
-    let node = match ir.nodes.iter().find(|n| n.id == node_id || n.label == node_id) {
+    let node = match ir
+        .nodes
+        .iter()
+        .find(|n| n.id == node_id || n.label == node_id)
+    {
         Some(n) => n,
         None => return NlDispatchResult::text(format!("ノード「{node_id}」が見つかりません。")),
     };
     let incoming = ir.edges.iter().filter(|e| e.to == node.id).count();
     let outgoing = ir.edges.iter().filter(|e| e.from == node.id).count();
-    let cycles = ir.edges.iter().filter(|e| (e.from == node.id || e.to == node.id) && e.cycle).count();
+    let cycles = ir
+        .edges
+        .iter()
+        .filter(|e| (e.from == node.id || e.to == node.id) && e.cycle)
+        .count();
     let risk = ir.risk_overlay.iter().find(|r| r.target == node.id);
     let mut lines = vec![
-        format!("**{}** (layer: {}, role: {})", node.label, node.layer, node.role),
+        format!(
+            "**{}** (layer: {}, role: {})",
+            node.label, node.layer, node.role
+        ),
         format!("依存: 入力 {incoming} / 出力 {outgoing}"),
     ];
     if cycles > 0 {
@@ -167,12 +197,19 @@ fn describe_node(root: &Path, selected: Option<&str>) -> NlDispatchResult {
 fn describe_risk(root: &Path) -> NlDispatchResult {
     let ir = match load_ir(root) {
         Some(ir) => ir,
-        None => return NlDispatchResult::text("構造IRが見つかりません。先に analyze を実行してください。"),
+        None => {
+            return NlDispatchResult::text(
+                "構造IRが見つかりません。先に analyze を実行してください。",
+            );
+        }
     };
     if ir.risk_overlay.is_empty() {
         return NlDispatchResult::text("リスクは検出されていません。");
     }
-    let mut lines = vec![format!("リスク項目が {} 件あります:", ir.risk_overlay.len())];
+    let mut lines = vec![format!(
+        "リスク項目が {} 件あります:",
+        ir.risk_overlay.len()
+    )];
     for r in &ir.risk_overlay {
         lines.push(format!("  [{}] {} — {}", r.level, r.target, r.message));
     }
@@ -269,6 +306,10 @@ mod tests {
             selected_node: None,
             root,
         });
-        assert!(result.response.contains("IR") || result.response.contains("cycle") || !result.response.is_empty());
+        assert!(
+            result.response.contains("IR")
+                || result.response.contains("cycle")
+                || !result.response.is_empty()
+        );
     }
 }

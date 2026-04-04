@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
+use viewer_core::timeline::compact_delta_chain;
 
 use crate::refactor::{
     GuiAction, GuiActionMode, RefactorRuntimeOptions, build_apply_report,
@@ -10,10 +11,10 @@ use crate::refactor::{
 };
 
 use super::{
-    DesignSyncStatus, HeatmapDelta, HistoryEntry, RiskOverlay, SnapshotDelta, SnapshotGraph,
-    StructureSnapshot, StructureViewIR, ViewMode, ViewerLoopTelemetry, ViewerSelection,
-    export_structure_view, export_structure_view_from_plan, launch_native_viewer, session_path,
-    structure_ir_path,
+    DesignSyncStatus, EdgeDeltaDelta, HeatmapDelta, HistoryEntry, NodeDelta, OverlayDelta,
+    RiskOverlay, SnapshotDelta, SnapshotGraph, StructureSnapshot, StructureViewIR, ViewMode,
+    ViewerLoopTelemetry, ViewerSelection, export_structure_view, export_structure_view_from_plan,
+    launch_native_viewer, session_path, structure_ir_path,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -95,11 +96,7 @@ pub fn apply_session_action(
     let before_ir = session.current_ir.clone();
     if matches!(event.mode, GuiActionMode::Preview) {
         let mut preview_ir = export_structure_view_from_plan(root, &plan)?;
-        preview_ir.snapshots = session
-            .history_stack
-            .iter()
-            .map(|entry| entry.snapshot.clone())
-            .collect();
+        preview_ir.snapshots = compacted_history_snapshots(&session.history_stack);
         preview_ir.history = history_entries(&session.history_stack);
         decorate_ir(
             &mut preview_ir,
@@ -131,11 +128,8 @@ pub fn apply_session_action(
     let mut after_ir = export_structure_view_from_plan(root, &plan)?;
     let record = SessionRecord {
         snapshot: StructureSnapshot {
-            before: snapshot_graph(&before_ir),
-            after: snapshot_graph(&after_ir),
-            delta: SnapshotDelta {
-                summary: delta.clone(),
-            },
+            base: checkpoint_base(&before_ir, session.history_stack.len()),
+            delta: build_snapshot_delta(&before_ir, &after_ir, &delta),
             timestamp: timestamp_now(),
             action: format!("{:?}", plan.target),
             confidence: plan.confidence,
@@ -145,11 +139,7 @@ pub fn apply_session_action(
     session.history_stack.push(record.clone());
     session.redo_stack.clear();
     session.snapshot_index = session.history_stack.len();
-    after_ir.snapshots = session
-        .history_stack
-        .iter()
-        .map(|entry| entry.snapshot.clone())
-        .collect();
+    after_ir.snapshots = compacted_history_snapshots(&session.history_stack);
     after_ir.history = history_entries(&session.history_stack);
     after_ir.risk_overlay = risk_overlay(&report.validation, &report.plan, &report.apply);
     decorate_ir(
@@ -174,11 +164,7 @@ pub fn undo_session(root: &Path) -> Result<SessionCommandReport, String> {
     session.redo_stack.push(record);
     session.snapshot_index = session.history_stack.len();
     session.current_ir = export_structure_view(root)?;
-    session.current_ir.snapshots = session
-        .history_stack
-        .iter()
-        .map(|entry| entry.snapshot.clone())
-        .collect();
+    session.current_ir.snapshots = compacted_history_snapshots(&session.history_stack);
     session.current_ir.history = history_entries(&session.history_stack);
     save_session(root, &session)?;
     write_ir(root, &session.current_ir)?;
@@ -194,11 +180,7 @@ pub fn redo_session(root: &Path) -> Result<SessionCommandReport, String> {
     session.history_stack.push(record.clone());
     session.snapshot_index = session.history_stack.len();
     session.current_ir = export_structure_view(root)?;
-    session.current_ir.snapshots = session
-        .history_stack
-        .iter()
-        .map(|entry| entry.snapshot.clone())
-        .collect();
+    session.current_ir.snapshots = compacted_history_snapshots(&session.history_stack);
     session.current_ir.history = history_entries(&session.history_stack);
     session.current_ir.risk_overlay = vec![RiskOverlay {
         target: record.snapshot.action.clone(),
@@ -266,6 +248,129 @@ fn snapshot_graph(ir: &StructureViewIR) -> SnapshotGraph {
     }
 }
 
+fn checkpoint_base(ir: &StructureViewIR, history_len: usize) -> Option<SnapshotGraph> {
+    if history_len % 20 == 0 {
+        Some(snapshot_graph(ir))
+    } else {
+        None
+    }
+}
+
+fn build_snapshot_delta(
+    before_ir: &StructureViewIR,
+    after_ir: &StructureViewIR,
+    summary: &[String],
+) -> SnapshotDelta {
+    let before_nodes = before_ir
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let after_nodes = after_ir
+        .nodes
+        .iter()
+        .map(|node| (node.id.clone(), node.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let node_ids = before_nodes
+        .keys()
+        .chain(after_nodes.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let node_updates = node_ids
+        .into_iter()
+        .filter_map(|id| {
+            let before = before_nodes.get(&id).cloned();
+            let after = after_nodes.get(&id).cloned();
+            (before != after).then_some(NodeDelta { id, before, after })
+        })
+        .collect();
+
+    let before_edges = before_ir
+        .edges
+        .iter()
+        .map(|edge| (edge_key(edge), edge.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let after_edges = after_ir
+        .edges
+        .iter()
+        .map(|edge| (edge_key(edge), edge.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let edge_keys = before_edges
+        .keys()
+        .chain(after_edges.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let edge_updates = edge_keys
+        .into_iter()
+        .filter_map(|key| {
+            let before = before_edges.get(&key).cloned();
+            let after = after_edges.get(&key).cloned();
+            if before == after {
+                return None;
+            }
+            let (from, to, kind) = split_edge_key(&key);
+            Some(EdgeDeltaDelta {
+                from,
+                to,
+                kind,
+                before,
+                after,
+            })
+        })
+        .collect();
+
+    let before_overlay = before_ir
+        .risk_overlay
+        .iter()
+        .map(|overlay| (overlay.target.clone(), overlay.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let after_overlay = after_ir
+        .risk_overlay
+        .iter()
+        .map(|overlay| (overlay.target.clone(), overlay.clone()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let overlay_targets = before_overlay
+        .keys()
+        .chain(after_overlay.keys())
+        .cloned()
+        .collect::<std::collections::BTreeSet<_>>();
+
+    let overlay_updates = overlay_targets
+        .into_iter()
+        .filter_map(|target| {
+            let before = before_overlay.get(&target).cloned();
+            let after = after_overlay.get(&target).cloned();
+            (before != after).then_some(OverlayDelta {
+                target,
+                before,
+                after,
+            })
+        })
+        .collect();
+
+    SnapshotDelta {
+        summary: summary.to_vec(),
+        node_updates,
+        edge_updates,
+        overlay_updates,
+    }
+}
+
+fn edge_key(edge: &crate::viewer::ViewEdge) -> String {
+    format!("{}|{}|{}", edge.from, edge.to, edge.kind)
+}
+
+fn split_edge_key(key: &str) -> (String, String, String) {
+    let mut parts = key.split('|');
+    (
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or_default().to_string(),
+        parts.next().unwrap_or_default().to_string(),
+    )
+}
+
 fn history_entries(history: &[SessionRecord]) -> Vec<HistoryEntry> {
     history
         .iter()
@@ -275,6 +380,18 @@ fn history_entries(history: &[SessionRecord]) -> Vec<HistoryEntry> {
             action: entry.snapshot.action.clone(),
             confidence: format!("{:.2}", entry.snapshot.confidence),
         })
+        .collect()
+}
+
+fn compacted_history_snapshots(history: &[SessionRecord]) -> Vec<StructureSnapshot> {
+    let core_snapshots = history
+        .iter()
+        .map(|entry| entry.snapshot.clone())
+        .map(StructureSnapshot::into_core)
+        .collect::<Vec<_>>();
+    compact_delta_chain(&core_snapshots, 100)
+        .into_iter()
+        .map(StructureSnapshot::from_core)
         .collect()
 }
 

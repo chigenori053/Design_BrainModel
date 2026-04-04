@@ -60,8 +60,7 @@ fn main() -> Result<(), String> {
                     },
                 },
             )?;
-            let result: DispatchResult =
-                ipc::dispatch_action(&cli, &dispatch_root, &action_path)?;
+            let result: DispatchResult = ipc::dispatch_action(&cli, &dispatch_root, &action_path)?;
             Ok(result.stdout)
         }),
         source_path_for_node: Arc::new(|_| None),

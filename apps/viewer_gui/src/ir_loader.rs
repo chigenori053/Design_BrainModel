@@ -77,17 +77,9 @@ mod tests {
         fs::create_dir_all(&root).expect("create root");
         let path = root.join("structure_view.json");
         let ir = StructureViewIR {
-            version: 2,
-            nodes: Vec::new(),
-            edges: Vec::new(),
-            preview: None,
-            snapshots: Vec::new(),
-            history: Vec::new(),
-            risk_overlay: Vec::new(),
             selection: ViewerSelection::default(),
-            candidates: Vec::new(),
-            heatmap: Vec::new(),
             design_sync: DesignSyncStatus::default(),
+            ..StructureViewIR::default()
         };
         fs::write(&path, serde_json::to_string_pretty(&ir).expect("serialize")).expect("write");
 
