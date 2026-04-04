@@ -1256,6 +1256,18 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
     writeln!(writer, "Applied: {}", report.execution.applied)?;
     writeln!(writer, "Rollback: {}", report.execution.rolled_back)?;
     writeln!(writer, "Files changed: {}", report.execution.files_changed)?;
+    if let Some(transactional) = &report.execution.transactional_apply {
+        writeln!(writer, "Transactional build: {}", transactional.build_ok)?;
+        writeln!(writer, "Sandbox cleanup: {}", transactional.cleanup_ok)?;
+        writeln!(
+            writer,
+            "Sandbox path: {}",
+            transactional.sandbox_path.display()
+        )?;
+    }
+    // Canonical stream count — must equal changes.summary.total_changes and
+    // execution.diff.diffs.len() for no-op targets (R5).
+    writeln!(writer, "Patches (canonical): {}", report.patches.len())?;
     writeln!(
         writer,
         "Diffs: {} (breaking={})",
@@ -1283,8 +1295,39 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
             writeln!(writer, "Commit: {}", commit_id)?;
         }
     }
+    if let Some(git) = &report.execution.git_commit {
+        writeln!(writer, "Git staged files: {}", git.staged_files.len())?;
+        writeln!(writer, "Git dirty excluded: {}", git.dirty_excluded.len())?;
+    }
+    if let Some(push) = &report.execution.git_push {
+        writeln!(writer, "Git push: {}", push.push_created)?;
+        writeln!(writer, "Push branch: {}", push.branch_name)?;
+        writeln!(writer, "Push remote: {}", push.remote_ref)?;
+    }
+    if let Some(pr) = &report.execution.pull_request {
+        writeln!(writer, "Pull request: {}", pr.pr_created)?;
+        writeln!(writer, "PR base: {}", pr.base_branch)?;
+        if let Some(url) = &pr.pr_url {
+            writeln!(writer, "PR URL: {url}")?;
+        }
+    }
     if let Some(reason) = &report.execution.reason {
         writeln!(writer, "Reason: {reason}")?;
+    }
+    if !report.apply_resolutions.is_empty() {
+        writeln!(writer, "Apply target resolution:")?;
+        for resolution in &report.apply_resolutions {
+            writeln!(
+                writer,
+                "- {} -> {} ({})",
+                resolution.module,
+                resolution.resolved_relative_path.display(),
+                resolution.resolution_strategy
+            )?;
+            if let Some(sandbox_path) = &resolution.sandbox_path {
+                writeln!(writer, "  sandbox: {}", sandbox_path.display())?;
+            }
+        }
     }
     for change in &report.changes.changes {
         writeln!(writer)?;

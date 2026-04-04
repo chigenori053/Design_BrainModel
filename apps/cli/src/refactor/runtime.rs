@@ -3,6 +3,7 @@ use std::path::Path;
 use serde::Serialize;
 
 use crate::coding::{CodingOptions, generate_code_change_set};
+use crate::refactor::PatchScope;
 
 use super::{
     ApplyResult, RefactorPlan, RefactorPreview, ValidationResult, file_move_change_set,
@@ -75,7 +76,16 @@ pub fn apply_refactor(
             format: options.format,
             safe_mode: true,
             auto_commit: options.auto_commit,
+            confirm_commit: false,
+            auto_push: false,
+            confirm_push: false,
+            auto_pr: false,
+            confirm_pr: false,
+            pr_base: "main".to_string(),
+            patch_scope: PatchScope::WorkspaceWide,
+            explicit_target: None,
         },
+        None,
     )?;
 
     if !execution.applied {

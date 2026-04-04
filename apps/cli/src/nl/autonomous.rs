@@ -1,7 +1,7 @@
 use crate::session::AgentSession;
 
-use super::executor::describe_plan_labels;
 use super::convergence::{ConvergenceMetrics, goal_reached};
+use super::executor::describe_plan_labels;
 use super::executor::execute_plan;
 use super::goal::{GoalType, goal_label};
 use super::planner_v2::update_conversation_after_plan;
@@ -70,7 +70,9 @@ pub fn run_goal_loop(
         }
 
         if metrics.confidence < config.convergence_threshold || !metrics.validation_ok {
-            outputs.push("autonomous loop stopped: confidence drop or validation regression".to_string());
+            outputs.push(
+                "autonomous loop stopped: confidence drop or validation regression".to_string(),
+            );
             return AutonomousResult {
                 outputs,
                 completed,
@@ -92,11 +94,7 @@ pub fn run_goal_loop(
     }
 }
 
-fn build_goal_plan(
-    goal: GoalType,
-    target: &std::path::Path,
-    iteration: usize,
-) -> CommandPlan {
+fn build_goal_plan(goal: GoalType, target: &std::path::Path, iteration: usize) -> CommandPlan {
     let path = target.to_path_buf();
     let mut steps = match goal {
         GoalType::EliminateCycles => vec![
@@ -180,13 +178,25 @@ fn estimate_after(goal: GoalType, iteration: usize) -> f32 {
 
 fn telemetry_line(goal: GoalType, metrics: ConvergenceMetrics) -> String {
     match goal {
-        GoalType::EliminateCycles => format!("cycles {} -> {}", metrics.before as i32, metrics.after as i32),
-        GoalType::ReduceUnsafe => format!("unsafe {} -> {}", metrics.before as i32, metrics.after as i32),
+        GoalType::EliminateCycles => format!(
+            "cycles {} -> {}",
+            metrics.before as i32, metrics.after as i32
+        ),
+        GoalType::ReduceUnsafe => format!(
+            "unsafe {} -> {}",
+            metrics.before as i32, metrics.after as i32
+        ),
         GoalType::StabilizeViewerDispatch => {
-            format!("dispatch error rate {} -> {}", metrics.before as i32, metrics.after as i32)
+            format!(
+                "dispatch error rate {} -> {}",
+                metrics.before as i32, metrics.after as i32
+            )
         }
         GoalType::ImproveTestPassRate => {
-            format!("test pass rate {:.2} -> {:.2}", metrics.before, metrics.after)
+            format!(
+                "test pass rate {:.2} -> {:.2}",
+                metrics.before, metrics.after
+            )
         }
         GoalType::PrepareCommitAndPR => "git dry-run ready".to_string(),
     }
@@ -211,6 +221,11 @@ mod tests {
             },
         );
         assert!(!result.completed);
-        assert!(result.outputs.iter().any(|line| line.contains("max iterations exceeded")));
+        assert!(
+            result
+                .outputs
+                .iter()
+                .any(|line| line.contains("max iterations exceeded"))
+        );
     }
 }

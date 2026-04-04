@@ -2,7 +2,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::coding::{CodingOptions, execute_code_change_set, generate_code_change_set};
+use crate::coding::{
+    CodingOptions, collect_apply_target_resolutions, execute_code_change_set,
+    generate_code_change_set, resolve_sandbox_module_file,
+};
 use crate::dbm::ProjectAnalysisResult;
 use crate::source_index::ModuleSourceIndex;
 use crate::world;
@@ -64,13 +67,30 @@ pub fn build_refactoring_report(
     let design_graph = design_graph_from_analysis(&analysis);
     let structural = structural_analysis(&design_graph);
     let changes = generate_code_change_set(path, &structural.code_patches)?;
-    let execution = execute_code_change_set(path, &changes, options)?;
+    let execution = execute_code_change_set(path, &changes, options, None)?;
+    let mut apply_resolutions =
+        collect_apply_target_resolutions(path, &structural.code_patches, None, &BTreeMap::new())?;
+    if let Some(transactional) = execution.transactional_apply.as_ref() {
+        for resolution in &mut apply_resolutions {
+            resolution.sandbox_path =
+                resolve_sandbox_module_file(&resolution.module, path, &transactional.sandbox_path)
+                    .ok()
+                    .or_else(|| {
+                        Some(
+                            transactional
+                                .sandbox_path
+                                .join(&resolution.resolved_relative_path),
+                        )
+                    });
+        }
+    }
     Ok(CodingReport {
         root: path.display().to_string(),
         dry_run,
         execution,
-        patches: structural.code_patches,
+        patches: changes.patches.clone(),
         changes,
+        apply_resolutions,
     })
 }
 
@@ -364,12 +384,7 @@ fn build_analysis_report(
             .map(|module| AnalysisModule {
                 name: module.name.clone(),
                 file_count: module.files.len(),
-                source_path: module
-                    .files
-                    .iter()
-                    .min()
-                    .cloned()
-                    .unwrap_or_default(),
+                source_path: module.files.iter().min().cloned().unwrap_or_default(),
             })
             .collect(),
         graph_nodes: build_graph_nodes(root, project),
@@ -430,20 +445,23 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
         logical_names.insert(dependency.to.clone());
     }
 
-    logical_names
-        .into_iter()
-        .for_each(|logical_name| {
-            if graph_nodes.contains_key(&logical_name) {
-                return;
-            }
-            if let Some((qualified_id, source_path)) = index.bind_graph_node(&logical_name) {
-                graph_nodes.insert(logical_name.clone(), ModuleNode {
+    logical_names.into_iter().for_each(|logical_name| {
+        if graph_nodes.contains_key(&logical_name) {
+            return;
+        }
+        if let Some((qualified_id, source_path)) = index.bind_graph_node(&logical_name) {
+            graph_nodes.insert(
+                logical_name.clone(),
+                ModuleNode {
                     qualified_id,
                     logical_name,
                     source_path: Some(source_path),
-                });
-            } else {
-                graph_nodes.insert(logical_name.clone(), ModuleNode {
+                },
+            );
+        } else {
+            graph_nodes.insert(
+                logical_name.clone(),
+                ModuleNode {
                     qualified_id: crate::source_index::QualifiedModuleId {
                         crate_name: root
                             .file_name()
@@ -454,9 +472,10 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
                     },
                     logical_name,
                     source_path: None,
-                });
-            }
-        });
+                },
+            );
+        }
+    });
     graph_nodes.into_values().collect()
 }
 

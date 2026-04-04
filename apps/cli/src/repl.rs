@@ -15,9 +15,11 @@ use crate::executor::Executor;
 use crate::input::{InputState, read_input_with_label};
 use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
-use crate::nl::planner_v2::{plan_input as plan_nl_input_v2, update_conversation_after_plan};
+use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
-use crate::nl::{execute_plan as execute_nl_plan, render_plan_summary};
+use crate::nl::{
+    execute_plan as execute_nl_plan, plan_input_with_v2_fallback, render_plan_summary_with_label,
+};
 use crate::plan::PlanStatus;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
@@ -41,16 +43,13 @@ where
     print_banner(writer)?;
 
     loop {
-        let input = match read_input_with_label(
-            reader,
-            writer,
-            session.state,
-            conversation.prompt_label(),
-        )
-        .map_err(|e| e.to_string())? {
-            InputState::Eof => break,
-            InputState::Line(line) => line,
-        };
+        let input =
+            match read_input_with_label(reader, writer, session.state, conversation.prompt_label())
+                .map_err(|e| e.to_string())?
+            {
+                InputState::Eof => break,
+                InputState::Line(line) => line,
+            };
 
         if input.is_empty() {
             continue;
@@ -103,7 +102,14 @@ fn dispatch<W: Write>(
             writer,
         ),
         Route::Agent(text) => {
-            handle_agent(&text, session, conversation, registry, *planner_mode, writer)?;
+            handle_agent(
+                &text,
+                session,
+                conversation,
+                registry,
+                *planner_mode,
+                writer,
+            )?;
             Ok(false)
         }
     }
@@ -333,8 +339,10 @@ fn handle_agent<W: Write>(
         return Ok(());
     }
 
-    if let Some(command_plan) = plan_nl_input_v2(input, session, conversation) {
-        let planner_summary = render_plan_summary(&command_plan);
+    let (command_plan, planner_label) = plan_input_with_v2_fallback(input, session, conversation);
+
+    if let Some(command_plan) = command_plan {
+        let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
         emit_output(session, writer, &planner_summary)?;
         update_conversation_after_plan(input, &command_plan, conversation);
 
@@ -470,8 +478,11 @@ fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
     writeln!(writer, "    このプロジェクト全体を解析して").map_err(|e| e.to_string())?;
     writeln!(writer, "    GUIで構造を開いて問題ノードを見せて").map_err(|e| e.to_string())?;
     writeln!(writer, "    Rust unsafe を減らして cargo check して").map_err(|e| e.to_string())?;
-    writeln!(writer, "    さっきの場所を安全に修正して   ← 前回パスを自動使用")
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "    さっきの場所を安全に修正して   ← 前回パスを自動使用"
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(writer, "").map_err(|e| e.to_string())?;
     writeln!(writer, "  コマンドの例:").map_err(|e| e.to_string())?;
     writeln!(writer, "    /validate src/lib.rs").map_err(|e| e.to_string())?;
@@ -499,15 +510,21 @@ fn print_help<W: Write>(
         "── 自然言語（入力 → 即時実行）──────────────────────────────"
     )
     .map_err(|e| e.to_string())?;
-    writeln!(writer, "  このプロジェクトを解析して     → design_cli analyze .")
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "  このプロジェクトを解析して     → design_cli analyze ."
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(
         writer,
         "  この循環依存を安全に直して     → design_cli analyze . → coding . --safe --check"
     )
     .map_err(|e| e.to_string())?;
-    writeln!(writer, "  GUIで構造を開いて             → design_cli structure view .")
-        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "  GUIで構造を開いて             → design_cli structure view ."
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(
         writer,
         "  unsafeを減らしてcargo check   → analyze → coding --safe --check → validate"
@@ -753,14 +770,18 @@ mod tests {
     fn agent_output_accumulates_in_transcript() {
         let (_, session, _) = run_with_session("some agent input\n");
         assert!(session.transcript.len() >= 2);
-        assert!(session
-            .transcript
-            .iter()
-            .any(|line| line.contains("[planner:")));
-        assert!(session
-            .transcript
-            .iter()
-            .any(|line| line.contains("[test] planner-only mode")));
+        assert!(
+            session
+                .transcript
+                .iter()
+                .any(|line| line.contains("[planner:"))
+        );
+        assert!(
+            session
+                .transcript
+                .iter()
+                .any(|line| line.contains("[test] planner-only mode"))
+        );
         assert_eq!(session.state, State::Completed);
         assert_eq!(
             session.current_plan.as_ref().map(|plan| plan.status),

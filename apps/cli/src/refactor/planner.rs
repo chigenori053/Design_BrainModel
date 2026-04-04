@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -9,6 +10,13 @@ use super::{
     RefactorPlan, RefactorTarget, StructureEdge, StructureGraph, counts_by_node,
     graph_from_analysis, integration_plan_for_target, source_index_for_report,
 };
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PatchScope {
+    WorkspaceWide,
+    SameCrate,
+    ExplicitTargetOnly,
+}
 
 pub fn default_target(report: &AnalysisReport) -> RefactorTarget {
     if report.cycles.has_cycle {

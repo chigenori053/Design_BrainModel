@@ -31,7 +31,10 @@ pub fn merge_target(
 
 fn has_explicit_target(input: &str) -> bool {
     input.split_whitespace().any(|token| {
-        token.contains('/') || token.starts_with('.') || token.ends_with(".rs") || token.ends_with(".toml")
+        token.contains('/')
+            || token.starts_with('.')
+            || token.ends_with(".rs")
+            || token.ends_with(".toml")
     })
 }
 

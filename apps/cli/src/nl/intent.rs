@@ -43,9 +43,16 @@ pub fn wants_coding(lower: &str) -> bool {
         "safe fix",
         "fix",
         "repair",
+        "refactor",
+        "prune",
+        "rebind",
         "修正",
         "直して",
         "直す",
+        "改善",
+        "厳密化",
+        "除去",
+        "最適化",
         "安全に",
         "unsafe",
         "実装",
@@ -56,16 +63,9 @@ pub fn wants_coding(lower: &str) -> bool {
 }
 
 pub fn wants_validate(lower: &str) -> bool {
-    [
-        "validate",
-        "検証",
-        "cargo check",
-        "check",
-        "確認",
-        "lint",
-    ]
-    .iter()
-    .any(|keyword| lower.contains(keyword))
+    ["validate", "検証", "cargo check", "check", "確認", "lint"]
+        .iter()
+        .any(|keyword| lower.contains(keyword))
 }
 
 pub fn wants_structure_view(lower: &str) -> bool {
@@ -85,9 +85,15 @@ pub fn wants_structure_view(lower: &str) -> bool {
 }
 
 pub fn wants_structure_edit(lower: &str) -> bool {
-    ["edit structure", "構造を編集", "viewer edit", "session attach", "編集"]
-        .iter()
-        .any(|keyword| lower.contains(keyword))
+    [
+        "edit structure",
+        "構造を編集",
+        "viewer edit",
+        "session attach",
+        "編集",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
 }
 
 pub fn wants_run(lower: &str) -> bool {
@@ -98,7 +104,9 @@ pub fn wants_run(lower: &str) -> bool {
 }
 
 pub fn wants_rules(lower: &str) -> bool {
-    ["rules", "rule", "ルール"].iter().any(|keyword| lower.contains(keyword))
+    ["rules", "rule", "ルール"]
+        .iter()
+        .any(|keyword| lower.contains(keyword))
 }
 
 pub fn wants_memory(lower: &str) -> bool {
@@ -113,7 +121,10 @@ mod tests {
 
     #[test]
     fn detects_analyze_intent() {
-        assert_eq!(primary_intent("このプロジェクトを解析して"), IntentType::Analyze);
+        assert_eq!(
+            primary_intent("このプロジェクトを解析して"),
+            IntentType::Analyze
+        );
     }
 
     #[test]

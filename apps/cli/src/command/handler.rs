@@ -62,14 +62,18 @@ impl CommandHandler {
     ) -> Result<Output, CommandError> {
         match subcommand {
             Some(sub) => {
-                let handler =
-                    self.subcommands
-                        .get(sub)
-                        .ok_or_else(|| CommandError::UnknownSubcommand {
-                            command: self.name.clone(),
-                            subcommand: sub.to_string(),
-                        })?;
-                (handler.execute)(args, session)
+                if let Some(handler) = self.subcommands.get(sub) {
+                    return (handler.execute)(args, session);
+                }
+                if let Some(default) = self.default {
+                    let mut forwarded = vec![sub.to_string()];
+                    forwarded.extend_from_slice(args);
+                    return default(&forwarded, session);
+                }
+                Err(CommandError::UnknownSubcommand {
+                    command: self.name.clone(),
+                    subcommand: sub.to_string(),
+                })
             }
             None => {
                 if let Some(default) = self.default {
@@ -125,6 +129,17 @@ mod tests {
         let mut session = AgentSession::new();
         let err = cmd.execute(Some("nope"), &[], &mut session).unwrap_err();
         assert!(matches!(err, CommandError::UnknownSubcommand { .. }));
+    }
+
+    #[test]
+    fn default_command_accepts_subcommand_as_first_arg() {
+        let mut cmd = CommandHandler::new("apply");
+        cmd.set_default(echo_handler);
+        let mut session = AgentSession::new();
+        let out = cmd
+            .execute(Some("."), &["--json".to_string()], &mut session)
+            .unwrap();
+        assert_eq!(out.message, ". --json");
     }
 
     #[test]

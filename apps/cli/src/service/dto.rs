@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::coding::{CodeChangeSet, CodingExecutionResult};
 use crate::runner::{CpuReleaseTelemetry, MemoryUsage, OutputMeta, SandboxMode};
-use crate::source_index::QualifiedModuleId;
+use crate::source_index::{ApplyTargetResolution, QualifiedModuleId};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct AnalyzeResultDTO {
@@ -132,6 +132,7 @@ pub struct CodingReport {
     pub execution: CodingExecutionResult,
     pub patches: Vec<integration_layer::CodePatch>,
     pub changes: CodeChangeSet,
+    pub apply_resolutions: Vec<ApplyTargetResolution>,
 }
 
 #[derive(Debug, Clone, Serialize)]

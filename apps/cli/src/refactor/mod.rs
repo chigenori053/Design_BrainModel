@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::path::Component;
 use std::path::{Path, PathBuf};
 
 use integration_layer::{
@@ -7,10 +8,11 @@ use integration_layer::{
     RefactorPlan as IntegrationRefactorPlan, RefactorPlanAction,
 };
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
 use crate::coding::{ChangeSummary, ChangeType, CodeChange, CodeChangeSet};
 use crate::service::{AnalysisDependency, AnalysisReport, ModuleNode, analyze_path};
-use crate::source_index::ModuleSourceIndex;
+use crate::source_index::{ModuleSourceIndex, QualifiedModuleId};
 
 pub mod gui_bridge;
 pub mod planner;
@@ -23,7 +25,7 @@ pub use gui_bridge::{
     GuiAction, GuiActionMode, build_refactor_candidates, gui_event_to_plan,
     gui_event_to_plan_with_candidates,
 };
-pub use planner::{create_refactor_plan, resolve_target};
+pub use planner::{PatchScope, create_refactor_plan, resolve_target};
 pub use preview::{RefactorPreview, render_preview};
 pub use rollback::{WorkspaceSnapshot, rollback_apply, snapshot_workspace};
 pub use runtime::{
@@ -68,18 +70,46 @@ pub enum RefactorActionKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RefactorOperation {
+    ExtractInterface,
+    RemoveDependency,
+    SplitModule,
+    MergeModule,
+    MoveFile,
+    RenameBoundary,
+    IntroduceService,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RefactorCandidate {
+    pub candidate_id: String,
+    pub module_id: QualifiedModuleId,
+    pub logical_name: String,
     pub kind: RefactorActionKind,
+    pub operation: RefactorOperation,
     pub title: String,
     pub rationale: String,
     pub confidence_milli: u16,
+    pub confidence: f32,
     pub from_node: ModuleNode,
     pub to_node: ModuleNode,
     pub patch_plan: RefactorTarget,
     pub source_path: PathBuf,
+    pub preview_hash: String,
+    pub base_file_hash: String,
     pub target_nodes: Vec<String>,
     pub target_edges: Vec<StructureEdge>,
     pub target: RefactorTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ApplyResolverError {
+    MissingSnapshot,
+    MissingSourcePath,
+    FileDriftDetected,
+    PathOutsideWorkspace,
+    PermissionDenied,
+    TransactionRollback,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -212,6 +242,88 @@ pub(crate) fn source_index_for_report(report: &AnalysisReport) -> ModuleSourceIn
     ModuleSourceIndex::build(Path::new(&report.root)).unwrap_or_default()
 }
 
+pub fn candidate_snapshot_dir(root: &Path) -> PathBuf {
+    root.join(".dbm").join("refactor").join("candidates")
+}
+
+pub fn candidate_snapshot_path(root: &Path, candidate_id: &str) -> PathBuf {
+    candidate_snapshot_dir(root).join(format!("{candidate_id}.json"))
+}
+
+pub fn resolve_preview_candidate(
+    root: &Path,
+    module_id: &QualifiedModuleId,
+    logical_name: &str,
+    source_index: &ModuleSourceIndex,
+) -> Result<PathBuf, String> {
+    let qualified = format!("{}::{}", module_id.crate_name, module_id.module_path);
+    let path = source_index
+        .resolve(&qualified)
+        .ok()
+        .flatten()
+        .or_else(|| source_index.resolve(logical_name).ok().flatten())
+        .or_else(|| {
+            source_index
+                .bind_graph_node(logical_name)
+                .map(|(_, path)| path)
+        })
+        .ok_or_else(|| format!("unable to resolve source path for module {logical_name}"))?;
+    let absolute = workspace_absolute_path(root, &path).map_err(|_| {
+        format!(
+            "resolved path escapes workspace boundary: {}",
+            path.display()
+        )
+    })?;
+    if !absolute.exists() {
+        return Err(format!(
+            "resolved path does not exist: {}",
+            absolute.display()
+        ));
+    }
+    let readonly = fs::metadata(&absolute)
+        .map_err(|err| format!("failed to inspect {}: {err}", absolute.display()))?
+        .permissions()
+        .readonly();
+    if readonly {
+        return Err(format!(
+            "write permission denied for {}",
+            absolute.display()
+        ));
+    }
+    Ok(path)
+}
+
+fn workspace_absolute_path(root: &Path, path: &Path) -> Result<PathBuf, ApplyResolverError> {
+    if path.as_os_str().is_empty() {
+        return Err(ApplyResolverError::MissingSourcePath);
+    }
+    if path.is_absolute() {
+        return if path.starts_with(root) {
+            Ok(path.to_path_buf())
+        } else {
+            Err(ApplyResolverError::PathOutsideWorkspace)
+        };
+    }
+
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::Normal(part) => normalized.push(part),
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return Err(ApplyResolverError::PathOutsideWorkspace);
+                }
+            }
+            Component::Prefix(_) | Component::RootDir => {
+                return Err(ApplyResolverError::PathOutsideWorkspace);
+            }
+        }
+    }
+
+    Ok(root.join(normalized))
+}
+
 pub(crate) fn resolve_candidate_source_path(
     report: &AnalysisReport,
     modules: &[String],
@@ -227,6 +339,321 @@ pub(crate) fn resolve_candidate_source_path(
         })
         .or_else(|| source_index_for_report(report).all_paths().first().cloned())
         .unwrap_or_default()
+}
+
+pub fn candidate_from_module(
+    report: &AnalysisReport,
+    logical_name: &str,
+    kind: RefactorActionKind,
+    title: String,
+    rationale: String,
+    target: RefactorTarget,
+    target_nodes: Vec<String>,
+    target_edges: Vec<StructureEdge>,
+    confidence_milli: u16,
+) -> RefactorCandidate {
+    let from_node = resolve_module_node(report, logical_name);
+    let to_node = from_node.clone();
+    let source_index = source_index_for_report(report);
+    let source_path = resolve_preview_candidate(
+        Path::new(&report.root),
+        &from_node.qualified_id,
+        logical_name,
+        &source_index,
+    )
+    .unwrap_or_else(|_| resolve_candidate_source_path(report, &target_nodes));
+    let operation = operation_from_kind(&kind);
+    let base_file_hash = hash_file(Path::new(&report.root), &source_path).unwrap_or_default();
+    let preview_hash = preview_hash(&source_path, &operation, &base_file_hash);
+    let confidence = f32::from(confidence_milli) / 1000.0;
+    RefactorCandidate {
+        candidate_id: candidate_id(
+            &from_node.qualified_id,
+            logical_name,
+            &operation,
+            &source_path,
+        ),
+        module_id: from_node.qualified_id.clone(),
+        logical_name: logical_name.to_string(),
+        kind,
+        operation,
+        title,
+        rationale,
+        confidence_milli,
+        confidence,
+        from_node,
+        to_node,
+        patch_plan: target.clone(),
+        source_path,
+        preview_hash,
+        base_file_hash,
+        target_nodes,
+        target_edges,
+        target,
+    }
+}
+
+pub fn persist_refactor_candidates(
+    root: &Path,
+    candidates: &[RefactorCandidate],
+) -> Result<(), String> {
+    let dir = candidate_snapshot_dir(root);
+    fs::create_dir_all(&dir).map_err(|err| format!("failed to create {}: {err}", dir.display()))?;
+    for candidate in candidates {
+        let path = candidate_snapshot_path(root, &candidate.candidate_id);
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(candidate).map_err(|err| err.to_string())?,
+        )
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+pub fn candidate_for_target(report: &AnalysisReport, target: &RefactorTarget) -> RefactorCandidate {
+    match target {
+        RefactorTarget::Cycle => candidate_from_module(
+            report,
+            report
+                .graph_nodes
+                .first()
+                .map(|node| node.logical_name.as_str())
+                .unwrap_or("core"),
+            RefactorActionKind::ExtractInterface,
+            "Cycle remediation".to_string(),
+            "Break the dominant cycle via interface extraction".to_string(),
+            target.clone(),
+            Vec::new(),
+            Vec::new(),
+            900,
+        ),
+        RefactorTarget::ExtractInterface { from, to } => candidate_from_module(
+            report,
+            from,
+            RefactorActionKind::ExtractInterface,
+            format!("Extract interface {from} -> {to}"),
+            "Break direct dependency and route through an interface boundary".to_string(),
+            target.clone(),
+            vec![from.clone(), to.clone()],
+            vec![StructureEdge {
+                from: from.clone(),
+                to: to.clone(),
+            }],
+            910,
+        ),
+        RefactorTarget::RemoveDependency { from, to } => candidate_from_module(
+            report,
+            from,
+            RefactorActionKind::RemoveDependency,
+            format!("Remove dependency {from} -> {to}"),
+            "Reduce coupling on the selected dependency path".to_string(),
+            target.clone(),
+            vec![from.clone(), to.clone()],
+            vec![StructureEdge {
+                from: from.clone(),
+                to: to.clone(),
+            }],
+            760,
+        ),
+        RefactorTarget::ModuleSplit(module) => candidate_from_module(
+            report,
+            module,
+            RefactorActionKind::SplitModule,
+            format!("Split module {module}"),
+            "Partition a dense cluster into smaller responsibilities".to_string(),
+            target.clone(),
+            vec![module.clone()],
+            Vec::new(),
+            820,
+        ),
+        RefactorTarget::MergeModule(modules) => candidate_from_module(
+            report,
+            modules.first().map(String::as_str).unwrap_or("core"),
+            RefactorActionKind::MergeModule,
+            format!("Merge {}", modules.join(" + ")),
+            "Collapse tightly coupled nodes into a single boundary".to_string(),
+            target.clone(),
+            modules.clone(),
+            Vec::new(),
+            660,
+        ),
+        RefactorTarget::LayerViolation(detail) => candidate_from_module(
+            report,
+            detail.split("->").next().unwrap_or("core").trim(),
+            RefactorActionKind::RemoveDependency,
+            format!("Fix layer violation {detail}"),
+            "Stabilize layer direction before apply".to_string(),
+            target.clone(),
+            vec![detail.clone()],
+            Vec::new(),
+            780,
+        ),
+        RefactorTarget::RenameBoundary(module) => candidate_from_module(
+            report,
+            module,
+            RefactorActionKind::RenameBoundary,
+            format!("Rename boundary {module}"),
+            "Clarify boundary naming".to_string(),
+            target.clone(),
+            vec![module.clone()],
+            Vec::new(),
+            700,
+        ),
+        RefactorTarget::IntroduceService(module) => candidate_from_module(
+            report,
+            module,
+            RefactorActionKind::IntroduceService,
+            format!("Introduce service for {module}"),
+            "Move orchestration into a service node".to_string(),
+            target.clone(),
+            vec![module.clone()],
+            Vec::new(),
+            730,
+        ),
+        RefactorTarget::FileMove(path) => candidate_from_module(
+            report,
+            path.file_stem()
+                .and_then(|stem| stem.to_str())
+                .unwrap_or("moved_file"),
+            RefactorActionKind::MoveFile,
+            format!("Move file {}", path.display()),
+            "Move file to a new boundary".to_string(),
+            target.clone(),
+            vec![path.display().to_string()],
+            Vec::new(),
+            650,
+        ),
+    }
+}
+
+pub fn load_refactor_candidate(
+    root: &Path,
+    candidate_id: &str,
+) -> Result<RefactorCandidate, ApplyResolverError> {
+    let path = candidate_snapshot_path(root, candidate_id);
+    let raw = fs::read_to_string(&path).map_err(|_| ApplyResolverError::MissingSnapshot)?;
+    serde_json::from_str(&raw).map_err(|_| ApplyResolverError::MissingSnapshot)
+}
+
+pub fn load_matching_refactor_candidate(
+    root: &Path,
+    logical_name: &str,
+    operation: RefactorOperation,
+) -> Result<RefactorCandidate, ApplyResolverError> {
+    let dir = candidate_snapshot_dir(root);
+    let entries = fs::read_dir(&dir).map_err(|_| ApplyResolverError::MissingSnapshot)?;
+    let mut matches = entries
+        .flatten()
+        .filter_map(|entry| fs::read_to_string(entry.path()).ok())
+        .filter_map(|raw| serde_json::from_str::<RefactorCandidate>(&raw).ok())
+        .filter(|candidate| {
+            candidate.logical_name == logical_name && candidate.operation == operation
+        })
+        .collect::<Vec<_>>();
+    matches.sort_by(|left, right| left.candidate_id.cmp(&right.candidate_id));
+    matches.pop().ok_or(ApplyResolverError::MissingSnapshot)
+}
+
+pub fn validate_apply_candidate(
+    root: &Path,
+    candidate: &RefactorCandidate,
+) -> Result<PathBuf, ApplyResolverError> {
+    let absolute = workspace_absolute_path(root, &candidate.source_path)?;
+    if !absolute.exists() {
+        return Err(ApplyResolverError::MissingSourcePath);
+    }
+    let metadata = fs::metadata(&absolute).map_err(|_| ApplyResolverError::MissingSourcePath)?;
+    if metadata.permissions().readonly() {
+        return Err(ApplyResolverError::PermissionDenied);
+    }
+    let current =
+        hash_file_absolute(&absolute).map_err(|_| ApplyResolverError::TransactionRollback)?;
+    if current != candidate.base_file_hash {
+        return Err(ApplyResolverError::FileDriftDetected);
+    }
+    Ok(absolute)
+}
+
+pub fn apply_resolver_error_message(error: &ApplyResolverError, path: Option<&Path>) -> String {
+    match error {
+        ApplyResolverError::MissingSnapshot => {
+            "Apply failed: missing preview snapshot. Re-run refactor preview before apply."
+                .to_string()
+        }
+        ApplyResolverError::MissingSourcePath => format!(
+            "Apply failed: source path is missing{}",
+            path.map(|p| format!(" on {}", p.display()))
+                .unwrap_or_default()
+        ),
+        ApplyResolverError::FileDriftDetected => format!(
+            "Apply failed: File drift detected on {}. Re-run refactor preview before apply.",
+            path.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "target file".to_string())
+        ),
+        ApplyResolverError::PathOutsideWorkspace => {
+            "Apply failed: target path escapes workspace boundary.".to_string()
+        }
+        ApplyResolverError::PermissionDenied => format!(
+            "Apply failed: permission denied on {}",
+            path.map(|p| p.display().to_string())
+                .unwrap_or_else(|| "target file".to_string())
+        ),
+        ApplyResolverError::TransactionRollback => {
+            "Apply failed: transactional rollback triggered before write.".to_string()
+        }
+    }
+}
+
+fn operation_from_kind(kind: &RefactorActionKind) -> RefactorOperation {
+    match kind {
+        RefactorActionKind::ExtractInterface => RefactorOperation::ExtractInterface,
+        RefactorActionKind::RemoveDependency => RefactorOperation::RemoveDependency,
+        RefactorActionKind::SplitModule => RefactorOperation::SplitModule,
+        RefactorActionKind::MergeModule => RefactorOperation::MergeModule,
+        RefactorActionKind::MoveFile => RefactorOperation::MoveFile,
+        RefactorActionKind::RenameBoundary => RefactorOperation::RenameBoundary,
+        RefactorActionKind::IntroduceService => RefactorOperation::IntroduceService,
+    }
+}
+
+fn candidate_id(
+    module_id: &QualifiedModuleId,
+    logical_name: &str,
+    operation: &RefactorOperation,
+    source_path: &Path,
+) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(module_id.crate_name.as_bytes());
+    hasher.update(module_id.module_path.as_bytes());
+    hasher.update(logical_name.as_bytes());
+    hasher.update(format!("{operation:?}").as_bytes());
+    hasher.update(source_path.display().to_string().as_bytes());
+    let digest = hasher.finalize();
+    format!("{:x}", digest)
+}
+
+fn preview_hash(source_path: &Path, operation: &RefactorOperation, base_file_hash: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(source_path.display().to_string().as_bytes());
+    hasher.update(format!("{operation:?}").as_bytes());
+    hasher.update(base_file_hash.as_bytes());
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn hash_file(root: &Path, path: &Path) -> Result<String, String> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        root.join(path)
+    };
+    hash_file_absolute(&absolute).map_err(|err| err.to_string())
+}
+
+fn hash_file_absolute(path: &Path) -> Result<String, std::io::Error> {
+    let bytes = fs::read(path)?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    Ok(format!("{:x}", hasher.finalize()))
 }
 
 pub(crate) fn resolve_module_node(report: &AnalysisReport, logical_name: &str) -> ModuleNode {
@@ -371,6 +798,7 @@ pub(crate) fn file_move_change_set(root: &Path, source: &Path) -> Result<CodeCha
         .map_err(|_| format!("file move path escapes root: {}", source.display()))?
         .to_path_buf();
     Ok(CodeChangeSet {
+        patches: vec![],
         changes: vec![
             CodeChange {
                 file_path: destination.display().to_string(),

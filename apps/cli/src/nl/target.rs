@@ -11,7 +11,8 @@ pub fn resolve_target(input: &str, session: &AgentSession) -> ResolvedTarget {
     };
 
     let lower = input.to_lowercase();
-    if lower.contains("このプロジェクト") || lower.contains("project") || lower.contains("全体") {
+    if lower.contains("このプロジェクト") || lower.contains("project") || lower.contains("全体")
+    {
         target.scope = Some("project".to_string());
     }
     if lower.contains("viewer") || lower.contains("gui") {
@@ -29,7 +30,8 @@ fn resolve_path(input: &str, session: &AgentSession) -> PathBuf {
     }
 
     let lower = input.to_lowercase();
-    if lower.contains("このプロジェクト") || lower.contains("project") || lower.contains("全体") {
+    if lower.contains("このプロジェクト") || lower.contains("project") || lower.contains("全体")
+    {
         return PathBuf::from(".");
     }
     if lower.contains("apps/cli") {

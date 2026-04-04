@@ -87,7 +87,8 @@ fn map_invocation_to_cli(
         "structure" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
             match subcommand {
-                Some("view") | Some("edit") | Some("dispatch") | Some("undo") | Some("redo") | Some("session") => {
+                Some("view") | Some("edit") | Some("dispatch") | Some("undo") | Some("redo")
+                | Some("session") => {
                     let mut cli_args = vec![subcommand.unwrap_or("view").to_string(), path];
                     cli_args.extend(args.iter().skip(1).cloned());
                     Ok(("structure".to_string(), cli_args))
@@ -106,7 +107,17 @@ fn map_invocation_to_cli(
         }
         "coding" => {
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
-            let mut cli_args = vec![path];
+            // R5: if the path is a file target (.rs/.toml/.md), remap to
+            //   coding . --target <file>
+            // so the workspace root is valid and the file is scoped via --target.
+            let is_file_target = path.ends_with(".rs")
+                || path.ends_with(".toml")
+                || path.ends_with(".md");
+            let mut cli_args = if is_file_target {
+                vec![".".to_string(), "--target".to_string(), path]
+            } else {
+                vec![path]
+            };
             cli_args.extend(args.iter().skip(1).cloned());
             Ok(("coding".to_string(), cli_args))
         }

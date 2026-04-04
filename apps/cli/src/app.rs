@@ -21,15 +21,19 @@ use serde_json::json;
 
 use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
 use crate::coding::{
-    CodingOptions, execute_code_change_set, generate_code_change_set_with_target,
-    load_patches_from_json,
+    CodingOptions, apply_bootstrap_safety_policy, collect_apply_target_resolutions,
+    deterministic_repl_v2_wiring_patches,
+    execute_code_change_set,
+    generate_code_change_set_with_resolved_paths, generate_code_change_set_with_target,
+    load_patches_from_json, resolve_apply_paths_for_patches, resolve_sandbox_module_file,
+    resolve_transactional_candidate_for_patches,
 };
 use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
 use crate::r#loop::run_loop;
 use crate::refactor::{
-    RefactorApplyReport, RefactorPreviewReport, RefactorRuntimeOptions, preview_report,
-    resolve_target,
+    PatchScope, RefactorApplyReport, RefactorPreviewReport, RefactorRuntimeOptions,
+    candidate_for_target, persist_refactor_candidates, preview_report, resolve_target,
 };
 use crate::renderer::{
     render_analysis_report_markdown, render_autonomous_execute_report, render_coding_report,
@@ -50,9 +54,11 @@ use crate::service::{
     path_contains_parent_component,
 };
 use crate::viewer::{
-    StructureViewReport, ViewMode, attach_session, dispatch_gui_action, edit_session,
-    export_structure_view, export_structure_view_from_plan, gui_action_path, launch_native_viewer,
-    redo_session, structure_ir_path, undo_session,
+    BenchmarkCommandReport, ReplayCommandReport, StructureViewReport, TimelineCommandReport,
+    ViewMode, attach_session, benchmark_structure_replay, dispatch_gui_action, edit_session,
+    export_demo_replay_assets, export_structure_view, export_structure_view_from_plan,
+    gui_action_path, launch_native_viewer, redo_session, structure_ir_path, summarize_timeline,
+    undo_session,
 };
 
 #[derive(Parser, Debug)]
@@ -244,6 +250,8 @@ pub struct CodingArgs {
     pub input: Option<PathBuf>,
     #[arg(long)]
     pub target: Option<PathBuf>,
+    #[arg(long)]
+    pub candidate: Option<String>,
     #[arg(long, default_value_t = false)]
     pub apply: bool,
     #[arg(long, default_value_t = false)]
@@ -260,6 +268,20 @@ pub struct CodingArgs {
     pub safe: bool,
     #[arg(long, default_value_t = false)]
     pub auto_commit: bool,
+    #[arg(long, default_value_t = false)]
+    pub confirm_commit: bool,
+    #[arg(long, default_value_t = false)]
+    pub auto_push: bool,
+    #[arg(long, default_value_t = false)]
+    pub confirm_push: bool,
+    #[arg(long, default_value_t = false)]
+    pub auto_pr: bool,
+    #[arg(long, default_value_t = false)]
+    pub confirm_pr: bool,
+    #[arg(long, default_value = "main")]
+    pub pr_base: String,
+    #[arg(long, hide = true)]
+    pub request: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -344,6 +366,10 @@ pub enum StructureCommands {
     Dispatch(StructureDispatchArgs),
     Undo(PathArgs),
     Redo(PathArgs),
+    Replay(StructureReplayArgs),
+    Timeline(StructureTimelineArgs),
+    Benchmark(StructureBenchmarkArgs),
+    ExportDemo(StructureExportDemoArgs),
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -384,6 +410,40 @@ pub struct StructureEditArgs {
 #[derive(clap::Args, Debug, Clone)]
 pub struct StructureSessionArgs {
     pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureReplayArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub tick: Option<usize>,
+    #[arg(long, default_value_t = false)]
+    pub reverse: bool,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureTimelineArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureBenchmarkArgs {
+    pub path: PathBuf,
+    #[arg(long, default_value_t = false)]
+    pub benchmark_json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct StructureExportDemoArgs {
+    pub path: PathBuf,
+    #[arg(long)]
+    pub export_dir: Option<PathBuf>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -665,6 +725,8 @@ fn execute_refactor(args: RefactorArgs) -> Result<(), String> {
         args.node.as_deref(),
         args.file.as_deref(),
     );
+    let candidate = candidate_for_target(&analysis, &target);
+    persist_refactor_candidates(&args.path, &[candidate])?;
     let report: RefactorPreviewReport = preview_report(&args.path, Some(target))?;
     if report_json(args.json, &report)? {
         return Ok(());
@@ -720,6 +782,10 @@ fn execute_structure(args: StructureArgs) -> Result<(), String> {
         StructureCommands::Dispatch(args) => execute_structure_dispatch(args),
         StructureCommands::Undo(args) => execute_structure_undo(args),
         StructureCommands::Redo(args) => execute_structure_redo(args),
+        StructureCommands::Replay(args) => execute_structure_replay(args),
+        StructureCommands::Timeline(args) => execute_structure_timeline(args),
+        StructureCommands::Benchmark(args) => execute_structure_benchmark(args),
+        StructureCommands::ExportDemo(args) => execute_structure_export_demo(args),
     }
 }
 
@@ -871,6 +937,71 @@ fn execute_structure_redo(args: PathArgs) -> Result<(), String> {
     Ok(())
 }
 
+fn execute_structure_replay(args: StructureReplayArgs) -> Result<(), String> {
+    let report: ReplayCommandReport =
+        crate::viewer::replay::replay_structure(&args.path, args.tick, args.reverse)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_timeline(args: StructureTimelineArgs) -> Result<(), String> {
+    let report: TimelineCommandReport = summarize_timeline(&args.path)?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_benchmark(args: StructureBenchmarkArgs) -> Result<(), String> {
+    let report: BenchmarkCommandReport = benchmark_structure_replay(&args.path)?;
+    if args.benchmark_json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
+fn execute_structure_export_demo(args: StructureExportDemoArgs) -> Result<(), String> {
+    let report = export_demo_replay_assets(&args.path, args.export_dir.as_deref())?;
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+        );
+        return Ok(());
+    }
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).map_err(|err| err.to_string())?
+    );
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy)]
 enum CodingMode {
     Coding,
@@ -906,12 +1037,39 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
         let Some(path) = args.path.clone() else {
             return Err("coding requires either <path> or --input".to_string());
         };
-        let analysis = analyze_path(&path)?;
-        let design_graph = design_graph_from_analysis(&analysis);
-        let structural = structural_analysis(&design_graph);
-        (path, structural.code_patches)
+        if let Some(target) = args.target.as_deref()
+            && let Some(patches) =
+                deterministic_repl_v2_wiring_patches(&path, target, args.request.as_deref())
+        {
+            (path, patches)
+        } else {
+            let analysis = analyze_path(&path)?;
+            let design_graph = design_graph_from_analysis(&analysis);
+            let structural = structural_analysis(&design_graph);
+            (path, structural.code_patches)
+        }
     };
-    let changes = generate_code_change_set_with_target(&root, &patches, args.target.as_deref())?;
+    let patches = apply_bootstrap_safety_policy(&patches, args.target.as_deref());
+    let resolved_paths = if args.apply {
+        resolve_apply_paths_for_patches(&root, &patches, args.candidate.as_deref())?
+    } else {
+        std::collections::BTreeMap::new()
+    };
+    let transactional_candidate = if args.apply {
+        resolve_transactional_candidate_for_patches(&root, &patches, args.candidate.as_deref())?
+    } else {
+        None
+    };
+    let changes = if resolved_paths.is_empty() {
+        generate_code_change_set_with_target(&root, &patches, args.target.as_deref())?
+    } else {
+        generate_code_change_set_with_resolved_paths(
+            &root,
+            &patches,
+            args.target.as_deref(),
+            &resolved_paths,
+        )?
+    };
     let execution = execute_code_change_set(
         &root,
         &changes,
@@ -923,19 +1081,60 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             format: args.format,
             safe_mode: true,
             auto_commit: args.auto_commit,
+            confirm_commit: args.confirm_commit
+                || (!args.json
+                    && args.auto_commit
+                    && prompt_commit_confirmation(changes.summary.total_changes)?),
+            auto_push: args.auto_push,
+            confirm_push: args.confirm_push
+                || (!args.json && args.auto_push && prompt_push_confirmation()?),
+            auto_pr: args.auto_pr,
+            confirm_pr: args.confirm_pr
+                || (!args.json && args.auto_pr && prompt_pr_confirmation(&args.pr_base)?),
+            pr_base: args.pr_base.clone(),
+            patch_scope: if args.target.is_some() {
+                PatchScope::ExplicitTargetOnly
+            } else {
+                PatchScope::WorkspaceWide
+            },
+            explicit_target: args.target.clone(),
         },
+        transactional_candidate.as_ref(),
     )?;
-    let report = CodingReport {
+    let mut apply_resolutions =
+        collect_apply_target_resolutions(&root, &patches, args.target.as_deref(), &resolved_paths)?;
+    if let Some(transactional) = execution.transactional_apply.as_ref() {
+        for resolution in &mut apply_resolutions {
+            resolution.sandbox_path =
+                resolve_sandbox_module_file(&resolution.module, &root, &transactional.sandbox_path)
+                    .ok()
+                    .or_else(|| {
+                        Some(
+                            transactional
+                                .sandbox_path
+                                .join(&resolution.resolved_relative_path),
+                        )
+                    });
+        }
+    }
+    let coding_report = CodingReport {
         root: root.display().to_string(),
         dry_run: !args.apply,
         execution,
-        patches,
+        // Use the canonical narrowed stream stored in CodeChangeSet (R3: candidate
+        // log count must equal the executable diff count).
+        patches: changes.patches.clone(),
         changes,
+        apply_resolutions,
     };
-    if report_json(args.json, &report)? {
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&coding_report).map_err(|err| err.to_string())?
+        );
         return Ok(());
     }
-    render_coding_report(&mut io::stdout().lock(), &report).map_err(|err| err.to_string())
+    render_coding_report(&mut io::stdout().lock(), &coding_report).map_err(|err| err.to_string())
 }
 
 fn execute_run(args: RunArgs) -> Result<(), String> {
@@ -1196,6 +1395,59 @@ where
     } else {
         Ok(Some(value.to_string()))
     }
+}
+
+fn prompt_commit_confirmation(file_count: usize) -> Result<bool, String> {
+    let mut writer = stdout().lock();
+    write!(
+        writer,
+        "Commit exact {file_count} DBM-applied files? (y/n) "
+    )
+    .map_err(|err| err.to_string())?;
+    writer.flush().map_err(|err| err.to_string())?;
+
+    let mut input = String::new();
+    stdin()
+        .read_line(&mut input)
+        .map_err(|err| err.to_string())?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn prompt_push_confirmation() -> Result<bool, String> {
+    let mut writer = stdout().lock();
+    write!(writer, "Push current branch to origin? (y/n) ").map_err(|err| err.to_string())?;
+    writer.flush().map_err(|err| err.to_string())?;
+
+    let mut input = String::new();
+    stdin()
+        .read_line(&mut input)
+        .map_err(|err| err.to_string())?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
+}
+
+fn prompt_pr_confirmation(base_branch: &str) -> Result<bool, String> {
+    let mut writer = stdout().lock();
+    write!(
+        writer,
+        "Create draft PR into '{base_branch}' from current branch? (y/n) "
+    )
+    .map_err(|err| err.to_string())?;
+    writer.flush().map_err(|err| err.to_string())?;
+
+    let mut input = String::new();
+    stdin()
+        .read_line(&mut input)
+        .map_err(|err| err.to_string())?;
+    Ok(matches!(
+        input.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }
 
 fn execute_run_command(args: &RunArgs) -> Result<RunReport, String> {

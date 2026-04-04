@@ -57,11 +57,17 @@ mod tests {
 
     #[test]
     fn detects_cycle_goal() {
-        assert_eq!(detect_goal("この循環依存をゼロにして"), Some(GoalType::EliminateCycles));
+        assert_eq!(
+            detect_goal("この循環依存をゼロにして"),
+            Some(GoalType::EliminateCycles)
+        );
     }
 
     #[test]
     fn detects_unsafe_goal() {
-        assert_eq!(detect_goal("unsafe を減らして"), Some(GoalType::ReduceUnsafe));
+        assert_eq!(
+            detect_goal("unsafe を減らして"),
+            Some(GoalType::ReduceUnsafe)
+        );
     }
 }

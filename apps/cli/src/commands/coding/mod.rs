@@ -31,32 +31,40 @@ impl CommandPlugin for CodingPlugin {
 
 /// /coding [path]  ─ コード変更セットを生成する
 fn execute_coding(args: &[String], session: &mut AgentSession) -> Result<Output, CommandError> {
-    let path = resolve_and_store_path(args, session, "coding")?;
-    crate::nl_executor::run_design_command("coding", &[path])
+    let (path, extra) = resolve_and_store_path(args, session, "coding")?;
+    let mut cli_args = vec![path];
+    cli_args.extend(extra);
+    crate::nl_executor::run_design_command("coding", &cli_args)
         .map(Output::text)
         .map_err(CommandError::ExecutionError)
 }
 
 /// /diff [path]  ─ 変更の差分を表示する
 fn execute_diff(args: &[String], session: &mut AgentSession) -> Result<Output, CommandError> {
-    let path = resolve_and_store_path(args, session, "diff")?;
-    crate::nl_executor::run_design_command("diff", &[path])
+    let (path, extra) = resolve_and_store_path(args, session, "diff")?;
+    let mut cli_args = vec![path];
+    cli_args.extend(extra);
+    crate::nl_executor::run_design_command("diff", &cli_args)
         .map(Output::text)
         .map_err(CommandError::ExecutionError)
 }
 
 /// /check [path]  ─ 変更をドライランで検証する
 fn execute_check(args: &[String], session: &mut AgentSession) -> Result<Output, CommandError> {
-    let path = resolve_and_store_path(args, session, "check")?;
-    crate::nl_executor::run_design_command("check", &[path])
+    let (path, extra) = resolve_and_store_path(args, session, "check")?;
+    let mut cli_args = vec![path];
+    cli_args.extend(extra);
+    crate::nl_executor::run_design_command("check", &cli_args)
         .map(Output::text)
         .map_err(CommandError::ExecutionError)
 }
 
 /// /apply [path]  ─ 変更を実際に適用する
 fn execute_apply(args: &[String], session: &mut AgentSession) -> Result<Output, CommandError> {
-    let path = resolve_and_store_path(args, session, "apply")?;
-    crate::nl_executor::run_design_command("apply", &[path, "--apply".to_string()])
+    let (path, extra) = resolve_and_store_path(args, session, "apply")?;
+    let mut cli_args = vec![path];
+    cli_args.extend(extra);
+    crate::nl_executor::run_design_command("apply", &cli_args)
         .map(Output::text)
         .map_err(CommandError::ExecutionError)
 }
@@ -65,12 +73,12 @@ fn resolve_and_store_path(
     args: &[String],
     session: &mut AgentSession,
     command_name: &str,
-) -> Result<String, CommandError> {
+) -> Result<(String, Vec<String>), CommandError> {
     let path = resolve_path(args, session).map_err(CommandError::ExecutionError)?;
     let path = path.display().to_string();
     session.context.set_last_path(&path);
     session.context.last_command = Some(command_name.to_string());
-    Ok(path)
+    Ok((path, args.iter().skip(1).cloned().collect()))
 }
 
 fn resolve_path(args: &[String], session: &AgentSession) -> Result<PathBuf, String> {
@@ -100,9 +108,10 @@ mod tests {
     #[test]
     fn coding_stores_last_path() {
         let mut session = AgentSession::new();
-        let path =
+        let (path, extra) =
             resolve_and_store_path(&["src/lib.rs".to_string()], &mut session, "coding").unwrap();
         assert_eq!(path, "src/lib.rs");
+        assert!(extra.is_empty());
         assert_eq!(session.context.last_path, Some("src/lib.rs".to_string()));
         assert_eq!(session.context.last_command, Some("coding".to_string()));
     }
@@ -115,7 +124,8 @@ mod tests {
         std::fs::write(&file_path, "fn main() {}\n").expect("write sample file");
 
         let mut session = AgentSession::new();
-        session.context
+        session
+            .context
             .set_last_path(file_path.to_str().expect("utf-8 path"));
 
         let path = resolve_path(&[], &session).expect("fallback path should resolve");
@@ -131,7 +141,8 @@ mod tests {
     #[test]
     fn diff_fails_fast_for_missing_last_path() {
         let mut session = AgentSession::new();
-        session.context
+        session
+            .context
             .set_last_path("/definitely/missing/dbm-coding-fallback.rs");
 
         let err = resolve_path(&[], &session).expect_err("missing path should fail fast");

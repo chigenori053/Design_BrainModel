@@ -904,9 +904,7 @@ mod tests {
                     ) || err.raw_os_error() == Some(35) =>
                 {
                     last_error = Some(err);
-                    std::thread::sleep(std::time::Duration::from_millis(
-                        50 * (attempt + 1) as u64,
-                    ));
+                    std::thread::sleep(std::time::Duration::from_millis(50 * (attempt + 1) as u64));
                 }
                 Err(err) => return Err(err),
             }

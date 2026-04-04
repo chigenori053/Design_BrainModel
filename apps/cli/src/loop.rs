@@ -12,6 +12,7 @@ use crate::renderer::{
     render_analysis_report, render_coding_report, render_design_report, render_question,
     render_result, render_validation_report,
 };
+use crate::refactor::PatchScope;
 use crate::service::{
     analyze_path, build_design_report, build_refactoring_report, build_validation_report,
 };
@@ -124,6 +125,14 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
                     format: false,
                     safe_mode: false,
                     auto_commit: false,
+                    confirm_commit: false,
+                    auto_push: false,
+                    confirm_push: false,
+                    auto_pr: false,
+                    confirm_pr: false,
+                    pr_base: "main".to_string(),
+                    patch_scope: PatchScope::WorkspaceWide,
+                    explicit_target: None,
                 },
             )
             .map_err(|err| io::Error::other(format!("refactoring failed: {err}")))?;
