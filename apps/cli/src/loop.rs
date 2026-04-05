@@ -126,6 +126,7 @@ fn handle_slash_command<W: Write>(input: &str, writer: &mut W) -> io::Result<boo
                     safe_mode: false,
                     auto_commit: false,
                     confirm_commit: false,
+                    prompt_commit: false,
                     auto_push: false,
                     confirm_push: false,
                     auto_pr: false,

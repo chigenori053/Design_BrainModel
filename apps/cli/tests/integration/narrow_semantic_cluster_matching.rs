@@ -65,15 +65,12 @@ fn nl_goal_patch() -> CodePatch {
 // ─── R1: cluster does not contain "app" ──────────────────────────────────────
 
 #[test]
-fn nl_cluster_excludes_app() {
+fn semantic_clusters_keep_only_expected_tokens() {
     let cluster = semantic_cluster_for_target(Path::new("apps/cli/src/nl/goal.rs"));
     assert!(!cluster.contains(&"app"), "\"app\" must not be in nl cluster: {cluster:?}");
     assert!(cluster.contains(&"nl"), "\"nl\" must be in cluster: {cluster:?}");
     assert!(cluster.contains(&"goal"), "\"goal\" must be in cluster: {cluster:?}");
-}
 
-#[test]
-fn coding_cluster_excludes_app() {
     let cluster = semantic_cluster_for_target(Path::new("apps/cli/src/coding.rs"));
     assert!(!cluster.contains(&"app"), "\"app\" must not be in coding cluster: {cluster:?}");
     assert!(cluster.contains(&"coding"), "\"coding\" must be in cluster: {cluster:?}");
@@ -82,34 +79,26 @@ fn coding_cluster_excludes_app() {
 // ─── R2: exact module token — adapter_app_interface must not match nl cluster ─
 
 #[test]
-fn adapter_app_interface_name_does_not_match_nl_cluster() {
-    // Even if the operation name contains "app", exact token matching must reject it
-    let patch = CodePatch {
-        patch_id: "leaky".to_string(),
-        action: RefactorPlanAction::IntroduceInterface {
-            between: ("adapter".to_string(), "app".to_string()),
+fn app_related_patches_do_not_match_nl_cluster() {
+    for patch in [
+        CodePatch {
+            patch_id: "leaky".to_string(),
+            action: RefactorPlanAction::IntroduceInterface {
+                between: ("adapter".to_string(), "app".to_string()),
+            },
+            operations: vec![PatchOperation::CreateInterface {
+                name: "adapter_app_interface".to_string(),
+                between: ("adapter".to_string(), "app".to_string()),
+            }],
+            description: "adapter app interface".to_string(),
         },
-        operations: vec![PatchOperation::CreateInterface {
-            name: "adapter_app_interface".to_string(),
-            between: ("adapter".to_string(), "app".to_string()),
-        }],
-        description: "adapter app interface".to_string(),
-    };
-    // cluster ["nl", "goal"] — neither "adapter" nor "app" exactly match
-    assert!(
-        !patch_matches_cluster(&patch, &["nl", "goal"]),
-        "adapter_app_interface must not leak through nl cluster"
-    );
-}
-
-#[test]
-fn exact_app_module_does_not_match_nl_cluster() {
-    // module named "app" exactly should NOT match ["nl", "goal"]
-    let patch = adapter_app_patch();
-    assert!(
-        !patch_matches_cluster(&patch, &["nl", "goal"]),
-        "exact \"app\" module must not match nl cluster {patch:?}"
-    );
+        adapter_app_patch(),
+    ] {
+        assert!(
+            !patch_matches_cluster(&patch, &["nl", "goal"]),
+            "app-related patch must not leak through nl cluster: {patch:?}"
+        );
+    }
 }
 
 // ─── R2: exact "app" module IS allowed in app.rs cluster ─────────────────────
@@ -175,48 +164,48 @@ fn namespaced_nl_module_matches_nl_cluster() {
 // ─── R4: description fallback is prohibited ───────────────────────────────────
 
 #[test]
-fn description_containing_nl_does_not_grant_pass() {
-    // description says "nl goal routing fix" but the modules are adapter/controller
-    let patch = CodePatch {
-        patch_id: "desc_trick".to_string(),
-        action: RefactorPlanAction::MoveDependency {
-            from: "adapter".to_string(),
-            to: "controller".to_string(),
-            via: None,
-        },
-        operations: vec![PatchOperation::UpdateDependency {
-            from: "adapter".to_string(),
-            to: "controller".to_string(),
-            via: None,
-        }],
-        description: "nl goal routing fix for adapter controller".to_string(),
-    };
-    assert!(
-        !patch_matches_cluster(&patch, &["nl", "goal"]),
-        "description must not grant cluster membership"
-    );
-}
-
-#[test]
-fn description_containing_app_does_not_grant_pass_for_coding_cluster() {
-    let patch = CodePatch {
-        patch_id: "desc_app".to_string(),
-        action: RefactorPlanAction::MoveDependency {
-            from: "agent".to_string(),
-            to: "capability".to_string(),
-            via: None,
-        },
-        operations: vec![PatchOperation::UpdateDependency {
-            from: "agent".to_string(),
-            to: "capability".to_string(),
-            via: None,
-        }],
-        description: "coding app source_index migration".to_string(),
-    };
-    assert!(
-        !patch_matches_cluster(&patch, &["coding", "source_index"]),
-        "description with coding/source_index must not grant membership to coding cluster"
-    );
+fn descriptions_do_not_grant_cluster_membership() {
+    for (patch, cluster) in [
+        (
+            CodePatch {
+                patch_id: "desc_trick".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "adapter".to_string(),
+                    to: "controller".to_string(),
+                    via: None,
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "adapter".to_string(),
+                    to: "controller".to_string(),
+                    via: None,
+                }],
+                description: "nl goal routing fix for adapter controller".to_string(),
+            },
+            vec!["nl", "goal"],
+        ),
+        (
+            CodePatch {
+                patch_id: "desc_app".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "agent".to_string(),
+                    to: "capability".to_string(),
+                    via: None,
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "agent".to_string(),
+                    to: "capability".to_string(),
+                    via: None,
+                }],
+                description: "coding app source_index migration".to_string(),
+            },
+            vec!["coding", "source_index"],
+        ),
+    ] {
+        assert!(
+            !patch_matches_cluster(&patch, &cluster),
+            "description must not grant cluster membership: {patch:?}"
+        );
+    }
 }
 
 // ─── Case 1: goal.rs dry-run — adapter/app patch completely eliminated ────────

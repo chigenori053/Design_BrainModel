@@ -1029,7 +1029,6 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
     if args.dry_run {
         args.apply = false;
     }
-
     let (root, patches) = if let Some(input) = &args.input {
         let root = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
         (root, load_patches_from_json(input)?)
@@ -1081,16 +1080,12 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             format: args.format,
             safe_mode: true,
             auto_commit: args.auto_commit,
-            confirm_commit: args.confirm_commit
-                || (!args.json
-                    && args.auto_commit
-                    && prompt_commit_confirmation(changes.summary.total_changes)?),
+            confirm_commit: args.confirm_commit,
+            prompt_commit: args.auto_commit && !args.json,
             auto_push: args.auto_push,
-            confirm_push: args.confirm_push
-                || (!args.json && args.auto_push && prompt_push_confirmation()?),
+            confirm_push: args.confirm_push,
             auto_pr: args.auto_pr,
-            confirm_pr: args.confirm_pr
-                || (!args.json && args.auto_pr && prompt_pr_confirmation(&args.pr_base)?),
+            confirm_pr: args.confirm_pr,
             pr_base: args.pr_base.clone(),
             patch_scope: if args.target.is_some() {
                 PatchScope::ExplicitTargetOnly
@@ -1395,59 +1390,6 @@ where
     } else {
         Ok(Some(value.to_string()))
     }
-}
-
-fn prompt_commit_confirmation(file_count: usize) -> Result<bool, String> {
-    let mut writer = stdout().lock();
-    write!(
-        writer,
-        "Commit exact {file_count} DBM-applied files? (y/n) "
-    )
-    .map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())?;
-
-    let mut input = String::new();
-    stdin()
-        .read_line(&mut input)
-        .map_err(|err| err.to_string())?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
-fn prompt_push_confirmation() -> Result<bool, String> {
-    let mut writer = stdout().lock();
-    write!(writer, "Push current branch to origin? (y/n) ").map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())?;
-
-    let mut input = String::new();
-    stdin()
-        .read_line(&mut input)
-        .map_err(|err| err.to_string())?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
-}
-
-fn prompt_pr_confirmation(base_branch: &str) -> Result<bool, String> {
-    let mut writer = stdout().lock();
-    write!(
-        writer,
-        "Create draft PR into '{base_branch}' from current branch? (y/n) "
-    )
-    .map_err(|err| err.to_string())?;
-    writer.flush().map_err(|err| err.to_string())?;
-
-    let mut input = String::new();
-    stdin()
-        .read_line(&mut input)
-        .map_err(|err| err.to_string())?;
-    Ok(matches!(
-        input.trim().to_ascii_lowercase().as_str(),
-        "y" | "yes"
-    ))
 }
 
 fn execute_run_command(args: &RunArgs) -> Result<RunReport, String> {

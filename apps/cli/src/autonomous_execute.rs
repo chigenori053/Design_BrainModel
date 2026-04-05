@@ -184,7 +184,6 @@ pub struct FixHint {
 pub enum CommandType {
     SafeRead,
     SafeWrite,
-    RemoteWrite,
     Dangerous,
 }
 
@@ -919,7 +918,7 @@ mod tests {
             .as_nanos();
         let script = std::env::temp_dir().join(format!("dbm_fake_gh_{unique}.sh"));
         let body = if status_ok {
-            "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/repo/pull/1\"\n  exit 0\nfi\nexit 1\n"
+            "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n  if [ \"$DBM_GH_DUPLICATE\" = \"1\" ]; then\n    echo '{\"number\":1,\"url\":\"https://github.com/example/repo/pull/1\"}'\n    exit 0\n  fi\n  exit 1\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/repo/pull/1\"\n  exit 0\nfi\nexit 1\n"
         } else {
             "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  echo \"auth failed\" >&2\n  exit 1\nfi\nexit 1\n"
         };
@@ -1474,7 +1473,7 @@ mod tests {
             CommandType::SafeWrite
         );
         assert_eq!(
-            GitExecutor::classify(&["commit", "-m", "auto fix(dependency): add serde dependency"]),
+            GitExecutor::classify(&["commit", "-m", "auto fix"]),
             CommandType::SafeWrite
         );
         assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Dangerous);
@@ -1489,11 +1488,15 @@ mod tests {
     fn remote_guard_rejects_protected_push_and_dangerous_gh_commands() {
         assert_eq!(
             RemoteGuard::classify_git(&["push", "origin", "dbm/auto-fix/20260327-120000"]),
-            CommandType::RemoteWrite
+            CommandType::SafeWrite
         );
         assert_eq!(
             RemoteGuard::classify_git(&["push", "origin", "main"]),
             CommandType::Dangerous
+        );
+        assert_eq!(
+            RemoteGuard::classify_git(&["push", "--dry-run", "origin", "dbm/auto-fix/20260327-120000"]),
+            CommandType::SafeWrite
         );
         assert_eq!(
             RemoteGuard::classify_git(&["rebase"]),
@@ -1502,6 +1505,14 @@ mod tests {
         assert_eq!(
             RemoteGuard::classify_gh(&["pr", "status"]),
             CommandType::SafeRead
+        );
+        assert_eq!(
+            RemoteGuard::classify_gh(&["pr", "view", "feature/test"]),
+            CommandType::SafeRead
+        );
+        assert_eq!(
+            RemoteGuard::classify_gh(&["pr", "create", "--base", "main"]),
+            CommandType::SafeWrite
         );
         assert_eq!(
             RemoteGuard::classify_gh(&["repo", "delete", "sample"]),
@@ -1539,7 +1550,7 @@ mod tests {
                 kind: "import",
                 detail: "add trait import".to_string(),
             }),
-            "auto fix(import): add trait import"
+            "auto fix"
         );
     }
 
@@ -1602,11 +1613,11 @@ mod tests {
         let _env = EnvVarGuard::set_path("DBM_GH_BIN", &fake_gh);
 
         let state = AuthValidator::validate(&repo).expect("auth validate");
-        assert_eq!(state.as_deref(), Some("github_auth_invalid"));
+        assert_eq!(state.as_deref(), Some("RemoteAuthFailed"));
     }
 
     #[test]
-    fn remote_integration_pushes_and_creates_pr() {
+    fn remote_integration_pushes_and_creates_pr_phase2() {
         let _guard = gh_env_lock().lock().expect("gh env lock");
         let repo = temp_git_repo("remote_success");
         let bare = attach_origin_remote(&repo, "remote_success");
@@ -1673,11 +1684,16 @@ mod tests {
 
         assert!(remote.pushed);
         assert!(remote.pr_created);
+        assert!(!remote.pr_duplicate);
         assert!(remote.branch.as_deref().is_some_and(is_auto_fix_branch));
         assert_eq!(
             remote.pr_url.as_deref(),
             Some("https://github.com/example/repo/pull/1")
         );
+        let telemetry_path = remote.telemetry_path.expect("telemetry path");
+        let telemetry = fs::read_to_string(telemetry_path).expect("telemetry");
+        assert!(telemetry.contains("\"push_ok\": true"), "{telemetry}");
+        assert!(telemetry.contains("\"pr_created\": true"), "{telemetry}");
 
         let heads = git_command()
             .args([
@@ -1695,6 +1711,70 @@ mod tests {
                 .as_deref()
                 .is_some_and(|branch| refs.contains(branch))
         );
+    }
+
+    #[test]
+    fn remote_integration_skips_duplicate_pr_creation() {
+        let _guard = gh_env_lock().lock().expect("gh env lock");
+        let repo = temp_git_repo("remote_duplicate");
+        let _bare = attach_origin_remote(&repo, "remote_duplicate");
+        let fake_gh = write_fake_gh(true);
+        let _env = EnvVarGuard::set_path("DBM_GH_BIN", &fake_gh);
+        unsafe {
+            std::env::set_var("DBM_GH_DUPLICATE", "1");
+        }
+
+        let attempts = vec![ExecuteAttempt {
+            attempt: 1,
+            task: "cargo build".to_string(),
+            exec_report: report(true, "None", "cargo", &["build"], "", false),
+            debug: None,
+            fix: Some(Fix {
+                r#type: "patch".to_string(),
+                content: "fix duplicate".to_string(),
+                executable: None,
+                patch: None,
+            }),
+            stop_reason: None,
+        }];
+        let git = GitIntegrationReport {
+            changed_files: vec!["src/main.rs".to_string()],
+            diff: String::new(),
+            diff_stats: DiffStats::default(),
+            actions: Vec::new(),
+            committed: true,
+            confirmation_required: false,
+            confirmation_granted: true,
+            rolled_back: false,
+            commit_id: Some("abc123".to_string()),
+            reason: None,
+        };
+
+        let remote = RemoteIntegration::finalize(
+            &repo,
+            &attempts,
+            Some(&git),
+            &GitIntegrationOptions {
+                auto_commit: true,
+                require_confirmation: false,
+                no_commit: false,
+                dry_run: false,
+                rollback_on_failure: false,
+                auto_remote: true,
+                enable_remote: true,
+            },
+            &mut StaticConfirmationHandler(true),
+        )
+        .expect("remote finalize")
+        .expect("remote report");
+
+        assert!(remote.pushed);
+        assert!(!remote.pr_created);
+        assert!(remote.pr_duplicate);
+        assert_eq!(remote.reason.as_deref(), Some("PRAlreadyExists"));
+        unsafe {
+            std::env::remove_var("DBM_GH_DUPLICATE");
+        }
     }
 
     #[test]

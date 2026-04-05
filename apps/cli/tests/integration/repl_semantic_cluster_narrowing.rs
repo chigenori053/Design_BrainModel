@@ -141,73 +141,35 @@ fn repl_rs_cluster_excludes_broad_architectural_tokens() {
 // ─── Case 1: adapter/app rejected ────────────────────────────────────────────
 
 #[test]
-fn repl_rs_rejects_adapter_app_patch() {
+fn repl_rs_prunes_broad_architectural_patches() {
     let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![adapter_app_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert!(
-        kept.is_empty(),
-        "adapter_app_interface must be pruned for repl.rs, kept: {kept:?}"
-    );
-}
-
-#[test]
-fn repl_rs_rejects_agent_domain_patch() {
-    let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![agent_domain_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert!(
-        kept.is_empty(),
-        "agent_domain_interface must be pruned for repl.rs, kept: {kept:?}"
-    );
-}
-
-#[test]
-fn repl_rs_rejects_dependency_engine_patch() {
-    let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![dependency_engine_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert!(
-        kept.is_empty(),
-        "dependency_engine_interface must be pruned for repl.rs, kept: {kept:?}"
-    );
-}
-
-#[test]
-fn repl_rs_rejects_controller_determinism_patch() {
-    let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![controller_determinism_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert!(
-        kept.is_empty(),
-        "controller_determinism must be pruned for repl.rs, kept: {kept:?}"
-    );
+    for patch in [
+        adapter_app_patch(),
+        agent_domain_patch(),
+        dependency_engine_patch(),
+        controller_determinism_patch(),
+    ] {
+        let kept = prune_patches_for_target(&[patch], target);
+        assert!(
+            kept.is_empty(),
+            "broad architectural patch must be pruned for repl.rs, kept: {kept:?}"
+        );
+    }
 }
 
 // ─── Case 2: planner_v2 import allowed ───────────────────────────────────────
 
 #[test]
-fn repl_rs_allows_planner_v2_wiring_patch() {
+fn repl_rs_allows_repl_local_wiring_patches() {
     let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![planner_v2_wiring_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert_eq!(
-        kept.len(),
-        1,
-        "planner_v2 wiring patch must pass through for repl.rs, kept: {kept:?}"
-    );
-}
-
-#[test]
-fn repl_rs_allows_nl_repl_patch() {
-    let target = Path::new("apps/cli/src/repl.rs");
-    let patches = vec![nl_repl_patch()];
-    let kept = prune_patches_for_target(&patches, target);
-    assert_eq!(
-        kept.len(),
-        1,
-        "nl -> repl wiring patch must pass through for repl.rs, kept: {kept:?}"
-    );
+    for patch in [planner_v2_wiring_patch(), nl_repl_patch()] {
+        let kept = prune_patches_for_target(&[patch], target);
+        assert_eq!(
+            kept.len(),
+            1,
+            "repl-local wiring patch must pass through for repl.rs, kept: {kept:?}"
+        );
+    }
 }
 
 #[test]

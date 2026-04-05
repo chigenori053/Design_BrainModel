@@ -1298,17 +1298,12 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
     if let Some(git) = &report.execution.git_commit {
         writeln!(writer, "Git staged files: {}", git.staged_files.len())?;
         writeln!(writer, "Git dirty excluded: {}", git.dirty_excluded.len())?;
-    }
-    if let Some(push) = &report.execution.git_push {
-        writeln!(writer, "Git push: {}", push.push_created)?;
-        writeln!(writer, "Push branch: {}", push.branch_name)?;
-        writeln!(writer, "Push remote: {}", push.remote_ref)?;
-    }
-    if let Some(pr) = &report.execution.pull_request {
-        writeln!(writer, "Pull request: {}", pr.pr_created)?;
-        writeln!(writer, "PR base: {}", pr.base_branch)?;
-        if let Some(url) = &pr.pr_url {
-            writeln!(writer, "PR URL: {url}")?;
+        writeln!(writer, "Git diff preview files: {}", git.diff_preview.len())?;
+        if let Some(path) = &git.telemetry_path {
+            writeln!(writer, "Git telemetry: {}", path.display())?;
+        }
+        if let Some(warning) = &git.warning {
+            writeln!(writer, "Git warning: {warning}")?;
         }
     }
     if let Some(reason) = &report.execution.reason {

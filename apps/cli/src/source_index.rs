@@ -365,6 +365,45 @@ impl ModuleSourceIndex {
             .next())
     }
 
+    pub fn crate_root_publicly_exports(
+        &self,
+        root: &Path,
+        crate_name: &str,
+        item: &str,
+    ) -> Result<bool, String> {
+        let normalized_crate = normalize_key(crate_name);
+        let root_relative = self
+            .by_qualified
+            .iter()
+            .find_map(|(id, path)| {
+                (id.crate_name == normalized_crate
+                    && matches!(
+                        path.file_name().and_then(|value| value.to_str()),
+                        Some("lib.rs" | "main.rs")
+                    ))
+                .then_some(path.clone())
+            });
+        let Some(root_relative) = root_relative else {
+            return Ok(false);
+        };
+        let content = fs::read_to_string(root.join(&root_relative))
+            .map_err(|err| format!("failed to read {}: {err}", root.join(&root_relative).display()))?;
+        let item = normalize_key(item);
+        Ok(content.lines().any(|line| {
+            let trimmed = line.trim();
+            trimmed == format!("pub mod {item};")
+                || trimmed == format!("mod {item};")
+                || parse_reexport_name(
+                    trimmed
+                        .strip_prefix("pub use ")
+                        .and_then(|value| value.strip_suffix(';'))
+                        .unwrap_or_default(),
+                )
+                .map(|candidate| normalize_key(&candidate) == item)
+                .unwrap_or(false)
+        }))
+    }
+
     fn resolve_same_crate_symbol_module(
         &self,
         root: &Path,

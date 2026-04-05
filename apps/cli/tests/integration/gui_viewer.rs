@@ -47,22 +47,30 @@ fn run(args: &[&str]) -> (i32, String, String) {
 }
 
 #[test]
-fn gui_render_2d_exports_ir_and_reports_gui_viewer() {
-    let dir = temp_project("2d");
-    let (code, stdout, _) = run(&["structure", "view", dir.to_str().unwrap(), "--2d", "--json"]);
-    assert_eq!(code, 0);
-    assert!(stdout.contains("\"mode\": \"2d\""));
-    assert!(stdout.contains("\"launch_url\""));
-    assert!(dir.join(".dbm/structure_view.json").exists());
-}
-
-#[test]
-fn gui_render_3d_uses_native_launcher() {
-    let dir = temp_project("3d");
+fn gui_render_modes_export_ir_and_report_expected_launch_targets() {
+    for (name, mode_flag, expected_mode, expected_launch_marker) in [
+        ("2d", "--2d", "\"mode\": \"2d\"", "\"launch_url\""),
+        ("3d", "--3d", "\"mode\": \"3d\"", "embedded://viewer_core"),
+    ] {
+        let dir = temp_project(name);
+        let (code, stdout, _) = run(&[
+            "structure",
+            "view",
+            dir.to_str().unwrap(),
+            mode_flag,
+            "--json",
+        ]);
+        assert_eq!(code, 0);
+        assert!(stdout.contains(expected_mode), "stdout: {stdout}");
+        assert!(
+            stdout.contains(expected_launch_marker),
+            "stdout: {stdout}"
+        );
+        assert!(dir.join(".dbm/structure_view.json").exists());
+    }
+    let dir = temp_project("3d_mode_suffix");
     let (code, stdout, _) = run(&["structure", "view", dir.to_str().unwrap(), "--3d", "--json"]);
     assert_eq!(code, 0);
-    assert!(stdout.contains("\"mode\": \"3d\""));
-    assert!(stdout.contains("embedded://viewer_core"));
     assert!(stdout.contains("mode=3d"));
 }
 

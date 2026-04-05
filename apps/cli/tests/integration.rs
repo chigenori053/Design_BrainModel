@@ -16,6 +16,14 @@ mod coding_target_scope;
 mod coding_target_semantic_pruning;
 #[path = "integration/coding_import_rebinding.rs"]
 mod coding_import_rebinding;
+#[path = "integration/coding_sandbox_copy.rs"]
+mod coding_sandbox_copy;
+#[path = "integration/coding_cargo_resolution.rs"]
+mod coding_cargo_resolution;
+#[path = "integration/coding_semantic_recovery.rs"]
+mod coding_semantic_recovery;
+#[path = "integration/coding_malformed_import_batch.rs"]
+mod coding_malformed_import_batch;
 #[path = "integration/command_flow.rs"]
 mod command_flow;
 #[path = "integration/gui_viewer.rs"]

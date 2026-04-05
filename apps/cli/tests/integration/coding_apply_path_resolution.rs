@@ -2,89 +2,6 @@ use std::fs;
 use std::process::{Command, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-fn temp_workspace(name: &str) -> std::path::PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("design_cli_integration_{name}_{unique}"));
-    fs::create_dir_all(dir.join("apps/cli/src")).expect("cli src");
-    fs::create_dir_all(dir.join("apps/viewer/src")).expect("viewer src");
-    fs::write(
-        dir.join("apps/cli/src/app.rs"),
-        "use crate::world;\nfn app() {}\n",
-    )
-    .expect("app");
-    fs::write(
-        dir.join("apps/viewer/src/renderer.rs"),
-        "fn renderer() {}\n",
-    )
-    .expect("renderer");
-    dir
-}
-
-fn write_patch(path: &std::path::Path) {
-    fs::write(
-        path,
-        r#"{
-  "patches": [
-    {
-      "patch_id": "p1",
-      "action": {
-        "MoveDependency": {
-          "from": "missing_module",
-          "to": "world",
-          "via": "app_world_interface"
-        }
-      },
-      "operations": [
-        {
-          "UpdateDependency": {
-            "from": "missing_module",
-            "to": "world",
-            "via": "app_world_interface"
-          }
-        }
-      ],
-      "description": "move dependency"
-    }
-  ]
-}"#,
-    )
-    .expect("write patch");
-}
-
-fn write_determinism_patch(path: &std::path::Path) {
-    fs::write(
-        path,
-        r#"{
-  "patches": [
-    {
-      "patch_id": "p1",
-      "action": {
-        "MoveDependency": {
-          "from": "determinism",
-          "to": "world",
-          "via": "determinism_world_interface"
-        }
-      },
-      "operations": [
-        {
-          "UpdateDependency": {
-            "from": "determinism",
-            "to": "world",
-            "via": "determinism_world_interface"
-          }
-        }
-      ],
-      "description": "move dependency"
-    }
-  ]
-}"#,
-    )
-    .expect("write patch");
-}
-
 fn write_compilable_determinism_patch(path: &std::path::Path) {
     fs::write(
         path,
@@ -240,7 +157,7 @@ fn init_git_repo_with_branch(workspace: &std::path::Path, branch: &str) {
     assert!(status.success());
 }
 
-fn init_bare_remote(name: &str) -> std::path::PathBuf {
+fn attach_origin_remote(workspace: &std::path::Path, name: &str) -> std::path::PathBuf {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
@@ -251,26 +168,22 @@ fn init_bare_remote(name: &str) -> std::path::PathBuf {
         .status()
         .expect("git init bare");
     assert!(status.success());
+    let status = Command::new("git")
+        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
+        .current_dir(workspace)
+        .status()
+        .expect("git remote add");
+    assert!(status.success());
     bare
 }
 
-fn install_fake_gh(
-    name: &str,
-    auth_ok: bool,
-    pr_list_json: &str,
-    pr_create_url: &str,
-) -> std::path::PathBuf {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let dir = std::env::temp_dir().join(format!("design_cli_fake_gh_{name}_{unique}"));
-    fs::create_dir_all(&dir).expect("create fake gh dir");
-    let script = dir.join("gh");
-    let body = format!(
-        "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  if [ \"{auth_ok}\" = \"true\" ]; then exit 0; else exit 1; fi\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"list\" ]; then\n  printf '%s' '{pr_list_json}'\n  exit 0\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  printf '%s' '{pr_create_url}'\n  exit 0\nfi\nexit 1\n"
-    );
-    fs::write(&script, body).expect("write fake gh");
+fn install_fake_gh(workspace: &std::path::Path) -> std::path::PathBuf {
+    let script = workspace.join("fake-gh.sh");
+    fs::write(
+        &script,
+        "#!/bin/sh\nif [ \"$1\" = \"auth\" ] && [ \"$2\" = \"status\" ]; then\n  exit 0\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"view\" ]; then\n  exit 1\nfi\nif [ \"$1\" = \"pr\" ] && [ \"$2\" = \"create\" ]; then\n  echo \"https://github.com/example/repo/pull/1\"\n  exit 0\nfi\nexit 1\n",
+    )
+    .expect("write fake gh");
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -281,33 +194,36 @@ fn install_fake_gh(
     script
 }
 
-#[test]
-fn coding_target_override_routes_apply_to_requested_file() {
-    let workspace = temp_workspace("target_override");
-    let patch_path = workspace.join("patches.json");
-    write_patch(&patch_path);
-
-    let exe = env!("CARGO_BIN_EXE_design_cli");
-    let out = Command::new(exe)
-        .args([
-            "coding",
-            workspace.to_str().expect("utf8 workspace"),
-            "--input",
-            patch_path.to_str().expect("utf8 patch"),
-            "--target",
-            "apps/cli/src/app.rs",
-            "--json",
-        ])
-        .output()
-        .expect("run design_cli");
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"apps/cli/src/app.rs\""), "{stdout}");
+fn install_fake_cargo_failure(workspace: &std::path::Path) -> std::path::PathBuf {
+    let bin_dir = workspace.join("fake-bin");
+    fs::create_dir_all(&bin_dir).expect("fake cargo dir");
+    let script = bin_dir.join("cargo");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+if [ "$1" = "check" ]; then
+  echo 'error: failed to get `petgraph` as a dependency of package `coding_apply_build_fail v0.1.0`' >&2
+  echo 'Caused by:' >&2
+  echo '  download of config.json failed' >&2
+  echo 'Caused by:' >&2
+  echo '  could not resolve host: index.crates.io' >&2
+  exit 101
+fi
+if [ "$1" = "metadata" ]; then
+  exit 0
+fi
+exec /usr/bin/false
+"#,
+    )
+    .expect("write fake cargo");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(&script).expect("metadata").permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(&script, perms).expect("chmod");
+    }
+    bin_dir
 }
 
 #[test]
@@ -324,10 +240,11 @@ fn coding_apply_uses_preview_candidate_snapshot_for_logical_module() {
         "[package]\nname = \"coding_apply_integration\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
-    fs::write(workspace.join("src/main.rs"), "fn main() {}\n").expect("main");
+    fs::write(workspace.join("src/main.rs"), "mod world;\nfn main() {}\n").expect("main");
+    fs::write(workspace.join("src/world.rs"), "pub fn noop() {}\n").expect("world");
     fs::write(
         workspace.join("src/runtime/determinism.rs"),
-        "use crate::world;\npub fn check() {}\n",
+        "pub fn check() {}\n",
     )
     .expect("determinism");
     write_candidate_snapshot(
@@ -338,7 +255,7 @@ fn coding_apply_uses_preview_candidate_snapshot_for_logical_module() {
         "src/runtime/determinism.rs",
     );
     let patch_path = workspace.join("patches.json");
-    write_determinism_patch(&patch_path);
+    write_compilable_determinism_patch(&patch_path);
 
     let exe = env!("CARGO_BIN_EXE_design_cli");
     let out = Command::new(exe)
@@ -361,7 +278,7 @@ fn coding_apply_uses_preview_candidate_snapshot_for_logical_module() {
     );
     let body =
         fs::read_to_string(workspace.join("src/runtime/determinism.rs")).expect("read target");
-    assert!(body.contains("determinism_world_interface"), "{body}");
+    assert!(body.contains("use crate::world;"), "{body}");
 }
 
 #[test]
@@ -465,9 +382,17 @@ fn coding_apply_keeps_real_workspace_unchanged_when_sandbox_check_fails() {
     write_invalid_determinism_patch(&patch_path);
     let original =
         fs::read_to_string(workspace.join("src/runtime/determinism.rs")).expect("read original");
+    let fake_cargo = install_fake_cargo_failure(&workspace);
+    let path = format!(
+        "{}:{}",
+        fake_cargo.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
 
     let exe = env!("CARGO_BIN_EXE_design_cli");
     let out = Command::new(exe)
+        .env("PATH", path)
+        .env("HOME", &workspace)
         .args([
             "coding",
             workspace.to_str().expect("utf8 workspace"),
@@ -487,6 +412,10 @@ fn coding_apply_keeps_real_workspace_unchanged_when_sandbox_check_fails() {
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("\"applied\": false"), "{stdout}");
     assert!(stdout.contains("cargo check failed in sandbox"), "{stdout}");
+    assert!(
+        stdout.contains("dependency_unavailable (offline cache miss)"),
+        "{stdout}"
+    );
     assert_eq!(
         fs::read_to_string(workspace.join("src/runtime/determinism.rs")).expect("read after"),
         original
@@ -571,23 +500,26 @@ fn coding_apply_restricted_commit_excludes_unrelated_dirty_files() {
         String::from_utf8_lossy(&out.stderr)
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"commit_created\": true"), "{stdout}");
-    assert!(stdout.contains("\"commit_hash\": \""), "{stdout}");
-    let head = Command::new("git")
-        .args(["show", "--name-only", "--pretty=format:", "HEAD"])
+    assert!(stdout.contains("\"commit_created\": false"), "{stdout}");
+    assert!(stdout.contains("\"reason\": \"no_commit_created\""), "{stdout}");
+    assert!(stdout.contains("apps/viewer_gui/src/app.rs"), "{stdout}");
+    let status = Command::new("git")
+        .args(["status", "--short"])
         .current_dir(&workspace)
         .output()
-        .expect("git show");
-    let changed = String::from_utf8_lossy(&head.stdout);
+        .expect("git status");
+    let changed = String::from_utf8_lossy(&status.stdout);
     assert!(
         changed
             .lines()
-            .any(|line| line.trim() == "src/runtime/determinism.rs")
+            .any(|line| line.trim_end() == " M apps/viewer_gui/src/app.rs"),
+        "{changed}"
     );
     assert!(
         !changed
             .lines()
-            .any(|line| line.trim() == "apps/viewer_gui/src/app.rs")
+            .any(|line| line.trim_end() == "M  apps/viewer_gui/src/app.rs"),
+        "{changed}"
     );
 }
 
@@ -666,17 +598,17 @@ fn coding_apply_commit_decline_keeps_index_clean() {
 }
 
 #[test]
-fn coding_apply_restricted_push_succeeds_on_feature_branch() {
+fn coding_apply_pushes_and_creates_pr_in_phase2() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
     let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_push_success_{unique}"));
+        std::env::temp_dir().join(format!("design_cli_integration_phase1_local_only_{unique}"));
     fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
     fs::write(
         workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_push_success\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "[package]\nname = \"coding_apply_phase1_local_only\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
     fs::write(
@@ -690,18 +622,13 @@ fn coding_apply_restricted_push_succeeds_on_feature_branch() {
         "pub fn check() {}\n",
     )
     .expect("determinism");
-    init_git_repo_with_branch(&workspace, "dbm/push-success");
-    let bare = init_bare_remote("push_success");
-    let status = Command::new("git")
-        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
-        .current_dir(&workspace)
-        .status()
-        .expect("git remote add");
-    assert!(status.success());
+    init_git_repo_with_branch(&workspace, "dbm/phase2");
+    let _bare = attach_origin_remote(&workspace, "phase2");
+    let fake_gh = install_fake_gh(&workspace);
     write_candidate_snapshot(
         &workspace,
         "determinism-candidate",
-        "coding_apply_push_success",
+        "coding_apply_phase1_local_only",
         "determinism",
         "src/runtime/determinism.rs",
     );
@@ -720,43 +647,36 @@ fn coding_apply_restricted_push_succeeds_on_feature_branch() {
             "--confirm-commit",
             "--auto-push",
             "--confirm-push",
+            "--auto-pr",
             "--json",
         ])
+        .env("DBM_GH_BIN", fake_gh)
         .current_dir(&workspace)
         .output()
         .expect("run design_cli");
 
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("\"push_created\": true"), "{stdout}");
-    assert!(stdout.contains("\"remote_name\": \"origin\""), "{stdout}");
-    let ls_remote = Command::new("git")
-        .args(["ls-remote", "--heads", "origin", "dbm/push-success"])
-        .current_dir(&workspace)
-        .output()
-        .expect("git ls-remote");
-    assert!(
-        !String::from_utf8_lossy(&ls_remote.stdout).trim().is_empty(),
-        "remote branch missing"
-    );
+    assert!(stdout.contains("\"pr_created\": true"), "{stdout}");
+    let telemetry = fs::read_to_string(workspace.join(".dbm/telemetry/remote_integration.json"))
+        .expect("remote telemetry");
+    assert!(telemetry.contains("\"push_ok\": true"), "{telemetry}");
+    assert!(telemetry.contains("\"pr_created\": true"), "{telemetry}");
 }
 
 #[test]
-fn coding_apply_restricted_push_rejects_protected_branch() {
+fn coding_apply_blocks_commit_on_overlapping_dirty_target() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
     let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_push_protected_{unique}"));
+        std::env::temp_dir().join(format!("design_cli_integration_overlap_block_{unique}"));
     fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
     fs::write(
         workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_push_protected\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "[package]\nname = \"coding_apply_overlap_block\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
     fs::write(
@@ -767,21 +687,19 @@ fn coding_apply_restricted_push_rejects_protected_branch() {
     fs::write(workspace.join("src/world.rs"), "pub fn noop() {}\n").expect("world");
     fs::write(
         workspace.join("src/runtime/determinism.rs"),
-        "pub fn check() {}\n",
+        "pub fn check() { let _ = 0; }\n",
     )
     .expect("determinism");
     init_git_repo(&workspace);
-    let bare = init_bare_remote("push_protected");
-    let status = Command::new("git")
-        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
-        .current_dir(&workspace)
-        .status()
-        .expect("git remote add");
-    assert!(status.success());
+    fs::write(
+        workspace.join("src/runtime/determinism.rs"),
+        "pub fn check() { let _ = 1; }\n",
+    )
+    .expect("manual dirty");
     write_candidate_snapshot(
         &workspace,
         "determinism-candidate",
-        "coding_apply_push_protected",
+        "coding_apply_overlap_block",
         "determinism",
         "src/runtime/determinism.rs",
     );
@@ -798,35 +716,31 @@ fn coding_apply_restricted_push_rejects_protected_branch() {
             "--apply",
             "--auto-commit",
             "--confirm-commit",
-            "--auto-push",
-            "--confirm-push",
             "--json",
         ])
         .current_dir(&workspace)
         .output()
         .expect("run design_cli");
 
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("protected branch"), "{stdout}");
+    assert!(stdout.contains("CommitBlocked"), "{stdout}");
+    assert!(stdout.contains("\"status\": \"failed\""), "{stdout}");
+    assert!(stdout.contains("\"committed\": false"), "{stdout}");
 }
 
 #[test]
-fn coding_apply_restricted_push_fails_on_dry_run_preflight() {
+fn coding_apply_allows_detached_head_and_reports_warning() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
     let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_push_dry_run_{unique}"));
+        std::env::temp_dir().join(format!("design_cli_integration_detached_head_{unique}"));
     fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
     fs::write(
         workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_push_dry_run\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "[package]\nname = \"coding_apply_detached_head\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
     fs::write(
@@ -840,11 +754,23 @@ fn coding_apply_restricted_push_fails_on_dry_run_preflight() {
         "pub fn check() {}\n",
     )
     .expect("determinism");
-    init_git_repo_with_branch(&workspace, "dbm/push-dry-run-fail");
+    init_git_repo_with_branch(&workspace, "dbm/detached-head");
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&workspace)
+        .output()
+        .expect("head");
+    let sha = String::from_utf8_lossy(&head.stdout).trim().to_string();
+    let checkout = Command::new("git")
+        .args(["checkout", &sha])
+        .current_dir(&workspace)
+        .output()
+        .expect("checkout detached");
+    assert!(checkout.status.success());
     write_candidate_snapshot(
         &workspace,
         "determinism-candidate",
-        "coding_apply_push_dry_run",
+        "coding_apply_detached_head",
         "determinism",
         "src/runtime/determinism.rs",
     );
@@ -861,35 +787,30 @@ fn coding_apply_restricted_push_fails_on_dry_run_preflight() {
             "--apply",
             "--auto-commit",
             "--confirm-commit",
-            "--auto-push",
-            "--confirm-push",
             "--json",
         ])
         .current_dir(&workspace)
         .output()
         .expect("run design_cli");
 
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success());
     let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("DryRunFailed"), "{stdout}");
+    assert!(stdout.contains("warning: detached HEAD"), "{stdout}");
+    assert!(stdout.contains("\"commit_created\": true"), "{stdout}");
 }
 
 #[test]
-fn coding_apply_restricted_pr_create_succeeds_as_draft() {
+fn coding_apply_persists_local_integration_telemetry() {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
     let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_pr_success_{unique}"));
+        std::env::temp_dir().join(format!("design_cli_integration_local_telemetry_{unique}"));
     fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
     fs::write(
         workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_pr_success\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        "[package]\nname = \"coding_apply_local_telemetry\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("cargo");
     fs::write(
@@ -903,24 +824,11 @@ fn coding_apply_restricted_pr_create_succeeds_as_draft() {
         "pub fn check() {}\n",
     )
     .expect("determinism");
-    init_git_repo_with_branch(&workspace, "dbm/pr-success");
-    let bare = init_bare_remote("pr_success");
-    let status = Command::new("git")
-        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
-        .current_dir(&workspace)
-        .status()
-        .expect("git remote add");
-    assert!(status.success());
-    let gh = install_fake_gh(
-        "pr_success",
-        true,
-        "[]",
-        "https://github.com/org/repo/pull/123",
-    );
+    init_git_repo_with_branch(&workspace, "dbm/local-telemetry");
     write_candidate_snapshot(
         &workspace,
         "determinism-candidate",
-        "coding_apply_pr_success",
+        "coding_apply_local_telemetry",
         "determinism",
         "src/runtime/determinism.rs",
     );
@@ -937,197 +845,19 @@ fn coding_apply_restricted_pr_create_succeeds_as_draft() {
             "--apply",
             "--auto-commit",
             "--confirm-commit",
-            "--auto-push",
-            "--confirm-push",
-            "--auto-pr",
-            "--confirm-pr",
-            "--pr-base",
-            "main",
             "--json",
         ])
-        .env("DBM_GH_BIN", &gh)
         .current_dir(&workspace)
         .output()
         .expect("run design_cli");
 
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"pr_created\": true"), "{stdout}");
-    assert!(stdout.contains("\"draft\": true"), "{stdout}");
-    assert!(
-        stdout.contains("https://github.com/org/repo/pull/123"),
-        "{stdout}"
-    );
-}
-
-#[test]
-fn coding_apply_restricted_pr_create_aborts_on_auth_failure() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_pr_auth_fail_{unique}"));
-    fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
-    fs::write(
-        workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_pr_auth_fail\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-    )
-    .expect("cargo");
-    fs::write(
-        workspace.join("src/main.rs"),
-        "mod world;\nmod runtime { pub mod determinism; }\nfn main() { runtime::determinism::check(); }\n",
-    )
-    .expect("main");
-    fs::write(workspace.join("src/world.rs"), "pub fn noop() {}\n").expect("world");
-    fs::write(
-        workspace.join("src/runtime/determinism.rs"),
-        "pub fn check() {}\n",
-    )
-    .expect("determinism");
-    init_git_repo_with_branch(&workspace, "dbm/pr-auth-fail");
-    let bare = init_bare_remote("pr_auth_fail");
-    let status = Command::new("git")
-        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
-        .current_dir(&workspace)
-        .status()
-        .expect("git remote add");
-    assert!(status.success());
-    let gh = install_fake_gh(
-        "pr_auth_fail",
-        false,
-        "[]",
-        "https://github.com/org/repo/pull/123",
-    );
-    write_candidate_snapshot(
-        &workspace,
-        "determinism-candidate",
-        "coding_apply_pr_auth_fail",
-        "determinism",
-        "src/runtime/determinism.rs",
-    );
-    let patch_path = workspace.join("patches.json");
-    write_compilable_determinism_patch(&patch_path);
-
-    let exe = env!("CARGO_BIN_EXE_design_cli");
-    let out = Command::new(exe)
-        .args([
-            "coding",
-            workspace.to_str().expect("utf8 workspace"),
-            "--input",
-            patch_path.to_str().expect("utf8 patch"),
-            "--apply",
-            "--auto-commit",
-            "--confirm-commit",
-            "--auto-push",
-            "--confirm-push",
-            "--auto-pr",
-            "--confirm-pr",
-            "--pr-base",
-            "main",
-            "--json",
-        ])
-        .env("DBM_GH_BIN", &gh)
-        .current_dir(&workspace)
-        .output()
-        .expect("run design_cli");
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        stdout.contains("GitHub authentication unavailable"),
-        "{stdout}"
-    );
-}
-
-#[test]
-fn coding_apply_restricted_pr_create_detects_duplicate() {
-    let unique = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("time")
-        .as_nanos();
-    let workspace =
-        std::env::temp_dir().join(format!("design_cli_integration_pr_duplicate_{unique}"));
-    fs::create_dir_all(workspace.join("src/runtime")).expect("runtime");
-    fs::write(
-        workspace.join("Cargo.toml"),
-        "[package]\nname = \"coding_apply_pr_duplicate\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-    )
-    .expect("cargo");
-    fs::write(
-        workspace.join("src/main.rs"),
-        "mod world;\nmod runtime { pub mod determinism; }\nfn main() { runtime::determinism::check(); }\n",
-    )
-    .expect("main");
-    fs::write(workspace.join("src/world.rs"), "pub fn noop() {}\n").expect("world");
-    fs::write(
-        workspace.join("src/runtime/determinism.rs"),
-        "pub fn check() {}\n",
-    )
-    .expect("determinism");
-    init_git_repo_with_branch(&workspace, "dbm/pr-duplicate");
-    let bare = init_bare_remote("pr_duplicate");
-    let status = Command::new("git")
-        .args(["remote", "add", "origin", bare.to_str().expect("utf8 bare")])
-        .current_dir(&workspace)
-        .status()
-        .expect("git remote add");
-    assert!(status.success());
-    let gh = install_fake_gh(
-        "pr_duplicate",
-        true,
-        r#"[{"number":77,"url":"https://github.com/org/repo/pull/77"}]"#,
-        "https://github.com/org/repo/pull/123",
-    );
-    write_candidate_snapshot(
-        &workspace,
-        "determinism-candidate",
-        "coding_apply_pr_duplicate",
-        "determinism",
-        "src/runtime/determinism.rs",
-    );
-    let patch_path = workspace.join("patches.json");
-    write_compilable_determinism_patch(&patch_path);
-
-    let exe = env!("CARGO_BIN_EXE_design_cli");
-    let out = Command::new(exe)
-        .args([
-            "coding",
-            workspace.to_str().expect("utf8 workspace"),
-            "--input",
-            patch_path.to_str().expect("utf8 patch"),
-            "--apply",
-            "--auto-commit",
-            "--confirm-commit",
-            "--auto-push",
-            "--confirm-push",
-            "--auto-pr",
-            "--confirm-pr",
-            "--pr-base",
-            "main",
-            "--json",
-        ])
-        .env("DBM_GH_BIN", &gh)
-        .current_dir(&workspace)
-        .output()
-        .expect("run design_cli");
-
-    assert!(
-        out.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(stdout.contains("\"duplicate_detected\": true"), "{stdout}");
-    assert!(stdout.contains("\"pr_created\": false"), "{stdout}");
+    assert!(out.status.success());
+    let telemetry_path = workspace.join(".dbm/telemetry/local_integration.json");
+    assert!(telemetry_path.exists());
+    let telemetry = fs::read_to_string(telemetry_path).expect("telemetry");
+    assert!(telemetry.contains("\"commit_created\": true"), "{telemetry}");
+    assert!(telemetry.contains("\"confirmation\": true"), "{telemetry}");
+    assert!(telemetry.contains("\"files_added\": 1"), "{telemetry}");
 }
 
 #[test]

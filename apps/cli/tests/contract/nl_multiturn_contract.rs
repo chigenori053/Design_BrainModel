@@ -55,7 +55,10 @@ fn git_steps_default_to_dry_run_safe_workflow() {
         followup.steps,
         vec![PlannedStep::Coding(
             PathBuf::from("."),
-            CodingOptions::default()
+            CodingOptions {
+                request: Some("presentation layer 側だけ直して".to_string()),
+                ..CodingOptions::default()
+            }
         )]
     );
 }

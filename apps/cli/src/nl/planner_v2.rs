@@ -78,7 +78,9 @@ pub fn plan_input(
 ) -> Option<CommandPlan> {
     // R1: continuation 上の exact "coding --apply" → ApplyPreviousCodingStep へ昇格。
     // generic planner を bypass し、前回 dry-run transaction を再利用する (R2)。
-    if input.trim() == "coding --apply" && conversation.has_pending_coding_transaction() {
+    if input.trim() == "coding --apply"
+        && (conversation.has_pending_coding_transaction() || conversation.has_reapply_guard())
+    {
         return Some(CommandPlan {
             steps: vec![PlannedStep::ApplyPreviousCodingStep],
         });

@@ -77,6 +77,7 @@ pub fn apply_refactor(
             safe_mode: true,
             auto_commit: options.auto_commit,
             confirm_commit: false,
+            prompt_commit: false,
             auto_push: false,
             confirm_push: false,
             auto_pr: false,

@@ -337,12 +337,6 @@ impl GitExecutor {
     pub(super) fn run_checked(root: &Path, args: &[&str]) -> Result<(), String> {
         match Self::classify(args) {
             CommandType::SafeRead | CommandType::SafeWrite => {}
-            CommandType::RemoteWrite => {
-                return Err(format!(
-                    "remote git command rejected by local executor: git {}",
-                    args.join(" ")
-                ));
-            }
             CommandType::Dangerous => {
                 return Err(format!(
                     "dangerous git command rejected: git {}",
@@ -646,13 +640,12 @@ fn commit_descriptor(attempts: &[ExecuteAttempt]) -> CommitDescriptor<'static> {
 }
 
 pub(super) fn commit_message(descriptor: &CommitDescriptor<'_>) -> String {
-    format!("auto fix({}): {}", descriptor.kind, descriptor.detail)
+    let _ = descriptor;
+    "auto fix".to_string()
 }
 
 fn is_valid_commit_message(message: &str) -> bool {
-    ["build", "import", "syntax", "dependency", "borrow"]
-        .iter()
-        .any(|kind| message.starts_with(&format!("auto fix({kind}): ")))
+    message == "auto fix"
 }
 
 fn is_allowed_file_type(file: &str) -> bool {
@@ -736,10 +729,6 @@ fn git_output_with_retry<const N: usize>(
 
 pub(super) fn is_protected_branch(branch: &str) -> bool {
     matches!(branch, "main" | "master")
-}
-
-pub(super) fn is_feature_branch(branch: &str) -> bool {
-    !is_protected_branch(branch) && !branch.trim().is_empty()
 }
 
 pub(super) fn is_auto_fix_branch(branch: &str) -> bool {

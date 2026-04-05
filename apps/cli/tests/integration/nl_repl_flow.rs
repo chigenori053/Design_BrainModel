@@ -47,26 +47,23 @@ fn run_repl(dir: &std::path::Path, input: &str) -> (i32, String, String) {
 }
 
 #[test]
-fn repl_executes_natural_language_analysis_flow() {
-    let dir = temp_project("analyze");
-    let (code, stdout, stderr) = run_repl(&dir, "このプロジェクト全体を解析して\n/exit\n");
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("DBM >"), "stdout: {stdout}");
-    assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("design_cli analyze ."),
-        "expected canonical analyze command in output: {stdout}"
-    );
-}
-
-#[test]
-fn repl_executes_natural_language_structure_flow() {
-    let dir = temp_project("structure");
-    let (code, stdout, stderr) = run_repl(&dir, "GUIで構造を開いて\n/exit\n");
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
-    assert!(
-        stdout.contains("design_cli structure view ."),
-        "expected canonical structure command in output: {stdout}"
-    );
+fn repl_executes_single_step_natural_language_flows() {
+    for (name, input, expected_command) in [
+        ("analyze", "このプロジェクト全体を解析して\n/exit\n", "design_cli analyze ."),
+        (
+            "structure",
+            "GUIで構造を開いて\n/exit\n",
+            "design_cli structure view .",
+        ),
+    ] {
+        let dir = temp_project(name);
+        let (code, stdout, stderr) = run_repl(&dir, input);
+        assert_eq!(code, 0, "stderr: {stderr}");
+        assert!(stdout.contains("DBM >"), "stdout: {stdout}");
+        assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
+        assert!(
+            stdout.contains(expected_command),
+            "expected canonical command in output: {stdout}"
+        );
+    }
 }

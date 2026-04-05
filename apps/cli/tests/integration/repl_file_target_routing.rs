@@ -24,138 +24,60 @@ fn conv_with_last(path: &str) -> ConversationState {
 // ─── mutation verb recognition ────────────────────────────────────────────────
 
 #[test]
-fn wants_coding_recognizes_strictify() {
-    assert!(wants_coding("厳密化"), "厳密化 must be a mutation verb");
-}
-
-#[test]
-fn wants_coding_recognizes_improve() {
-    assert!(wants_coding("改善"), "改善 must be a mutation verb");
-}
-
-#[test]
-fn wants_coding_recognizes_refactor() {
-    assert!(wants_coding("refactor"), "refactor must be a mutation verb");
-}
-
-#[test]
-fn wants_coding_recognizes_prune() {
-    assert!(wants_coding("prune"), "prune must be a mutation verb");
-}
-
-#[test]
-fn wants_coding_recognizes_rebind() {
-    assert!(wants_coding("rebind"), "rebind must be a mutation verb");
+fn wants_coding_recognizes_mutation_verbs() {
+    for input in ["厳密化", "改善", "refactor", "prune", "rebind"] {
+        assert!(wants_coding(input), "{input} must be a mutation verb");
+    }
 }
 
 // ─── Case 1: file-local coding → Coding { target } ───────────────────────────
 
 #[test]
-fn file_path_with_strictify_routes_to_coding() {
-    let plan = plan_input(
-        "apps/cli/src/coding.rs の bootstrap pruning をさらに厳密化して",
-        &session(),
-        &conv(),
-    )
-    .expect("must produce a plan");
-
-    assert_eq!(plan.steps.len(), 1, "must produce exactly one step");
-    match &plan.steps[0] {
-        PlannedStep::Coding(path, _) => {
-            assert_eq!(
-                path,
-                &PathBuf::from("apps/cli/src/coding.rs"),
-                "target must be the .rs file"
-            );
+fn file_path_with_mutation_routes_to_coding() {
+    for (input, expected_path) in [
+        (
+            "apps/cli/src/coding.rs の bootstrap pruning をさらに厳密化して",
+            "apps/cli/src/coding.rs",
+        ),
+        ("refactor apps/cli/src/nl/goal.rs", "apps/cli/src/nl/goal.rs"),
+        (
+            "apps/cli/src/coding.rs の semantic pruning を改善して",
+            "apps/cli/src/coding.rs",
+        ),
+    ] {
+        let plan = plan_input(input, &session(), &conv()).expect("must produce a plan");
+        assert_eq!(plan.steps.len(), 1, "must produce exactly one step");
+        match &plan.steps[0] {
+            PlannedStep::Coding(path, _) => {
+                assert_eq!(path, &PathBuf::from(expected_path));
+            }
+            other => panic!("expected Coding step, got {other:?}"),
         }
-        other => panic!("expected Coding step, got {other:?}"),
     }
 }
-
-#[test]
-fn file_path_with_refactor_routes_to_coding() {
-    let plan = plan_input(
-        "refactor apps/cli/src/nl/goal.rs",
-        &session(),
-        &conv(),
-    )
-    .expect("must produce a plan");
-
-    match &plan.steps[0] {
-        PlannedStep::Coding(path, _) => {
-            assert_eq!(path, &PathBuf::from("apps/cli/src/nl/goal.rs"));
-        }
-        other => panic!("expected Coding, got {other:?}"),
-    }
-}
-
-#[test]
-fn file_path_with_prune_routes_to_coding() {
-    let plan = plan_input(
-        "apps/cli/src/coding.rs の semantic pruning を改善して",
-        &session(),
-        &conv(),
-    )
-    .expect("must produce a plan");
-
-    match &plan.steps[0] {
-        PlannedStep::Coding(path, _) => {
-            assert_eq!(path, &PathBuf::from("apps/cli/src/coding.rs"));
-        }
-        other => panic!("expected Coding, got {other:?}"),
-    }
-}
-
-// ─── Case 2: previous target reuse (R4) ──────────────────────────────────────
 
 #[test]
 fn previous_target_reuse_on_mutation_followup() {
-    let prev = "apps/cli/src/coding.rs";
-    let plan = plan_input(
-        "さっきの場所をさらに改善して",
-        &session(),
-        &conv_with_last(prev),
-    )
-    .expect("must produce a plan with previous target");
+    for (prev, input) in [
+        ("apps/cli/src/coding.rs", "さっきの場所をさらに改善して"),
+        ("apps/cli/src/nl/goal.rs", "さっきのファイルをさらに修正して"),
+    ] {
+        let plan = plan_input(input, &session(), &conv_with_last(prev))
+            .expect("must produce a plan with previous target");
 
-    match &plan.steps[0] {
-        PlannedStep::Coding(path, _) => {
-            assert_eq!(
-                path,
-                &PathBuf::from(prev),
-                "must reuse last target"
-            );
+        match &plan.steps[0] {
+            PlannedStep::Coding(path, _) => {
+                assert_eq!(path, &PathBuf::from(prev), "must reuse last target");
+            }
+            other => panic!("expected Coding with previous target, got {other:?}"),
         }
-        other => panic!("expected Coding with previous target, got {other:?}"),
     }
 }
 
 #[test]
-fn sakkinono_phrase_reuses_last_target() {
-    let prev = "apps/cli/src/nl/goal.rs";
-    let plan = plan_input(
-        "さっきのファイルをさらに修正して",
-        &session(),
-        &conv_with_last(prev),
-    )
-    .expect("plan");
-
-    match &plan.steps[0] {
-        PlannedStep::Coding(path, _) => assert_eq!(path, &PathBuf::from(prev)),
-        other => panic!("expected Coding, got {other:?}"),
-    }
-}
-
-// ─── Case 3: directory analyze is unaffected ─────────────────────────────────
-
-#[test]
-fn project_wide_analyze_routes_to_analyze() {
-    let plan = plan_input("プロジェクト全体を解析して", &session(), &conv());
-
-    // "プロジェクト全体" contains "全体" which maps to project scope analyze
-    // But plan_input returns None for "whole project" phrases → falls to legacy planner.
-    // Either None or an Analyze step is acceptable.
-    if let Some(plan) = plan {
+fn analyze_intent_does_not_route_to_coding() {
+    let project_wide = plan_input("プロジェクト全体を解析して", &session(), &conv());
+    if let Some(plan) = project_wide {
         for step in &plan.steps {
             assert!(
                 !matches!(step, PlannedStep::Coding(_, _)),
@@ -163,28 +85,20 @@ fn project_wide_analyze_routes_to_analyze() {
             );
         }
     }
-    // None is also acceptable — the legacy planner handles it
-}
 
-#[test]
-fn analyze_keyword_alone_routes_to_analyze_not_coding() {
-    let plan = plan_input("このプロジェクトを解析して", &session(), &conv())
+    let analyze = plan_input("このプロジェクトを解析して", &session(), &conv())
         .expect("must produce a plan");
-
-    for step in &plan.steps {
+    for step in &analyze.steps {
         assert!(
             !matches!(step, PlannedStep::Coding(_, _)),
             "解析 without mutation must not produce Coding: {step:?}"
         );
     }
-    assert!(plan.steps.iter().any(|s| matches!(s, PlannedStep::Analyze(_))));
+    assert!(analyze.steps.iter().any(|s| matches!(s, PlannedStep::Analyze(_))));
 }
 
-// ─── Case 4: file path without mutation → view intent, not coding ─────────────
-
 #[test]
-fn file_path_without_mutation_does_not_force_coding() {
-    // "見せて" triggers StructureView, which is checked BEFORE R1+R3
+fn non_mutating_file_reference_does_not_force_coding() {
     let plan = plan_input("apps/cli/src/coding.rs を見せて", &session(), &conv());
 
     if let Some(plan) = plan {
@@ -195,11 +109,7 @@ fn file_path_without_mutation_does_not_force_coding() {
             );
         }
     }
-}
 
-#[test]
-fn wants_analyze_does_not_include_mutation_keywords() {
-    // confirm analyze detection is unaffected
     assert!(wants_analyze("このプロジェクトを解析して"));
     assert!(!wants_analyze("coding.rs を厳密化して"));
 }

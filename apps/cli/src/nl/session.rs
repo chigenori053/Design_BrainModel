@@ -58,4 +58,12 @@ impl ConversationState {
             .map(|tx| !tx.applied)
             .unwrap_or(false)
     }
+
+    /// R1 拡張: apply 済み transaction でも same transaction への再 apply guard を維持する。
+    pub fn has_reapply_guard(&self) -> bool {
+        self.last_coding_transaction
+            .as_ref()
+            .map(|tx| tx.applied)
+            .unwrap_or(false)
+    }
 }

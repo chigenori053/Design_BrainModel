@@ -44,6 +44,7 @@ fn target_scope_options(target: &str) -> CodingOptions {
         safe_mode: true,
         auto_commit: false,
         confirm_commit: false,
+        prompt_commit: false,
         auto_push: false,
         confirm_push: false,
         auto_pr: false,
@@ -227,44 +228,40 @@ fn rollback_on_scope_violation() {
 }
 
 #[test]
-fn source_index_bootstrap_blocks_introduce_interface() {
-    let patches = vec![CodePatch {
-        patch_id: "p1".to_string(),
-        action: RefactorPlanAction::IntroduceInterface {
-            between: ("source_index".to_string(), "world".to_string()),
-        },
-        operations: vec![PatchOperation::CreateInterface {
-            name: "AgentDomainInterface".to_string(),
-            between: ("source_index".to_string(), "world".to_string()),
+fn source_index_bootstrap_blocks_cross_module_changes() {
+    for patches in [
+        vec![CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::IntroduceInterface {
+                between: ("source_index".to_string(), "world".to_string()),
+            },
+            operations: vec![PatchOperation::CreateInterface {
+                name: "AgentDomainInterface".to_string(),
+                between: ("source_index".to_string(), "world".to_string()),
+            }],
+            description: "introduce interface".to_string(),
         }],
-        description: "introduce interface".to_string(),
-    }];
-
-    let filtered =
-        apply_bootstrap_safety_policy(&patches, Some(Path::new("apps/cli/src/source_index.rs")));
-    assert!(filtered.is_empty(), "{filtered:?}");
-}
-
-#[test]
-fn source_index_bootstrap_blocks_move_dependency() {
-    let patches = vec![CodePatch {
-        patch_id: "p1".to_string(),
-        action: RefactorPlanAction::MoveDependency {
-            from: "source_index".to_string(),
-            to: "world".to_string(),
-            via: Some("adapter_app_interface".to_string()),
-        },
-        operations: vec![PatchOperation::UpdateDependency {
-            from: "source_index".to_string(),
-            to: "world".to_string(),
-            via: Some("adapter_app_interface".to_string()),
+        vec![CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::MoveDependency {
+                from: "source_index".to_string(),
+                to: "world".to_string(),
+                via: Some("adapter_app_interface".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: "source_index".to_string(),
+                to: "world".to_string(),
+                via: Some("adapter_app_interface".to_string()),
+            }],
+            description: "move dependency".to_string(),
         }],
-        description: "move dependency".to_string(),
-    }];
-
-    let filtered =
-        apply_bootstrap_safety_policy(&patches, Some(Path::new("apps/cli/src/source_index.rs")));
-    assert!(filtered.is_empty(), "{filtered:?}");
+    ] {
+        let filtered = apply_bootstrap_safety_policy(
+            &patches,
+            Some(Path::new("apps/cli/src/source_index.rs")),
+        );
+        assert!(filtered.is_empty(), "{filtered:?}");
+    }
 }
 
 #[test]
