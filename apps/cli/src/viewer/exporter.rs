@@ -2,21 +2,43 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
-use crate::refactor::RefactorPlan;
+use crate::commands::analyze::project::{AnalyzeMode, AnalyzeOptions, analyze_with_options};
+use crate::refactor::{RefactorPlan, candidate_for_target, generate_mock_preview_diff};
+use crate::report::Language;
 use crate::service::{AnalysisReport, analyze_path};
 use crate::source_index::ModuleSourceIndex;
 
 use super::{
-    CameraMode, CameraPreset3D, CandidateMove3D, ChangedEdge, Cluster3D, DesignSyncStatus, Edge3D,
-    EdgeDelta, GraphDeltaAnimation, GraphSnapshot3D, HeatmapDelta, LayerPlane3D, Node3D,
-    NodeMoveDelta, PreviewEdge, PreviewGraph, PreviewOverlay, RefactorOverlay3D, RuntimePath3D,
-    RuntimePathKind, SemanticGraph3D, Structure3DIr, StructureViewIR, TelemetryOverlay3D,
-    Timeline3D, Vec3, ViewEdge, ViewNode, ViewerOverlays3D, ViewerSelection, structure_ir_path,
+    CameraMode, CameraPreset3D, CandidateMove3D, Cluster3D, DesignSyncStatus, Edge3D, EdgeDelta,
+    GraphDeltaAnimation, GraphSnapshot3D, HeatmapDelta, LayerPlane3D, Node3D, NodeMoveDelta,
+    RefactorOverlay3D, RuntimePath3D, RuntimePathKind, SemanticGraph3D, Structure3DIr,
+    StructureViewIR, TelemetryOverlay3D, Timeline3D, Vec3, ViewEdge, ViewNode, ViewerOverlays3D,
+    ViewerSelection, structure_ir_path, sync_apply_preview_with_selection,
+    sync_preview_with_selection, sync_transaction_execution_with_selection,
+    sync_transaction_preview_with_selection,
 };
 
 pub fn export_structure_view(root: &Path) -> Result<StructureViewIR, String> {
     let analysis = analyze_path(root)?;
-    let ir = build_structure_view_ir(&analysis, None);
+    let mut ir = build_structure_view_ir(&analysis, None);
+    if let Some(root_str) = root.to_str() {
+        let options = AnalyzeOptions {
+            path: root_str.to_string(),
+            mode: AnalyzeMode::Summary,
+            report: false,
+            design: false,
+            language: Language::English,
+            intent: None,
+            json: false,
+        };
+        if let Ok(unified) = analyze_with_options(&options) {
+            super::inject_recommendation_candidates(&mut ir, &unified);
+        }
+    }
+    sync_preview_with_selection(&mut ir);
+    sync_apply_preview_with_selection(&mut ir);
+    sync_transaction_preview_with_selection(&mut ir);
+    sync_transaction_execution_with_selection(&mut ir);
     write_ir(root, &ir)?;
     Ok(ir)
 }
@@ -113,7 +135,14 @@ pub fn build_structure_view_ir(
         version: 2,
         nodes,
         edges,
-        preview: plan.map(build_preview_overlay),
+        preview: plan
+            .map(|plan| generate_mock_preview_diff(&candidate_for_target(analysis, &plan.target))),
+        apply_preview: None,
+        transaction_preview: None,
+        transaction_execution: None,
+        transaction_result: None,
+        promote_result: None,
+        git_commit_preview: None,
         snapshots: Vec::new(),
         history: Vec::new(),
         risk_overlay: Vec::new(),
@@ -436,66 +465,6 @@ fn build_timeline_3d(plan: Option<&RefactorPlan>, graph: &SemanticGraph3D) -> Ti
         snapshots,
         current_tick: 0,
         autoplay: plan.is_some(),
-    }
-}
-
-fn build_preview_overlay(plan: &RefactorPlan) -> PreviewOverlay {
-    let before_graph = PreviewGraph {
-        nodes: plan.before_graph.nodes.clone(),
-        edges: plan
-            .before_graph
-            .edges
-            .iter()
-            .map(|edge| PreviewEdge {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
-            })
-            .collect(),
-    };
-    let after_graph = PreviewGraph {
-        nodes: plan.after_graph.nodes.clone(),
-        edges: plan
-            .after_graph
-            .edges
-            .iter()
-            .map(|edge| PreviewEdge {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
-            })
-            .collect(),
-    };
-    let mut changed_edges = Vec::new();
-    for edge in &plan.removed_edges {
-        changed_edges.push(ChangedEdge {
-            from: edge.from.clone(),
-            to: edge.to.clone(),
-            change: "removed".to_string(),
-        });
-    }
-    for edge in &plan.after_graph.edges {
-        let existed = plan
-            .before_graph
-            .edges
-            .iter()
-            .any(|before| before.from == edge.from && before.to == edge.to);
-        if !existed {
-            changed_edges.push(ChangedEdge {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
-                change: "added".to_string(),
-            });
-        }
-    }
-    let moved_files = plan
-        .moved_files
-        .iter()
-        .map(|(from, to)| format!("{} -> {}", from.display(), to.display()))
-        .collect();
-    PreviewOverlay {
-        before_graph,
-        after_graph,
-        changed_edges,
-        moved_files,
     }
 }
 

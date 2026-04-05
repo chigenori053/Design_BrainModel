@@ -4224,6 +4224,13 @@ fn create_transactional_sandbox(root: &Path, sandbox_root: &Path) -> Result<(), 
     copy_workspace_with_ignore_guard(root, sandbox_root)
 }
 
+pub fn create_transactional_preview_sandbox(
+    root: &Path,
+    sandbox_root: &Path,
+) -> Result<(), String> {
+    create_transactional_sandbox(root, sandbox_root)
+}
+
 fn copy_workspace_with_ignore_guard(source_root: &Path, destination: &Path) -> Result<(), String> {
     let mut telemetry = SandboxCopyTelemetry::default();
     copy_workspace_subset(source_root, source_root, destination, &mut telemetry)?;
@@ -4845,6 +4852,14 @@ fn run_offline_cargo_check(
     Err(format!("build_error: {message}"))
 }
 
+pub fn run_transactional_preview_cargo_check(
+    root: &Path,
+    sandbox_root: &Path,
+    package: &str,
+) -> Result<String, String> {
+    run_offline_cargo_check(sandbox_root, root, Some(package))
+}
+
 fn offline_cargo_check_args(package: Option<&str>, lockfile_used: bool) -> Vec<String> {
     let mut args = vec!["check".to_string(), "--offline".to_string()];
     if lockfile_used {
@@ -4857,10 +4872,7 @@ fn offline_cargo_check_args(package: Option<&str>, lockfile_used: bool) -> Vec<S
     args
 }
 
-fn run_cargo_process(
-    build_root: &Path,
-    args: &[String],
-) -> Result<(bool, String, String), String> {
+fn run_cargo_process(build_root: &Path, args: &[String]) -> Result<(bool, String, String), String> {
     let command = resolve_command("cargo").map_err(|err| err.to_string())?;
     let mut process = Command::new(command);
     process.current_dir(build_root);

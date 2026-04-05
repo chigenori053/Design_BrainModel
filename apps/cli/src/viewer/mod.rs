@@ -2,7 +2,17 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::refactor::RefactorCandidate;
+use crate::commands::analyze::project::UnifiedAnalyzeResult;
+use crate::refactor::{
+    ApplyPreviewPlan, GitCommitPreview, PreviewDiff, PromoteResult, RefactorActionKind,
+    RefactorCandidate, RefactorOperation, RefactorTarget, StructureEdge,
+    TransactionExecutionPreview, TransactionPreview, TransactionResult,
+    execute_transactional_safe_apply, generate_apply_preview_plan, generate_git_commit_preview,
+    generate_mock_preview_diff, generate_transaction_execution_preview,
+    generate_transaction_preview, promote_sandbox_to_workspace,
+};
+use crate::service::ModuleNode;
+use crate::source_index::QualifiedModuleId;
 
 pub mod benchmark;
 pub mod exporter;
@@ -50,7 +60,19 @@ pub struct StructureViewIR {
     pub version: u32,
     pub nodes: Vec<ViewNode>,
     pub edges: Vec<ViewEdge>,
-    pub preview: Option<PreviewOverlay>,
+    pub preview: Option<PreviewDiff>,
+    #[serde(default)]
+    pub apply_preview: Option<ApplyPreviewPlan>,
+    #[serde(default)]
+    pub transaction_preview: Option<TransactionPreview>,
+    #[serde(default)]
+    pub transaction_execution: Option<TransactionExecutionPreview>,
+    #[serde(default)]
+    pub transaction_result: Option<TransactionResult>,
+    #[serde(default)]
+    pub promote_result: Option<PromoteResult>,
+    #[serde(default)]
+    pub git_commit_preview: Option<GitCommitPreview>,
     #[serde(default)]
     pub snapshots: Vec<StructureSnapshot>,
     #[serde(default)]
@@ -76,6 +98,12 @@ impl Default for StructureViewIR {
             nodes: Vec::new(),
             edges: Vec::new(),
             preview: None,
+            apply_preview: None,
+            transaction_preview: None,
+            transaction_execution: None,
+            transaction_result: None,
+            promote_result: None,
+            git_commit_preview: None,
             snapshots: Vec::new(),
             history: Vec::new(),
             risk_overlay: Vec::new(),
@@ -105,33 +133,6 @@ pub struct ViewEdge {
     pub to: String,
     pub kind: String,
     pub cycle: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreviewOverlay {
-    pub before_graph: PreviewGraph,
-    pub after_graph: PreviewGraph,
-    pub changed_edges: Vec<ChangedEdge>,
-    pub moved_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreviewGraph {
-    pub nodes: Vec<String>,
-    pub edges: Vec<PreviewEdge>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreviewEdge {
-    pub from: String,
-    pub to: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChangedEdge {
-    pub from: String,
-    pub to: String,
-    pub change: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -479,7 +480,25 @@ impl StructureViewIR {
                 .cloned()
                 .map(ViewEdge::into_core)
                 .collect(),
-            preview: self.preview.clone().map(PreviewOverlay::into_core),
+            preview: self.preview.clone().map(PreviewDiff::into_core),
+            apply_preview: self.apply_preview.clone().map(ApplyPreviewPlan::into_core),
+            transaction_preview: self
+                .transaction_preview
+                .clone()
+                .map(TransactionPreview::into_core),
+            transaction_execution: self
+                .transaction_execution
+                .clone()
+                .map(TransactionExecutionPreview::into_core),
+            transaction_result: self
+                .transaction_result
+                .clone()
+                .map(TransactionResult::into_core),
+            promote_result: self.promote_result.clone().map(PromoteResult::into_core),
+            git_commit_preview: self
+                .git_commit_preview
+                .clone()
+                .map(GitCommitPreview::into_core),
             snapshots: self
                 .snapshots
                 .iter()
@@ -615,43 +634,101 @@ impl ViewEdge {
     }
 }
 
-impl PreviewOverlay {
-    fn into_core(self) -> viewer_core::model::PreviewOverlay {
-        viewer_core::model::PreviewOverlay {
-            before_graph: viewer_core::model::PreviewGraph {
-                nodes: self.before_graph.nodes,
-                edges: self
-                    .before_graph
-                    .edges
-                    .into_iter()
-                    .map(|edge| viewer_core::model::PreviewEdge {
-                        from: edge.from,
-                        to: edge.to,
-                    })
-                    .collect(),
+impl PreviewDiff {
+    fn into_core(self) -> viewer_core::model::PreviewDiff {
+        viewer_core::model::PreviewDiff {
+            candidate_id: self.candidate_id,
+            summary: self.summary,
+            estimated_effect: self.estimated_effect,
+            safe: self.safe,
+            diff_lines: self.diff_lines,
+        }
+    }
+}
+
+impl ApplyPreviewPlan {
+    fn into_core(self) -> viewer_core::model::ApplyPreviewPlan {
+        viewer_core::model::ApplyPreviewPlan {
+            candidate_id: self.candidate_id,
+            target_files: self.target_files,
+            operations: self.operations,
+            checks: self.checks,
+            rollback: viewer_core::model::RollbackPreview {
+                mode: self.rollback.mode,
+                safe: self.rollback.safe,
             },
-            after_graph: viewer_core::model::PreviewGraph {
-                nodes: self.after_graph.nodes,
-                edges: self
-                    .after_graph
-                    .edges
-                    .into_iter()
-                    .map(|edge| viewer_core::model::PreviewEdge {
-                        from: edge.from,
-                        to: edge.to,
-                    })
-                    .collect(),
+            write: self.write,
+        }
+    }
+}
+
+impl TransactionPreview {
+    fn into_core(self) -> viewer_core::model::TransactionPreview {
+        viewer_core::model::TransactionPreview {
+            candidate_id: self.candidate_id,
+            allowed: self.allowed,
+            safe: self.safe,
+            steps: self.steps,
+            rollback_strategy: viewer_core::model::TransactionRollbackPreview {
+                mode: self.rollback_strategy.mode,
+                guaranteed: self.rollback_strategy.guaranteed,
             },
-            changed_edges: self
-                .changed_edges
-                .into_iter()
-                .map(|edge| viewer_core::model::ChangedEdge {
-                    from: edge.from,
-                    to: edge.to,
-                    change: edge.change,
-                })
-                .collect(),
-            moved_files: self.moved_files,
+            write: self.write,
+        }
+    }
+}
+
+impl TransactionExecutionPreview {
+    fn into_core(self) -> viewer_core::model::TransactionExecutionPreview {
+        viewer_core::model::TransactionExecutionPreview {
+            candidate_id: self.candidate_id,
+            allowed: self.allowed,
+            executed: self.executed,
+            sandbox_write: viewer_core::model::SandboxWritePreview {
+                enabled: self.sandbox_write.enabled,
+                target_files: self.sandbox_write.target_files,
+            },
+            steps: self.steps,
+            rollback_guaranteed: self.rollback_guaranteed,
+            write: self.write,
+        }
+    }
+}
+
+impl TransactionResult {
+    fn into_core(self) -> viewer_core::model::TransactionResult {
+        viewer_core::model::TransactionResult {
+            executed: self.executed,
+            success: self.success,
+            sandbox_root: self.sandbox_root,
+            written_files: self.written_files,
+            cargo_check: self.cargo_check,
+            rollback_executed: self.rollback_executed,
+        }
+    }
+}
+
+impl PromoteResult {
+    fn into_core(self) -> viewer_core::model::PromoteResult {
+        viewer_core::model::PromoteResult {
+            confirmed: self.confirmed,
+            workspace_write: self.workspace_write,
+            written_files: self.written_files,
+            cargo_check: self.cargo_check,
+            rollback_executed: self.rollback_executed,
+        }
+    }
+}
+
+impl GitCommitPreview {
+    fn into_core(self) -> viewer_core::model::GitCommitPreview {
+        viewer_core::model::GitCommitPreview {
+            branch: self.branch,
+            protected_branch: self.protected_branch,
+            commit_allowed: self.commit_allowed,
+            commit_message: self.commit_message,
+            changed_files: self.changed_files,
+            push: self.push,
         }
     }
 }
@@ -1029,6 +1106,160 @@ impl Structure3DIr {
             },
         }
     }
+}
+
+/// Parse `"RemoveDependency(<from> -> <to>)"` into `Some((from, to))`.
+/// Returns `None` for any other format, including malformed input.
+/// No regex — uses strip_prefix / strip_suffix / split_once only.
+fn parse_remove_dependency(action: &str) -> Option<(String, String)> {
+    let inner = action
+        .strip_prefix("RemoveDependency(")?
+        .strip_suffix(')')?;
+    let (from, to) = inner.split_once(" -> ")?;
+    let from = from.trim().to_string();
+    let to = to.trim().to_string();
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    Some((from, to))
+}
+
+/// Inject a `RefactorCandidate` derived from `analysis.decision` into `ir.candidates`.
+///
+/// Only handles `RemoveDependency(<from> -> <to>)` actions in Phase1 Step2.
+/// On parse failure the function is a no-op (panic-free, per spec).
+/// Also marks any matching `ViewEdge` as `cycle = true`.
+pub fn inject_recommendation_candidates(ir: &mut StructureViewIR, analysis: &UnifiedAnalyzeResult) {
+    let Some((from, to)) = parse_remove_dependency(&analysis.decision.action) else {
+        return;
+    };
+
+    let id = format!("cut-{}-{}", from, to);
+    let qid_from = QualifiedModuleId {
+        crate_name: String::new(),
+        module_path: from.clone(),
+    };
+    let qid_to = QualifiedModuleId {
+        crate_name: String::new(),
+        module_path: to.clone(),
+    };
+    let confidence_milli =
+        (analysis.decision.confidence * 1000.0).clamp(0.0, f64::from(u16::MAX)) as u16;
+    let candidate = RefactorCandidate {
+        candidate_id: id,
+        module_id: qid_from.clone(),
+        logical_name: from.clone(),
+        kind: RefactorActionKind::RemoveDependency,
+        operation: RefactorOperation::RemoveDependency,
+        title: format!("Remove dependency {} -> {}", from, to),
+        rationale: analysis.decision.expected_impact.clone(),
+        confidence_milli,
+        confidence: analysis.decision.confidence as f32,
+        from_node: ModuleNode {
+            qualified_id: qid_from,
+            logical_name: from.clone(),
+            source_path: None,
+        },
+        to_node: ModuleNode {
+            qualified_id: qid_to,
+            logical_name: to.clone(),
+            source_path: None,
+        },
+        patch_plan: RefactorTarget::RemoveDependency {
+            from: from.clone(),
+            to: to.clone(),
+        },
+        source_path: PathBuf::new(),
+        preview_hash: String::new(),
+        base_file_hash: String::new(),
+        target_nodes: vec![from.clone(), to.clone()],
+        target_edges: vec![StructureEdge {
+            from: from.clone(),
+            to: to.clone(),
+        }],
+        target: RefactorTarget::RemoveDependency {
+            from: from.clone(),
+            to: to.clone(),
+        },
+    };
+    ir.candidates.push(candidate);
+
+    // Sync cycle flag on matching edges (Req §6)
+    for edge in &mut ir.edges {
+        if edge.from == from && edge.to == to {
+            edge.cycle = true;
+        }
+    }
+}
+
+pub fn resolve_selected_candidate(ir: &StructureViewIR) -> Option<&RefactorCandidate> {
+    for selected in &ir.selection.selected_edges {
+        if let Some(candidate) = ir.candidates.iter().find(|candidate| {
+            candidate
+                .target_edges
+                .iter()
+                .any(|edge| selected.from == edge.from && selected.to == edge.to)
+        }) {
+            return Some(candidate);
+        }
+    }
+
+    for selected_node in &ir.selection.selected_nodes {
+        if let Some(candidate) = ir.candidates.iter().find(|candidate| {
+            candidate
+                .target_nodes
+                .iter()
+                .any(|node| node == selected_node)
+        }) {
+            return Some(candidate);
+        }
+    }
+
+    ir.candidates.first()
+}
+
+pub fn sync_preview_with_selection(ir: &mut StructureViewIR) {
+    ir.preview = resolve_selected_candidate(ir).map(generate_mock_preview_diff);
+}
+
+pub fn sync_apply_preview_with_selection(ir: &mut StructureViewIR) {
+    ir.apply_preview = generate_apply_preview_plan(ir);
+}
+
+pub fn sync_transaction_preview_with_selection(ir: &mut StructureViewIR) {
+    ir.transaction_preview = ir
+        .apply_preview
+        .as_ref()
+        .and_then(generate_transaction_preview);
+}
+
+pub fn sync_transaction_execution_with_selection(ir: &mut StructureViewIR) {
+    ir.transaction_execution = ir
+        .transaction_preview
+        .as_ref()
+        .zip(ir.apply_preview.as_ref())
+        .and_then(|(tx, apply)| generate_transaction_execution_preview(tx, apply));
+}
+
+pub fn execute_transaction_for_ir(ir: &mut StructureViewIR) {
+    ir.transaction_result = ir
+        .transaction_execution
+        .as_ref()
+        .and_then(execute_transactional_safe_apply);
+}
+
+pub fn promote_transaction_for_ir(ir: &mut StructureViewIR, confirmed: bool) {
+    ir.promote_result = ir
+        .transaction_result
+        .as_ref()
+        .and_then(|tx| promote_sandbox_to_workspace(tx, confirmed));
+}
+
+pub fn sync_git_commit_preview_with_selection(ir: &mut StructureViewIR) {
+    ir.git_commit_preview = ir
+        .promote_result
+        .as_ref()
+        .and_then(generate_git_commit_preview);
 }
 
 #[cfg(test)]

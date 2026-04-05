@@ -14,7 +14,9 @@ use super::{
     DesignSyncStatus, EdgeDeltaDelta, HeatmapDelta, HistoryEntry, NodeDelta, OverlayDelta,
     RiskOverlay, SnapshotDelta, SnapshotGraph, StructureSnapshot, StructureViewIR, ViewMode,
     ViewerLoopTelemetry, ViewerSelection, export_structure_view, export_structure_view_from_plan,
-    launch_native_viewer, session_path, structure_ir_path,
+    launch_native_viewer, session_path, structure_ir_path, sync_apply_preview_with_selection,
+    sync_preview_with_selection, sync_transaction_execution_with_selection,
+    sync_transaction_preview_with_selection,
 };
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -558,6 +560,10 @@ fn decorate_ir(
     ir.candidates = candidates;
     ir.heatmap = heatmap;
     ir.design_sync = design_sync;
+    sync_preview_with_selection(ir);
+    sync_apply_preview_with_selection(ir);
+    sync_transaction_preview_with_selection(ir);
+    sync_transaction_execution_with_selection(ir);
 }
 
 fn heatmap(plan: &crate::refactor::RefactorPlan) -> Vec<HeatmapDelta> {

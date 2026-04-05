@@ -29,7 +29,12 @@ pub use planner::{PatchScope, create_refactor_plan, resolve_target};
 pub use preview::{RefactorPreview, render_preview};
 pub use rollback::{WorkspaceSnapshot, rollback_apply, snapshot_workspace};
 pub use runtime::{
-    RefactorApplyReport, RefactorRuntimeOptions, apply_refactor, build_apply_report,
+    ApplyPreviewPlan, GitCommitPreview, PromoteResult, RefactorApplyReport, RefactorRuntimeOptions,
+    RollbackPreview, SandboxWritePreview, TransactionExecutionPreview, TransactionPreview,
+    TransactionResult, TransactionRollbackPreview, apply_refactor, build_apply_report,
+    execute_transactional_safe_apply, generate_apply_preview_plan, generate_git_commit_preview,
+    generate_transaction_execution_preview, generate_transaction_preview,
+    promote_sandbox_to_workspace,
 };
 pub use validator::{ValidationResult, validate_refactor};
 
@@ -100,6 +105,15 @@ pub struct RefactorCandidate {
     pub target_nodes: Vec<String>,
     pub target_edges: Vec<StructureEdge>,
     pub target: RefactorTarget,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewDiff {
+    pub candidate_id: String,
+    pub summary: String,
+    pub estimated_effect: String,
+    pub safe: bool,
+    pub diff_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -248,6 +262,25 @@ pub fn candidate_snapshot_dir(root: &Path) -> PathBuf {
 
 pub fn candidate_snapshot_path(root: &Path, candidate_id: &str) -> PathBuf {
     candidate_snapshot_dir(root).join(format!("{candidate_id}.json"))
+}
+
+pub fn generate_mock_preview_diff(candidate: &RefactorCandidate) -> PreviewDiff {
+    match &candidate.target {
+        RefactorTarget::RemoveDependency { from, to } => PreviewDiff {
+            candidate_id: candidate.candidate_id.clone(),
+            summary: format!("Remove dependency {from} -> {to}"),
+            estimated_effect: candidate.rationale.clone(),
+            safe: true,
+            diff_lines: vec![format!("- {from} -> {to}"), format!("+ {from} -> ports")],
+        },
+        _ => PreviewDiff {
+            candidate_id: candidate.candidate_id.clone(),
+            summary: candidate.title.clone(),
+            estimated_effect: candidate.rationale.clone(),
+            safe: true,
+            diff_lines: Vec::new(),
+        },
+    }
 }
 
 pub fn resolve_preview_candidate(

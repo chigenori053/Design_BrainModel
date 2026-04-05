@@ -72,7 +72,19 @@ pub struct StructureViewIR {
     pub version: u32,
     pub nodes: Vec<ViewNode>,
     pub edges: Vec<ViewEdge>,
-    pub preview: Option<PreviewOverlay>,
+    pub preview: Option<PreviewDiff>,
+    #[serde(default)]
+    pub apply_preview: Option<ApplyPreviewPlan>,
+    #[serde(default)]
+    pub transaction_preview: Option<TransactionPreview>,
+    #[serde(default)]
+    pub transaction_execution: Option<TransactionExecutionPreview>,
+    #[serde(default)]
+    pub transaction_result: Option<TransactionResult>,
+    #[serde(default)]
+    pub promote_result: Option<PromoteResult>,
+    #[serde(default)]
+    pub git_commit_preview: Option<GitCommitPreview>,
     #[serde(default)]
     pub snapshots: Vec<StructureSnapshot>,
     #[serde(default)]
@@ -98,6 +110,12 @@ impl Default for StructureViewIR {
             nodes: Vec::new(),
             edges: Vec::new(),
             preview: None,
+            apply_preview: None,
+            transaction_preview: None,
+            transaction_execution: None,
+            transaction_result: None,
+            promote_result: None,
+            git_commit_preview: None,
             snapshots: Vec::new(),
             history: Vec::new(),
             risk_overlay: Vec::new(),
@@ -129,31 +147,91 @@ pub struct ViewEdge {
     pub cycle: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreviewOverlay {
-    pub before_graph: PreviewGraph,
-    pub after_graph: PreviewGraph,
-    pub changed_edges: Vec<ChangedEdge>,
-    pub moved_files: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct PreviewGraph {
-    pub nodes: Vec<String>,
-    pub edges: Vec<PreviewEdge>,
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PreviewDiff {
+    pub candidate_id: String,
+    pub summary: String,
+    pub estimated_effect: String,
+    pub safe: bool,
+    pub diff_lines: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct PreviewEdge {
-    pub from: String,
-    pub to: String,
+pub struct ApplyPreviewPlan {
+    pub candidate_id: String,
+    pub target_files: Vec<String>,
+    pub operations: Vec<String>,
+    pub checks: Vec<String>,
+    pub rollback: RollbackPreview,
+    pub write: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ChangedEdge {
-    pub from: String,
-    pub to: String,
-    pub change: String,
+pub struct RollbackPreview {
+    pub mode: String,
+    pub safe: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionPreview {
+    pub candidate_id: String,
+    pub allowed: bool,
+    pub safe: bool,
+    pub steps: Vec<String>,
+    pub rollback_strategy: TransactionRollbackPreview,
+    pub write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionRollbackPreview {
+    pub mode: String,
+    pub guaranteed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionExecutionPreview {
+    pub candidate_id: String,
+    pub allowed: bool,
+    pub executed: bool,
+    pub sandbox_write: SandboxWritePreview,
+    pub steps: Vec<String>,
+    pub rollback_guaranteed: bool,
+    pub write: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SandboxWritePreview {
+    pub enabled: bool,
+    pub target_files: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransactionResult {
+    pub executed: bool,
+    pub success: bool,
+    pub sandbox_root: String,
+    pub written_files: Vec<String>,
+    pub cargo_check: String,
+    pub rollback_executed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PromoteResult {
+    pub confirmed: bool,
+    pub workspace_write: bool,
+    pub written_files: Vec<String>,
+    pub cargo_check: String,
+    pub rollback_executed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommitPreview {
+    pub branch: String,
+    pub protected_branch: bool,
+    pub commit_allowed: bool,
+    pub commit_message: String,
+    pub changed_files: Vec<String>,
+    pub push: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
