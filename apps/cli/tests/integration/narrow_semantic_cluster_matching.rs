@@ -24,8 +24,11 @@ fn write_project(root: &Path) {
         "[package]\nname = \"narrow_test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("write Cargo.toml");
-    fs::write(root.join("src/main.rs"), "mod nl;\nmod app;\nfn main() {}\n")
-        .expect("write main");
+    fs::write(
+        root.join("src/main.rs"),
+        "mod nl;\nmod app;\nfn main() {}\n",
+    )
+    .expect("write main");
     fs::write(root.join("src/nl/mod.rs"), "pub mod goal;\n").expect("write nl mod");
     fs::write(root.join("src/nl/goal.rs"), "pub fn resolve() {}\n").expect("write goal");
     fs::write(root.join("src/app.rs"), "pub fn run() {}\n").expect("write app");
@@ -42,6 +45,7 @@ fn adapter_app_patch() -> CodePatch {
             between: ("adapter".to_string(), "app".to_string()),
         }],
         description: "introduce adapter-app boundary".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -59,6 +63,7 @@ fn nl_goal_patch() -> CodePatch {
             via: None,
         }],
         description: "move nl -> goal".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -67,13 +72,28 @@ fn nl_goal_patch() -> CodePatch {
 #[test]
 fn semantic_clusters_keep_only_expected_tokens() {
     let cluster = semantic_cluster_for_target(Path::new("apps/cli/src/nl/goal.rs"));
-    assert!(!cluster.contains(&"app"), "\"app\" must not be in nl cluster: {cluster:?}");
-    assert!(cluster.contains(&"nl"), "\"nl\" must be in cluster: {cluster:?}");
-    assert!(cluster.contains(&"goal"), "\"goal\" must be in cluster: {cluster:?}");
+    assert!(
+        !cluster.contains(&"app"),
+        "\"app\" must not be in nl cluster: {cluster:?}"
+    );
+    assert!(
+        cluster.contains(&"nl"),
+        "\"nl\" must be in cluster: {cluster:?}"
+    );
+    assert!(
+        cluster.contains(&"goal"),
+        "\"goal\" must be in cluster: {cluster:?}"
+    );
 
     let cluster = semantic_cluster_for_target(Path::new("apps/cli/src/coding.rs"));
-    assert!(!cluster.contains(&"app"), "\"app\" must not be in coding cluster: {cluster:?}");
-    assert!(cluster.contains(&"coding"), "\"coding\" must be in cluster: {cluster:?}");
+    assert!(
+        !cluster.contains(&"app"),
+        "\"app\" must not be in coding cluster: {cluster:?}"
+    );
+    assert!(
+        cluster.contains(&"coding"),
+        "\"coding\" must be in cluster: {cluster:?}"
+    );
 }
 
 // ─── R2: exact module token — adapter_app_interface must not match nl cluster ─
@@ -91,6 +111,7 @@ fn app_related_patches_do_not_match_nl_cluster() {
                 between: ("adapter".to_string(), "app".to_string()),
             }],
             description: "adapter app interface".to_string(),
+            target_file: Default::default(),
         },
         adapter_app_patch(),
     ] {
@@ -131,6 +152,7 @@ fn interface_name_with_nl_substring_does_not_match() {
             between: ("adapter".to_string(), "renderer".to_string()),
         }],
         description: "fake nl interface".to_string(),
+        target_file: Default::default(),
     };
     assert!(
         !patch_matches_cluster(&patch, &["nl", "goal"]),
@@ -154,6 +176,7 @@ fn namespaced_nl_module_matches_nl_cluster() {
             via: None,
         }],
         description: "move nl::goal".to_string(),
+        target_file: Default::default(),
     };
     assert!(
         patch_matches_cluster(&patch, &["nl", "goal"]),
@@ -180,6 +203,7 @@ fn descriptions_do_not_grant_cluster_membership() {
                     via: None,
                 }],
                 description: "nl goal routing fix for adapter controller".to_string(),
+                target_file: Default::default(),
             },
             vec!["nl", "goal"],
         ),
@@ -197,6 +221,7 @@ fn descriptions_do_not_grant_cluster_membership() {
                     via: None,
                 }],
                 description: "coding app source_index migration".to_string(),
+                target_file: Default::default(),
             },
             vec!["coding", "source_index"],
         ),
@@ -224,7 +249,11 @@ fn goal_rs_rejects_adapter_app_patch() {
     assert!(
         change_set.changes.is_empty(),
         "adapter_app_interface patch must not produce any changes for goal.rs, got: {:?}",
-        change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+        change_set
+            .changes
+            .iter()
+            .map(|c| &c.file_path)
+            .collect::<Vec<_>>()
     );
 }
 
@@ -237,7 +266,11 @@ fn app_rs_allows_all_patches_via_empty_cluster() {
     let patches = vec![adapter_app_patch(), nl_goal_patch()];
     let kept = prune_patches_for_target(&patches, target);
     // empty cluster → all patches pass
-    assert_eq!(kept.len(), 2, "empty cluster must pass all patches through: {kept:?}");
+    assert_eq!(
+        kept.len(),
+        2,
+        "empty cluster must pass all patches through: {kept:?}"
+    );
 }
 
 // ─── Case 3: description accidental hit rejected ──────────────────────────────
@@ -261,6 +294,7 @@ fn goal_rs_rejects_patch_whose_description_mentions_nl() {
             via: None,
         }],
         description: "nl goal routing update".to_string(),
+        target_file: Default::default(),
     }];
 
     let change_set = generate_code_change_set_with_target(&root, &patches, Some(target))
@@ -269,6 +303,10 @@ fn goal_rs_rejects_patch_whose_description_mentions_nl() {
     assert!(
         change_set.changes.is_empty(),
         "description-only hit must be pruned for goal.rs, got: {:?}",
-        change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+        change_set
+            .changes
+            .iter()
+            .map(|c| &c.file_path)
+            .collect::<Vec<_>>()
     );
 }

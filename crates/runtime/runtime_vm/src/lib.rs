@@ -1,4 +1,5 @@
 pub mod adapter;
+pub mod adapter_world_interface;
 pub mod agent;
 pub mod agent_registry;
 pub mod execution_mode;

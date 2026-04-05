@@ -1495,7 +1495,12 @@ mod tests {
             CommandType::Dangerous
         );
         assert_eq!(
-            RemoteGuard::classify_git(&["push", "--dry-run", "origin", "dbm/auto-fix/20260327-120000"]),
+            RemoteGuard::classify_git(&[
+                "push",
+                "--dry-run",
+                "origin",
+                "dbm/auto-fix/20260327-120000"
+            ]),
             CommandType::SafeWrite
         );
         assert_eq!(

@@ -364,6 +364,8 @@ enum Commands {
         intent: Option<String>,
         #[arg(long, default_value_t = false)]
         json: bool,
+        #[arg(long, default_value_t = false)]
+        design_json: bool,
     },
     PhaseAnalyze {
         #[arg(long = "target", default_value = "./project")]
@@ -683,7 +685,17 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             lang,
             intent,
             json,
-        } => run_unified_analyze(path, detailed, report, design, lang, intent, json),
+            design_json,
+        } => run_unified_analyze(
+            path,
+            detailed,
+            report,
+            design,
+            lang,
+            intent,
+            json,
+            design_json,
+        ),
         Commands::PhaseAnalyze {
             target,
             seed,
@@ -763,6 +775,7 @@ fn run_unified_analyze(
     lang: String,
     intent: Option<String>,
     json: bool,
+    design_json: bool,
 ) -> Result<(), String> {
     let mode = if detailed {
         AnalyzeMode::Detailed
@@ -788,6 +801,9 @@ fn run_unified_analyze(
     if json {
         forwarded.push("--json".to_string());
     }
+    if design_json {
+        forwarded.push("--design-json".to_string());
+    }
 
     let parsed = project::parse_options(&forwarded)?;
     let options = AnalyzeOptions {
@@ -798,9 +814,10 @@ fn run_unified_analyze(
         language: parsed.language,
         intent: parsed.intent,
         json: parsed.json,
+        design_json: parsed.design_json,
     };
     let output = project::execute(&path, options)?;
-    if json {
+    if json || design_json {
         println!("{output}");
         return Ok(());
     }

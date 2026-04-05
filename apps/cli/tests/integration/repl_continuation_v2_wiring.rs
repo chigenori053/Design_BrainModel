@@ -70,5 +70,8 @@ trait + registry に抽象化して
             >= 2,
         "stdout: {stdout}"
     );
-    assert!(!stdout.contains("path is not a directory"), "stdout: {stdout}");
+    assert!(
+        !stdout.contains("path is not a directory"),
+        "stdout: {stdout}"
+    );
 }

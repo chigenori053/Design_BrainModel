@@ -11,6 +11,7 @@ pub fn run(
     lang: String,
     intent: Option<String>,
     json: bool,
+    design_json: bool,
     out: Option<PathBuf>,
     report_md: Option<PathBuf>,
 ) -> Result<(), String> {
@@ -37,6 +38,9 @@ pub fn run(
     }
     if json {
         forwarded.push(OsString::from("--json"));
+    }
+    if design_json {
+        forwarded.push(OsString::from("--design-json"));
     }
     if let Some(out) = out {
         forwarded.push(OsString::from("--out"));

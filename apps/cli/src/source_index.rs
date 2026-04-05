@@ -37,6 +37,7 @@ struct SourceEntry {
 pub struct ModuleSourceIndex {
     by_qualified: BTreeMap<QualifiedModuleId, PathBuf>,
     by_bare: BTreeMap<String, Vec<SourceEntry>>,
+    debug_by_bare: BTreeMap<String, Vec<SourceEntry>>,
     all_paths: Vec<PathBuf>,
     preferred_crate: Option<String>,
 }
@@ -60,6 +61,13 @@ impl ModuleSourceIndex {
         files.sort();
         files.dedup();
 
+        let mut debug_files = Vec::new();
+        for include_root in include_roots(root) {
+            collect_debug_source_files(root, &include_root, &mut debug_files)?;
+        }
+        debug_files.sort();
+        debug_files.dedup();
+
         let mut by_qualified = BTreeMap::new();
         let mut by_bare = BTreeMap::<String, Vec<SourceEntry>>::new();
         for relative in &files {
@@ -77,8 +85,31 @@ impl ModuleSourceIndex {
                     priority,
                 });
         }
+        let mut debug_by_bare = BTreeMap::<String, Vec<SourceEntry>>::new();
+        for relative in &debug_files {
+            let Some(id) = qualified_module_id(relative, preferred_crate.as_deref()) else {
+                continue;
+            };
+            let priority = path_priority(relative, preferred_crate.as_deref());
+            debug_by_bare
+                .entry(normalize_key(&id.module_path))
+                .or_default()
+                .push(SourceEntry {
+                    id,
+                    path: relative.clone(),
+                    priority,
+                });
+        }
 
         for entries in by_bare.values_mut() {
+            entries.sort_by(|lhs, rhs| {
+                lhs.priority
+                    .cmp(&rhs.priority)
+                    .then_with(|| lhs.id.crate_name.cmp(&rhs.id.crate_name))
+                    .then_with(|| lhs.path.cmp(&rhs.path))
+            });
+        }
+        for entries in debug_by_bare.values_mut() {
             entries.sort_by(|lhs, rhs| {
                 lhs.priority
                     .cmp(&rhs.priority)
@@ -90,6 +121,7 @@ impl ModuleSourceIndex {
         Ok(Self {
             by_qualified,
             by_bare,
+            debug_by_bare,
             all_paths: files,
             preferred_crate,
         })
@@ -136,8 +168,20 @@ impl ModuleSourceIndex {
                 return Some((id, path));
             }
         }
+        None
+    }
 
-        let candidates = self.fuzzy_candidates(module);
+    pub fn bind_graph_node_debug_fallback(
+        &self,
+        module: &str,
+    ) -> Option<(QualifiedModuleId, PathBuf)> {
+        let key = normalize_key(module);
+        if let Some(entries) = self.debug_by_bare.get(&key) {
+            let entry = representative_entry(entries, module)?;
+            return Some((entry.id.clone(), entry.path.clone()));
+        }
+
+        let candidates = self.debug_fuzzy_candidates(module);
         if candidates.is_empty() {
             return None;
         }
@@ -372,22 +416,23 @@ impl ModuleSourceIndex {
         item: &str,
     ) -> Result<bool, String> {
         let normalized_crate = normalize_key(crate_name);
-        let root_relative = self
-            .by_qualified
-            .iter()
-            .find_map(|(id, path)| {
-                (id.crate_name == normalized_crate
-                    && matches!(
-                        path.file_name().and_then(|value| value.to_str()),
-                        Some("lib.rs" | "main.rs")
-                    ))
-                .then_some(path.clone())
-            });
+        let root_relative = self.by_qualified.iter().find_map(|(id, path)| {
+            (id.crate_name == normalized_crate
+                && matches!(
+                    path.file_name().and_then(|value| value.to_str()),
+                    Some("lib.rs" | "main.rs")
+                ))
+            .then_some(path.clone())
+        });
         let Some(root_relative) = root_relative else {
             return Ok(false);
         };
-        let content = fs::read_to_string(root.join(&root_relative))
-            .map_err(|err| format!("failed to read {}: {err}", root.join(&root_relative).display()))?;
+        let content = fs::read_to_string(root.join(&root_relative)).map_err(|err| {
+            format!(
+                "failed to read {}: {err}",
+                root.join(&root_relative).display()
+            )
+        })?;
         let item = normalize_key(item);
         Ok(content.lines().any(|line| {
             let trimmed = line.trim();
@@ -517,6 +562,27 @@ impl ModuleSourceIndex {
         });
         matches
     }
+
+    fn debug_fuzzy_candidates(&self, module: &str) -> Vec<SourceEntry> {
+        let terms = semantic_terms(module);
+        let mut matches = self
+            .debug_by_bare
+            .values()
+            .flat_map(|entries| entries.iter())
+            .filter(|entry| {
+                let haystack = entry.path.display().to_string().to_ascii_lowercase();
+                terms.iter().any(|term| haystack.contains(term))
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        matches.sort_by(|lhs, rhs| {
+            lhs.priority
+                .cmp(&rhs.priority)
+                .then_with(|| lhs.id.crate_name.cmp(&rhs.id.crate_name))
+                .then_with(|| lhs.path.cmp(&rhs.path))
+        });
+        matches
+    }
 }
 
 fn include_roots(root: &Path) -> Vec<PathBuf> {
@@ -572,6 +638,42 @@ fn collect_source_files(root: &Path, dir: &Path, files: &mut Vec<PathBuf>) -> Re
     Ok(())
 }
 
+fn collect_debug_source_files(
+    root: &Path,
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(dir)
+        .map_err(|err| format!("failed to read {}: {err}", dir.display()))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("failed to list {}: {err}", dir.display()))?;
+    entries.sort_by_key(|entry| entry.file_name());
+
+    for entry in entries {
+        let path = entry.path();
+        let relative = relative_to_root(root, &path);
+        if should_exclude_debug(&relative) {
+            continue;
+        }
+
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("failed to inspect {}: {err}", path.display()))?;
+        if file_type.is_dir() {
+            collect_debug_source_files(root, &path, files)?;
+            continue;
+        }
+
+        if !file_type.is_file() || !is_supported_source_file(&path) {
+            continue;
+        }
+
+        files.push(relative);
+    }
+
+    Ok(())
+}
+
 fn should_exclude(relative: &Path) -> bool {
     let parts = path_parts(relative);
     if parts.is_empty() {
@@ -582,6 +684,20 @@ fn should_exclude(relative: &Path) -> bool {
         .any(|window| window == ["tests", "fixtures"])
     {
         return true;
+    }
+    parts.iter().any(|part| {
+        matches!(
+            *part,
+            ".git" | ".dbm" | "node_modules" | "target" | "tmp" | "sandbox" | "golden" | "snapshot"
+        )
+    }) || parts.contains(&"fixtures")
+        || parts.contains(&"examples")
+}
+
+fn should_exclude_debug(relative: &Path) -> bool {
+    let parts = path_parts(relative);
+    if parts.is_empty() {
+        return false;
     }
     parts.iter().any(|part| {
         matches!(
@@ -668,17 +784,7 @@ fn path_priority(relative: &Path, preferred_crate: Option<&str>) -> u8 {
             return 0;
         }
     }
-
-    let parts = path_parts(relative);
-    match parts.as_slice() {
-        ["apps", ..] => 1,
-        ["crates", ..] | ["core", ..] => 2,
-        ["contracts", ..] => 3,
-        ["tests", ..] => 4,
-        ["tools", ..] => 5,
-        ["xtask", ..] => 6,
-        _ => 7,
-    }
+    source_binding_rank(relative)
 }
 
 fn preferred_crate_name(root: &Path) -> Option<String> {
@@ -747,7 +853,7 @@ fn representative_entry<'a>(entries: &'a [SourceEntry], module: &str) -> Option<
     })
 }
 
-fn representative_rank(path: &Path, module_leaf: &str) -> (u8, usize) {
+fn representative_rank(path: &Path, module_leaf: &str) -> (u8, u8, usize) {
     let file_name = path
         .file_name()
         .and_then(|value| value.to_str())
@@ -770,7 +876,48 @@ fn representative_rank(path: &Path, module_leaf: &str) -> (u8, usize) {
     } else {
         2
     };
-    (kind, depth)
+    (source_binding_rank(path), kind, depth)
+}
+
+pub(crate) fn source_binding_rank(path: &Path) -> u8 {
+    if is_production_src(path) {
+        0
+    } else if is_workspace_crate(path) {
+        1
+    } else if is_test_support(path) {
+        2
+    } else if is_tests(path) {
+        3
+    } else {
+        4
+    }
+}
+
+fn is_production_src(path: &Path) -> bool {
+    let normalized = normalized_path(path);
+    normalized.contains("/src/")
+        && !normalized.contains("/tests/")
+        && !normalized.contains("/fixtures/")
+        && !normalized.contains("/examples/")
+}
+
+fn is_workspace_crate(path: &Path) -> bool {
+    normalized_path(path).starts_with("crates/")
+}
+
+fn is_test_support(path: &Path) -> bool {
+    let normalized = normalized_path(path);
+    normalized.contains("/tests/support/")
+        || normalized.contains("/tests/integration/support/")
+        || normalized.contains("/test_support/")
+}
+
+fn is_tests(path: &Path) -> bool {
+    normalized_path(path).contains("/tests/")
+}
+
+fn normalized_path(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
 }
 
 fn resolution_strategy(path: &Path, module: &str) -> &'static str {

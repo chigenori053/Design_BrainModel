@@ -501,7 +501,10 @@ fn coding_apply_restricted_commit_excludes_unrelated_dirty_files() {
     );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("\"commit_created\": false"), "{stdout}");
-    assert!(stdout.contains("\"reason\": \"no_commit_created\""), "{stdout}");
+    assert!(
+        stdout.contains("\"reason\": \"no_commit_created\""),
+        "{stdout}"
+    );
     assert!(stdout.contains("apps/viewer_gui/src/app.rs"), "{stdout}");
     let status = Command::new("git")
         .args(["status", "--short"])
@@ -655,7 +658,11 @@ fn coding_apply_pushes_and_creates_pr_in_phase2() {
         .output()
         .expect("run design_cli");
 
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(stdout.contains("\"push_created\": true"), "{stdout}");
     assert!(stdout.contains("\"pr_created\": true"), "{stdout}");
@@ -855,7 +862,10 @@ fn coding_apply_persists_local_integration_telemetry() {
     let telemetry_path = workspace.join(".dbm/telemetry/local_integration.json");
     assert!(telemetry_path.exists());
     let telemetry = fs::read_to_string(telemetry_path).expect("telemetry");
-    assert!(telemetry.contains("\"commit_created\": true"), "{telemetry}");
+    assert!(
+        telemetry.contains("\"commit_created\": true"),
+        "{telemetry}"
+    );
     assert!(telemetry.contains("\"confirmation\": true"), "{telemetry}");
     assert!(telemetry.contains("\"files_added\": 1"), "{telemetry}");
 }

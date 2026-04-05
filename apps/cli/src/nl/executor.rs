@@ -84,9 +84,8 @@ fn execute_apply_previous_coding_step(conversation: &mut ConversationState) -> S
 
     // R4: --check → --apply の deterministic 変換。target / request は R3 で保持済み。
     let path_str = tx.target.display().to_string();
-    let is_file_target = path_str.ends_with(".rs")
-        || path_str.ends_with(".toml")
-        || path_str.ends_with(".md");
+    let is_file_target =
+        path_str.ends_with(".rs") || path_str.ends_with(".toml") || path_str.ends_with(".md");
     let mut args = if is_file_target {
         vec![".".to_string(), "--target".to_string(), path_str]
     } else {
@@ -182,7 +181,10 @@ fn to_canonical_command(step: &PlannedStep) -> (&'static str, Vec<String>, Strin
                 "coding",
                 args,
                 if is_file_target {
-                    format!("design_cli coding . --target {} --safe --check", path.display())
+                    format!(
+                        "design_cli coding . --target {} --safe --check",
+                        path.display()
+                    )
                 } else {
                     format!("design_cli coding {} --safe --check", path.display())
                 },

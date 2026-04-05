@@ -419,23 +419,6 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
     let mut graph_nodes = BTreeMap::<String, ModuleNode>::new();
     let index = ModuleSourceIndex::build(root).unwrap_or_default();
 
-    for (qualified_id, source_path) in index.all_bindings() {
-        let logical_name = qualified_id
-            .module_path
-            .split("::")
-            .last()
-            .unwrap_or(&qualified_id.module_path)
-            .to_string();
-        graph_nodes.insert(
-            logical_name.clone(),
-            ModuleNode {
-                qualified_id,
-                logical_name,
-                source_path: Some(source_path),
-            },
-        );
-    }
-
     let mut logical_names = BTreeSet::new();
     for module in &project.modules {
         logical_names.insert(module.name.clone());
@@ -446,9 +429,6 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
     }
 
     logical_names.into_iter().for_each(|logical_name| {
-        if graph_nodes.contains_key(&logical_name) {
-            return;
-        }
         if let Some((qualified_id, source_path)) = index.bind_graph_node(&logical_name) {
             graph_nodes.insert(
                 logical_name.clone(),

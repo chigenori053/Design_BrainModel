@@ -26,7 +26,8 @@ fn temp_workspace(name: &str) -> std::path::PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    let root = std::env::temp_dir().join(format!("design_cli_snapshot_unification_{name}_{unique}"));
+    let root =
+        std::env::temp_dir().join(format!("design_cli_snapshot_unification_{name}_{unique}"));
     fs::create_dir_all(root.join("src")).expect("create src");
     root
 }
@@ -64,21 +65,36 @@ fn write_single_patch_workspace(root: &Path) {
 #[test]
 fn coding_json_repl_noop_uses_canonical_empty_patches() {
     let repo_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let (code, stdout, stderr) = run_in(&repo_root, &[
-        "coding",
-        ".",
-        "--target",
-        "apps/cli/src/repl.rs",
-        "--check",
-        "--json",
-    ]);
+    let (code, stdout, stderr) = run_in(
+        &repo_root,
+        &[
+            "coding",
+            ".",
+            "--target",
+            "apps/cli/src/repl.rs",
+            "--check",
+            "--json",
+        ],
+    );
     assert_eq!(code, 0, "stderr: {stderr}");
 
     let out: Value = serde_json::from_str(&stdout).expect("stdout json");
     assert_eq!(out["patches"], Value::Array(vec![]), "stdout: {stdout}");
-    assert_eq!(out["changes"]["patches"], Value::Array(vec![]), "stdout: {stdout}");
-    assert_eq!(out["changes"]["changes"], Value::Array(vec![]), "stdout: {stdout}");
-    assert_eq!(out["execution"]["diff"]["diffs"], Value::Array(vec![]), "stdout: {stdout}");
+    assert_eq!(
+        out["changes"]["patches"],
+        Value::Array(vec![]),
+        "stdout: {stdout}"
+    );
+    assert_eq!(
+        out["changes"]["changes"],
+        Value::Array(vec![]),
+        "stdout: {stdout}"
+    );
+    assert_eq!(
+        out["execution"]["diff"]["diffs"],
+        Value::Array(vec![]),
+        "stdout: {stdout}"
+    );
 }
 
 #[test]

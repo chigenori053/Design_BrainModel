@@ -22,11 +22,10 @@ use serde_json::json;
 use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
 use crate::coding::{
     CodingOptions, apply_bootstrap_safety_policy, collect_apply_target_resolutions,
-    deterministic_repl_v2_wiring_patches,
-    execute_code_change_set,
+    deterministic_repl_v2_wiring_patches, execute_code_change_set,
     generate_code_change_set_with_resolved_paths, generate_code_change_set_with_target,
-    load_patches_from_json, resolve_apply_paths_for_patches, resolve_sandbox_module_file,
-    resolve_transactional_candidate_for_patches,
+    load_patches_from_design_snapshot, load_patches_from_json, resolve_apply_paths_for_patches,
+    resolve_sandbox_module_file, resolve_transactional_candidate_for_patches,
 };
 use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
@@ -190,6 +189,8 @@ pub struct AnalyzeArgs {
     pub intent: Option<String>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
+    #[arg(long, default_value_t = false)]
+    pub design_json: bool,
     /// Save a structured operational log (JSON) to this path.
     #[arg(long, hide = true)]
     pub out: Option<PathBuf>,
@@ -248,6 +249,8 @@ pub struct CodingArgs {
     pub path: Option<PathBuf>,
     #[arg(long)]
     pub input: Option<PathBuf>,
+    #[arg(long)]
+    pub from_design_snapshot: Option<PathBuf>,
     #[arg(long)]
     pub target: Option<PathBuf>,
     #[arg(long)]
@@ -644,6 +647,9 @@ fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
     if args.json {
         forwarded.push("--json".to_string());
     }
+    if args.design_json {
+        forwarded.push("--design-json".to_string());
+    }
 
     let output_result = (|| {
         let options = project::parse_options(&forwarded)?;
@@ -660,6 +666,7 @@ fn execute_analyze_with_log(args: AnalyzeArgs) -> Result<(), String> {
             language: options.language,
             intent: options.intent,
             json: options.json,
+            design_json: options.design_json,
         };
         project::execute(&options.path.clone(), options)
     })();
@@ -1029,9 +1036,18 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
     if args.dry_run {
         args.apply = false;
     }
-    let (root, patches) = if let Some(input) = &args.input {
+    let (root, patches, mutation_resolution) = if let Some(input) = &args.input {
         let root = args.path.clone().unwrap_or_else(|| PathBuf::from("."));
-        (root, load_patches_from_json(input)?)
+        (root, load_patches_from_json(input)?, None)
+    } else if let Some(snapshot) = &args.from_design_snapshot {
+        let Some(path) = args.path.clone() else {
+            return Err("coding requires <path> with --from-design-snapshot".to_string());
+        };
+        let (plan, patches, resolution) = load_patches_from_design_snapshot(&path, snapshot)?;
+        if args.target.is_none() && plan.constraints.target_scope_locked {
+            args.target = resolution.canonical_target_path.clone();
+        }
+        (path, patches, Some(resolution))
     } else {
         let Some(path) = args.path.clone() else {
             return Err("coding requires either <path> or --input".to_string());
@@ -1040,12 +1056,12 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             && let Some(patches) =
                 deterministic_repl_v2_wiring_patches(&path, target, args.request.as_deref())
         {
-            (path, patches)
+            (path, patches, None)
         } else {
             let analysis = analyze_path(&path)?;
             let design_graph = design_graph_from_analysis(&analysis);
             let structural = structural_analysis(&design_graph);
-            (path, structural.code_patches)
+            (path, structural.code_patches, None)
         }
     };
     let patches = apply_bootstrap_safety_policy(&patches, args.target.as_deref());
@@ -1069,7 +1085,7 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             &resolved_paths,
         )?
     };
-    let execution = execute_code_change_set(
+    let mut execution = execute_code_change_set(
         &root,
         &changes,
         &CodingOptions {
@@ -1096,6 +1112,23 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
         },
         transactional_candidate.as_ref(),
     )?;
+    if let Some(resolution) = mutation_resolution.as_ref() {
+        execution.canonical_target_path = resolution
+            .canonical_target_path
+            .as_ref()
+            .map(|path| path.display().to_string());
+        execution.legacy_pipeline_hits = resolution.legacy_pipeline_hits;
+        execution.fallback_resolution_hits = resolution.fallback_resolution_hits;
+        execution.stale_artifact_detected = resolution.stale_artifact_detected;
+        if resolution.stale_artifact_detected {
+            execution.reason = Some(match execution.reason.take() {
+                Some(reason) => {
+                    format!("stale snapshot artifact detected: resolver_version mismatch\n{reason}")
+                }
+                None => "stale snapshot artifact detected: resolver_version mismatch".to_string(),
+            });
+        }
+    }
     let mut apply_resolutions =
         collect_apply_target_resolutions(&root, &patches, args.target.as_deref(), &resolved_paths)?;
     if let Some(transactional) = execution.transactional_apply.as_ref() {

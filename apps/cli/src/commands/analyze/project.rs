@@ -6,7 +6,14 @@ use crate::dbm::analyzer::{self, Complexity, ProjectAnalysisResult};
 use crate::design_output::{DesignExtractor, MarkdownDesignExtractor};
 use crate::renderer::{render_unified_analyze_detailed, render_unified_analyze_summary};
 use crate::report::{Language, ReportGenerator, TemplateReportGenerator};
+use crate::service::{DesignEdge, DesignNode, DesignSnapshot, DesignViolation};
 use crate::session::AgentSession;
+use crate::source_index::ModuleSourceIndex;
+
+// use crate::refactor_viewer_interface::RefactorViewerInterface;
+// use crate::dependency_engine_interface::DependencyEngineInterface;
+// use crate::controller_determinism_interface::ControllerDeterminismInterface;
+// use crate::adapter_app_interface::AdapterAppInterface;
 
 pub fn handler() -> SubCommandHandler {
     SubCommandHandler::new("project", execute_unified)
@@ -37,6 +44,7 @@ pub struct AnalyzeOptions {
     pub language: Language,
     pub intent: Option<IntentProfile>,
     pub json: bool,
+    pub design_json: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -82,6 +90,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
     let mut language = Language::English;
     let mut intent = None;
     let mut json = false;
+    let mut design_json = false;
 
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
@@ -91,6 +100,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
             "--report" => report = true,
             "--design" => design = true,
             "--json" => json = true,
+            "--design-json" => design_json = true,
             "--lang" => {
                 let value = iter
                     .next()
@@ -133,6 +143,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
         language,
         intent,
         json,
+        design_json,
     })
 }
 
@@ -179,6 +190,12 @@ pub fn execute(path: &str, mut options: AnalyzeOptions) -> Result<String, String
 }
 
 pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
+    if options.design_json {
+        let snapshot = build_design_snapshot(&result.path, &result.analysis);
+        return serde_json::to_string_pretty(&snapshot)
+            .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
+    }
+
     if options.json {
         return serde_json::to_string_pretty(result)
             .unwrap_or_else(|_| "{\"error\":\"serialization failed\"}".to_string());
@@ -198,6 +215,155 @@ pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) ->
     }
 
     sections.join("\n\n")
+}
+
+fn build_design_snapshot(root: &str, result: &ProjectAnalysisResult) -> DesignSnapshot {
+    let index = ModuleSourceIndex::build(std::path::Path::new(root)).unwrap_or_default();
+    let debug_fallback = analyze_debug_fallback_enabled();
+    let (nodes, analyze_legacy_binding_hits, analyze_fallback_hits) =
+        build_design_nodes(result, &index, debug_fallback);
+    let fixture_binding_detected = nodes.iter().any(|node| {
+        let path = node.source_path.replace('\\', "/");
+        path.contains("/tests/") || path.contains("/fixtures/") || path.contains("/examples/")
+    });
+    DesignSnapshot {
+        nodes,
+        edges: build_design_edges(result),
+        cycles: collect_cycle_paths(result),
+        violations: collect_design_violations(result),
+        analyze_legacy_binding_hits,
+        analyze_fallback_hits,
+        fixture_binding_detected,
+    }
+}
+
+fn build_design_nodes(
+    result: &ProjectAnalysisResult,
+    index: &ModuleSourceIndex,
+    debug_fallback: bool,
+) -> (Vec<DesignNode>, u64, u64) {
+    let mut analyze_legacy_binding_hits = 0_u64;
+    let mut analyze_fallback_hits = 0_u64;
+    let mut nodes = result
+        .modules
+        .iter()
+        .map(|module| {
+            let source_path = if let Some((_, path)) = index.bind_graph_node(&module.name) {
+                path.display().to_string()
+            } else if debug_fallback {
+                if let Some((_, path)) = index.bind_graph_node_debug_fallback(&module.name) {
+                    analyze_legacy_binding_hits += 1;
+                    analyze_fallback_hits += 1;
+                    path.display().to_string()
+                } else {
+                    module
+                        .files
+                        .iter()
+                        .min()
+                        .cloned()
+                        .unwrap_or_else(|| module.name.clone())
+                }
+            } else {
+                module
+                    .files
+                    .iter()
+                    .min()
+                    .cloned()
+                    .unwrap_or_else(|| module.name.clone())
+            };
+            DesignNode {
+                id: module.name.clone(),
+                logical_name: module.name.clone(),
+                source_path,
+            }
+        })
+        .collect::<Vec<_>>();
+    nodes.sort_by(|left, right| left.id.cmp(&right.id));
+    (nodes, analyze_legacy_binding_hits, analyze_fallback_hits)
+}
+
+fn analyze_debug_fallback_enabled() -> bool {
+    matches!(
+        std::env::var("DBM_ENABLE_ANALYZE_DEBUG_FALLBACK")
+            .ok()
+            .as_deref(),
+        Some("1" | "true" | "TRUE" | "yes" | "on")
+    )
+}
+
+fn build_design_edges(result: &ProjectAnalysisResult) -> Vec<DesignEdge> {
+    let mut edges = result
+        .dependencies
+        .iter()
+        .map(|edge| DesignEdge {
+            id: format!("{}->{}", edge.from, edge.to),
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+        })
+        .collect::<Vec<_>>();
+    edges.sort_by(|left, right| left.id.cmp(&right.id));
+    edges
+}
+
+fn collect_cycle_paths(result: &ProjectAnalysisResult) -> Vec<Vec<String>> {
+    let mut cycles = result
+        .dependencies
+        .iter()
+        .filter(|dep| {
+            result
+                .dependencies
+                .iter()
+                .any(|other| other.from == dep.to && other.to == dep.from)
+        })
+        .map(|dep| vec![dep.from.clone(), dep.to.clone(), dep.from.clone()])
+        .collect::<Vec<_>>();
+    cycles.sort();
+    cycles.dedup();
+    cycles
+}
+
+fn collect_design_violations(result: &ProjectAnalysisResult) -> Vec<DesignViolation> {
+    let mut violations = Vec::new();
+
+    for cycle in collect_cycle_paths(result) {
+        if cycle.len() >= 2 {
+            let from = cycle[0].clone();
+            let to = cycle[1].clone();
+            violations.push(DesignViolation {
+                violation_type: "dependency_cycle".to_string(),
+                edge_id: Some(format!("{from}->{to}")),
+                description: format!("Dependency cycle detected between {from} and {to}"),
+            });
+        }
+    }
+
+    for file in result.files.iter().filter(|file| !file.todos.is_empty()) {
+        violations.push(DesignViolation {
+            violation_type: "todo_marker".to_string(),
+            edge_id: None,
+            description: format!("TODO/FIXME remains in {}", file.path),
+        });
+    }
+
+    for file in result
+        .files
+        .iter()
+        .filter(|file| file.complexity == Complexity::High)
+    {
+        violations.push(DesignViolation {
+            violation_type: "high_complexity".to_string(),
+            edge_id: None,
+            description: format!("High complexity file requires review: {}", file.path),
+        });
+    }
+
+    violations.sort_by(|left, right| {
+        left.violation_type
+            .cmp(&right.violation_type)
+            .then_with(|| left.edge_id.cmp(&right.edge_id))
+            .then_with(|| left.description.cmp(&right.description))
+    });
+    violations
 }
 
 fn parse_intent(value: &str) -> Option<IntentProfile> {
@@ -529,6 +695,24 @@ mod tests {
     }
 
     #[test]
+    fn analyze_project_design_json_takes_priority_over_json() {
+        let h = handler();
+        let mut session = AgentSession::new();
+        let out = (h.execute)(
+            &[
+                ".".to_string(),
+                "--json".to_string(),
+                "--design-json".to_string(),
+            ],
+            &mut session,
+        )
+        .unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&out.message).expect("json");
+        assert!(parsed.get("edges").is_some(), "got: {}", out.message);
+        assert!(parsed.get("modules").is_none(), "got: {}", out.message);
+    }
+
+    #[test]
     fn analyze_project_report_and_design_follow_decision_context() {
         let options = AnalyzeOptions {
             path: ".".to_string(),
@@ -538,6 +722,7 @@ mod tests {
             language: Language::English,
             intent: Some(IntentProfile::Maintainability),
             json: false,
+            design_json: false,
         };
         let result = analyze_with_options(&options).unwrap();
         let output = render_output(&result, &options);
@@ -561,5 +746,12 @@ mod tests {
         .unwrap();
         assert_eq!(opts.mode, AnalyzeMode::Detailed);
         assert_eq!(opts.intent, Some(IntentProfile::Maintainability));
+    }
+
+    #[test]
+    fn parse_options_accepts_design_json() {
+        let opts = parse_options(&[".".to_string(), "--design-json".to_string()]).unwrap();
+        assert!(opts.design_json);
+        assert!(!opts.json);
     }
 }

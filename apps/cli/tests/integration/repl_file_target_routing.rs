@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use design_cli::nl::intent::{wants_coding, wants_analyze};
+use design_cli::nl::intent::{wants_analyze, wants_coding};
 use design_cli::nl::planner_v2::plan_input;
 use design_cli::nl::session::ConversationState;
 use design_cli::nl::types::PlannedStep;
@@ -39,7 +39,10 @@ fn file_path_with_mutation_routes_to_coding() {
             "apps/cli/src/coding.rs の bootstrap pruning をさらに厳密化して",
             "apps/cli/src/coding.rs",
         ),
-        ("refactor apps/cli/src/nl/goal.rs", "apps/cli/src/nl/goal.rs"),
+        (
+            "refactor apps/cli/src/nl/goal.rs",
+            "apps/cli/src/nl/goal.rs",
+        ),
         (
             "apps/cli/src/coding.rs の semantic pruning を改善して",
             "apps/cli/src/coding.rs",
@@ -60,7 +63,10 @@ fn file_path_with_mutation_routes_to_coding() {
 fn previous_target_reuse_on_mutation_followup() {
     for (prev, input) in [
         ("apps/cli/src/coding.rs", "さっきの場所をさらに改善して"),
-        ("apps/cli/src/nl/goal.rs", "さっきのファイルをさらに修正して"),
+        (
+            "apps/cli/src/nl/goal.rs",
+            "さっきのファイルをさらに修正して",
+        ),
     ] {
         let plan = plan_input(input, &session(), &conv_with_last(prev))
             .expect("must produce a plan with previous target");
@@ -86,15 +92,20 @@ fn analyze_intent_does_not_route_to_coding() {
         }
     }
 
-    let analyze = plan_input("このプロジェクトを解析して", &session(), &conv())
-        .expect("must produce a plan");
+    let analyze =
+        plan_input("このプロジェクトを解析して", &session(), &conv()).expect("must produce a plan");
     for step in &analyze.steps {
         assert!(
             !matches!(step, PlannedStep::Coding(_, _)),
             "解析 without mutation must not produce Coding: {step:?}"
         );
     }
-    assert!(analyze.steps.iter().any(|s| matches!(s, PlannedStep::Analyze(_))));
+    assert!(
+        analyze
+            .steps
+            .iter()
+            .any(|s| matches!(s, PlannedStep::Analyze(_)))
+    );
 }
 
 #[test]

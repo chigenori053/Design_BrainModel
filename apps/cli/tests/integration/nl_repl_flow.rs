@@ -49,7 +49,11 @@ fn run_repl(dir: &std::path::Path, input: &str) -> (i32, String, String) {
 #[test]
 fn repl_executes_single_step_natural_language_flows() {
     for (name, input, expected_command) in [
-        ("analyze", "このプロジェクト全体を解析して\n/exit\n", "design_cli analyze ."),
+        (
+            "analyze",
+            "このプロジェクト全体を解析して\n/exit\n",
+            "design_cli analyze .",
+        ),
         (
             "structure",
             "GUIで構造を開いて\n/exit\n",
@@ -60,7 +64,10 @@ fn repl_executes_single_step_natural_language_flows() {
         let (code, stdout, stderr) = run_repl(&dir, input);
         assert_eq!(code, 0, "stderr: {stderr}");
         assert!(stdout.contains("DBM >"), "stdout: {stdout}");
-        assert!(stdout.contains("[planner: nl_v2] 1 steps"), "stdout: {stdout}");
+        assert!(
+            stdout.contains("[planner: nl_v2] 1 steps"),
+            "stdout: {stdout}"
+        );
         assert!(
             stdout.contains(expected_command),
             "expected canonical command in output: {stdout}"

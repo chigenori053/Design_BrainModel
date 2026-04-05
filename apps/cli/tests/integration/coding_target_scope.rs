@@ -69,11 +69,15 @@ fn explicit_target_prunes_runtime_vm_candidate() {
             between: ("runtime::repl".to_string(), "world".to_string()),
         }],
         description: "introduce interface".to_string(),
+        target_file: Default::default(),
     }];
 
-    let change_set =
-        generate_code_change_set_with_target(&root, &patches, Some(Path::new("src/runtime/repl.rs")))
-            .expect("non-target candidate should be pruned before patch generation");
+    let change_set = generate_code_change_set_with_target(
+        &root,
+        &patches,
+        Some(Path::new("src/runtime/repl.rs")),
+    )
+    .expect("non-target candidate should be pruned before patch generation");
     assert!(change_set.changes.is_empty(), "{change_set:?}");
 }
 
@@ -111,14 +115,20 @@ fn target_mode_blocks_mod_registration() {
         },
     };
 
-    let result =
-        execute_code_change_set(&root, &change_set, &target_scope_options("src/runtime/repl.rs"), None)
-            .expect("scope violation returns failed execution");
+    let result = execute_code_change_set(
+        &root,
+        &change_set,
+        &target_scope_options("src/runtime/repl.rs"),
+        None,
+    )
+    .expect("scope violation returns failed execution");
     assert_eq!(result.status, "failed");
     assert!(result.rolled_back);
     assert_eq!(
         result.reason.as_deref(),
-        Some("patch_scope_violation: target file src/runtime/repl.rs != generated patch path src/runtime/mod.rs")
+        Some(
+            "patch_scope_violation: target file src/runtime/repl.rs != generated patch path src/runtime/mod.rs"
+        )
     );
 }
 
@@ -139,11 +149,15 @@ fn explicit_target_drops_cross_crate_candidates() {
             ],
         }],
         description: "drop cross crate candidates".to_string(),
+        target_file: Default::default(),
     }];
 
-    let change_set =
-        generate_code_change_set_with_target(&root, &patches, Some(Path::new("src/runtime/repl.rs")))
-            .expect("cross-crate candidates should be dropped");
+    let change_set = generate_code_change_set_with_target(
+        &root,
+        &patches,
+        Some(Path::new("src/runtime/repl.rs")),
+    )
+    .expect("cross-crate candidates should be dropped");
     assert!(change_set.changes.is_empty(), "{change_set:?}");
 }
 
@@ -164,6 +178,7 @@ fn patch_scope_violation_no_longer_occurs_for_same_file() {
             via: Some("repl_world_interface".to_string()),
         }],
         description: "import fix".to_string(),
+        target_file: Default::default(),
     }];
 
     let change_set = generate_code_change_set_with_target(
@@ -213,13 +228,22 @@ fn rollback_on_scope_violation() {
         },
     };
 
-    let result =
-        execute_code_change_set(&root, &change_set, &target_scope_options("src/runtime/repl.rs"), None)
-            .expect("scope violation returns failed execution");
+    let result = execute_code_change_set(
+        &root,
+        &change_set,
+        &target_scope_options("src/runtime/repl.rs"),
+        None,
+    )
+    .expect("scope violation returns failed execution");
 
     assert_eq!(result.status, "failed");
     assert!(result.rolled_back);
-    assert_eq!(result.reason.as_deref(), Some("patch_scope_violation: target file src/runtime/repl.rs != generated patch path src/repl_world_interface.rs"));
+    assert_eq!(
+        result.reason.as_deref(),
+        Some(
+            "patch_scope_violation: target file src/runtime/repl.rs != generated patch path src/repl_world_interface.rs"
+        )
+    );
     assert_eq!(
         fs::read_to_string(root.join("src/runtime/repl.rs")).expect("read target"),
         original
@@ -240,6 +264,7 @@ fn source_index_bootstrap_blocks_cross_module_changes() {
                 between: ("source_index".to_string(), "world".to_string()),
             }],
             description: "introduce interface".to_string(),
+            target_file: Default::default(),
         }],
         vec![CodePatch {
             patch_id: "p1".to_string(),
@@ -254,6 +279,7 @@ fn source_index_bootstrap_blocks_cross_module_changes() {
                 via: Some("adapter_app_interface".to_string()),
             }],
             description: "move dependency".to_string(),
+            target_file: Default::default(),
         }],
     ] {
         let filtered = apply_bootstrap_safety_policy(
@@ -286,6 +312,7 @@ fn source_index_bootstrap_disables_import_rebinding() {
             via: Some("adapter_app_interface".to_string()),
         }],
         description: "import rebinding".to_string(),
+        target_file: Default::default(),
     }];
 
     let filtered =

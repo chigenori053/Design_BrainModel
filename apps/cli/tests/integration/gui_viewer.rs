@@ -62,10 +62,7 @@ fn gui_render_modes_export_ir_and_report_expected_launch_targets() {
         ]);
         assert_eq!(code, 0);
         assert!(stdout.contains(expected_mode), "stdout: {stdout}");
-        assert!(
-            stdout.contains(expected_launch_marker),
-            "stdout: {stdout}"
-        );
+        assert!(stdout.contains(expected_launch_marker), "stdout: {stdout}");
         assert!(dir.join(".dbm/structure_view.json").exists());
     }
     let dir = temp_project("3d_mode_suffix");

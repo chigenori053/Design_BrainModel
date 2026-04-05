@@ -306,8 +306,8 @@ pub(super) struct BranchManager;
 
 impl BranchManager {
     pub(super) fn create(root: &Path) -> Result<String, String> {
-        let current = current_branch(root)?
-            .ok_or_else(|| "RemoteBlocked: detached HEAD".to_string())?;
+        let current =
+            current_branch(root)?.ok_or_else(|| "RemoteBlocked: detached HEAD".to_string())?;
         if is_protected_branch(&current) {
             return Err("RemoteBlocked: protected branch".to_string());
         }
@@ -331,7 +331,10 @@ impl PushController {
         };
         let classified = RemoteGuard::classify_git(&args);
         if classified != CommandType::SafeWrite {
-            return Err(format!("dangerous remote command rejected: git {}", args.join(" ")));
+            return Err(format!(
+                "dangerous remote command rejected: git {}",
+                args.join(" ")
+            ));
         }
         let output = git_command()
             .args(&args)
@@ -361,7 +364,10 @@ impl PushController {
 struct PRManager;
 
 impl PRManager {
-    fn duplicate(root: &Path, branch: &str) -> Result<Option<(Option<u64>, Option<String>)>, String> {
+    fn duplicate(
+        root: &Path,
+        branch: &str,
+    ) -> Result<Option<(Option<u64>, Option<String>)>, String> {
         let args = ["pr", "view", branch, "--json", "number,url"];
         if RemoteGuard::classify_gh(&args) != CommandType::SafeRead {
             return Err("dangerous gh command rejected".to_string());
@@ -378,7 +384,8 @@ impl PRManager {
             .map_err(|err| format!("failed to parse gh pr view output: {err}"))?;
         Ok(Some((
             value.get("number").and_then(|value| value.as_u64()),
-            value.get("url")
+            value
+                .get("url")
                 .and_then(|value| value.as_str())
                 .map(ToString::to_string),
         )))
@@ -512,7 +519,9 @@ fn current_branch(root: &Path) -> Result<Option<String>, String> {
         .output()
         .map_err(|err| format!("failed to inspect branch: {err}"))?;
     if output.status.success() {
-        Ok(Some(String::from_utf8_lossy(&output.stdout).trim().to_string()))
+        Ok(Some(
+            String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        ))
     } else {
         Ok(None)
     }

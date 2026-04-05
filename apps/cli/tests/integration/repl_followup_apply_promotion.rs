@@ -19,11 +19,7 @@ fn temp_project(name: &str) -> std::path::PathBuf {
     )
     .expect("write cargo");
     fs::write(dir.join("src/lib.rs"), "pub mod coding;\n").expect("write lib");
-    fs::write(
-        dir.join("src/coding.rs"),
-        "pub fn code() -> i32 { 0 }\n",
-    )
-    .expect("write coding");
+    fs::write(dir.join("src/coding.rs"), "pub fn code() -> i32 { 0 }\n").expect("write coding");
     dir
 }
 

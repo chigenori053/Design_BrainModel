@@ -3,8 +3,7 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use design_cli::coding::{
-    apply_bootstrap_safety_policy, generate_code_change_set_with_target,
-    prune_patches_for_target,
+    apply_bootstrap_safety_policy, generate_code_change_set_with_target, prune_patches_for_target,
 };
 use integration_layer::{CodePatch, PatchOperation, RefactorPlanAction};
 
@@ -13,8 +12,7 @@ fn temp_workspace(name: &str) -> PathBuf {
         .duration_since(UNIX_EPOCH)
         .expect("time")
         .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!("design_cli_canonical_stream_{name}_{unique}"));
+    let root = std::env::temp_dir().join(format!("design_cli_canonical_stream_{name}_{unique}"));
     fs::create_dir_all(root.join("src")).expect("create src dir");
     root
 }
@@ -44,6 +42,7 @@ fn unrelated_patches() -> Vec<CodePatch> {
                 between: ("adapter".to_string(), "controller".to_string()),
             }],
             description: "introduce interface between adapter and controller".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "unrelated_2".to_string(),
@@ -58,6 +57,7 @@ fn unrelated_patches() -> Vec<CodePatch> {
                 via: None,
             }],
             description: "move determinism -> engine".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "unrelated_3".to_string(),
@@ -72,6 +72,7 @@ fn unrelated_patches() -> Vec<CodePatch> {
                 via: None,
             }],
             description: "move dependency -> runtime".to_string(),
+            target_file: Default::default(),
         },
     ]
 }
@@ -92,7 +93,11 @@ fn goal_rs_target_unrelated_patches_produce_zero_changes() {
     assert!(
         change_set.changes.is_empty(),
         "unrelated patches must produce 0 changes for goal.rs, got: {:?}",
-        change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+        change_set
+            .changes
+            .iter()
+            .map(|c| &c.file_path)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         change_set.summary.total_changes, 0,
@@ -122,7 +127,11 @@ fn pruned_patches_and_changes_are_consistent() {
         assert!(
             change_set.changes.is_empty(),
             "canonical patches empty but changes non-empty: {:?}",
-            change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+            change_set
+                .changes
+                .iter()
+                .map(|c| &c.file_path)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -160,6 +169,7 @@ fn coding_rs_self_host_unrelated_patches_produce_zero_changes() {
                 between: ("adapter".to_string(), "controller".to_string()),
             }],
             description: "introduce interface adapter-controller".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "foreign_2".to_string(),
@@ -174,6 +184,7 @@ fn coding_rs_self_host_unrelated_patches_produce_zero_changes() {
                 via: None,
             }],
             description: "agent -> capability migration".to_string(),
+            target_file: Default::default(),
         },
     ];
 
@@ -184,7 +195,11 @@ fn coding_rs_self_host_unrelated_patches_produce_zero_changes() {
     assert!(
         change_set.changes.is_empty(),
         "unrelated patches must produce 0 changes for coding.rs self-host, got: {:?}",
-        change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+        change_set
+            .changes
+            .iter()
+            .map(|c| &c.file_path)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         change_set.summary.total_changes, 0,

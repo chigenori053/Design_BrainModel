@@ -26,8 +26,7 @@ fn write_workspace_manifest(root: &std::path::Path) {
     )
     .expect("main");
     fs::write(root.join("src/coding.rs"), "pub fn helper() {}\n").expect("coding");
-    fs::write(root.join("src/renderer.rs"), "pub struct Renderer;\n")
-    .expect("renderer");
+    fs::write(root.join("src/renderer.rs"), "pub struct Renderer;\n").expect("renderer");
     fs::write(root.join("patches.json"), "{ \"patches\": [] }\n").expect("patches");
 }
 
@@ -53,7 +52,11 @@ fn coding_malformed_import_batch_recovers_grouped_use_tree() {
         .output()
         .expect("run design_cli");
 
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"status\": \"checked\""), "{stdout}");
     assert!(stdout.contains("\"build_ok\": true"), "{stdout}");
@@ -62,7 +65,10 @@ fn coding_malformed_import_batch_recovers_grouped_use_tree() {
     let telemetry =
         fs::read_to_string(workspace.join(".dbm/telemetry/malformed_import_recovery.json"))
             .expect("malformed import telemetry");
-    assert!(telemetry.contains("\"group_normalized\": true"), "{telemetry}");
+    assert!(
+        telemetry.contains("\"group_normalized\": true"),
+        "{telemetry}"
+    );
     assert!(telemetry.contains("\"imports_fixed\":"), "{telemetry}");
 }
 
@@ -88,14 +94,21 @@ fn coding_malformed_import_batch_preserves_existing_green_imports() {
         .output()
         .expect("run design_cli");
 
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"status\": \"checked\""), "{stdout}");
 
     let telemetry =
         fs::read_to_string(workspace.join(".dbm/telemetry/malformed_import_recovery.json"))
             .expect("malformed import telemetry");
-    assert!(telemetry.contains("\"stable_preserved\": true"), "{telemetry}");
+    assert!(
+        telemetry.contains("\"stable_preserved\": true"),
+        "{telemetry}"
+    );
 
     let original = fs::read_to_string(workspace.join("src/app.rs")).expect("app");
     assert!(original.contains("use crate::coding;"), "{original}");

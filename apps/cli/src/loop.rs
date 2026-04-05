@@ -8,11 +8,11 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 
 use crate::command::{Command, parse_command};
 use crate::input::{InputState, read_input};
+use crate::refactor::PatchScope;
 use crate::renderer::{
     render_analysis_report, render_coding_report, render_design_report, render_question,
     render_result, render_validation_report,
 };
-use crate::refactor::PatchScope;
 use crate::service::{
     analyze_path, build_design_report, build_refactoring_report, build_validation_report,
 };

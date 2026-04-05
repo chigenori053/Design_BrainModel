@@ -1,6 +1,8 @@
 use std::path::Path;
 
-use design_cli::coding::{patch_matches_cluster, prune_patches_for_target, semantic_cluster_for_target};
+use design_cli::coding::{
+    patch_matches_cluster, prune_patches_for_target, semantic_cluster_for_target,
+};
 use integration_layer::{CodePatch, PatchOperation, RefactorPlanAction};
 
 fn move_patch(id: &str, from: &str, to: &str) -> CodePatch {
@@ -17,6 +19,7 @@ fn move_patch(id: &str, from: &str, to: &str) -> CodePatch {
             via: None,
         }],
         description: format!("move {} -> {}", from, to),
+        target_file: Default::default(),
     }
 }
 
@@ -31,6 +34,7 @@ fn introduce_patch(id: &str, a: &str, b: &str) -> CodePatch {
             between: (a.to_string(), b.to_string()),
         }],
         description: format!("introduce interface between {} and {}", a, b),
+        target_file: Default::default(),
     }
 }
 
@@ -105,7 +109,10 @@ fn goal_rs_target_prunes_unrelated_patches() {
     // Cluster is ["nl", "goal"] — adapter/app/controller/dependency/agent/domain
     // are all outside the cluster; all five patches must be pruned.
     let ids: Vec<&str> = kept.iter().map(|p| p.patch_id.as_str()).collect();
-    assert!(ids.is_empty(), "all unrelated patches must be pruned, got: {ids:?}");
+    assert!(
+        ids.is_empty(),
+        "all unrelated patches must be pruned, got: {ids:?}"
+    );
 }
 
 // ─── Case 2: agent/mod.rs — cross-cluster leakage removed ────────────────────
@@ -125,12 +132,24 @@ fn agent_mod_prunes_adapter_and_controller_patches() {
     let ids: Vec<&str> = kept.iter().map(|p| p.patch_id.as_str()).collect();
 
     // adapter/controller patches must be gone
-    assert!(!ids.contains(&"p1"), "adapter patch should be pruned: {ids:?}");
-    assert!(!ids.contains(&"p2"), "controller patch should be pruned: {ids:?}");
+    assert!(
+        !ids.contains(&"p1"),
+        "adapter patch should be pruned: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"p2"),
+        "controller patch should be pruned: {ids:?}"
+    );
 
     // agent patches must survive
-    assert!(ids.contains(&"p3"), "agent->capability patch must survive: {ids:?}");
-    assert!(ids.contains(&"p4"), "agent->domain patch must survive: {ids:?}");
+    assert!(
+        ids.contains(&"p3"),
+        "agent->capability patch must survive: {ids:?}"
+    );
+    assert!(
+        ids.contains(&"p4"),
+        "agent->domain patch must survive: {ids:?}"
+    );
 }
 
 // ─── Case 3: coding.rs self-host — unrelated patches are empty ───────────────
@@ -152,9 +171,18 @@ fn coding_rs_self_host_prunes_non_coding_patches() {
 
     // none of adapter/controller/determinism/engine/agent/capability/nl/goal
     // are in the coding cluster
-    assert!(!ids.contains(&"p1"), "adapter/controller patch should be pruned: {ids:?}");
-    assert!(!ids.contains(&"p2"), "determinism/engine patch should be pruned: {ids:?}");
-    assert!(!ids.contains(&"p3"), "agent patch should be pruned: {ids:?}");
+    assert!(
+        !ids.contains(&"p1"),
+        "adapter/controller patch should be pruned: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"p2"),
+        "determinism/engine patch should be pruned: {ids:?}"
+    );
+    assert!(
+        !ids.contains(&"p3"),
+        "agent patch should be pruned: {ids:?}"
+    );
     assert!(!ids.contains(&"p4"), "nl patch should be pruned: {ids:?}");
 }
 
@@ -170,7 +198,10 @@ fn coding_rs_self_host_keeps_coding_patches() {
     let kept = prune_patches_for_target(&patches, target);
     let ids: Vec<&str> = kept.iter().map(|p| p.patch_id.as_str()).collect();
 
-    assert!(ids.contains(&"p1"), "coding->source_index must survive: {ids:?}");
+    assert!(
+        ids.contains(&"p1"),
+        "coding->source_index must survive: {ids:?}"
+    );
     assert!(ids.contains(&"p2"), "app->coding must survive: {ids:?}");
 }
 

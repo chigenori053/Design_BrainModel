@@ -152,7 +152,11 @@ fn repl_v2_wiring_is_idempotent_on_second_dry_run() {
     assert_eq!(second_code, 0, "stderr: {second_stderr}");
 
     let out: Value = serde_json::from_str(&second_stdout).expect("stdout json");
-    assert_eq!(out["patches"], Value::Array(vec![]), "stdout: {second_stdout}");
+    assert_eq!(
+        out["patches"],
+        Value::Array(vec![]),
+        "stdout: {second_stdout}"
+    );
     assert_eq!(
         out["changes"]["changes"],
         Value::Array(vec![]),
@@ -170,6 +174,9 @@ fn repl_v2_wiring_emits_no_architectural_frontier_candidates() {
         "agent_domain_interface",
         "dependency_engine_interface",
     ] {
-        assert!(!stdout.contains(forbidden), "forbidden={forbidden}\nstdout: {stdout}");
+        assert!(
+            !stdout.contains(forbidden),
+            "forbidden={forbidden}\nstdout: {stdout}"
+        );
     }
 }

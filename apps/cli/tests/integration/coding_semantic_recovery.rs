@@ -56,19 +56,35 @@ fn coding_semantic_recovery_uses_rustc_help_for_missing_import() {
         .output()
         .expect("run design_cli");
 
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"status\": \"checked\""), "{stdout}");
     assert!(stdout.contains("\"build_ok\": true"), "{stdout}");
 
     let telemetry = fs::read_to_string(workspace.join(".dbm/telemetry/semantic_recovery.json"))
         .expect("semantic recovery telemetry");
-    assert!(telemetry.contains("\"error_type\": \"MissingType\""), "{telemetry}");
-    assert!(telemetry.contains("\"used_rustc_help\": true"), "{telemetry}");
-    assert!(telemetry.contains("\"patch_family\": \"safe_import_fix\""), "{telemetry}");
+    assert!(
+        telemetry.contains("\"error_type\": \"MissingType\""),
+        "{telemetry}"
+    );
+    assert!(
+        telemetry.contains("\"used_rustc_help\": true"),
+        "{telemetry}"
+    );
+    assert!(
+        telemetry.contains("\"patch_family\": \"safe_import_fix\""),
+        "{telemetry}"
+    );
 
     let original = fs::read_to_string(workspace.join("src/agent/mod.rs")).expect("agent");
-    assert!(!original.contains("use crate::domain::AgentInput;"), "{original}");
+    assert!(
+        !original.contains("use crate::domain::AgentInput;"),
+        "{original}"
+    );
 }
 
 #[test]
@@ -108,17 +124,33 @@ fn coding_semantic_recovery_preserves_green_import_hub() {
         .output()
         .expect("run design_cli");
 
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(stdout.contains("\"status\": \"checked\""), "{stdout}");
     assert!(stdout.contains("\"build_ok\": true"), "{stdout}");
 
     let telemetry = fs::read_to_string(workspace.join(".dbm/telemetry/semantic_recovery.json"))
         .expect("semantic recovery telemetry");
-    assert!(telemetry.contains("\"error_type\": \"MissingImport\""), "{telemetry}");
-    assert!(telemetry.contains("\"green_state_preserved\": true"), "{telemetry}");
+    assert!(
+        telemetry.contains("\"error_type\": \"MissingImport\""),
+        "{telemetry}"
+    );
+    assert!(
+        telemetry.contains("\"green_state_preserved\": true"),
+        "{telemetry}"
+    );
 
     let original = fs::read_to_string(workspace.join("src/agent/mod.rs")).expect("agent");
-    assert!(original.contains("use crate::agent_capability_interface;"), "{original}");
-    assert!(original.contains("pub use crate::domain::{AgentInput, AgentOutput, DomainError};"), "{original}");
+    assert!(
+        original.contains("use crate::agent_capability_interface;"),
+        "{original}"
+    );
+    assert!(
+        original.contains("pub use crate::domain::{AgentInput, AgentOutput, DomainError};"),
+        "{original}"
+    );
 }

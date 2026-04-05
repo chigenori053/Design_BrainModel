@@ -29,8 +29,21 @@ fn has_file_path_target(input: &str) -> bool {
 /// R2: mutation verbs that require Coding intent when a file target is present
 fn wants_mutation_verb(lower: &str) -> bool {
     [
-        "修正", "改善", "厳密化", "除去", "最適化", "直して", "直す", "refactor", "prune",
-        "rebind", "fix", "repair", "抽象化", "trait", "registry",
+        "修正",
+        "改善",
+        "厳密化",
+        "除去",
+        "最適化",
+        "直して",
+        "直す",
+        "refactor",
+        "prune",
+        "rebind",
+        "fix",
+        "repair",
+        "抽象化",
+        "trait",
+        "registry",
     ]
     .iter()
     .any(|k| lower.contains(k))
@@ -153,7 +166,10 @@ pub fn plan_input(
     }
 
     if wants_coding(&lower) {
-        steps.push(PlannedStep::Coding(merged.path.clone(), coding_options_for_request(input)));
+        steps.push(PlannedStep::Coding(
+            merged.path.clone(),
+            coding_options_for_request(input),
+        ));
     }
 
     if wants_validate(&lower) {

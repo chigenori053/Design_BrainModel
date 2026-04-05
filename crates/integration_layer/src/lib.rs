@@ -1,4 +1,5 @@
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 
 use architecture_ir::stable_v03::{ArchitectureGraph, RelationType as ArchitectureRelationType};
 use code_language_core::stable_v03::GeneratedFile;
@@ -422,6 +423,8 @@ pub struct CodePatch {
     pub action: RefactorPlanAction,
     pub operations: Vec<PatchOperation>,
     pub description: String,
+    #[serde(default)]
+    pub target_file: PathBuf,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -1764,6 +1767,7 @@ fn map_action_to_patch(action: &RefactorPlanAction) -> CodePatch {
         action: action.clone(),
         operations,
         description,
+        target_file: Default::default(),
     }
 }
 

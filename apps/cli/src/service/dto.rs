@@ -89,6 +89,78 @@ pub struct AnalysisDependency {
     pub to: String,
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignSnapshot {
+    pub nodes: Vec<DesignNode>,
+    pub edges: Vec<DesignEdge>,
+    pub cycles: Vec<Vec<String>>,
+    pub violations: Vec<DesignViolation>,
+    #[serde(default)]
+    pub analyze_legacy_binding_hits: u64,
+    #[serde(default)]
+    pub analyze_fallback_hits: u64,
+    #[serde(default)]
+    pub fixture_binding_detected: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignNode {
+    pub id: String,
+    pub logical_name: String,
+    pub source_path: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignEdge {
+    pub id: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DesignViolation {
+    pub violation_type: String,
+    pub edge_id: Option<String>,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationPlan {
+    pub edge_id: String,
+    pub operation: MutationOperation,
+    pub strategy: MutationStrategy,
+    pub constraints: MutationConstraints,
+    #[serde(default)]
+    pub source_path: Option<String>,
+    #[serde(default)]
+    pub snapshot_version: Option<String>,
+    #[serde(default)]
+    pub resolver_version: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationOperation {
+    RemoveDependency,
+    ExtractInterface,
+    MoveDependency,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum MutationStrategy {
+    ExtractInterface,
+    ImportRebinding,
+    BoundaryMove,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MutationConstraints {
+    pub preserve_public_api: bool,
+    pub no_new_cycles: bool,
+    pub target_scope_locked: bool,
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DesignReport {
     pub root: String,

@@ -110,9 +110,8 @@ fn map_invocation_to_cli(
             // R5: if the path is a file target (.rs/.toml/.md), remap to
             //   coding . --target <file>
             // so the workspace root is valid and the file is scoped via --target.
-            let is_file_target = path.ends_with(".rs")
-                || path.ends_with(".toml")
-                || path.ends_with(".md");
+            let is_file_target =
+                path.ends_with(".rs") || path.ends_with(".toml") || path.ends_with(".md");
             let mut cli_args = if is_file_target {
                 vec![".".to_string(), "--target".to_string(), path]
             } else {

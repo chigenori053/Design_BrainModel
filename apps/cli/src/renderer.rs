@@ -1256,6 +1256,19 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
     writeln!(writer, "Applied: {}", report.execution.applied)?;
     writeln!(writer, "Rollback: {}", report.execution.rolled_back)?;
     writeln!(writer, "Files changed: {}", report.execution.files_changed)?;
+    if let Some(target) = &report.execution.canonical_target_path {
+        writeln!(writer, "Canonical target: {}", target)?;
+    }
+    if report.execution.stale_artifact_detected {
+        writeln!(writer, "Warning: stale snapshot artifact detected")?;
+    }
+    if report.execution.legacy_pipeline_hits > 0 || report.execution.fallback_resolution_hits > 0 {
+        writeln!(
+            writer,
+            "Legacy pipeline hits: {} (fallback={})",
+            report.execution.legacy_pipeline_hits, report.execution.fallback_resolution_hits
+        )?;
+    }
     if let Some(transactional) = &report.execution.transactional_apply {
         writeln!(writer, "Transactional build: {}", transactional.build_ok)?;
         writeln!(writer, "Sandbox cleanup: {}", transactional.cleanup_ok)?;

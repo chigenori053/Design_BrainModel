@@ -15,7 +15,10 @@ use crate::refactor::{
     validate_apply_candidate,
 };
 use crate::runner::{fixed_env, resolve_command};
+use crate::service::{MutationOperation, MutationPlan, MutationStrategy};
 use crate::source_index::{ApplyTargetResolution, ModuleSourceIndex, QualifiedModuleId};
+
+const SNAPSHOT_RESOLVER_VERSION: &str = "snapshot-v1";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeType {
@@ -116,6 +119,18 @@ pub struct CodingExecutionResult {
     pub git_commit: Option<RestrictedGitCommitResult>,
     pub git_push: Option<RestrictedGitPushResult>,
     pub pull_request: Option<RestrictedPullRequestResult>,
+    pub canonical_target_path: Option<String>,
+    pub legacy_pipeline_hits: u64,
+    pub fallback_resolution_hits: u64,
+    pub stale_artifact_detected: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct MutationResolutionTelemetry {
+    pub canonical_target_path: Option<PathBuf>,
+    pub legacy_pipeline_hits: u64,
+    pub fallback_resolution_hits: u64,
+    pub stale_artifact_detected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -431,6 +446,7 @@ pub fn deterministic_repl_v2_wiring_patch(target: &Path, request: &str) -> Optio
             via: Some("plan_nl_input_v2".to_string()),
         }],
         description: "deterministic repl planner_v2 wiring rewrite".to_string(),
+        target_file: Default::default(),
     }])
 }
 
@@ -461,6 +477,217 @@ pub fn load_patches_from_json(path: &Path) -> Result<Vec<CodePatch>, String> {
         return serde_json::from_value(patches.clone()).map_err(|err| err.to_string());
     }
     Err("input JSON does not contain patches".to_string())
+}
+
+pub fn load_mutation_plan_from_json(path: &Path) -> Result<MutationPlan, String> {
+    let raw = fs::read_to_string(path)
+        .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+    serde_json::from_str(&raw).map_err(|err| format!("failed to parse {}: {err}", path.display()))
+}
+
+pub fn load_patches_from_design_snapshot(
+    root: &Path,
+    path: &Path,
+) -> Result<(MutationPlan, Vec<CodePatch>, MutationResolutionTelemetry), String> {
+    let plan = load_mutation_plan_from_json(path)?;
+    let resolution = resolve_mutation_target(root, &plan)?;
+    let patches = mutation_plan_to_patches(root, &plan, &resolution)?;
+    Ok((plan, patches, resolution))
+}
+
+pub fn resolve_mutation_target_path(
+    root: &Path,
+    plan: &MutationPlan,
+) -> Result<Option<PathBuf>, String> {
+    Ok(resolve_mutation_target(root, plan)?.canonical_target_path)
+}
+
+pub fn mutation_plan_to_patches(
+    root: &Path,
+    plan: &MutationPlan,
+    resolution: &MutationResolutionTelemetry,
+) -> Result<Vec<CodePatch>, String> {
+    let (from, to) = resolve_edge_id_exact(root, &plan.edge_id)?;
+    let target_file = resolution.canonical_target_path.clone().unwrap_or_default();
+    let patch = match (&plan.operation, &plan.strategy) {
+        (MutationOperation::RemoveDependency, MutationStrategy::ExtractInterface) => {
+            let description = format!("remove dependency {from} -> {to} via ports");
+            CodePatch {
+                patch_id: format!("mutation-remove-dependency-{}", plan.edge_id),
+                action: integration_layer::RefactorPlanAction::MoveDependency {
+                    from: from.clone(),
+                    to: "ports".to_string(),
+                    via: None,
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from,
+                    to: "ports".to_string(),
+                    via: None,
+                }],
+                description,
+                target_file: target_file.clone(),
+            }
+        }
+        (MutationOperation::RemoveDependency, MutationStrategy::ImportRebinding) => {
+            let description = format!("rebind dependency {from} -> {to} into ports");
+            CodePatch {
+                patch_id: format!("mutation-remove-dependency-{}", plan.edge_id),
+                action: integration_layer::RefactorPlanAction::MoveDependency {
+                    from: from.clone(),
+                    to: "ports".to_string(),
+                    via: None,
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from,
+                    to: "ports".to_string(),
+                    via: None,
+                }],
+                description,
+                target_file: target_file.clone(),
+            }
+        }
+        (MutationOperation::ExtractInterface, MutationStrategy::ExtractInterface) => {
+            let name = format!("{}Port", pascal_case(&from));
+            CodePatch {
+                patch_id: format!("mutation-extract-interface-{}", plan.edge_id),
+                action: integration_layer::RefactorPlanAction::IntroduceInterface {
+                    between: (from.clone(), to.clone()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name,
+                    between: (from, to),
+                }],
+                description: format!("extract interface for {}", plan.edge_id),
+                target_file: target_file.clone(),
+            }
+        }
+        (MutationOperation::MoveDependency, MutationStrategy::BoundaryMove) => CodePatch {
+            patch_id: format!("mutation-move-dependency-{}", plan.edge_id),
+            action: integration_layer::RefactorPlanAction::MoveDependency {
+                from: from.clone(),
+                to: to.clone(),
+                via: Some("ports".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from,
+                to,
+                via: Some("ports".to_string()),
+            }],
+            description: format!("move dependency boundary for {}", plan.edge_id),
+            target_file: target_file.clone(),
+        },
+        _ => {
+            return Err(format!(
+                "unsupported mutation combination: {:?} + {:?}",
+                plan.operation, plan.strategy
+            ));
+        }
+    };
+    Ok(vec![patch])
+}
+
+fn resolve_edge_id_exact(root: &Path, edge_id: &str) -> Result<(String, String), String> {
+    let analysis = crate::service::analyze_path(root)?;
+    analysis
+        .dependencies
+        .iter()
+        .find(|edge| format!("{}->{}", edge.from, edge.to) == edge_id)
+        .map(|edge| (edge.from.clone(), edge.to.clone()))
+        .ok_or_else(|| format!("edge id not found in design snapshot: {edge_id}"))
+}
+
+fn resolve_mutation_target(
+    root: &Path,
+    plan: &MutationPlan,
+) -> Result<MutationResolutionTelemetry, String> {
+    let stale_artifact_detected = match (
+        plan.snapshot_version.as_deref(),
+        plan.resolver_version.as_deref(),
+    ) {
+        (Some(snapshot), Some(resolver)) => snapshot != resolver,
+        (None, Some(resolver)) => resolver != SNAPSHOT_RESOLVER_VERSION,
+        (Some(snapshot), None) => snapshot != SNAPSHOT_RESOLVER_VERSION,
+        (None, None) => false,
+    };
+
+    if let Some(source_path) = plan
+        .source_path
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return Ok(MutationResolutionTelemetry {
+            canonical_target_path: Some(normalize_target_scope_path(root, Path::new(source_path))?),
+            stale_artifact_detected,
+            ..MutationResolutionTelemetry::default()
+        });
+    }
+
+    let (from, _) = resolve_edge_id_exact(root, &plan.edge_id)?;
+    let analysis = crate::service::analyze_path(root)?;
+    let mut candidates = analysis
+        .modules
+        .iter()
+        .filter(|module| module.name == from)
+        .map(|module| PathBuf::from(module.source_path.clone()))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| (path_rank(path), path_to_sort_key(path)));
+    candidates.dedup();
+    let canonical_target_path = candidates
+        .into_iter()
+        .next()
+        .or_else(|| resolve_apply_target_relative(root, &from));
+
+    Ok(MutationResolutionTelemetry {
+        canonical_target_path,
+        legacy_pipeline_hits: 1,
+        fallback_resolution_hits: 1,
+        stale_artifact_detected,
+    })
+}
+
+fn path_rank(path: &Path) -> usize {
+    if is_production_src(path) {
+        0
+    } else if is_workspace_crate(path) {
+        1
+    } else if is_test_support(path) {
+        2
+    } else if is_tests(path) {
+        3
+    } else {
+        4
+    }
+}
+
+fn is_production_src(path: &Path) -> bool {
+    let normalized = normalized_path_string(path);
+    normalized.contains("/src/")
+        && !normalized.contains("/tests/")
+        && !normalized.contains("/fixtures/")
+        && !normalized.contains("/examples/")
+}
+
+fn is_workspace_crate(path: &Path) -> bool {
+    normalized_path_string(path).starts_with("crates/")
+}
+
+fn is_test_support(path: &Path) -> bool {
+    let normalized = normalized_path_string(path);
+    normalized.contains("/tests/support/")
+        || normalized.contains("/tests/integration/support/")
+        || normalized.contains("/test_support/")
+}
+
+fn is_tests(path: &Path) -> bool {
+    normalized_path_string(path).contains("/tests/")
+}
+
+fn normalized_path_string(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/")
+}
+
+fn path_to_sort_key(path: &Path) -> String {
+    path.to_string_lossy().to_string()
 }
 
 pub fn patches_to_edits(patches: &[CodePatch]) -> Vec<Edit> {
@@ -534,10 +761,7 @@ pub fn apply_bootstrap_safety_policy(
 }
 
 pub fn semantic_cluster_for_target(target: &Path) -> Vec<&'static str> {
-    let file = target
-        .file_name()
-        .and_then(|n| n.to_str())
-        .unwrap_or("");
+    let file = target.file_name().and_then(|n| n.to_str()).unwrap_or("");
 
     // File-level rules take priority over directory-level rules.
     // Broad architectural tokens (app, adapter, agent, dependency, controller,
@@ -620,7 +844,9 @@ pub fn patch_matches_cluster(patch: &CodePatch, cluster: &[&str]) -> bool {
     // ConversationState) match via exact_module_token_matches_cluster because
     // they appear as path segments in `crate::nl::planner_v2::*` imports.
     patch.operations.iter().any(|op| match op {
-        PatchOperation::CreateInterface { between: (a, b), .. } => {
+        PatchOperation::CreateInterface {
+            between: (a, b), ..
+        } => {
             exact_module_token_matches_cluster(a, cluster)
                 || exact_module_token_matches_cluster(b, cluster)
         }
@@ -631,7 +857,10 @@ pub fn patch_matches_cluster(patch: &CodePatch, cluster: &[&str]) -> bool {
                     .as_deref()
                     .map_or(false, |v| exact_module_token_matches_cluster(v, cluster))
         }
-        PatchOperation::SplitModule { module, new_modules } => {
+        PatchOperation::SplitModule {
+            module,
+            new_modules,
+        } => {
             exact_module_token_matches_cluster(module, cluster)
                 || new_modules
                     .iter()
@@ -735,7 +964,11 @@ pub fn generate_code_change_set_with_resolved_paths(
             summary
         });
 
-    Ok(CodeChangeSet { patches, changes, summary })
+    Ok(CodeChangeSet {
+        patches,
+        changes,
+        summary,
+    })
 }
 
 fn deterministic_repl_v2_change_set(
@@ -798,20 +1031,19 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
         return Ok(content.to_string());
     }
 
-    let old_v2_import =
-        "use crate::nl::planner_v2::{plan_input as plan_nl_input_v2, update_conversation_after_plan};";
+    let old_v2_import = "use crate::nl::planner_v2::{plan_input as plan_nl_input_v2, update_conversation_after_plan};";
     let new_v2_import = format!("{REPL_V2_IMPORT_LINE}\n{REPL_V2_UPDATE_IMPORT_LINE}");
     let content = if content.contains(old_v2_import) {
         content.replacen(old_v2_import, &new_v2_import, 1)
-    } else if content.contains(REPL_V2_IMPORT_LINE) && content.contains(REPL_V2_UPDATE_IMPORT_LINE) {
+    } else if content.contains(REPL_V2_IMPORT_LINE) && content.contains(REPL_V2_UPDATE_IMPORT_LINE)
+    {
         content.to_string()
     } else {
         return Err("deterministic repl_v2 rewrite: missing planner_v2 import block".to_string());
     };
 
     let old_nl_import = "use crate::nl::{execute_plan as execute_nl_plan, render_plan_summary};";
-    let new_nl_import =
-        "use crate::nl::{\n    execute_plan as execute_nl_plan, plan_input as plan_nl_input, render_plan_summary_with_label,\n};";
+    let new_nl_import = "use crate::nl::{\n    execute_plan as execute_nl_plan, plan_input as plan_nl_input, render_plan_summary_with_label,\n};";
     let content = if content.contains(old_nl_import) {
         content.replacen(old_nl_import, new_nl_import, 1)
     } else if content.contains(REPL_LEGACY_IMPORT_SNIPPET)
@@ -819,7 +1051,9 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
     {
         content
     } else {
-        return Err("deterministic repl_v2 rewrite: missing legacy planner import block".to_string());
+        return Err(
+            "deterministic repl_v2 rewrite: missing legacy planner import block".to_string(),
+        );
     };
 
     let old_flow = r#"    if let Some(command_plan) = plan_nl_input_v2(input, session, conversation) {
@@ -943,12 +1177,9 @@ pub fn collect_apply_target_resolutions(
     let source_index = ModuleSourceIndex::build(root).unwrap_or_default();
     let target_override = resolve_target_override(root, target_override)?;
     let mut resolutions = BTreeMap::<String, ApplyTargetResolution>::new();
-    for edit in patches_to_edits(&patches) {
-        let module = match edit {
-            Edit::CreateInterface { between, .. } => between.0,
-            Edit::ReplaceDependency { from, .. } => from,
-            Edit::SplitModule { module, .. } => module,
-            Edit::ExtractComponent { from, .. } => from,
+    for patch in &patches {
+        let Some(module) = patch_target_module(patch) else {
+            continue;
         };
         let resolution = if let Some(path) = target_override.as_deref() {
             let relative = normalize_relative(root, path).map(PathBuf::from)?;
@@ -957,6 +1188,14 @@ pub fn collect_apply_target_resolutions(
                 resolution_strategy: "target_override".to_string(),
                 resolved_relative_path: relative.clone(),
                 resolved_path: relative,
+                sandbox_path: None,
+            }
+        } else if !patch.target_file.as_os_str().is_empty() {
+            ApplyTargetResolution {
+                module: module.clone(),
+                resolution_strategy: "canonical_target_file".to_string(),
+                resolved_relative_path: patch.target_file.clone(),
+                resolved_path: patch.target_file.clone(),
                 sandbox_path: None,
             }
         } else if let Some(path) = resolved_paths.get(&module) {
@@ -1011,6 +1250,10 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
         });
     }
     let diff = compute_diff_report(root, change_set)?;
@@ -1029,8 +1272,13 @@ pub fn execute_code_change_set(
         } else {
             None
         };
-        let transactional =
-            transactional_apply(root, change_set, transactional_candidate, options.no_build)?;
+        let transactional = transactional_apply(
+            root,
+            change_set,
+            transactional_candidate,
+            options.no_build,
+            options.explicit_target.as_deref(),
+        )?;
         if !transactional.applied {
             return Ok(CodingExecutionResult {
                 status: "failed".to_string(),
@@ -1051,6 +1299,10 @@ pub fn execute_code_change_set(
                 git_commit: None,
                 git_push: None,
                 pull_request: None,
+                canonical_target_path: None,
+                legacy_pipeline_hits: 0,
+                fallback_resolution_hits: 0,
+                stale_artifact_detected: false,
             });
         }
 
@@ -1073,6 +1325,10 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
         };
         if options.auto_commit {
             match restricted_commit(
@@ -1098,13 +1354,13 @@ pub fn execute_code_change_set(
                         Some(commit.status_before.branch_name.clone())
                     };
                     if !commit.commit_created {
-                        result.reason = Some(if commit.confirmation_required
-                            && !commit.confirmation_granted
-                        {
-                            "commit_skipped".to_string()
-                        } else {
-                            "no_commit_created".to_string()
-                        });
+                        result.reason = Some(
+                            if commit.confirmation_required && !commit.confirmation_granted {
+                                "commit_skipped".to_string()
+                            } else {
+                                "no_commit_created".to_string()
+                            },
+                        );
                     }
                     if let Some(warning) = &commit.warning {
                         result.reason = Some(match &result.reason {
@@ -1126,19 +1382,14 @@ pub fn execute_code_change_set(
                                     root,
                                     &RemoteIntegrationTelemetry {
                                         remote: RemoteIntegrationTelemetryData {
-                                            branch: result
-                                                .branch
-                                                .clone()
-                                                .unwrap_or_default(),
+                                            branch: result.branch.clone().unwrap_or_default(),
                                             dry_run_ok: false,
                                             push_ok: false,
                                             pr_created: false,
                                             pr_duplicate: false,
                                             base: "main".to_string(),
                                             remote: "origin".to_string(),
-                                            auth_failure: Some(
-                                                err.starts_with("RemoteAuthFailed"),
-                                            ),
+                                            auth_failure: Some(err.starts_with("RemoteAuthFailed")),
                                             confirmation: None,
                                         },
                                     },
@@ -1172,8 +1423,7 @@ pub fn execute_code_change_set(
                             ) {
                                 Ok(pr) => {
                                     if pr.duplicate_detected {
-                                        result.reason =
-                                            Some("PRAlreadyExists".to_string());
+                                        result.reason = Some("PRAlreadyExists".to_string());
                                     }
                                     result.pull_request = Some(pr);
                                 }
@@ -1285,6 +1535,10 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
         });
     }
 
@@ -1312,6 +1566,10 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
         });
     }
 
@@ -1353,6 +1611,10 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
         }),
         Err(err) => {
             restore_workspace(backups)?;
@@ -1375,6 +1637,10 @@ pub fn execute_code_change_set(
                 git_commit: None,
                 git_push: None,
                 pull_request: None,
+                canonical_target_path: None,
+                legacy_pipeline_hits: 0,
+                fallback_resolution_hits: 0,
+                stale_artifact_detected: false,
             })
         }
     }
@@ -1403,6 +1669,7 @@ pub fn transactional_apply(
     change_set: &CodeChangeSet,
     candidate: Option<&RefactorCandidate>,
     skip_build: bool,
+    explicit_target: Option<&Path>,
 ) -> Result<TransactionalApplyResult, String> {
     let started = Instant::now();
     let sandbox_root = transactional_sandbox_root(root, candidate)?;
@@ -1439,8 +1706,14 @@ pub fn transactional_apply(
 
         if !skip_build {
             let build_started = Instant::now();
-            let build = run_transactional_cargo_check(root, &sandbox_root, change_set, candidate)
-                .map_err(|err| {
+            let build = run_transactional_cargo_check(
+                root,
+                &sandbox_root,
+                change_set,
+                candidate,
+                explicit_target,
+            )
+            .map_err(|err| {
                 diagnostics.push(err);
                 TransactionalApplyError::CargoCheckFailed
             })?;
@@ -1942,7 +2215,12 @@ fn resolve_git_root(root: &Path) -> Result<PathBuf, String> {
 
 fn collect_git_status(root: &Path) -> Result<GitStatusSnapshot, String> {
     let output = Command::new("git")
-        .args(["status", "--porcelain=v2", "--branch", "--untracked-files=all"])
+        .args([
+            "status",
+            "--porcelain=v2",
+            "--branch",
+            "--untracked-files=all",
+        ])
         .current_dir(root)
         .output()
         .map_err(|err| format!("DirtyIsolationFailed: failed to run git status: {err}"))?;
@@ -2006,7 +2284,10 @@ fn collect_git_status(root: &Path) -> Result<GitStatusSnapshot, String> {
     Ok(snapshot)
 }
 
-fn collect_git_diff_preview(root: &Path, changed_files: &[PathBuf]) -> Result<Vec<GitDiffEntry>, String> {
+fn collect_git_diff_preview(
+    root: &Path,
+    changed_files: &[PathBuf],
+) -> Result<Vec<GitDiffEntry>, String> {
     let mut preview = Vec::new();
     for path in changed_files {
         let path_str = normalize_git_path(path);
@@ -2503,7 +2784,9 @@ pub fn restricted_pr_create(
             String::from_utf8_lossy(&commit_hash.stderr).trim()
         ));
     }
-    let commit_hash = String::from_utf8_lossy(&commit_hash.stdout).trim().to_string();
+    let commit_hash = String::from_utf8_lossy(&commit_hash.stdout)
+        .trim()
+        .to_string();
     let body = format!(
         "- generated by design_cli\n- sandbox build verified\n- local commit hash: {commit_hash}\n- files: {file_count}\n- crate: {}",
         candidate
@@ -2541,29 +2824,29 @@ pub fn restricted_pr_create(
     Ok(RestrictedPullRequestResult {
         branch_name: branch_name.to_string(),
         base_branch: base_branch.to_string(),
-            pr_created: true,
-            pr_number,
-            pr_url: Some(url),
-            draft: false,
-            duplicate_detected: false,
-            telemetry_path: Some(persist_remote_integration_telemetry(
-                workspace_root,
-                &RemoteIntegrationTelemetry {
-                    remote: RemoteIntegrationTelemetryData {
-                        branch: branch_name.to_string(),
-                        dry_run_ok: true,
-                        push_ok: true,
-                        pr_created: true,
-                        pr_duplicate: false,
-                        base: base_branch.to_string(),
-                        remote: "origin".to_string(),
-                        auth_failure: None,
-                        confirmation: Some(true),
-                    },
+        pr_created: true,
+        pr_number,
+        pr_url: Some(url),
+        draft: false,
+        duplicate_detected: false,
+        telemetry_path: Some(persist_remote_integration_telemetry(
+            workspace_root,
+            &RemoteIntegrationTelemetry {
+                remote: RemoteIntegrationTelemetryData {
+                    branch: branch_name.to_string(),
+                    dry_run_ok: true,
+                    push_ok: true,
+                    pr_created: true,
+                    pr_duplicate: false,
+                    base: base_branch.to_string(),
+                    remote: "origin".to_string(),
+                    auth_failure: None,
+                    confirmation: Some(true),
                 },
-            )?),
-            elapsed_ms: started.elapsed().as_millis(),
-        })
+            },
+        )?),
+        elapsed_ms: started.elapsed().as_millis(),
+    })
 }
 
 fn ensure_gh_auth(root: &Path) -> Result<(), String> {
@@ -2711,8 +2994,8 @@ fn fix_build_with_entry(
     let modules = detect_top_level_modules(project_root)?;
     let inserted = insert_mod_declarations(&entry_file, &modules)?;
     fix.registered_modules = inserted;
-    fix.build_fixed =
-        semantic_recovered || !(fix.registered_modules.is_empty() && fix.created_placeholders.is_empty());
+    fix.build_fixed = semantic_recovered
+        || !(fix.registered_modules.is_empty() && fix.created_placeholders.is_empty());
     Ok(fix)
 }
 
@@ -2751,8 +3034,12 @@ fn attempt_semantic_compile_recovery(
     }
     let lockfile_used = project_root.join("Cargo.lock").exists();
     let args = offline_cargo_check_args(None, lockfile_used);
-    let result = run_cargo_process(project_root, &args)
-        .map_err(|err| format!("failed to run cargo check in {}: {err}", project_root.display()))?;
+    let result = run_cargo_process(project_root, &args).map_err(|err| {
+        format!(
+            "failed to run cargo check in {}: {err}",
+            project_root.display()
+        )
+    })?;
     if result.0 {
         return Ok(false);
     }
@@ -2790,9 +3077,11 @@ fn classify_semantic_compile_error(message: &str) -> Option<SemanticCompileError
         });
     }
     if message.contains("cannot find type `") || message.contains("cannot find type ") {
-        return extract_help_use_statement(message).map(|help_use| SemanticCompileError::MissingType {
-            target_file,
-            help_use,
+        return extract_help_use_statement(message).map(|help_use| {
+            SemanticCompileError::MissingType {
+                target_file,
+                help_use,
+            }
         });
     }
     if message.contains("failed to resolve: use of unresolved module or unlinked crate")
@@ -2879,8 +3168,13 @@ fn apply_semantic_recovery(
             unresolved_use,
             help_use,
         } => {
-            let mut content = fs::read_to_string(project_root.join(&target_file))
-                .map_err(|err| format!("failed to read {}: {err}", project_root.join(&target_file).display()))?;
+            let mut content =
+                fs::read_to_string(project_root.join(&target_file)).map_err(|err| {
+                    format!(
+                        "failed to read {}: {err}",
+                        project_root.join(&target_file).display()
+                    )
+                })?;
             let green_state_preserved = preserves_stable_domain_import_hub(&content);
             let before = content.clone();
             if green_state_preserved {
@@ -2902,8 +3196,12 @@ fn apply_semantic_recovery(
             }
             let applied = content != before;
             if applied {
-                fs::write(project_root.join(&target_file), content)
-                    .map_err(|err| format!("failed to write {}: {err}", project_root.join(&target_file).display()))?;
+                fs::write(project_root.join(&target_file), content).map_err(|err| {
+                    format!(
+                        "failed to write {}: {err}",
+                        project_root.join(&target_file).display()
+                    )
+                })?;
             }
             Ok((
                 applied,
@@ -2917,7 +3215,10 @@ fn apply_semantic_recovery(
                 },
             ))
         }
-        SemanticCompileError::MissingType { target_file, help_use } => {
+        SemanticCompileError::MissingType {
+            target_file,
+            help_use,
+        } => {
             let path = project_root.join(&target_file);
             let content = fs::read_to_string(&path)
                 .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
@@ -2971,7 +3272,10 @@ fn apply_semantic_recovery(
                 },
             ))
         }
-        SemanticCompileError::TraitBoundMissing { target_file: _, trait_name: _ } => Ok((
+        SemanticCompileError::TraitBoundMissing {
+            target_file: _,
+            trait_name: _,
+        } => Ok((
             false,
             SemanticRecoveryTelemetry {
                 semantic_recovery: SemanticRecoveryTelemetryData {
@@ -3124,11 +3428,13 @@ fn apply_local_trait_fallback_to_content(
         return content.to_string();
     }
     let without_use = remove_exact_use_line(content, unresolved_use);
-    let fallback = format!(
-        "pub trait {symbol} {{\n    // TODO: local semantic recovery fallback\n}}\n"
-    );
+    let fallback =
+        format!("pub trait {symbol} {{\n    // TODO: local semantic recovery fallback\n}}\n");
     if without_use.starts_with("use ") {
-        let lines = without_use.lines().map(ToString::to_string).collect::<Vec<_>>();
+        let lines = without_use
+            .lines()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
         let insert_at = lines
             .iter()
             .position(|line| !line.trim_start().starts_with("use "))
@@ -3207,7 +3513,9 @@ fn normalize_malformed_import_block(
 
 fn top_import_block_range(content: &str) -> Option<(usize, usize)> {
     let lines = content.lines().collect::<Vec<_>>();
-    let start = lines.iter().position(|line| line.trim_start().starts_with("use "))?;
+    let start = lines
+        .iter()
+        .position(|line| line.trim_start().starts_with("use "))?;
     let mut end = start;
     let mut brace_depth = 0isize;
     let mut saw_group = false;
@@ -3233,7 +3541,11 @@ fn top_import_block_range(content: &str) -> Option<(usize, usize)> {
         }
         saw_group |= trimmed.contains('{');
         end += 1;
-        if brace_depth == 0 && saw_group && end < lines.len() && !lines[end].trim().starts_with("use ") {
+        if brace_depth == 0
+            && saw_group
+            && end < lines.len()
+            && !lines[end].trim().starts_with("use ")
+        {
             break;
         }
     }
@@ -3266,16 +3578,27 @@ fn parse_tolerant_import_block(lines: &[String]) -> Option<ParsedImportBlock> {
         if trimmed.is_empty() {
             continue;
         }
-        if let Some(rest) = trimmed.strip_prefix("use ").or_else(|| trimmed.strip_prefix("pub use ")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("use ")
+            .or_else(|| trimmed.strip_prefix("pub use "))
+        {
             if let Some((prefix, symbols)) = parse_braced_crate_import(rest.trim_end_matches(';')) {
-                flush_group(&mut imports, &mut current_group_prefix, &mut current_group_items);
+                flush_group(
+                    &mut imports,
+                    &mut current_group_prefix,
+                    &mut current_group_items,
+                );
                 current_group_prefix = Some(prefix.to_string());
                 current_group_items.extend(symbols);
                 group_normalized = true;
                 continue;
             }
             if rest.contains('{') && !rest.contains('}') {
-                flush_group(&mut imports, &mut current_group_prefix, &mut current_group_items);
+                flush_group(
+                    &mut imports,
+                    &mut current_group_prefix,
+                    &mut current_group_items,
+                );
                 let prefix = rest.split('{').next()?.trim().trim_end_matches("::");
                 current_group_prefix = Some(prefix.to_string());
                 let trailing = rest.split('{').nth(1).unwrap_or_default();
@@ -3289,14 +3612,22 @@ fn parse_tolerant_import_block(lines: &[String]) -> Option<ParsedImportBlock> {
         if current_group_prefix.is_some() {
             collect_group_items(trimmed, &mut current_group_items);
             if trimmed.contains('}') {
-                flush_group(&mut imports, &mut current_group_prefix, &mut current_group_items);
+                flush_group(
+                    &mut imports,
+                    &mut current_group_prefix,
+                    &mut current_group_items,
+                );
             }
             group_normalized = true;
             continue;
         }
         return None;
     }
-    flush_group(&mut imports, &mut current_group_prefix, &mut current_group_items);
+    flush_group(
+        &mut imports,
+        &mut current_group_prefix,
+        &mut current_group_items,
+    );
     Some(ParsedImportBlock {
         imports,
         group_normalized,
@@ -3304,10 +3635,7 @@ fn parse_tolerant_import_block(lines: &[String]) -> Option<ParsedImportBlock> {
 }
 
 fn collect_group_items(fragment: &str, items: &mut Vec<String>) {
-    let cleaned = fragment
-        .replace("};", "")
-        .replace('}', "")
-        .replace('{', "");
+    let cleaned = fragment.replace("};", "").replace('}', "").replace('{', "");
     for item in cleaned.split(',') {
         let trimmed = item.trim();
         if let Some(normalized) = normalize_group_item(trimmed) {
@@ -3334,11 +3662,7 @@ fn is_valid_module_token(token: &str) -> bool {
     chars.all(|ch| ch == '_' || ch.is_ascii_alphanumeric())
 }
 
-fn flush_group(
-    imports: &mut Vec<String>,
-    prefix: &mut Option<String>,
-    items: &mut Vec<String>,
-) {
+fn flush_group(imports: &mut Vec<String>, prefix: &mut Option<String>, items: &mut Vec<String>) {
     let Some(prefix) = prefix.take() else {
         return;
     };
@@ -3356,11 +3680,13 @@ fn flush_group(
 }
 
 fn stable_imports_in_content(content: &str) -> bool {
-    !stable_imports_in_lines(&content.lines().map(ToString::to_string).collect::<Vec<_>>()).is_empty()
+    !stable_imports_in_lines(&content.lines().map(ToString::to_string).collect::<Vec<_>>())
+        .is_empty()
 }
 
 fn stable_imports_in_lines(lines: &[String]) -> Vec<String> {
-    lines.iter()
+    lines
+        .iter()
         .map(|line| line.trim().to_string())
         .filter(|line| {
             line.starts_with("use ")
@@ -3609,6 +3935,15 @@ fn patch_resolver_key(patch: &CodePatch) -> Option<(String, RefactorOperation)> 
     }
 }
 
+fn patch_target_module(patch: &CodePatch) -> Option<String> {
+    match patch.operations.first()? {
+        PatchOperation::CreateInterface { between, .. } => Some(between.0.clone()),
+        PatchOperation::UpdateDependency { from, .. } => Some(from.clone()),
+        PatchOperation::SplitModule { module, .. } => Some(module.clone()),
+        PatchOperation::ExtractComponent { from, .. } => Some(from.clone()),
+    }
+}
+
 fn load_or_create_draft<'a>(
     root: &Path,
     drafts: &'a mut BTreeMap<String, FileDraft>,
@@ -3815,7 +4150,9 @@ fn has_stable_domain_reexport_import(content: &str) -> bool {
 }
 
 fn is_trait_definition_hub(content: &str) -> bool {
-    content.lines().any(|line| line.trim_start().starts_with("pub trait "))
+    content
+        .lines()
+        .any(|line| line.trim_start().starts_with("pub trait "))
         && content
             .lines()
             .any(|line| line.trim_start().starts_with("pub use "))
@@ -4356,7 +4693,17 @@ enum SandboxCopyDecision {
 
 fn sandbox_copy_decision(relative: &Path, is_dir: bool) -> SandboxCopyDecision {
     let parts = path_parts(relative);
-    let ignored_dirs = [".git", ".dbm", "target", "node_modules", "dist", "build", "coverage", ".tmp", ".cache"];
+    let ignored_dirs = [
+        ".git",
+        ".dbm",
+        "target",
+        "node_modules",
+        "dist",
+        "build",
+        "coverage",
+        ".tmp",
+        ".cache",
+    ];
     if let Some(first) = parts.first()
         && ignored_dirs.contains(&first.as_str())
     {
@@ -4378,7 +4725,15 @@ fn sandbox_copy_decision(relative: &Path, is_dir: bool) -> SandboxCopyDecision {
         return SandboxCopyDecision::Copy;
     }
     let ignored_suffixes = [
-        ".rmeta", ".rlib", ".o", ".so", ".dylib", ".part.bin", ".swp", ".tmp", ".lock",
+        ".rmeta",
+        ".rlib",
+        ".o",
+        ".so",
+        ".dylib",
+        ".part.bin",
+        ".swp",
+        ".tmp",
+        ".lock",
     ];
     if file_name == ".DS_Store"
         || ignored_suffixes
@@ -4670,15 +5025,18 @@ fn run_transactional_cargo_check(
     sandbox_root: &Path,
     change_set: &CodeChangeSet,
     candidate: Option<&RefactorCandidate>,
+    explicit_target: Option<&Path>,
 ) -> Result<Vec<String>, String> {
     if !sandbox_root.join("Cargo.toml").exists() {
         return Ok(Vec::new());
     }
-    let package = infer_affected_crate(root, change_set, candidate)?;
+    let canonical_target = primary_canonical_target(root, change_set, explicit_target)?;
+    let package = infer_affected_crate(root, candidate, &canonical_target)?;
     match run_offline_cargo_check(sandbox_root, root, Some(&package)) {
         Ok(diagnostic) => Ok(vec![diagnostic]),
         Err(message) => Err(format!(
-            "Transactional apply aborted: cargo check failed in sandbox. Real workspace remains unchanged.\n{message}"
+            "Transactional apply aborted: cargo check failed in sandbox. Real workspace remains unchanged.\ncanonical target: {}\n{message}",
+            canonical_target.display()
         )),
     }
 }
@@ -4700,31 +5058,64 @@ fn validate_sandbox_change_set(
     Ok(())
 }
 
-fn infer_affected_crate(
+fn primary_canonical_target(
     root: &Path,
     change_set: &CodeChangeSet,
+    explicit_target: Option<&Path>,
+) -> Result<PathBuf, String> {
+    let mut candidates = change_set
+        .changes
+        .iter()
+        .map(|change| PathBuf::from(&change.file_path))
+        .collect::<Vec<_>>();
+    candidates.sort();
+    candidates.dedup();
+    if let Some(path) = candidates.into_iter().next() {
+        return Ok(path);
+    }
+    if let Some(target) = explicit_target {
+        return normalize_target_scope_path(root, target);
+    }
+    Err("unable to determine canonical target path for transactional apply".to_string())
+}
+
+fn infer_affected_crate_from_workspace_path(
+    workspace_root: &Path,
+    workspace_target: &Path,
+) -> Option<String> {
+    let workspace_path = workspace_root.join(workspace_target);
+    let mut current = workspace_path.parent().map(Path::to_path_buf);
+    while let Some(dir) = current {
+        let manifest = dir.join("Cargo.toml");
+        if manifest.exists() {
+            if let Some(name) = parse_package_name(&manifest).ok().flatten() {
+                return Some(name);
+            }
+        }
+        if dir == workspace_root {
+            break;
+        }
+        current = dir.parent().map(Path::to_path_buf);
+    }
+    None
+}
+
+fn infer_affected_crate(
+    root: &Path,
     candidate: Option<&RefactorCandidate>,
+    canonical_target_path: &Path,
 ) -> Result<String, String> {
+    // Priority 1: candidate carries a known crate name.
     if let Some(candidate) = candidate {
         if !candidate.module_id.crate_name.is_empty() {
             return Ok(candidate.module_id.crate_name.clone());
         }
     }
-    for change in &change_set.changes {
-        let mut current = root.join(&change.file_path).parent().map(Path::to_path_buf);
-        while let Some(dir) = current {
-            let manifest = dir.join("Cargo.toml");
-            if manifest.exists() {
-                if let Some(name) = parse_package_name(&manifest)? {
-                    return Ok(name);
-                }
-            }
-            if dir == root {
-                break;
-            }
-            current = dir.parent().map(Path::to_path_buf);
-        }
+    // Priority 2: infer directly from the canonical workspace-relative target path.
+    if let Some(name) = infer_affected_crate_from_workspace_path(root, canonical_target_path) {
+        return Ok(name);
     }
+    // Priority 3: root-level Cargo.toml fallback (single-package workspace).
     let manifest = root.join("Cargo.toml");
     if manifest.exists() {
         if let Some(name) = parse_package_name(&manifest)? {
@@ -4775,8 +5166,12 @@ fn run_offline_cargo_check(
 ) -> Result<String, String> {
     let lockfile_used = build_root.join("Cargo.lock").exists();
     let args = offline_cargo_check_args(package, lockfile_used);
-    let result = run_cargo_process(build_root, &args)
-        .map_err(|err| format!("failed to run cargo check in {}: {err}", build_root.display()))?;
+    let result = run_cargo_process(build_root, &args).map_err(|err| {
+        format!(
+            "failed to run cargo check in {}: {err}",
+            build_root.display()
+        )
+    })?;
     if result.0 {
         let telemetry = CargoResolutionTelemetry {
             cargo_resolution: CargoResolutionTelemetryData {
@@ -4790,17 +5185,22 @@ fn run_offline_cargo_check(
         persist_cargo_resolution_telemetry(telemetry_root, &telemetry)?;
         return Ok(format!(
             "cargo check{} succeeded (offline)",
-            package
-                .map(|pkg| format!(" -p {pkg}"))
-                .unwrap_or_default()
+            package.map(|pkg| format!(" -p {pkg}")).unwrap_or_default()
         ));
     }
 
     let mut message = primary_cargo_message(&result.1, &result.2);
     if is_dependency_unavailable_message(&message) && lockfile_used {
-        let _ = run_cargo_process(build_root, &["metadata".to_string(), "--offline".to_string()]);
-        let retry = run_cargo_process(build_root, &args)
-            .map_err(|err| format!("failed to run cargo check in {}: {err}", build_root.display()))?;
+        let _ = run_cargo_process(
+            build_root,
+            &["metadata".to_string(), "--offline".to_string()],
+        );
+        let retry = run_cargo_process(build_root, &args).map_err(|err| {
+            format!(
+                "failed to run cargo check in {}: {err}",
+                build_root.display()
+            )
+        })?;
         if retry.0 {
             let telemetry = CargoResolutionTelemetry {
                 cargo_resolution: CargoResolutionTelemetryData {
@@ -4814,9 +5214,7 @@ fn run_offline_cargo_check(
             persist_cargo_resolution_telemetry(telemetry_root, &telemetry)?;
             return Ok(format!(
                 "cargo check{} succeeded (offline)",
-                package
-                    .map(|pkg| format!(" -p {pkg}"))
-                    .unwrap_or_default()
+                package.map(|pkg| format!(" -p {pkg}")).unwrap_or_default()
             ));
         }
         message = primary_cargo_message(&retry.1, &retry.2);
@@ -5091,13 +5489,14 @@ fn enforce_patch_scope(changes: &[CodeChange], fence: &PatchFence) -> Result<(),
 }
 
 fn normalize_path_for_scope(path: &Path) -> PathBuf {
-    path.components().fold(PathBuf::new(), |mut normalized, component| {
-        match component {
-            Component::CurDir => {}
-            other => normalized.push(other.as_os_str()),
-        }
-        normalized
-    })
+    path.components()
+        .fold(PathBuf::new(), |mut normalized, component| {
+            match component {
+                Component::CurDir => {}
+                other => normalized.push(other.as_os_str()),
+            }
+            normalized
+        })
 }
 
 fn normalize_target_scope_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -5422,6 +5821,7 @@ mod tests {
                 via: Some("renderer_world_interface".to_string()),
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
         let edits = patches_to_edits(&patches);
         assert_eq!(
@@ -5447,6 +5847,7 @@ mod tests {
                 between: ("debug".to_string(), "renderer".to_string()),
             }],
             description: "interface".to_string(),
+            target_file: Default::default(),
         }];
         let change_set = generate_code_change_set(&root, &patches).expect("change set");
         assert!(
@@ -5478,6 +5879,7 @@ mod tests {
                 via: Some("renderer_world_interface".to_string()),
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
         let change_set = generate_code_change_set(&root, &patches).expect("change set");
         let change = change_set.changes.first().expect("change");
@@ -5511,6 +5913,7 @@ mod tests {
                 via: Some("app_world_interface".to_string()),
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
 
         let change_set = generate_code_change_set_with_target(
@@ -5538,6 +5941,7 @@ mod tests {
                 via: Some("renderer_world_interface".to_string()),
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
 
         let error = generate_code_change_set_with_target(
@@ -5584,6 +5988,7 @@ mod tests {
                 via: Some("determinism_world_interface".to_string()),
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
         let resolved =
             resolve_apply_paths_for_patches(&root, &patches, Some(&candidate.candidate_id))
@@ -5637,6 +6042,7 @@ mod tests {
                 via: None,
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
         let error = resolve_apply_paths_for_patches(&root, &patches, Some(&candidate.candidate_id))
             .expect_err("drift should abort");
@@ -5704,6 +6110,7 @@ mod tests {
                 via: None,
             }],
             description: "move".to_string(),
+            target_file: Default::default(),
         }];
         let error = resolve_apply_paths_for_patches(&root, &patches, Some("escape"))
             .expect_err("workspace escape must fail");
@@ -5739,6 +6146,7 @@ mod tests {
                 component: "world_service".to_string(),
             }],
             description: "extract".to_string(),
+            target_file: Default::default(),
         }];
         let lhs = generate_code_change_set(&root, &patches).expect("lhs");
         let rhs = generate_code_change_set(&root, &patches).expect("rhs");
@@ -6008,7 +6416,7 @@ mod tests {
             .expect("mutate real file");
         });
 
-        let result = transactional_apply(&root, &change_set, Some(&candidate), false)
+        let result = transactional_apply(&root, &change_set, Some(&candidate), false, None)
             .expect("transactional result");
 
         assert!(!result.applied);
@@ -6044,7 +6452,7 @@ mod tests {
             false,
             None,
         )
-            .expect("restricted commit");
+        .expect("restricted commit");
 
         assert!(result.commit_created);
         assert_eq!(result.staged_files, vec![PathBuf::from("src/main.rs")]);
@@ -6079,7 +6487,7 @@ mod tests {
             false,
             None,
         )
-            .expect("restricted commit");
+        .expect("restricted commit");
 
         assert!(!result.commit_created);
         assert!(result.confirmation_required);
@@ -6131,7 +6539,11 @@ mod tests {
             .current_dir(&root)
             .output()
             .expect("checkout detached");
-        assert!(checkout.status.success(), "{}", String::from_utf8_lossy(&checkout.stderr));
+        assert!(
+            checkout.status.success(),
+            "{}",
+            String::from_utf8_lossy(&checkout.stderr)
+        );
         fs::write(
             root.join("src/main.rs"),
             "fn main() { println!(\"dbm\"); }\n",
@@ -6152,7 +6564,10 @@ mod tests {
         assert_eq!(result.warning.as_deref(), Some("warning: detached HEAD"));
         let telemetry_path = result.telemetry_path.expect("telemetry path");
         let telemetry = fs::read_to_string(telemetry_path).expect("telemetry");
-        assert!(telemetry.contains("\"commit_created\": true"), "{telemetry}");
+        assert!(
+            telemetry.contains("\"commit_created\": true"),
+            "{telemetry}"
+        );
         assert!(telemetry.contains("\"confirmation\": true"), "{telemetry}");
     }
 
@@ -6192,13 +6607,15 @@ mod tests {
         set_push_confirmation_response(false);
         let gh = install_fake_gh(&root, true, "", "https://github.com/org/repo/pull/99");
 
-        let result = with_fake_gh(&gh, || restricted_push(None, &root, false).expect("restricted push"));
+        let result = with_fake_gh(&gh, || {
+            restricted_push(None, &root, false).expect("restricted push")
+        });
         assert!(!result.push_created);
         assert!(result.confirmation_required);
         assert!(!result.confirmation_granted);
         assert!(result.dry_run_ok);
-        let telemetry = fs::read_to_string(result.telemetry_path.expect("telemetry path"))
-            .expect("telemetry");
+        let telemetry =
+            fs::read_to_string(result.telemetry_path.expect("telemetry path")).expect("telemetry");
         assert!(telemetry.contains("\"push_ok\": false"), "{telemetry}");
     }
 
@@ -6227,7 +6644,9 @@ mod tests {
         assert!(status.success());
         let gh = install_fake_gh(&root, false, "", "https://github.com/org/repo/pull/99");
 
-        let err = with_fake_gh(&gh, || restricted_push(None, &root, true).expect_err("auth failure"));
+        let err = with_fake_gh(&gh, || {
+            restricted_push(None, &root, true).expect_err("auth failure")
+        });
         assert_eq!(err, "RemoteAuthFailed");
         let telemetry = fs::read_to_string(root.join(".dbm/telemetry/remote_integration.json"))
             .expect("telemetry");
@@ -6262,8 +6681,8 @@ mod tests {
         assert!(!result.pr_created);
         assert!(result.duplicate_detected);
         assert_eq!(result.pr_number, Some(42));
-        let telemetry = fs::read_to_string(result.telemetry_path.expect("telemetry path"))
-            .expect("telemetry");
+        let telemetry =
+            fs::read_to_string(result.telemetry_path.expect("telemetry path")).expect("telemetry");
         assert!(telemetry.contains("\"pr_duplicate\": true"), "{telemetry}");
     }
 
@@ -6519,7 +6938,10 @@ mod tests {
         let fix = fix_build(&root).expect("fix build");
         assert!(fix.build_fixed);
         let engine = fs::read_to_string(root.join("src/engine/mod.rs")).expect("engine");
-        assert!(engine.contains("pub trait DependencyEngineInterface"), "{engine}");
+        assert!(
+            engine.contains("pub trait DependencyEngineInterface"),
+            "{engine}"
+        );
         assert!(!engine.contains("use execution_core::"), "{engine}");
         run_build_validation(&root, &root).expect("cargo check after fallback");
     }

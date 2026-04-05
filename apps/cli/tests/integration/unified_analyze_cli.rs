@@ -18,6 +18,7 @@ fn analyze_help_exposes_unified_flags_and_hides_legacy_flags() {
         "--detailed",
         "--report",
         "--design",
+        "--design-json",
         "--lang",
         "--intent",
         "--json",

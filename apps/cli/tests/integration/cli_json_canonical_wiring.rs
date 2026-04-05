@@ -11,8 +11,8 @@ use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use design_cli::coding::{
-    generate_code_change_set_with_target, prune_patches_for_target,
-    CodingExecutionResult, DiffReport,
+    CodingExecutionResult, DiffReport, generate_code_change_set_with_target,
+    prune_patches_for_target,
 };
 use design_cli::renderer::render_coding_report;
 use design_cli::service::dto::CodingReport;
@@ -36,13 +36,23 @@ fn write_project(root: &Path) {
         "[package]\nname = \"canonical_wiring\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
     )
     .expect("write Cargo.toml");
-    fs::write(root.join("src/main.rs"), "mod nl;\nmod repl;\nfn main() {}\n").expect("write main");
-    fs::write(root.join("src/nl/mod.rs"), "pub mod goal;\npub mod planner_v2;\n")
-        .expect("write nl mod");
+    fs::write(
+        root.join("src/main.rs"),
+        "mod nl;\nmod repl;\nfn main() {}\n",
+    )
+    .expect("write main");
+    fs::write(
+        root.join("src/nl/mod.rs"),
+        "pub mod goal;\npub mod planner_v2;\n",
+    )
+    .expect("write nl mod");
     fs::write(root.join("src/nl/goal.rs"), "pub fn resolve() {}\n").expect("write goal");
-    fs::write(root.join("src/nl/planner_v2.rs"), "pub fn plan() {}\n")
-        .expect("write planner_v2");
-    fs::write(root.join("src/repl.rs"), "use crate::nl;\npub fn run() {}\n").expect("write repl");
+    fs::write(root.join("src/nl/planner_v2.rs"), "pub fn plan() {}\n").expect("write planner_v2");
+    fs::write(
+        root.join("src/repl.rs"),
+        "use crate::nl;\npub fn run() {}\n",
+    )
+    .expect("write repl");
     fs::write(root.join("src/coding.rs"), "pub fn code() {}\n").expect("write coding");
 }
 
@@ -61,6 +71,7 @@ fn architectural_patches() -> Vec<CodePatch> {
                 between: ("adapter".to_string(), "app".to_string()),
             }],
             description: "introduce adapter-app boundary".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "agent_domain".to_string(),
@@ -72,6 +83,7 @@ fn architectural_patches() -> Vec<CodePatch> {
                 between: ("agent".to_string(), "domain".to_string()),
             }],
             description: "introduce agent-domain boundary".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "dependency_engine".to_string(),
@@ -86,6 +98,7 @@ fn architectural_patches() -> Vec<CodePatch> {
                 via: None,
             }],
             description: "move dependency -> engine".to_string(),
+            target_file: Default::default(),
         },
     ]
 }
@@ -105,6 +118,7 @@ fn repl_planner_patch() -> CodePatch {
             via: None,
         }],
         description: "wire repl to planner_v2".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -125,17 +139,24 @@ fn repl_rs_noop_patches_changes_summary_all_zero() {
         change_set.patches.len(),
         0,
         "canonical patches must be 0 for repl.rs with architectural patches: {:?}",
-        change_set.patches.iter().map(|p| &p.patch_id).collect::<Vec<_>>()
+        change_set
+            .patches
+            .iter()
+            .map(|p| &p.patch_id)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
         change_set.changes.len(),
         0,
         "changes must be 0 for no-op: {:?}",
-        change_set.changes.iter().map(|c| &c.file_path).collect::<Vec<_>>()
+        change_set
+            .changes
+            .iter()
+            .map(|c| &c.file_path)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
-        change_set.summary.total_changes,
-        0,
+        change_set.summary.total_changes, 0,
         "summary.total_changes must be 0 for no-op"
     );
 }
@@ -181,11 +202,14 @@ fn planner_patch_survives_repl_cluster_and_count_is_consistent() {
         change_set.patches.len(),
         1,
         "only repl_planner_v2 should survive pruning: {:?}",
-        change_set.patches.iter().map(|p| &p.patch_id).collect::<Vec<_>>()
+        change_set
+            .patches
+            .iter()
+            .map(|p| &p.patch_id)
+            .collect::<Vec<_>>()
     );
     assert_eq!(
-        change_set.patches[0].patch_id,
-        "repl_planner_v2",
+        change_set.patches[0].patch_id, "repl_planner_v2",
         "surviving patch must be repl_planner_v2"
     );
 
@@ -215,8 +239,8 @@ fn canonical_patches_in_change_set_equals_prune_result() {
     let externally_pruned = prune_patches_for_target(&raw_patches, target);
 
     // change_set.patches must equal the externally computed prune
-    let change_set = generate_code_change_set_with_target(&root, &raw_patches, Some(target))
-        .expect("generate");
+    let change_set =
+        generate_code_change_set_with_target(&root, &raw_patches, Some(target)).expect("generate");
 
     assert_eq!(
         change_set.patches.len(),
@@ -226,15 +250,25 @@ fn canonical_patches_in_change_set_equals_prune_result() {
         externally_pruned.len()
     );
 
-    let cs_ids: Vec<&str> = change_set.patches.iter().map(|p| p.patch_id.as_str()).collect();
-    let ext_ids: Vec<&str> = externally_pruned.iter().map(|p| p.patch_id.as_str()).collect();
-    assert_eq!(cs_ids, ext_ids, "patch ids must match between change_set and external prune");
+    let cs_ids: Vec<&str> = change_set
+        .patches
+        .iter()
+        .map(|p| p.patch_id.as_str())
+        .collect();
+    let ext_ids: Vec<&str> = externally_pruned
+        .iter()
+        .map(|p| p.patch_id.as_str())
+        .collect();
+    assert_eq!(
+        cs_ids, ext_ids,
+        "patch ids must match between change_set and external prune"
+    );
 }
 
 // ─── Case 3: renderer text output shows canonical count ───────────────────────
 
 fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport {
-    use design_cli::coding::{ChangeSummary, CodeChangeSet, CodeChange, ChangeType, DiffHunk};
+    use design_cli::coding::{ChangeSummary, ChangeType, CodeChange, CodeChangeSet, DiffHunk};
 
     let changes: Vec<CodeChange> = (0..changes_len)
         .map(|i| CodeChange {
@@ -259,6 +293,7 @@ fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport
                 new_modules: vec![],
             }],
             description: format!("split module_{i}"),
+            target_file: Default::default(),
         })
         .collect();
 
@@ -289,6 +324,10 @@ fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport
             git_commit: None,
             git_push: None,
             pull_request: None,
+            canonical_target_path: None,
+            legacy_pipeline_hits: 0,
+            fallback_resolution_hits: 0,
+            stale_artifact_detected: false,
             reason: None,
             sandbox_root: None,
         },
@@ -352,8 +391,7 @@ fn r5_noop_all_counts_zero() {
             "target={target_str}: changes must be 0"
         );
         assert_eq!(
-            change_set.summary.total_changes,
-            0,
+            change_set.summary.total_changes, 0,
             "target={target_str}: summary.total_changes must be 0"
         );
     }
@@ -373,7 +411,11 @@ fn change_set_patches_is_sole_canonical_source() {
 
     // CodingReport.patches MUST come from change_set.patches (cloned).
     // We verify by checking the change_set itself has the canonical patches field.
-    let expected_ids: Vec<&str> = change_set.patches.iter().map(|p| p.patch_id.as_str()).collect();
+    let expected_ids: Vec<&str> = change_set
+        .patches
+        .iter()
+        .map(|p| p.patch_id.as_str())
+        .collect();
     let report_patches = change_set.patches.clone();
     let actual_ids: Vec<&str> = report_patches.iter().map(|p| p.patch_id.as_str()).collect();
     assert_eq!(

@@ -57,6 +57,7 @@ fn coding_import_rebinding_updates_nested_module_tree_and_passes_check() {
                 between: ("controller".to_string(), "world".to_string()),
             }],
             description: "create interface".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "p2".to_string(),
@@ -71,12 +72,13 @@ fn coding_import_rebinding_updates_nested_module_tree_and_passes_check() {
                 via: Some("ControllerDeterminismInterface".to_string()),
             }],
             description: "rebind import".to_string(),
+            target_file: Default::default(),
         },
     ];
 
     let change_set = generate_code_change_set(&workspace, &patches).expect("change set");
     let diff = compute_diff_report(&workspace, &change_set).expect("diff");
-    let result = transactional_apply(&workspace, &change_set, None, false).expect("apply");
+    let result = transactional_apply(&workspace, &change_set, None, false, None).expect("apply");
 
     assert!(result.applied, "{:?}", result.diagnostics);
     assert!(result.build_ok, "{:?}", result.diagnostics);
@@ -188,7 +190,11 @@ fn coding_check_preserves_domain_reexport_imports() {
         .output()
         .expect("run design_cli");
 
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         !stdout.contains("use crate::agent_capability_interface;"),

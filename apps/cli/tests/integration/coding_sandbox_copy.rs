@@ -35,7 +35,11 @@ fn coding_sandbox_copy_ignores_incremental_artifacts() {
         .output()
         .expect("run design_cli");
 
-    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
     let telemetry = fs::read_to_string(workspace.join(".dbm/telemetry/sandbox_copy.json"))
         .expect("sandbox telemetry");
     assert!(telemetry.contains("\"target\""), "{telemetry}");

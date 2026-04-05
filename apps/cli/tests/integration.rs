@@ -1,3 +1,7 @@
+#[path = "integration/analyze_design_json.rs"]
+mod analyze_design_json;
+#[path = "integration/analyze_node_binding_ranking.rs"]
+mod analyze_node_binding_ranking;
 #[path = "integration/apply_preview_bridge.rs"]
 mod apply_preview_bridge;
 #[path = "integration/canonical_patch_stream.rs"]
@@ -10,6 +14,8 @@ mod cli_planner_snapshot_unification;
 mod coding_apply_path_resolution;
 #[path = "integration/coding_cargo_resolution.rs"]
 mod coding_cargo_resolution;
+#[path = "integration/coding_from_design_snapshot.rs"]
+mod coding_from_design_snapshot;
 #[path = "integration/coding_import_rebinding.rs"]
 mod coding_import_rebinding;
 #[path = "integration/coding_malformed_import_batch.rs"]
@@ -30,6 +36,12 @@ mod cycle_recommendation_bridge;
 mod git_commit_preview;
 #[path = "integration/gui_viewer.rs"]
 mod gui_viewer;
+#[path = "integration/legacy_pipeline_elimination.rs"]
+mod legacy_pipeline_elimination;
+#[path = "integration/mutation_apply_parity.rs"]
+mod mutation_apply_parity;
+#[path = "integration/mutation_target_ranking.rs"]
+mod mutation_target_ranking;
 #[path = "integration/narrow_semantic_cluster_matching.rs"]
 mod narrow_semantic_cluster_matching;
 #[path = "integration/nl_autonomous_loop.rs"]

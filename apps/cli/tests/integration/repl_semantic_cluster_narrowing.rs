@@ -5,7 +5,9 @@
 /// dependency/controller/capability) while allowing planner_v2 wiring patches.
 use std::path::Path;
 
-use design_cli::coding::{patch_matches_cluster, prune_patches_for_target, semantic_cluster_for_target};
+use design_cli::coding::{
+    patch_matches_cluster, prune_patches_for_target, semantic_cluster_for_target,
+};
 use integration_layer::{CodePatch, PatchOperation, RefactorPlanAction};
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
@@ -21,6 +23,7 @@ fn adapter_app_patch() -> CodePatch {
             between: ("adapter".to_string(), "app".to_string()),
         }],
         description: "introduce adapter-app boundary".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -35,6 +38,7 @@ fn agent_domain_patch() -> CodePatch {
             between: ("agent".to_string(), "domain".to_string()),
         }],
         description: "introduce agent-domain boundary".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -52,6 +56,7 @@ fn dependency_engine_patch() -> CodePatch {
             via: None,
         }],
         description: "move dependency -> engine".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -69,6 +74,7 @@ fn controller_determinism_patch() -> CodePatch {
             via: None,
         }],
         description: "move controller -> determinism".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -86,6 +92,7 @@ fn planner_v2_wiring_patch() -> CodePatch {
             via: None,
         }],
         description: "wire repl to planner_v2".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -103,6 +110,7 @@ fn nl_repl_patch() -> CodePatch {
             via: None,
         }],
         description: "wire nl -> repl".to_string(),
+        target_file: Default::default(),
     }
 }
 
@@ -129,7 +137,14 @@ fn repl_rs_cluster_contains_repl_nl_planner_v2() {
 fn repl_rs_cluster_excludes_broad_architectural_tokens() {
     let cluster = semantic_cluster_for_target(Path::new("apps/cli/src/repl.rs"));
     for forbidden in &[
-        "app", "adapter", "agent", "dependency", "controller", "domain", "engine", "capability",
+        "app",
+        "adapter",
+        "agent",
+        "dependency",
+        "controller",
+        "domain",
+        "engine",
+        "capability",
     ] {
         assert!(
             !cluster.contains(forbidden),
@@ -189,6 +204,7 @@ fn planner_v2_namespaced_import_matches_repl_cluster() {
             via: None,
         }],
         description: "use crate::nl::planner_v2".to_string(),
+        target_file: Default::default(),
     };
     assert!(
         patch_matches_cluster(&patch, &["repl", "nl", "planner_v2"]),
@@ -212,6 +228,7 @@ fn adapter_app_compound_name_does_not_match_repl_cluster() {
             between: ("adapter".to_string(), "app".to_string()),
         }],
         description: "accidental compound name".to_string(),
+        target_file: Default::default(),
     };
     assert!(
         !patch_matches_cluster(&patch, &["repl", "nl", "planner_v2"]),
@@ -239,6 +256,12 @@ fn mixed_batch_prunes_architectural_retains_wiring() {
         kept.iter().map(|p| &p.patch_id).collect::<Vec<_>>()
     );
     let ids: Vec<&str> = kept.iter().map(|p| p.patch_id.as_str()).collect();
-    assert!(ids.contains(&"planner_v2_wiring"), "planner_v2_wiring must be retained");
-    assert!(ids.contains(&"nl_repl_wiring"), "nl_repl_wiring must be retained");
+    assert!(
+        ids.contains(&"planner_v2_wiring"),
+        "planner_v2_wiring must be retained"
+    );
+    assert!(
+        ids.contains(&"nl_repl_wiring"),
+        "nl_repl_wiring must be retained"
+    );
 }

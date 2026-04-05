@@ -66,6 +66,7 @@ fn workspace_symbol_rebinding_rewrites_to_public_cross_crate_path() {
                 between: ("dependency".to_string(), "engine".to_string()),
             }],
             description: "create cross crate interface".to_string(),
+            target_file: Default::default(),
         },
         CodePatch {
             patch_id: "p2".to_string(),
@@ -80,12 +81,13 @@ fn workspace_symbol_rebinding_rewrites_to_public_cross_crate_path() {
                 via: Some("DependencyEngineInterface".to_string()),
             }],
             description: "rebind engine import".to_string(),
+            target_file: Default::default(),
         },
     ];
 
     let change_set = generate_code_change_set(&workspace, &patches).expect("change set");
     let diff = compute_diff_report(&workspace, &change_set).expect("diff");
-    let result = transactional_apply(&workspace, &change_set, None, false).expect("apply");
+    let result = transactional_apply(&workspace, &change_set, None, false, None).expect("apply");
 
     assert!(result.applied, "{:?}", result.diagnostics);
     assert!(result.build_ok, "{:?}", result.diagnostics);

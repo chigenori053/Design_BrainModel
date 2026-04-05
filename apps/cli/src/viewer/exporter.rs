@@ -30,6 +30,7 @@ pub fn export_structure_view(root: &Path) -> Result<StructureViewIR, String> {
             language: Language::English,
             intent: None,
             json: false,
+            design_json: false,
         };
         if let Ok(unified) = analyze_with_options(&options) {
             super::inject_recommendation_candidates(&mut ir, &unified);

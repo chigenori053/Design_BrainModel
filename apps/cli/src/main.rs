@@ -91,6 +91,8 @@ struct AnalyzeArgs {
     intent: Option<String>,
     #[arg(long, default_value_t = false)]
     json: bool,
+    #[arg(long, default_value_t = false)]
+    design_json: bool,
     #[arg(long, hide = true)]
     out: Option<PathBuf>,
     #[arg(long, hide = true)]
@@ -174,6 +176,7 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
             args.lang,
             args.intent,
             args.json,
+            args.design_json,
             args.out,
             args.report_md,
         ),
