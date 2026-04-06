@@ -20,6 +20,8 @@ mod coding_from_design_snapshot;
 mod coding_import_rebinding;
 #[path = "integration/coding_malformed_import_batch.rs"]
 mod coding_malformed_import_batch;
+#[path = "integration/coding_mutation_flow.rs"]
+mod coding_mutation_flow;
 #[path = "integration/coding_sandbox_copy.rs"]
 mod coding_sandbox_copy;
 #[path = "integration/coding_semantic_recovery.rs"]

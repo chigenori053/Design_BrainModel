@@ -5859,39 +5859,6 @@ mod tests {
     }
 
     #[test]
-    fn diff_generation() {
-        let root = temp_dir("diff_generation");
-        fs::write(
-            root.join("src/renderer.rs"),
-            "use crate::world;\nfn render() {}\n",
-        )
-        .expect("write");
-        let patches = vec![CodePatch {
-            patch_id: "p1".to_string(),
-            action: RefactorPlanAction::MoveDependency {
-                from: "renderer".to_string(),
-                to: "world".to_string(),
-                via: Some("renderer_world_interface".to_string()),
-            },
-            operations: vec![PatchOperation::UpdateDependency {
-                from: "renderer".to_string(),
-                to: "world".to_string(),
-                via: Some("renderer_world_interface".to_string()),
-            }],
-            description: "move".to_string(),
-            target_file: Default::default(),
-        }];
-        let change_set = generate_code_change_set(&root, &patches).expect("change set");
-        let change = change_set.changes.first().expect("change");
-        assert_eq!(change.change_type, ChangeType::ModifyFile);
-        assert!(
-            change.hunks[0]
-                .replacement
-                .contains("use crate::renderer_world_interface;")
-        );
-    }
-
-    #[test]
     fn target_override_is_used_for_replace_dependency() {
         let root = temp_dir("target_override");
         fs::create_dir_all(root.join("apps/cli/src")).expect("create cli src");
@@ -5916,13 +5883,19 @@ mod tests {
             target_file: Default::default(),
         }];
 
-        let change_set = generate_code_change_set_with_target(
+        let resolutions = collect_apply_target_resolutions(
             &root,
             &patches,
             Some(Path::new("apps/cli/src/app.rs")),
+            &BTreeMap::new(),
         )
-        .expect("change set");
-        assert_eq!(change_set.changes[0].file_path, "apps/cli/src/app.rs");
+        .expect("resolutions");
+        assert_eq!(resolutions.len(), 1);
+        assert_eq!(
+            resolutions[0].resolved_relative_path,
+            PathBuf::from("apps/cli/src/app.rs")
+        );
+        assert_eq!(resolutions[0].resolution_strategy, "target_override");
     }
 
     #[test]
@@ -5951,56 +5924,6 @@ mod tests {
         )
         .expect_err("missing target should fail");
         assert!(error.contains("target file does not exist"));
-    }
-
-    #[test]
-    fn preview_apply_deterministic_path_resolution_uses_snapshot() {
-        let root = temp_dir("apply_resolver_deterministic");
-        fs::create_dir_all(root.join("src/runtime")).expect("runtime");
-        fs::write(
-            root.join("Cargo.toml"),
-            "[package]\nname = \"coding_test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
-        )
-        .expect("cargo");
-        fs::write(root.join("src/main.rs"), "mod runtime;\nfn main() {}\n").expect("main");
-        fs::write(root.join("src/runtime/mod.rs"), "pub mod determinism;\n").expect("mod");
-        fs::write(
-            root.join("src/runtime/determinism.rs"),
-            "use crate::world;\npub fn check() {}\n",
-        )
-        .expect("determinism");
-        let candidate = write_candidate_snapshot(
-            &root,
-            "determinism",
-            "src/runtime/determinism.rs",
-            RefactorOperation::RemoveDependency,
-        );
-        let patches = vec![CodePatch {
-            patch_id: "p1".to_string(),
-            action: RefactorPlanAction::MoveDependency {
-                from: "determinism".to_string(),
-                to: "world".to_string(),
-                via: Some("determinism_world_interface".to_string()),
-            },
-            operations: vec![PatchOperation::UpdateDependency {
-                from: "determinism".to_string(),
-                to: "world".to_string(),
-                via: Some("determinism_world_interface".to_string()),
-            }],
-            description: "move".to_string(),
-            target_file: Default::default(),
-        }];
-        let resolved =
-            resolve_apply_paths_for_patches(&root, &patches, Some(&candidate.candidate_id))
-                .expect("resolved");
-        assert_eq!(
-            resolved.get("determinism"),
-            Some(&PathBuf::from("src/runtime/determinism.rs"))
-        );
-        let changes =
-            generate_code_change_set_with_resolved_paths(&root, &patches, None, &resolved)
-                .expect("change set");
-        assert_eq!(changes.changes[0].file_path, "src/runtime/determinism.rs");
     }
 
     #[test]
@@ -6854,51 +6777,6 @@ mod tests {
         );
         let main = fs::read_to_string(root.join("src/main.rs")).expect("read main");
         assert!(main.contains("pub mod world_service;"));
-    }
-
-    #[test]
-    fn import_resolution() {
-        let root = temp_dir("import_resolution");
-        write_rust_project(
-            &root,
-            "pub mod renderer;\nfn main() { renderer::render(); }\n",
-        );
-        fs::write(
-            root.join("src/renderer.rs"),
-            "use crate::renderer_world_interface;\npub fn render() {}\n",
-        )
-        .expect("write renderer");
-        let fix = fix_build(&root).expect("fix build");
-        assert!(
-            fix.created_placeholders
-                .iter()
-                .any(|module| module == "renderer_world_interface")
-        );
-        assert!(root.join("src/renderer_world_interface.rs").exists());
-        let main = fs::read_to_string(root.join("src/main.rs")).expect("read main");
-        assert!(main.contains("pub mod renderer_world_interface;"));
-    }
-
-    #[test]
-    fn build_success_after_fix() {
-        let root = temp_dir("build_success_after_fix");
-        write_rust_project(
-            &root,
-            "pub mod renderer;\nfn main() { renderer::render(); }\n",
-        );
-        fs::write(
-            root.join("src/renderer.rs"),
-            "use crate::debug_renderer_interface::DebugRendererInterface;\nuse crate::renderer_world_interface;\npub fn render() {}\n",
-        )
-        .expect("write renderer");
-        fs::write(
-            root.join("src/debug_renderer_interface.rs"),
-            "pub trait DebugRendererInterface {}\n",
-        )
-        .expect("write interface");
-        let fix = fix_build(&root).expect("fix build");
-        assert!(fix.build_fixed);
-        run_build_validation(&root, &root).expect("cargo check after fix");
     }
 
     #[test]
