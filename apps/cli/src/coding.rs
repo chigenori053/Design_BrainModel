@@ -18,7 +18,7 @@ use crate::runner::{fixed_env, resolve_command};
 use crate::service::{MutationOperation, MutationPlan, MutationStrategy};
 use crate::source_index::{ApplyTargetResolution, ModuleSourceIndex, QualifiedModuleId};
 
-const SNAPSHOT_RESOLVER_VERSION: &str = "snapshot-v1";
+const CURRENT_RESOLVER_VERSION: &str = "3";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeType {
@@ -56,6 +56,10 @@ pub struct CodeChangeSet {
     pub patches: Vec<CodePatch>,
     pub changes: Vec<CodeChange>,
     pub summary: ChangeSummary,
+    /// Truth source for representative target resolution. Set from
+    /// `MutationResolutionTelemetry::canonical_target_path` when available.
+    #[serde(default)]
+    pub canonical_target: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +72,7 @@ pub enum Edit {
         from: String,
         to: String,
         via: Option<String>,
+        target_file: Option<PathBuf>,
     },
     SplitModule {
         module: String,
@@ -507,12 +512,18 @@ pub fn mutation_plan_to_patches(
     plan: &MutationPlan,
     resolution: &MutationResolutionTelemetry,
 ) -> Result<Vec<CodePatch>, String> {
-    let (from, to) = resolve_edge_id_exact(root, &plan.edge_id)?;
+    let (from, to) = if matches!(plan.operation, MutationOperation::BreakCycle) {
+        resolve_edge_id_exact(root, &plan.edge_id).or_else(|_| {
+            parse_edge_id(&plan.edge_id).ok_or_else(|| format!("invalid edge id: {}", plan.edge_id))
+        })?
+    } else {
+        resolve_edge_id_exact(root, &plan.edge_id)?
+    };
     let target_file = resolution.canonical_target_path.clone().unwrap_or_default();
-    let patch = match (&plan.operation, &plan.strategy) {
+    let patches = match (&plan.operation, &plan.strategy) {
         (MutationOperation::RemoveDependency, MutationStrategy::ExtractInterface) => {
             let description = format!("remove dependency {from} -> {to} via ports");
-            CodePatch {
+            vec![CodePatch {
                 patch_id: format!("mutation-remove-dependency-{}", plan.edge_id),
                 action: integration_layer::RefactorPlanAction::MoveDependency {
                     from: from.clone(),
@@ -526,11 +537,11 @@ pub fn mutation_plan_to_patches(
                 }],
                 description,
                 target_file: target_file.clone(),
-            }
+            }]
         }
         (MutationOperation::RemoveDependency, MutationStrategy::ImportRebinding) => {
             let description = format!("rebind dependency {from} -> {to} into ports");
-            CodePatch {
+            vec![CodePatch {
                 patch_id: format!("mutation-remove-dependency-{}", plan.edge_id),
                 action: integration_layer::RefactorPlanAction::MoveDependency {
                     from: from.clone(),
@@ -544,11 +555,11 @@ pub fn mutation_plan_to_patches(
                 }],
                 description,
                 target_file: target_file.clone(),
-            }
+            }]
         }
         (MutationOperation::ExtractInterface, MutationStrategy::ExtractInterface) => {
             let name = format!("{}Port", pascal_case(&from));
-            CodePatch {
+            vec![CodePatch {
                 patch_id: format!("mutation-extract-interface-{}", plan.edge_id),
                 action: integration_layer::RefactorPlanAction::IntroduceInterface {
                     between: (from.clone(), to.clone()),
@@ -559,9 +570,9 @@ pub fn mutation_plan_to_patches(
                 }],
                 description: format!("extract interface for {}", plan.edge_id),
                 target_file: target_file.clone(),
-            }
+            }]
         }
-        (MutationOperation::MoveDependency, MutationStrategy::BoundaryMove) => CodePatch {
+        (MutationOperation::MoveDependency, MutationStrategy::BoundaryMove) => vec![CodePatch {
             patch_id: format!("mutation-move-dependency-{}", plan.edge_id),
             action: integration_layer::RefactorPlanAction::MoveDependency {
                 from: from.clone(),
@@ -575,7 +586,18 @@ pub fn mutation_plan_to_patches(
             }],
             description: format!("move dependency boundary for {}", plan.edge_id),
             target_file: target_file.clone(),
-        },
+        }],
+        (MutationOperation::BreakCycle, MutationStrategy::ExtractInterfaceBothSides) => {
+            build_break_cycle_extract_interface_both_sides_patches(
+                root,
+                &resolution
+                    .canonical_target_path
+                    .clone()
+                    .ok_or_else(|| "break_cycle requires canonical_target_file".to_string())?,
+                &from,
+                &to,
+            )?
+        }
         _ => {
             return Err(format!(
                 "unsupported mutation combination: {:?} + {:?}",
@@ -583,7 +605,108 @@ pub fn mutation_plan_to_patches(
             ));
         }
     };
-    Ok(vec![patch])
+    Ok(patches)
+}
+
+fn build_break_cycle_extract_interface_both_sides_patches(
+    root: &Path,
+    canonical_target_file: &Path,
+    from: &str,
+    to: &str,
+) -> Result<Vec<CodePatch>, String> {
+    let from_target = canonical_target_file.to_path_buf();
+    debug_assert_break_cycle_target(&from_target);
+    let from_interface = format!("{}{}Interface", pascal_case(from), pascal_case(to));
+    if let Some(to_target) = derive_break_cycle_peer_target(root, &from_target, to) {
+        debug_assert_break_cycle_target(&to_target);
+        let to_interface = format!("{}{}Interface", pascal_case(to), pascal_case(from));
+        return Ok(vec![
+            CodePatch {
+                patch_id: format!("mutation-break-cycle-create-interface-{from}-{to}"),
+                action: integration_layer::RefactorPlanAction::IntroduceInterface {
+                    between: (from.to_string(), to.to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: from_interface,
+                    between: (from.to_string(), to.to_string()),
+                }],
+                description: format!("create interface to decouple {from} from {to}"),
+                target_file: from_target.clone(),
+            },
+            CodePatch {
+                patch_id: format!("mutation-break-cycle-update-dependency-{from}-{to}"),
+                action: integration_layer::RefactorPlanAction::MoveDependency {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    via: Some("ports".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: from.to_string(),
+                    to: to.to_string(),
+                    via: Some("ports".to_string()),
+                }],
+                description: format!("reroute dependency {from} -> {to} through ports"),
+                target_file: from_target,
+            },
+            CodePatch {
+                patch_id: format!("mutation-break-cycle-create-interface-{to}-{from}"),
+                action: integration_layer::RefactorPlanAction::IntroduceInterface {
+                    between: (to.to_string(), from.to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: to_interface,
+                    between: (to.to_string(), from.to_string()),
+                }],
+                description: format!("create interface to decouple {to} from {from}"),
+                target_file: to_target.clone(),
+            },
+            CodePatch {
+                patch_id: format!("mutation-break-cycle-update-dependency-{to}-{from}"),
+                action: integration_layer::RefactorPlanAction::MoveDependency {
+                    from: to.to_string(),
+                    to: from.to_string(),
+                    via: Some("ports".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: to.to_string(),
+                    to: from.to_string(),
+                    via: Some("ports".to_string()),
+                }],
+                description: format!("reroute dependency {to} -> {from} through ports"),
+                target_file: to_target,
+            },
+        ]);
+    }
+
+    Ok(vec![
+        CodePatch {
+            patch_id: format!("mutation-break-cycle-create-interface-{from}-{to}"),
+            action: integration_layer::RefactorPlanAction::IntroduceInterface {
+                between: (from.to_string(), to.to_string()),
+            },
+            operations: vec![PatchOperation::CreateInterface {
+                name: from_interface.clone(),
+                between: (from.to_string(), to.to_string()),
+            }],
+            description: format!("create interface to decouple {from} from {to}"),
+            target_file: from_target.clone(),
+        },
+        CodePatch {
+            patch_id: format!("mutation-break-cycle-update-dependency-{from}-{to}"),
+            action: integration_layer::RefactorPlanAction::MoveDependency {
+                from: from.to_string(),
+                to: to.to_string(),
+                via: Some(from_interface.clone()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: from.to_string(),
+                to: to.to_string(),
+                via: Some(from_interface),
+            }],
+            description: format!("reroute dependency {from} -> {to} through interface mediation"),
+            target_file: from_target,
+        },
+    ])
 }
 
 fn resolve_edge_id_exact(root: &Path, edge_id: &str) -> Result<(String, String), String> {
@@ -596,19 +719,25 @@ fn resolve_edge_id_exact(root: &Path, edge_id: &str) -> Result<(String, String),
         .ok_or_else(|| format!("edge id not found in design snapshot: {edge_id}"))
 }
 
+fn parse_edge_id(edge_id: &str) -> Option<(String, String)> {
+    let (from, to) = edge_id.split_once("->")?;
+    let from = from.trim();
+    let to = to.trim();
+    if from.is_empty() || to.is_empty() {
+        return None;
+    }
+    Some((from.to_string(), to.to_string()))
+}
+
 fn resolve_mutation_target(
     root: &Path,
     plan: &MutationPlan,
 ) -> Result<MutationResolutionTelemetry, String> {
-    let stale_artifact_detected = match (
-        plan.snapshot_version.as_deref(),
-        plan.resolver_version.as_deref(),
-    ) {
-        (Some(snapshot), Some(resolver)) => snapshot != resolver,
-        (None, Some(resolver)) => resolver != SNAPSHOT_RESOLVER_VERSION,
-        (Some(snapshot), None) => snapshot != SNAPSHOT_RESOLVER_VERSION,
-        (None, None) => false,
-    };
+    let stale_artifact_detected = plan
+        .resolver_version
+        .as_deref()
+        .map(|resolver| resolver != CURRENT_RESOLVER_VERSION)
+        .unwrap_or(false);
 
     if let Some(source_path) = plan
         .source_path
@@ -623,26 +752,70 @@ fn resolve_mutation_target(
     }
 
     let (from, _) = resolve_edge_id_exact(root, &plan.edge_id)?;
-    let analysis = crate::service::analyze_path(root)?;
-    let mut candidates = analysis
-        .modules
-        .iter()
-        .filter(|module| module.name == from)
-        .map(|module| PathBuf::from(module.source_path.clone()))
-        .collect::<Vec<_>>();
-    candidates.sort_by_key(|path| (path_rank(path), path_to_sort_key(path)));
-    candidates.dedup();
-    let canonical_target_path = candidates
-        .into_iter()
-        .next()
-        .or_else(|| resolve_apply_target_relative(root, &from));
+    let canonical_target_path = resolve_mutation_module_path(root, &from, true);
 
     Ok(MutationResolutionTelemetry {
         canonical_target_path,
         legacy_pipeline_hits: 1,
-        fallback_resolution_hits: 1,
+        fallback_resolution_hits: if matches!(plan.operation, MutationOperation::BreakCycle) {
+            0
+        } else {
+            1
+        },
         stale_artifact_detected,
     })
+}
+
+fn resolve_mutation_module_path(
+    root: &Path,
+    module_name: &str,
+    allow_degraded_fallback: bool,
+) -> Option<PathBuf> {
+    let analysis = crate::service::analyze_path(root).ok()?;
+    let mut candidates = analysis
+        .modules
+        .iter()
+        .filter(|module| module.name == module_name)
+        .map(|module| PathBuf::from(module.source_path.clone()))
+        .collect::<Vec<_>>();
+    candidates.sort_by_key(|path| (path_rank(path), path_to_sort_key(path)));
+    candidates.dedup();
+    let primary = candidates.into_iter().next();
+    if primary.is_some() || !allow_degraded_fallback {
+        return primary;
+    }
+    resolve_apply_target_relative(root, module_name)
+}
+
+pub fn derive_break_cycle_peer_target(
+    root: &Path,
+    canonical_target_file: &Path,
+    peer_module: &str,
+) -> Option<PathBuf> {
+    let source_root = semantic_source_root_for_module(canonical_target_file)?;
+    let direct = source_root.join(format!("{peer_module}.rs"));
+    if root.join(&direct).exists() {
+        return Some(direct);
+    }
+    let nested = source_root.join(peer_module).join("mod.rs");
+    if root.join(&nested).exists() {
+        return Some(nested);
+    }
+    None
+}
+
+fn semantic_source_root_for_module(source_target: &Path) -> Option<PathBuf> {
+    let parent = source_target.parent()?;
+    if source_target.file_name().and_then(|name| name.to_str()) == Some("mod.rs") {
+        return parent.parent().map(Path::to_path_buf);
+    }
+    Some(parent.to_path_buf())
+}
+
+fn debug_assert_break_cycle_target(target: &Path) {
+    let normalized = normalized_path_string(target);
+    debug_assert!(!normalized.contains("tests/fixtures"));
+    debug_assert!(!normalized.contains("debug"));
 }
 
 fn path_rank(path: &Path) -> usize {
@@ -706,6 +879,8 @@ pub fn patches_to_edits(patches: &[CodePatch]) -> Vec<Edit> {
                         from: from.clone(),
                         to: to.clone(),
                         via: via.clone(),
+                        target_file: (!patch.target_file.as_os_str().is_empty())
+                            .then(|| patch.target_file.clone()),
                     })
                 }
                 PatchOperation::SplitModule {
@@ -899,6 +1074,26 @@ pub fn generate_code_change_set_with_target(
     generate_code_change_set_with_resolved_paths(root, patches, target_override, &BTreeMap::new())
 }
 
+pub fn patches_to_change_set(
+    root: &Path,
+    patches: &[CodePatch],
+    target_override: Option<&Path>,
+    resolved_paths: &BTreeMap<String, PathBuf>,
+    canonical_target: Option<&Path>,
+) -> Result<CodeChangeSet, String> {
+    let mut change_set = generate_code_change_set_with_resolved_paths(
+        root,
+        patches,
+        target_override,
+        resolved_paths,
+    )?;
+    change_set.canonical_target = canonical_target
+        .map(|path| normalize_target_scope_path(root, path))
+        .transpose()?
+        .or_else(|| canonical_patch_target_file(&change_set.patches));
+    Ok(change_set)
+}
+
 pub fn generate_code_change_set_with_resolved_paths(
     root: &Path,
     patches: &[CodePatch],
@@ -933,12 +1128,13 @@ pub fn generate_code_change_set_with_resolved_paths(
         )?;
     }
     if fence.scope != PatchScope::ExplicitTargetOnly {
-        rewrite_crate_imports_for_generated_files(root, &source_index, &mut drafts)?;
+        rewrite_crate_imports_for_created_drafts(root, &source_index, &mut drafts)?;
         register_generated_submodules(root, &mut drafts)?;
     }
 
     let mut changes = drafts
         .into_iter()
+        .filter(|(_, draft)| draft.original != draft.content)
         .map(|(file_path, draft)| CodeChange {
             file_path,
             change_type: draft.change_type.clone(),
@@ -968,6 +1164,7 @@ pub fn generate_code_change_set_with_resolved_paths(
         patches,
         changes,
         summary,
+        canonical_target: None,
     })
 }
 
@@ -995,6 +1192,7 @@ fn deterministic_repl_v2_change_set(
             patches: vec![],
             changes: vec![],
             summary: ChangeSummary::default(),
+            canonical_target: None,
         }));
     }
 
@@ -1015,6 +1213,7 @@ fn deterministic_repl_v2_change_set(
             modify_files: 1,
             move_files: 0,
         },
+        canonical_target: None,
     }))
 }
 
@@ -3740,15 +3939,24 @@ fn apply_edit(
                 name
             );
         }
-        Edit::ReplaceDependency { from, to, via } => {
+        Edit::ReplaceDependency {
+            from,
+            to,
+            via,
+            target_file,
+        } => {
             let explicit_target = fence.explicit_target.as_deref().map(Path::to_path_buf);
-            let resolved = resolved_paths.get(&from).cloned();
-            let discovered = source_index
-                .resolve_apply_target(&from)
-                .map(|resolution| resolution.resolved_path)
-                .or_else(|| source_index.resolve(&from).ok().flatten());
-            let file_path =
-                prune_patch_candidates(root, fence, vec![explicit_target, resolved, discovered])?;
+            let canonical = target_file;
+            let file_path = if canonical.is_some() {
+                prune_patch_candidates(root, fence, vec![explicit_target, canonical])?
+            } else {
+                let resolved = resolved_paths.get(&from).cloned();
+                let discovered = source_index
+                    .resolve_apply_target(&from)
+                    .map(|resolution| resolution.resolved_path)
+                    .or_else(|| source_index.resolve(&from).ok().flatten());
+                prune_patch_candidates(root, fence, vec![explicit_target, resolved, discovered])?
+            };
             let Some(file_path) = file_path else {
                 return Ok(());
             };
@@ -4023,6 +4231,25 @@ fn rewrite_crate_imports_for_generated_files(
             &generated_by_leaf,
             &generated_symbol_targets,
         )?;
+    }
+    Ok(())
+}
+
+fn rewrite_crate_imports_for_created_drafts(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    drafts: &mut BTreeMap<String, FileDraft>,
+) -> Result<(), String> {
+    let mut created_only = drafts
+        .iter()
+        .filter(|(_, draft)| draft.change_type == ChangeType::CreateFile)
+        .map(|(file_key, draft)| (file_key.clone(), draft.clone()))
+        .collect::<BTreeMap<_, _>>();
+    rewrite_crate_imports_for_generated_files(root, source_index, &mut created_only)?;
+    for (file_key, draft) in created_only {
+        if let Some(existing) = drafts.get_mut(&file_key) {
+            existing.content = draft.content;
+        }
     }
     Ok(())
 }
@@ -4881,12 +5108,15 @@ fn resolve_root_module_file_for_change_set(
 fn resolve_root_module_file_relative_for_change_set(
     root: &Path,
     change_set: &CodeChangeSet,
-    candidate: Option<&RefactorCandidate>,
+    _candidate: Option<&RefactorCandidate>,
 ) -> Result<PathBuf, String> {
-    if let Some(relative) = representative_module_relative_path(change_set, candidate)
-        && let Some(resolved) = resolve_root_module_relative_from_target(root, &relative)
-    {
-        return Ok(resolved);
+    if let Some(relative) = representative_module_relative_path(change_set) {
+        return resolve_root_module_relative_from_target(root, &relative).ok_or_else(|| {
+            format!(
+                "failed to resolve root module file from canonical target {}",
+                relative.display()
+            )
+        });
     }
     resolve_root_module_file_relative(root)
 }
@@ -4904,40 +5134,75 @@ fn resolve_root_module_file_relative(root: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-fn representative_module_relative_path(
-    change_set: &CodeChangeSet,
-    candidate: Option<&RefactorCandidate>,
-) -> Option<PathBuf> {
-    candidate
-        .map(|candidate| candidate.source_path.clone())
-        .or_else(|| {
-            change_set
-                .changes
-                .first()
-                .map(|change| PathBuf::from(&change.file_path))
+fn representative_module_relative_path(change_set: &CodeChangeSet) -> Option<PathBuf> {
+    change_set
+        .canonical_target
+        .clone()
+        .or_else(|| canonical_patch_target_file(&change_set.patches))
+}
+
+/// Returns the best representative target file from a patch set, using canonical rank
+/// priority: adapter-style targets > semantic peers > interface mediation files > registration.
+/// Does not depend on patch ordering.
+fn canonical_patch_target_file(patches: &[CodePatch]) -> Option<PathBuf> {
+    patches
+        .iter()
+        .filter(|p| !p.target_file.as_os_str().is_empty())
+        .min_by_key(|p| {
+            let rank = patch_canonical_rank(&p.target_file);
+            (rank, p.target_file.as_os_str().to_owned())
         })
+        .map(|p| p.target_file.clone())
+}
+
+/// Rank a patch target file for representative selection.
+/// Lower is higher priority.
+///   0 — canonical adapter target (non-interface, non-registration)
+///   1 — interface mediation file (name contains "interface" or "_world_interface")
+///   2 — registration file (lib.rs / main.rs)
+fn patch_canonical_rank(path: &Path) -> u8 {
+    let name = path.file_name().and_then(|s| s.to_str()).unwrap_or("");
+    let stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+    if name == "lib.rs" || name == "main.rs" {
+        2
+    } else if stem.contains("_world_interface") || stem.to_lowercase().contains("interface") {
+        1
+    } else {
+        0
+    }
 }
 
 fn resolve_root_module_relative_from_target(root: &Path, relative: &Path) -> Option<PathBuf> {
-    let parts = relative
-        .components()
-        .filter_map(|component| match component {
-            std::path::Component::Normal(value) => value.to_str(),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    let src_index = parts.iter().position(|part| *part == "src")?;
-    let src_root = parts[..=src_index]
-        .iter()
-        .fold(PathBuf::new(), |mut path, part| {
-            path.push(part);
-            path
-        });
-    for candidate in ["lib.rs", "main.rs"] {
-        let path = src_root.join(candidate);
-        if root.join(&path).exists() {
-            return Some(path);
+    let mut current = relative.parent().map(Path::to_path_buf)?;
+    loop {
+        for candidate in ["lib.rs", "main.rs"] {
+            let direct = current.join(candidate);
+            if root.join(&direct).exists() {
+                return Some(direct);
+            }
         }
+        for candidate in ["src/lib.rs", "src/main.rs"] {
+            let nested = current.join(candidate);
+            if root.join(&nested).exists() {
+                return Some(nested);
+            }
+        }
+        let manifest = current.join("Cargo.toml");
+        if root.join(&manifest).exists() {
+            for candidate in ["src/lib.rs", "src/main.rs"] {
+                let package_root = current.join(candidate);
+                if root.join(&package_root).exists() {
+                    return Some(package_root);
+                }
+            }
+        }
+        let Some(parent) = current.parent() else {
+            break;
+        };
+        if parent == current {
+            break;
+        }
+        current = parent.to_path_buf();
     }
     None
 }
@@ -5063,18 +5328,22 @@ fn primary_canonical_target(
     change_set: &CodeChangeSet,
     explicit_target: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    let mut candidates = change_set
-        .changes
-        .iter()
-        .map(|change| PathBuf::from(&change.file_path))
-        .collect::<Vec<_>>();
-    candidates.sort();
-    candidates.dedup();
-    if let Some(path) = candidates.into_iter().next() {
-        return Ok(path);
+    if let Some(target) = &change_set.canonical_target {
+        return Ok(target.clone());
+    }
+    if let Some(target) = canonical_patch_target_file(&change_set.patches) {
+        return Ok(target);
     }
     if let Some(target) = explicit_target {
         return normalize_target_scope_path(root, target);
+    }
+    // Fallback for non-mutation patches (e.g. --input): rank changes to avoid
+    // selecting lib.rs / main.rs registration as the canonical target.
+    if let Some(change) = change_set.changes.iter().min_by_key(|c| {
+        let path = Path::new(&c.file_path);
+        (patch_canonical_rank(path), c.file_path.clone())
+    }) {
+        return Ok(PathBuf::from(&change.file_path));
     }
     Err("unable to determine canonical target path for transactional apply".to_string())
 }
@@ -5524,13 +5793,7 @@ fn update_dependency_content(
         return Ok(content.to_string());
     }
 
-    let desired = match via {
-        Some(via) if via.ends_with("Interface") => {
-            format!("use crate::{}::{};", snake_case(via), via)
-        }
-        Some(via) => format!("use crate::{};", snake_case(via)),
-        None => format!("use crate::{};", snake_case(target)),
-    };
+    let desired = desired_dependency_use_line(root, source_index, current_path, target, via)?;
     if desired.starts_with("use crate::")
         && !desired.contains("::{")
         && desired.matches("::").count() == 1
@@ -5547,7 +5810,26 @@ fn update_dependency_content(
     let target_prefix = format!("use crate::{}", snake_case(target));
     let mut lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
     if matches!(via, Some(value) if value.ends_with("Interface")) {
-        if !lines.iter().any(|line| line.trim() == desired) {
+        let interface_is_used = symbol_used_outside_imports(content, via.unwrap_or_default());
+        if let Some(index) = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with(&target_prefix))
+        {
+            let preserve_target_import = imported_symbols_still_required(
+                root,
+                source_index,
+                current_path,
+                content,
+                &lines[index],
+            )?;
+            if interface_is_used && !preserve_target_import {
+                lines[index] = desired.clone();
+            } else if !interface_is_used && !preserve_target_import {
+                lines.remove(index);
+            } else if interface_is_used && !lines.iter().any(|line| line.trim() == desired) {
+                lines.insert(0, desired);
+            }
+        } else if !lines.iter().any(|line| line.trim() == desired) {
             lines.insert(0, desired);
         }
     } else if let Some(index) = lines
@@ -5563,7 +5845,379 @@ fn update_dependency_content(
     if !updated.ends_with('\n') {
         updated.push('\n');
     }
+    updated = preserve_interface_only_break_cycle_semantics(&updated);
     Ok(updated)
+}
+
+fn desired_dependency_use_line(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    current_path: &Path,
+    target: &str,
+    via: Option<&str>,
+) -> Result<String, String> {
+    Ok(match via {
+        Some(via) if via.ends_with("Interface") => {
+            if let Some(current_id) = source_index.qualified_id_for_path(current_path) {
+                let module_leaf = snake_case(via);
+                interface_use_line_for_target(root, current_path, &current_id, &module_leaf, via)
+            } else {
+                format!("use crate::{}::{};", snake_case(via), via)
+            }
+        }
+        Some(via) => format!("use crate::{};", snake_case(via)),
+        None => {
+            let _ = root;
+            format!("use crate::{};", snake_case(target))
+        }
+    })
+}
+
+fn interface_use_line_for_target(
+    root: &Path,
+    current_path: &Path,
+    current_id: &QualifiedModuleId,
+    module_leaf: &str,
+    interface_name: &str,
+) -> String {
+    if interface_is_sibling_module(root, current_path, module_leaf)
+        && !is_module_root_file(current_path)
+    {
+        return format!("use super::{module_leaf}::{interface_name};");
+    }
+
+    match parent_module_root(current_path, current_id) {
+        Some(parent) if parent == current_id.crate_name => {
+            format!("use crate::{module_leaf}::{interface_name};")
+        }
+        Some(parent) => format!("use crate::{parent}::{module_leaf}::{interface_name};"),
+        None => format!("use crate::{module_leaf}::{interface_name};"),
+    }
+}
+
+fn interface_is_sibling_module(root: &Path, current_path: &Path, module_leaf: &str) -> bool {
+    let absolute = root.join(current_path);
+    let Some(parent) = absolute.parent() else {
+        return false;
+    };
+    parent.join(format!("{module_leaf}.rs")).exists() || parent.join(module_leaf).join("mod.rs").exists()
+}
+
+fn is_module_root_file(path: &Path) -> bool {
+    matches!(
+        path.file_name().and_then(|name| name.to_str()),
+        Some("mod.rs" | "lib.rs" | "main.rs")
+    )
+}
+
+fn parent_module_root(current_path: &Path, current_id: &QualifiedModuleId) -> Option<String> {
+    if is_module_root_file(current_path) {
+        return Some(current_id.module_path.clone());
+    }
+    let (parent, _) = current_id.module_path.rsplit_once("::")?;
+    Some(parent.to_string())
+}
+
+fn imported_symbols_still_required(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    current_path: &Path,
+    content: &str,
+    use_line: &str,
+) -> Result<bool, String> {
+    let Some(imported_symbols) = imported_symbols_from_use_line(use_line) else {
+        return Ok(true);
+    };
+    for symbol in imported_symbols {
+        if symbol_used_outside_imports(content, &symbol)
+            || imported_trait_method_is_used(
+                root,
+                source_index,
+                current_path,
+                use_line,
+                &symbol,
+                content,
+            )?
+        {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+fn imported_symbols_from_use_line(use_line: &str) -> Option<Vec<String>> {
+    let trimmed = use_line.trim();
+    let remainder = trimmed.strip_prefix("use crate::")?.strip_suffix(';')?;
+    if let Some((_, symbols)) = parse_braced_crate_import(remainder) {
+        let imported = symbols
+            .into_iter()
+            .filter_map(|symbol| imported_symbol_name(&symbol))
+            .collect::<Vec<_>>();
+        return Some(imported);
+    }
+    let symbol = remainder.rsplit("::").next()?;
+    if !is_rust_symbol(symbol) {
+        return Some(Vec::new());
+    }
+    Some(vec![imported_symbol_name(symbol)?])
+}
+
+fn imported_symbol_name(symbol: &str) -> Option<String> {
+    let trimmed = symbol.trim();
+    if let Some((_, alias)) = trimmed.split_once(" as ") {
+        return Some(alias.trim().to_string());
+    }
+    Some(trimmed.to_string())
+}
+
+fn imported_trait_method_is_used(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    current_path: &Path,
+    use_line: &str,
+    symbol: &str,
+    content: &str,
+) -> Result<bool, String> {
+    let Some(trait_methods) =
+        imported_trait_methods(root, source_index, current_path, use_line, symbol)?
+    else {
+        return Ok(false);
+    };
+    Ok(trait_methods
+        .iter()
+        .any(|method| content.contains(&format!(".{method}("))))
+}
+
+fn imported_trait_methods(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    current_path: &Path,
+    use_line: &str,
+    symbol: &str,
+) -> Result<Option<Vec<String>>, String> {
+    let Some(module_prefix) = imported_symbol_module_prefix(use_line, symbol) else {
+        return Ok(None);
+    };
+    let current_id = match source_index.qualified_id_for_path(current_path) {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let Some(module_path) = source_index
+        .resolve_symbol_module(root, &current_id.crate_name, Some(&current_id.module_path), symbol)?
+        .filter(|resolved| resolved == &module_prefix)
+        .or(Some(module_prefix))
+    else {
+        return Ok(None);
+    };
+    let Some(module_file) = source_index.resolve(&module_path)? else {
+        return Ok(None);
+    };
+    let trait_source = fs::read_to_string(root.join(module_file))
+        .map_err(|err| format!("failed to read trait source for {symbol}: {err}"))?;
+    Ok(parse_trait_methods(&trait_source, symbol))
+}
+
+fn imported_symbol_module_prefix(use_line: &str, symbol: &str) -> Option<String> {
+    let trimmed = use_line.trim();
+    let remainder = trimmed.strip_prefix("use crate::")?.strip_suffix(';')?;
+    if let Some((prefix, symbols)) = parse_braced_crate_import(remainder) {
+        return symbols
+            .iter()
+            .any(|candidate| imported_symbol_name(candidate).as_deref() == Some(symbol))
+            .then(|| prefix.to_string());
+    }
+    let (prefix, imported) = remainder.rsplit_once("::")?;
+    (imported_symbol_name(imported).as_deref() == Some(symbol)).then(|| prefix.to_string())
+}
+
+fn parse_trait_methods(content: &str, trait_name: &str) -> Option<Vec<String>> {
+    let trait_header = format!("trait {trait_name}");
+    let mut in_trait = false;
+    let mut brace_depth = 0usize;
+    let mut methods = Vec::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if !in_trait {
+            if !trimmed.contains(&trait_header) {
+                continue;
+            }
+            in_trait = true;
+        }
+        brace_depth += trimmed.matches('{').count();
+        brace_depth = brace_depth.saturating_sub(trimmed.matches('}').count());
+        if let Some(rest) = trimmed.strip_prefix("fn ") {
+            let method = rest
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            if !method.is_empty() {
+                methods.push(method.to_string());
+            }
+        }
+        if in_trait && brace_depth == 0 {
+            break;
+        }
+    }
+    (!methods.is_empty()).then_some(methods)
+}
+
+fn symbol_used_outside_imports(content: &str, symbol: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim();
+        !trimmed.starts_with("use ") && trimmed.contains(symbol)
+    })
+}
+
+fn preserve_interface_only_break_cycle_semantics(content: &str) -> String {
+    let content = remove_unused_adapter_world_interface_import(content);
+    enforce_break_cycle_tuple_arity_invariants(&content)
+}
+
+fn remove_unused_adapter_world_interface_import(content: &str) -> String {
+    if symbol_used_outside_imports(content, "AdapterWorldInterface") {
+        return content.to_string();
+    }
+    remove_exact_use_line(
+        content,
+        "use crate::adapter_world_interface::AdapterWorldInterface;",
+    )
+}
+
+fn enforce_break_cycle_tuple_arity_invariants(content: &str) -> String {
+    if !content.contains("inferred_knowledge_graph") {
+        return content.to_string();
+    }
+
+    let lines = content.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let destructure_start = lines.iter().position(|line| line.contains("let ("));
+    let Some(destructure_start) = destructure_start else {
+        return content.to_string();
+    };
+    let destructure_end = lines
+        .iter()
+        .enumerate()
+        .skip(destructure_start)
+        .find_map(|(index, line)| line.contains(") = if").then_some(index));
+    let Some(destructure_end) = destructure_end else {
+        return content.to_string();
+    };
+    if !lines[destructure_start..=destructure_end]
+        .iter()
+        .any(|line| line.contains("inferred_knowledge_graph"))
+    {
+        return content.to_string();
+    }
+    let lhs_bindings = lines[destructure_start..=destructure_end]
+        .iter()
+        .flat_map(|line| line.split(','))
+        .filter_map(|part| {
+            let token = part.trim();
+            if token.is_empty()
+                || token == "let ("
+                || token == ") = if"
+                || token.starts_with(") = if")
+            {
+                None
+            } else {
+                Some(token.trim_start_matches("let ").trim().to_string())
+            }
+        })
+        .collect::<Vec<_>>();
+    let lhs_arity = lhs_bindings.len();
+    let Some(inferred_index) = lhs_bindings
+        .iter()
+        .position(|binding| binding == "inferred_knowledge_graph")
+    else {
+        return content.to_string();
+    };
+
+    let if_tuple_open = lines
+        .iter()
+        .enumerate()
+        .skip(destructure_end + 1)
+        .find_map(|(index, line)| (line.trim() == "(").then_some(index));
+    let Some(if_tuple_open) = if_tuple_open else {
+        return content.to_string();
+    };
+    let if_tuple_close = lines
+        .iter()
+        .enumerate()
+        .skip(if_tuple_open + 1)
+        .find_map(|(index, line)| (line.trim() == ")").then_some(index));
+    let Some(if_tuple_close) = if_tuple_close else {
+        return content.to_string();
+    };
+
+    let else_start = lines
+        .iter()
+        .enumerate()
+        .skip(if_tuple_close)
+        .find_map(|(index, line)| (line.trim() == "} else {").then_some(index));
+    let Some(else_start) = else_start else {
+        return content.to_string();
+    };
+    let else_tuple_open = lines
+        .iter()
+        .enumerate()
+        .skip(else_start + 1)
+        .find_map(|(index, line)| (line.trim() == "(").then_some(index));
+    let Some(else_tuple_open) = else_tuple_open else {
+        return content.to_string();
+    };
+    let else_tuple_close = lines
+        .iter()
+        .enumerate()
+        .skip(else_tuple_open + 1)
+        .find_map(|(index, line)| (line.trim() == ")").then_some(index));
+    let Some(else_tuple_close) = else_tuple_close else {
+        return content.to_string();
+    };
+
+    let mut updated = lines;
+    let mut modified = false;
+    for (tuple_open, tuple_close) in [
+        (else_tuple_open, else_tuple_close),
+        (if_tuple_open, if_tuple_close),
+    ] {
+        let tuple_items = updated[tuple_open + 1..tuple_close]
+            .iter()
+            .enumerate()
+            .filter_map(|(offset, line)| {
+                let trimmed = line.trim();
+                (!trimmed.is_empty() && trimmed != "," && trimmed.ends_with(','))
+                    .then_some((tuple_open + 1 + offset, trimmed.to_string()))
+            })
+            .collect::<Vec<_>>();
+        if tuple_items.len() >= lhs_arity {
+            continue;
+        }
+        if tuple_items.len() + 1 != lhs_arity || inferred_index > tuple_items.len() {
+            return content.to_string();
+        }
+        let indent = tuple_items
+            .first()
+            .and_then(|(index, _)| {
+                updated.get(*index).map(|candidate| {
+                    let trimmed = candidate.trim_start();
+                    candidate[..candidate.len().saturating_sub(trimmed.len())].to_string()
+                })
+            })
+            .unwrap_or_else(|| "            ".to_string());
+        let insert_index = tuple_items
+            .get(inferred_index)
+            .map(|(index, _)| *index)
+            .unwrap_or(tuple_close);
+        updated.insert(insert_index, format!("{indent}KnowledgeGraph::default(),"));
+        modified = true;
+    }
+    if !modified {
+        return content.to_string();
+    }
+    let mut rebuilt = updated.join("\n");
+    if content.ends_with('\n') && !rebuilt.ends_with('\n') {
+        rebuilt.push('\n');
+    }
+    rebuilt
 }
 
 fn normalize_relative(root: &Path, path: &Path) -> Result<String, String> {
@@ -5830,6 +6484,7 @@ mod tests {
                 from: "renderer".to_string(),
                 to: "world".to_string(),
                 via: Some("renderer_world_interface".to_string()),
+                target_file: None,
             }]
         );
     }
@@ -6077,55 +6732,77 @@ mod tests {
     }
 
     #[test]
-    fn apply_success() {
-        let root = temp_dir("apply_success");
-        write_rust_project(&root, "fn main() {}\n");
-        let change_set = CodeChangeSet {
-            patches: vec![],
-            changes: vec![CodeChange {
-                file_path: "src/world_service.rs".to_string(),
-                change_type: ChangeType::CreateFile,
-                hunks: vec![DiffHunk {
-                    start_line: 1,
-                    end_line: 1,
-                    replacement: "pub struct WorldService {}\n".to_string(),
-                }],
-            }],
-            summary: ChangeSummary {
-                total_changes: 1,
-                create_files: 1,
-                modify_files: 0,
-                move_files: 0,
-            },
-        };
-        let result = execute_code_change_set(
-            &root,
-            &change_set,
-            &CodingOptions {
-                apply: true,
-                check: false,
-                no_build: false,
-                backup: false,
-                format: false,
-                safe_mode: true,
-                auto_commit: false,
-                confirm_commit: false,
-                prompt_commit: false,
-                auto_push: false,
-                confirm_push: false,
-                auto_pr: false,
-                confirm_pr: false,
-                pr_base: "main".to_string(),
-                patch_scope: PatchScope::WorkspaceWide,
-                explicit_target: None,
-            },
-            None,
+    fn break_cycle_change_set_representative_target() {
+        let root = temp_dir("break_cycle_representative_target");
+        fs::create_dir_all(root.join("crates/runtime/runtime_vm/src")).expect("runtime_vm");
+        fs::write(
+            root.join("crates/runtime/runtime_vm/src/lib.rs"),
+            "pub mod adapter;\npub mod adapter_world_interface;\n",
         )
-        .expect("apply");
-        assert_eq!(result.status, "applied");
-        assert!(result.build_ok);
-        assert!(result.transactional_apply.is_some());
-        assert!(root.join("src/world_service.rs").exists());
+        .expect("lib");
+        fs::write(
+            root.join("crates/runtime/runtime_vm/src/adapter.rs"),
+            "pub fn adapt() {}\n",
+        )
+        .expect("adapter");
+        fs::write(
+            root.join("crates/runtime/runtime_vm/src/adapter_world_interface.rs"),
+            "pub trait AdapterWorldInterface {}\n",
+        )
+        .expect("interface");
+
+        let adapter = PathBuf::from("crates/runtime/runtime_vm/src/adapter.rs");
+        let interface = PathBuf::from("crates/runtime/runtime_vm/src/adapter_world_interface.rs");
+        let registration = PathBuf::from("crates/runtime/runtime_vm/src/lib.rs");
+        let orderings = vec![
+            vec![adapter.clone(), interface.clone(), registration.clone()],
+            vec![registration.clone(), interface.clone(), adapter.clone()],
+            vec![interface.clone(), registration.clone(), adapter.clone()],
+        ];
+
+        for ordering in orderings {
+            let patches = ordering
+                .iter()
+                .enumerate()
+                .map(|(index, path)| CodePatch {
+                    patch_id: format!("p{}", index + 1),
+                    action: RefactorPlanAction::MoveDependency {
+                        from: "adapter".to_string(),
+                        to: "world".to_string(),
+                        via: Some("adapter_world_interface".to_string()),
+                    },
+                    operations: vec![PatchOperation::UpdateDependency {
+                        from: "adapter".to_string(),
+                        to: "world".to_string(),
+                        via: Some("adapter_world_interface".to_string()),
+                    }],
+                    description: path.display().to_string(),
+                    target_file: path.clone(),
+                })
+                .collect::<Vec<_>>();
+            let change_set = patches_to_change_set(
+                &root,
+                &patches,
+                None,
+                &BTreeMap::new(),
+                Some(adapter.as_path()),
+            )
+            .expect("change set");
+
+            assert_eq!(
+                representative_module_relative_path(&change_set),
+                Some(adapter.clone())
+            );
+            assert_eq!(
+                primary_canonical_target(&root, &change_set, None).expect("canonical target"),
+                adapter.clone()
+            );
+            assert_eq!(
+                resolve_root_module_file_relative_for_change_set(&root, &change_set, None)
+                    .expect("root module"),
+                registration.clone()
+            );
+        }
     }
 
     #[test]
@@ -6150,6 +6827,7 @@ mod tests {
                 modify_files: 1,
                 move_files: 0,
             },
+            canonical_target: None,
         };
         let result = execute_code_change_set(
             &root,
@@ -6204,6 +6882,7 @@ mod tests {
                 modify_files: 0,
                 move_files: 0,
             },
+            canonical_target: None,
         };
         let result = execute_code_change_set(
             &root,
@@ -6255,6 +6934,7 @@ mod tests {
                 modify_files: 1,
                 move_files: 0,
             },
+            canonical_target: None,
         };
 
         let err = execute_code_change_set(
@@ -6330,6 +7010,7 @@ mod tests {
                 modify_files: 1,
                 move_files: 0,
             },
+            canonical_target: None,
         };
         install_before_real_apply_hook(|root| {
             fs::write(

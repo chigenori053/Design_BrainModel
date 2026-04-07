@@ -212,3 +212,109 @@ fn coding_check_preserves_domain_reexport_imports() {
         "{stdout}"
     );
 }
+
+#[test]
+fn engine_executor_break_cycle_sibling_import_rebinding() {
+    let workspace = temp_workspace("engine_executor_sibling_rebinding");
+    fs::create_dir_all(workspace.join("crates/agent_core/src/engine")).expect("engine dir");
+    fs::write(
+        workspace.join("Cargo.toml"),
+        "[workspace]\nmembers = [\"crates/agent_core\"]\nresolver = \"2\"\n",
+    )
+    .expect("workspace cargo");
+    fs::write(
+        workspace.join("crates/agent_core/Cargo.toml"),
+        "[package]\nname = \"agent_core\"\nversion = \"1.0.0\"\nedition = \"2024\"\n",
+    )
+    .expect("agent_core cargo");
+    fs::write(
+        workspace.join("crates/agent_core/src/lib.rs"),
+        "pub mod engine;\n",
+    )
+    .expect("lib");
+    fs::write(
+        workspace.join("crates/agent_core/src/engine/mod.rs"),
+        "pub mod distance;\npub mod executor;\n",
+    )
+    .expect("engine mod");
+    fs::write(
+        workspace.join("crates/agent_core/src/engine/executor.rs"),
+        "pub trait EngineExecutor {}\n",
+    )
+    .expect("executor");
+    fs::write(
+        workspace.join("crates/agent_core/src/engine/distance.rs"),
+        "use crate::engine::executor::EngineExecutor;\n\npub fn bind(_executor: &dyn EngineExecutor) {}\n",
+    )
+    .expect("distance");
+
+    let patches = vec![
+        CodePatch {
+            patch_id: "engine-interface".to_string(),
+            action: RefactorPlanAction::IntroduceInterface {
+                between: ("engine".to_string(), "executor".to_string()),
+            },
+            operations: vec![PatchOperation::CreateInterface {
+                name: "EngineExecutorInterface".to_string(),
+                between: ("engine".to_string(), "executor".to_string()),
+            }],
+            description: "create interface".to_string(),
+            target_file: PathBuf::from("crates/agent_core/src/engine/distance.rs"),
+        },
+        CodePatch {
+            patch_id: "engine-rebind".to_string(),
+            action: RefactorPlanAction::MoveDependency {
+                from: "engine".to_string(),
+                to: "executor".to_string(),
+                via: Some("EngineExecutorInterface".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: "engine".to_string(),
+                to: "executor".to_string(),
+                via: Some("EngineExecutorInterface".to_string()),
+            }],
+            description: "rebind sibling interface".to_string(),
+            target_file: PathBuf::from("crates/agent_core/src/engine/distance.rs"),
+        },
+    ];
+
+    let change_set = generate_code_change_set(&workspace, &patches).expect("change set");
+    let result = transactional_apply(&workspace, &change_set, None, false, None).expect("apply");
+
+    assert!(result.applied, "{:?}", result.diagnostics);
+    assert!(result.build_ok, "{:?}", result.diagnostics);
+
+    let distance =
+        fs::read_to_string(workspace.join("crates/agent_core/src/engine/distance.rs"))
+            .expect("distance");
+    assert!(
+        distance.contains("use super::engine_executor_interface::EngineExecutorInterface;")
+            || distance.contains(
+                "use crate::engine::engine_executor_interface::EngineExecutorInterface;"
+            ),
+        "{distance}"
+    );
+    assert!(
+        !distance.contains("crate::engine::distance::engine_executor_interface"),
+        "{distance}"
+    );
+
+    let engine_mod = fs::read_to_string(workspace.join("crates/agent_core/src/engine/mod.rs"))
+        .expect("engine mod");
+    assert!(
+        engine_mod.contains("pub mod engine_executor_interface;"),
+        "{engine_mod}"
+    );
+
+    let cargo_check = Command::new("cargo")
+        .args(["check", "-p", "agent_core"])
+        .current_dir(&workspace)
+        .output()
+        .expect("cargo check");
+    assert!(
+        cargo_check.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&cargo_check.stdout),
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+}

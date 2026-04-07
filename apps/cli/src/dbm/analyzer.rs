@@ -101,11 +101,19 @@ pub struct FileAnalysis {
     pub todos: Vec<String>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DependencyEdgeType {
+    Direct,
+    Mediated,
+}
+
 /// モジュール間依存エッジ
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct DependencyEdge {
     pub from: String,
     pub to: String,
+    pub edge_type: DependencyEdgeType,
 }
 
 /// ディレクトリ単位のモジュール
@@ -179,21 +187,28 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
     let paths = scan_directory(root)?;
 
     // 2. 各ファイル解析（相対パス + 依存抽出）
-    let mut records: Vec<(FileAnalysis, Vec<String>)> = vec![];
+    let mut records: Vec<(FileAnalysis, Vec<(String, bool)>, bool)> = vec![];
     for path in &paths {
         if let Some(record) = analyze_file_project(path, root) {
             records.push(record);
         }
     }
 
-    let files: Vec<FileAnalysis> = records.iter().map(|(f, _)| f.clone()).collect();
+    let files: Vec<FileAnalysis> = records.iter().map(|(f, _, _)| f.clone()).collect();
 
     // 3. モジュール構造を推定
     let modules = group_modules(&files);
     let known_modules: BTreeSet<String> = modules.iter().map(|m| m.name.clone()).collect();
+    let mediated_modules = collect_mediated_modules(&records, &known_modules);
+    let dual_boundary_pairs = collect_dual_boundary_pairs(&mediated_modules);
 
     // 4. 依存グラフ構築
-    let dependencies = build_dependency_edges(&records, &known_modules);
+    let dependencies = build_dependency_edges(
+        &records,
+        &known_modules,
+        &mediated_modules,
+        &dual_boundary_pairs,
+    );
 
     // 5. サマリ生成
     let summary = build_summary(&files);
@@ -255,8 +270,11 @@ fn is_supported_extension(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-/// 1ファイルを解析して (FileAnalysis, raw_deps) を返す
-fn analyze_file_project(path: &Path, root: &Path) -> Option<(FileAnalysis, Vec<String>)> {
+/// 1ファイルを解析して (FileAnalysis, raw_deps_with_interface_flag) を返す
+fn analyze_file_project(
+    path: &Path,
+    root: &Path,
+) -> Option<(FileAnalysis, Vec<(String, bool)>, bool)> {
     let ext = path.extension()?.to_str()?;
     let language = Language::from_extension(ext)?;
 
@@ -273,6 +291,8 @@ fn analyze_file_project(path: &Path, root: &Path) -> Option<(FileAnalysis, Vec<S
         .collect();
 
     let deps = extract_dependencies(&content, &language);
+    let is_mediated_source = file_declares_mediated_trait(&content)
+        || file_path_declares_mediated_source(path.strip_prefix(root).ok()?);
 
     // ルートからの相対パス
     let rel_path = path
@@ -288,16 +308,17 @@ fn analyze_file_project(path: &Path, root: &Path) -> Option<(FileAnalysis, Vec<S
             todos,
         },
         deps,
+        is_mediated_source,
     ))
 }
 
-/// ソースコードから import/use 文を解析して依存モジュール名リストを返す（公開）
-pub fn extract_dependencies(content: &str, language: &Language) -> Vec<String> {
+/// ソースコードから import/use 文を解析して (依存モジュール名, is_interface) リストを返す
+pub fn extract_dependencies(content: &str, language: &Language) -> Vec<(String, bool)> {
     let mut deps = Vec::new();
 
     for line in content.lines() {
         let trimmed = line.trim();
-        // コメント行をスキップ（行コメント・ブロックコメント）
+        // コメント行をスキップ
         if trimmed.starts_with("//")
             || trimmed.starts_with("/*")
             || trimmed.starts_with("*")
@@ -308,48 +329,33 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<String> {
 
         match language {
             Language::Rust => {
-                // "use crate::module_name::..." → "module_name"
                 if let Some(rest) = trimmed.strip_prefix("use crate::") {
-                    let segment = rest
-                        .split("::")
-                        .next()
-                        .unwrap_or("")
-                        .trim_end_matches(';')
-                        .trim_end_matches('{')
-                        .trim();
+                    let full_path = rest.trim_end_matches(';').trim_end_matches('{').trim();
+                    let is_interface = path_declares_mediation(full_path);
+                    let segment = full_path.split("::").next().unwrap_or("");
                     if !segment.is_empty() && segment != "self" {
-                        deps.push(segment.to_string());
+                        deps.push((segment.to_string(), is_interface));
                     }
                 }
             }
             Language::Python => {
                 if let Some(rest) = trimmed.strip_prefix("from .") {
-                    // "from .module import x" → "module"
-                    let module = rest
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .split('.')
-                        .next()
-                        .unwrap_or("");
-                    if !module.is_empty() {
-                        deps.push(module.to_string());
+                    let module = rest.split_whitespace().next().unwrap_or("");
+                    let is_interface = path_declares_mediation(module);
+                    let segment = module.split('.').next().unwrap_or("");
+                    if !segment.is_empty() {
+                        deps.push((segment.to_string(), is_interface));
                     }
                 } else if let Some(rest) = trimmed.strip_prefix("import ") {
-                    let module = rest
-                        .split_whitespace()
-                        .next()
-                        .unwrap_or("")
-                        .split('.')
-                        .next()
-                        .unwrap_or("");
-                    if !module.is_empty() {
-                        deps.push(module.to_string());
+                    let module = rest.split_whitespace().next().unwrap_or("");
+                    let is_interface = path_declares_mediation(module);
+                    let segment = module.split('.').next().unwrap_or("");
+                    if !segment.is_empty() {
+                        deps.push((segment.to_string(), is_interface));
                     }
                 }
             }
             Language::TypeScript => {
-                // "import ... from './module'" or "import ... from '../utils'"
                 if trimmed.starts_with("import ") && trimmed.contains(" from ") {
                     if let Some(from_part) = trimmed.split(" from ").nth(1) {
                         let module_path = from_part
@@ -357,13 +363,12 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<String> {
                             .trim_end_matches(';')
                             .trim_matches('"')
                             .trim_matches('\'');
-                        // ローカル import のみ（相対パス）
                         if module_path.starts_with("./") || module_path.starts_with("../") {
+                            let is_interface = path_declares_mediation(module_path);
                             if let Some(last) = module_path.split('/').last() {
-                                // index → parent dir name、それ以外はそのまま
                                 let name = last.trim_end_matches(".ts").trim_end_matches(".tsx");
                                 if !name.is_empty() && name != "index" {
-                                    deps.push(name.to_string());
+                                    deps.push((name.to_string(), is_interface));
                                 }
                             }
                         }
@@ -371,12 +376,12 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<String> {
                 }
             }
             Language::Go => {
-                // import ブロック内の "path/to/package" → "package"
-                let trimmed = trimmed.trim_matches('"');
-                if !trimmed.contains(' ') && trimmed.contains('/') {
-                    if let Some(last) = trimmed.split('/').last() {
+                let path = trimmed.trim_matches('"');
+                if !path.contains(' ') && path.contains('/') {
+                    let is_interface = path_declares_mediation(path);
+                    if let Some(last) = path.split('/').last() {
                         if !last.is_empty() {
-                            deps.push(last.to_string());
+                            deps.push((last.to_string(), is_interface));
                         }
                     }
                 }
@@ -384,10 +389,12 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<String> {
         }
     }
 
-    // 重複除去（順序保持）
-    let mut seen = BTreeSet::new();
-    deps.retain(|d| seen.insert(d.clone()));
-    deps
+    let mut seen = BTreeMap::new();
+    for (d, is_if) in deps {
+        let entry = seen.entry(d).or_insert(false);
+        *entry = *entry || is_if;
+    }
+    seen.into_iter().collect()
 }
 
 /// 分岐命令（if/match/for/while/else/loop）の数を数える
@@ -417,12 +424,7 @@ fn group_modules(files: &[FileAnalysis]) -> Vec<Module> {
     let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
 
     for file in files {
-        let module_name = Path::new(&file.path)
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("root")
-            .to_string();
+        let module_name = module_name_from_relative_path(&file.path);
         groups
             .entry(module_name)
             .or_default()
@@ -437,30 +439,202 @@ fn group_modules(files: &[FileAnalysis]) -> Vec<Module> {
 
 /// ファイルごとの依存情報からモジュール間エッジを構築する
 fn build_dependency_edges(
-    records: &[(FileAnalysis, Vec<String>)],
+    records: &[(FileAnalysis, Vec<(String, bool)>, bool)],
     known_modules: &BTreeSet<String>,
+    mediated_modules: &BTreeSet<String>,
+    dual_boundary_pairs: &BTreeSet<(String, String)>,
 ) -> Vec<DependencyEdge> {
     let mut edges = BTreeSet::new();
+    let mut interface_users: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
 
-    for (file, deps) in records {
-        let from_module = Path::new(&file.path)
-            .parent()
-            .and_then(|p| p.file_name())
-            .and_then(|n| n.to_str())
-            .unwrap_or("root")
-            .to_string();
+    // 1. 直接依存の抽出
+    for (file, deps, _) in records {
+        let from_module = module_name_from_relative_path(&file.path);
 
-        for dep in deps {
+        for (dep, is_interface) in deps {
             if known_modules.contains(dep) && dep != &from_module {
+                let edge_type = if *is_interface
+                    || mediated_modules.contains(dep)
+                    || dual_boundary_pairs.contains(&ordered_boundary_pair(&from_module, dep))
+                {
+                    DependencyEdgeType::Mediated
+                } else {
+                    DependencyEdgeType::Direct
+                };
+
                 edges.insert(DependencyEdge {
                     from: from_module.clone(),
                     to: dep.clone(),
+                    edge_type,
                 });
+
+                if edge_type == DependencyEdgeType::Mediated {
+                    interface_users
+                        .entry(dep.clone())
+                        .or_default()
+                        .insert(from_module.clone());
+                }
+            }
+        }
+    }
+    // 2. 共有インターフェースによる Mediated Edge の追加
+    for (_interface, users) in interface_users {
+        let users_vec: Vec<String> = users.into_iter().collect();
+        for i in 0..users_vec.len() {
+            for j in 0..users_vec.len() {
+                if i != j {
+                    edges.insert(DependencyEdge {
+                        from: users_vec[i].clone(),
+                        to: users_vec[j].clone(),
+                        edge_type: DependencyEdgeType::Mediated,
+                    });
+                }
             }
         }
     }
 
     edges.into_iter().collect()
+}
+
+fn collect_mediated_modules(
+    records: &[(FileAnalysis, Vec<(String, bool)>, bool)],
+    known_modules: &BTreeSet<String>,
+) -> BTreeSet<String> {
+    let mut mediated = BTreeSet::new();
+    for (file, _, is_mediated_source) in records {
+        let module_name = module_name_from_relative_path(&file.path);
+        if *is_mediated_source || is_mediated_module_name(&module_name) {
+            if known_modules.contains(&module_name) {
+                mediated.insert(module_name);
+            }
+        }
+    }
+    mediated
+}
+
+fn collect_dual_boundary_pairs(
+    mediated_modules: &BTreeSet<String>,
+) -> BTreeSet<(String, String)> {
+    let mut pairs = BTreeSet::new();
+    for module in mediated_modules {
+        let Some((lhs, rhs)) = boundary_pair_for_module_name(module) else {
+            continue;
+        };
+        let reverse = format!("{rhs}_{lhs}_interface");
+        if mediated_modules.contains(&reverse) {
+            pairs.insert(ordered_boundary_pair(&lhs, &rhs));
+        }
+    }
+    pairs
+}
+
+fn boundary_pair_for_module_name(name: &str) -> Option<(String, String)> {
+    let normalized = normalize_mediation_name(name);
+    let stripped = normalized.strip_suffix("_interface")?;
+    let (lhs, rhs) = stripped.split_once('_')?;
+    if lhs.is_empty() || rhs.is_empty() {
+        return None;
+    }
+    Some((lhs.to_string(), rhs.to_string()))
+}
+
+fn ordered_boundary_pair(lhs: &str, rhs: &str) -> (String, String) {
+    if lhs <= rhs {
+        (lhs.to_string(), rhs.to_string())
+    } else {
+        (rhs.to_string(), lhs.to_string())
+    }
+}
+
+fn module_name_from_relative_path(relative_path: &str) -> String {
+    let path = Path::new(relative_path);
+    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    if matches!(file_name, "mod.rs" | "index.ts" | "index.tsx" | "index.js" | "index.jsx") {
+        return path
+            .parent()
+            .and_then(|p| p.file_name())
+            .and_then(|n| n.to_str())
+            .unwrap_or("root")
+            .to_string();
+    }
+
+    let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or_default();
+    if matches!(stem, "lib" | "main") {
+        return "root".to_string();
+    }
+
+    if file_is_directly_under_source_root(path) || path.parent().is_none() {
+        return stem.to_string();
+    }
+
+    path.parent()
+        .and_then(|p| p.file_name())
+        .and_then(|n| n.to_str())
+        .unwrap_or("root")
+        .to_string()
+}
+
+fn file_is_directly_under_source_root(path: &Path) -> bool {
+    matches!(
+        path.parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str()),
+        Some("src")
+    )
+}
+
+fn file_path_declares_mediated_source(relative_path: &Path) -> bool {
+    relative_path
+        .file_stem()
+        .and_then(|name| name.to_str())
+        .map(is_mediated_module_name)
+        .unwrap_or(false)
+        || relative_path
+            .parent()
+            .and_then(|parent| parent.file_name())
+            .and_then(|name| name.to_str())
+            .map(is_mediated_module_name)
+            .unwrap_or(false)
+}
+
+fn path_declares_mediation(path: &str) -> bool {
+    path.split(&[':', '/', '.'][..]).any(is_mediated_module_name)
+        || path.split("::").any(is_mediated_symbol_name)
+}
+
+fn is_mediated_module_name(name: &str) -> bool {
+    let normalized = normalize_mediation_name(name);
+    normalized.ends_with("_interface")
+        || normalized.ends_with("_bridge")
+        || normalized.ends_with("_port")
+        || normalized.ends_with("_adapter_interface")
+}
+
+fn is_mediated_symbol_name(name: &str) -> bool {
+    let normalized = normalize_mediation_name(name);
+    normalized.ends_with("interface")
+        || normalized.ends_with("bridge")
+        || normalized.ends_with("port")
+}
+
+fn normalize_mediation_name(name: &str) -> String {
+    name.trim_matches(|c: char| c == '{' || c == '}' || c == ';')
+        .replace('-', "_")
+        .to_ascii_lowercase()
+}
+
+fn file_declares_mediated_trait(content: &str) -> bool {
+    content.lines().any(|line| {
+        let trimmed = line.trim_start();
+        let Some(rest) = trimmed.strip_prefix("pub trait ") else {
+            return false;
+        };
+        let trait_name = rest
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .next()
+            .unwrap_or_default();
+        is_mediated_symbol_name(trait_name)
+    })
 }
 
 /// ファイルリストからプロジェクトサマリを生成する
@@ -696,15 +870,15 @@ mod tests {
         let content =
             "use crate::planner::rule_based::RuleBasedPlanner;\nuse crate::dbm::client::DBMClient;";
         let deps = extract_dependencies(content, &Language::Rust);
-        assert!(deps.contains(&"planner".to_string()), "deps: {deps:?}");
-        assert!(deps.contains(&"dbm".to_string()), "deps: {deps:?}");
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"planner".to_string()), "deps: {deps:?}");
+        assert!(names.contains(&"dbm".to_string()), "deps: {deps:?}");
     }
 
     #[test]
     fn extract_deps_rust_skips_std_and_external() {
         let content = "use std::collections::HashMap;\nuse serde::Serialize;";
         let deps = extract_dependencies(content, &Language::Rust);
-        // These start with "std" or external crate, not "crate::" so they produce nothing
         assert!(deps.is_empty(), "should not extract std/external: {deps:?}");
     }
 
@@ -712,23 +886,75 @@ mod tests {
     fn extract_deps_rust_dedup() {
         let content = "use crate::planner::a::X;\nuse crate::planner::b::Y;";
         let deps = extract_dependencies(content, &Language::Rust);
-        assert_eq!(deps.iter().filter(|d| *d == "planner").count(), 1);
+        assert_eq!(deps.iter().filter(|(d, _)| *d == "planner").count(), 1);
+    }
+
+    #[test]
+    fn extract_deps_rust_interface_detection() {
+        let content = "use crate::world::AdapterWorldInterface;";
+        let deps = extract_dependencies(content, &Language::Rust);
+        assert!(deps.iter().any(|(n, is_if)| n == "world" && *is_if));
+    }
+
+    #[test]
+    fn extract_deps_rust_generic_mediation_naming_detection() {
+        let content = "use crate::controller_replay_interface::ControllerReplayInterface;\nuse crate::runtime_bridge::RuntimeBridge;\nuse crate::storage_port::StoragePort;";
+        let deps = extract_dependencies(content, &Language::Rust);
+        assert!(
+            deps.iter()
+                .any(|(name, is_if)| name == "controller_replay_interface" && *is_if),
+            "{deps:?}"
+        );
+        assert!(
+            deps.iter()
+                .any(|(name, is_if)| name == "runtime_bridge" && *is_if),
+            "{deps:?}"
+        );
+        assert!(
+            deps.iter()
+                .any(|(name, is_if)| name == "storage_port" && *is_if),
+            "{deps:?}"
+        );
+    }
+
+    #[test]
+    fn file_declares_mediated_trait_detects_generic_interface_trait() {
+        assert!(file_declares_mediated_trait(
+            "pub trait ControllerReplayInterface {\n    fn replay(&self) -> bool;\n}\n"
+        ));
+        assert!(!file_declares_mediated_trait(
+            "pub trait ExecutionController {\n    fn run(&self);\n}\n"
+        ));
+    }
+
+    #[test]
+    fn collect_dual_boundary_pairs_detects_world_boundary_pairs() {
+        let modules = BTreeSet::from([
+            "renderer_world_interface".to_string(),
+            "world_renderer_interface".to_string(),
+            "controller_replay_interface".to_string(),
+        ]);
+        let pairs = collect_dual_boundary_pairs(&modules);
+        assert!(pairs.contains(&(String::from("renderer"), String::from("world"))));
+        assert!(!pairs.contains(&(String::from("controller"), String::from("replay"))));
     }
 
     #[test]
     fn extract_deps_python_relative() {
         let content = "from .utils import helper\nfrom .models import Foo\n";
         let deps = extract_dependencies(content, &Language::Python);
-        assert!(deps.contains(&"utils".to_string()), "deps: {deps:?}");
-        assert!(deps.contains(&"models".to_string()), "deps: {deps:?}");
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"utils".to_string()), "deps: {deps:?}");
+        assert!(names.contains(&"models".to_string()), "deps: {deps:?}");
     }
 
     #[test]
     fn extract_deps_typescript_local() {
         let content = "import { Foo } from './planner';\nimport bar from '../utils';\n";
         let deps = extract_dependencies(content, &Language::TypeScript);
-        assert!(deps.contains(&"planner".to_string()), "deps: {deps:?}");
-        assert!(deps.contains(&"utils".to_string()), "deps: {deps:?}");
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
+        assert!(names.contains(&"planner".to_string()), "deps: {deps:?}");
+        assert!(names.contains(&"utils".to_string()), "deps: {deps:?}");
     }
 
     #[test]
@@ -742,11 +968,12 @@ mod tests {
     fn extract_deps_skips_comment_lines() {
         let content = "// use crate::planner;\nuse crate::dbm::client;";
         let deps = extract_dependencies(content, &Language::Rust);
+        let names: Vec<String> = deps.iter().map(|(n, _)| n.clone()).collect();
         assert!(
-            !deps.contains(&"planner".to_string()),
+            !names.contains(&"planner".to_string()),
             "should skip commented use"
         );
-        assert!(deps.contains(&"dbm".to_string()));
+        assert!(names.contains(&"dbm".to_string()));
     }
 
     // ── Complexity ──
@@ -811,6 +1038,28 @@ mod tests {
         }];
         let modules = group_modules(&files);
         assert_eq!(modules[0].name, "root");
+    }
+
+    #[test]
+    fn group_modules_uses_file_stem_for_source_root_flat_files() {
+        let files = vec![
+            FileAnalysis {
+                path: "apps/cli/src/renderer.rs".to_string(),
+                language: Language::Rust,
+                complexity: Complexity::Low,
+                todos: vec![],
+            },
+            FileAnalysis {
+                path: "apps/cli/src/world_renderer_interface.rs".to_string(),
+                language: Language::Rust,
+                complexity: Complexity::Low,
+                todos: vec![],
+            },
+        ];
+        let modules = group_modules(&files);
+        let names: Vec<&str> = modules.iter().map(|m| m.name.as_str()).collect();
+        assert!(names.contains(&"renderer"), "{names:?}");
+        assert!(names.contains(&"world_renderer_interface"), "{names:?}");
     }
 
     // ── count_branches ──
