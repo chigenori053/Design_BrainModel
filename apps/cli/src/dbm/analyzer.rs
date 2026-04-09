@@ -512,9 +512,7 @@ fn collect_mediated_modules(
     mediated
 }
 
-fn collect_dual_boundary_pairs(
-    mediated_modules: &BTreeSet<String>,
-) -> BTreeSet<(String, String)> {
+fn collect_dual_boundary_pairs(mediated_modules: &BTreeSet<String>) -> BTreeSet<(String, String)> {
     let mut pairs = BTreeSet::new();
     for module in mediated_modules {
         let Some((lhs, rhs)) = boundary_pair_for_module_name(module) else {
@@ -548,8 +546,14 @@ fn ordered_boundary_pair(lhs: &str, rhs: &str) -> (String, String) {
 
 fn module_name_from_relative_path(relative_path: &str) -> String {
     let path = Path::new(relative_path);
-    let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default();
-    if matches!(file_name, "mod.rs" | "index.ts" | "index.tsx" | "index.js" | "index.jsx") {
+    let file_name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
+    if matches!(
+        file_name,
+        "mod.rs" | "index.ts" | "index.tsx" | "index.js" | "index.jsx"
+    ) {
         return path
             .parent()
             .and_then(|p| p.file_name())
@@ -558,7 +562,10 @@ fn module_name_from_relative_path(relative_path: &str) -> String {
             .to_string();
     }
 
-    let stem = path.file_stem().and_then(|n| n.to_str()).unwrap_or_default();
+    let stem = path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .unwrap_or_default();
     if matches!(stem, "lib" | "main") {
         return "root".to_string();
     }
@@ -598,7 +605,8 @@ fn file_path_declares_mediated_source(relative_path: &Path) -> bool {
 }
 
 fn path_declares_mediation(path: &str) -> bool {
-    path.split(&[':', '/', '.'][..]).any(is_mediated_module_name)
+    path.split(&[':', '/', '.'][..])
+        .any(is_mediated_module_name)
         || path.split("::").any(is_mediated_symbol_name)
 }
 

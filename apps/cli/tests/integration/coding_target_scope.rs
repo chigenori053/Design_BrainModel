@@ -113,6 +113,7 @@ fn target_mode_blocks_mod_registration() {
             modify_files: 2,
             move_files: 0,
         },
+        canonical_target: None,
     };
 
     let result = execute_code_change_set(
@@ -226,6 +227,7 @@ fn rollback_on_scope_violation() {
             modify_files: 1,
             move_files: 0,
         },
+        canonical_target: None,
     };
 
     let result = execute_code_change_set(
@@ -352,6 +354,7 @@ fn source_index_bootstrap_same_file_local_edit_only() {
             modify_files: 1,
             move_files: 0,
         },
+        canonical_target: None,
     };
 
     let result = execute_code_change_set(

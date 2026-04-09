@@ -3,7 +3,9 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use design_cli::coding::{compute_diff_report, generate_code_change_set, transactional_apply};
+use design_cli::coding::{
+    compute_diff_report, fix_build, generate_code_change_set, transactional_apply,
+};
 use integration_layer::{CodePatch, PatchOperation, RefactorPlanAction};
 
 fn temp_workspace(name: &str) -> PathBuf {
@@ -284,14 +286,12 @@ fn engine_executor_break_cycle_sibling_import_rebinding() {
     assert!(result.applied, "{:?}", result.diagnostics);
     assert!(result.build_ok, "{:?}", result.diagnostics);
 
-    let distance =
-        fs::read_to_string(workspace.join("crates/agent_core/src/engine/distance.rs"))
-            .expect("distance");
+    let distance = fs::read_to_string(workspace.join("crates/agent_core/src/engine/distance.rs"))
+        .expect("distance");
     assert!(
         distance.contains("use super::engine_executor_interface::EngineExecutorInterface;")
-            || distance.contains(
-                "use crate::engine::engine_executor_interface::EngineExecutorInterface;"
-            ),
+            || distance
+                .contains("use crate::engine::engine_executor_interface::EngineExecutorInterface;"),
         "{distance}"
     );
     assert!(
@@ -317,4 +317,70 @@ fn engine_executor_break_cycle_sibling_import_rebinding() {
         String::from_utf8_lossy(&cargo_check.stdout),
         String::from_utf8_lossy(&cargo_check.stderr)
     );
+}
+
+#[test]
+fn crate_root_reexport_import_rebinding_for_generated_patch() {
+    let workspace = temp_workspace("crate_root_reexport_import_rebinding");
+    let crate_root = workspace.join("crates/memory_space");
+    fs::create_dir_all(crate_root.join("src")).expect("memory_space dir");
+    fs::write(
+        crate_root.join("Cargo.toml"),
+        "[package]\nname = \"memory_space_phase14\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+    )
+    .expect("memory_space cargo");
+    fs::write(
+        crate_root.join("src/lib.rs"),
+        "pub mod pattern_extractor;\npub mod pattern_matcher;\n\npub struct WorldState;\npub type Layer = u8;\n\npub use pattern_extractor::layer_sequence_from_state;\n",
+    )
+    .expect("lib");
+    fs::write(
+        crate_root.join("src/pattern_extractor.rs"),
+        "pub fn layer_sequence_from_state(_state: &crate::WorldState) -> Vec<crate::Layer> {\n    vec![1]\n}\n",
+    )
+    .expect("pattern extractor");
+    fs::write(
+        crate_root.join("src/pattern_matcher.rs"),
+        "pub fn match_patterns(state: &crate::WorldState) -> usize {\n    let current_layers = layer_sequence_from_state(state);\n    current_layers.len()\n}\n",
+    )
+    .expect("pattern matcher");
+
+    let first = fix_build(&crate_root).expect("first fix build");
+    assert!(first.build_fixed);
+
+    let matcher = fs::read_to_string(crate_root.join("src/pattern_matcher.rs"))
+        .expect("pattern matcher after first fix");
+    let import_block = matcher
+        .lines()
+        .take_while(|line| line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(
+        matcher.contains("use crate::layer_sequence_from_state;"),
+        "{matcher}"
+    );
+
+    let cargo_check = Command::new("cargo")
+        .args(["check", "-p", "memory_space_phase14"])
+        .current_dir(&crate_root)
+        .output()
+        .expect("cargo check");
+    assert!(
+        cargo_check.status.success(),
+        "stdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&cargo_check.stdout),
+        String::from_utf8_lossy(&cargo_check.stderr)
+    );
+
+    let second = fix_build(&crate_root).expect("second fix build");
+    let matcher_after_second = fs::read_to_string(crate_root.join("src/pattern_matcher.rs"))
+        .expect("pattern matcher after second fix");
+    let import_block_after_second = matcher_after_second
+        .lines()
+        .take_while(|line| line.trim_start().starts_with("use "))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(!second.build_fixed);
+    assert_eq!(import_block_after_second, import_block);
 }

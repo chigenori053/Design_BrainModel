@@ -124,7 +124,8 @@ fn recommendation_lines(result: &ProjectAnalysisResult) -> Vec<String> {
 mod tests {
     use super::*;
     use crate::dbm::analyzer::{
-        Complexity, DependencyEdge, FileAnalysis, Language, Module, ProjectSummary,
+        Complexity, DependencyEdge, DependencyEdgeType, FileAnalysis, Language, Module,
+        ProjectAnalysisResult, ProjectSummary,
     };
 
     fn sample_result() -> ProjectAnalysisResult {
@@ -138,7 +139,9 @@ mod tests {
             dependencies: vec![DependencyEdge {
                 from: "app".to_string(),
                 to: "renderer".to_string(),
+                edge_type: DependencyEdgeType::Direct,
             }],
+
             modules: vec![
                 Module {
                     name: "app".to_string(),

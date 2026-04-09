@@ -22,6 +22,7 @@ design_search_engine = { workspace = true }
 hybrid_vm = { workspace = true }
 integration_layer = { workspace = true }
 language_core = { workspace = true }
+language_reasoning = { workspace = true }
 code_language_core = { workspace = true }
 unified_design_ir = { workspace = true }
 runtime_vm = { workspace = true }
@@ -41,3 +42,4 @@ crossterm = { workspace = true }
 ctrlc = "3.4"
 ratatui = { workspace = true }
 serde_yaml = "0.9"
+tempfile = "3"

@@ -299,6 +299,10 @@ fn build_design_edges(result: &ProjectAnalysisResult) -> Vec<DesignEdge> {
             id: format!("{}->{}", edge.from, edge.to),
             from: edge.from.clone(),
             to: edge.to.clone(),
+            edge_type: match edge.edge_type {
+                analyzer::DependencyEdgeType::Direct => crate::service::DesignEdgeType::Direct,
+                analyzer::DependencyEdgeType::Mediated => crate::service::DesignEdgeType::Mediated,
+            },
         })
         .collect::<Vec<_>>();
     edges.sort_by(|left, right| left.id.cmp(&right.id));
@@ -309,10 +313,12 @@ fn collect_cycle_paths(result: &ProjectAnalysisResult) -> Vec<Vec<String>> {
     let mut cycles = result
         .dependencies
         .iter()
+        .filter(|dep| dep.edge_type == analyzer::DependencyEdgeType::Direct)
         .filter(|dep| {
             result
                 .dependencies
                 .iter()
+                .filter(|other| other.edge_type == analyzer::DependencyEdgeType::Direct)
                 .any(|other| other.from == dep.to && other.to == dep.from)
         })
         .map(|dep| vec![dep.from.clone(), dep.to.clone(), dep.from.clone()])
@@ -381,10 +387,13 @@ fn parse_intent(value: &str) -> Option<IntentProfile> {
 fn count_cycles(result: &ProjectAnalysisResult) -> usize {
     let mut count = 0usize;
     for dep in &result.dependencies {
-        if result
-            .dependencies
-            .iter()
-            .any(|other| other.from == dep.to && other.to == dep.from && dep.from < dep.to)
+        if dep.edge_type == analyzer::DependencyEdgeType::Direct
+            && result.dependencies.iter().any(|other| {
+                other.edge_type == analyzer::DependencyEdgeType::Direct
+                    && other.from == dep.to
+                    && other.to == dep.from
+                    && dep.from < dep.to
+            })
         {
             count += 1;
         }

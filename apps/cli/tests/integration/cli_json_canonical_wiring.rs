@@ -336,6 +336,7 @@ fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport
             patches: vec![],
             changes,
             summary,
+            canonical_target: None,
         },
         apply_resolutions: vec![],
     }

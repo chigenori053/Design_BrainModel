@@ -56,7 +56,7 @@ fn plan_with_source(source_path: Option<&str>, stale: bool) -> MutationPlan {
         },
         source_path: source_path.map(ToString::to_string),
         snapshot_version: Some(if stale { "snapshot-v0" } else { "snapshot-v1" }.to_string()),
-        resolver_version: Some("snapshot-v1".to_string()),
+        resolver_version: Some(if stale { "2" } else { "3" }.to_string()),
     }
 }
 

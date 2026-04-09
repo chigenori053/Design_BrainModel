@@ -1,6 +1,6 @@
 use world_model_core::WorldState;
 
-use crate::pattern_extractor::layer_sequence_from_state;
+use crate::layer_sequence_from_state;
 use crate::pattern_store::{DesignPattern, PatternStore};
 
 #[derive(Clone, Debug, PartialEq)]

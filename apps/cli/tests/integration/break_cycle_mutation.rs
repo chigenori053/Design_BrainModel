@@ -261,8 +261,7 @@ fn temp_controller_replay_workspace(name: &str) -> PathBuf {
     ));
     fs::create_dir_all(dir.join("crates/execution_stability_core/src/controller"))
         .expect("controller dir");
-    fs::create_dir_all(dir.join("crates/execution_stability_core/src/replay"))
-        .expect("replay dir");
+    fs::create_dir_all(dir.join("crates/execution_stability_core/src/replay")).expect("replay dir");
     dir
 }
 
@@ -812,7 +811,8 @@ fn controller_replay_break_cycle_trait_preservation() {
     )
     .expect("controller");
     assert!(
-        controller.contains("use crate::replay::replay_engine::{DefaultReplayEngine, ReplayEngine};"),
+        controller
+            .contains("use crate::replay::replay_engine::{DefaultReplayEngine, ReplayEngine};"),
         "{controller}"
     );
 }

@@ -23,9 +23,9 @@ use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_comman
 use crate::coding::{
     CodingOptions, apply_bootstrap_safety_policy, collect_apply_target_resolutions,
     deterministic_repl_v2_wiring_patches, execute_code_change_set,
-    generate_code_change_set_with_resolved_paths, generate_code_change_set_with_target,
-    load_patches_from_design_snapshot, load_patches_from_json, resolve_apply_paths_for_patches,
-    resolve_sandbox_module_file, resolve_transactional_candidate_for_patches,
+    load_patches_from_design_snapshot, load_patches_from_json, patches_to_change_set,
+    resolve_apply_paths_for_patches, resolve_sandbox_module_file,
+    resolve_transactional_candidate_for_patches,
 };
 use crate::commands::analyze::project::{self, AnalyzeMode};
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
@@ -40,7 +40,7 @@ use crate::renderer::{
     render_refactor_preview_report, render_result, render_rules_report, render_run_report,
     render_validation_report,
 };
-use crate::repl::run_repl;
+use crate::repl::run_repl_stdio;
 use crate::runner::{
     ExecutionConfig, ExecutionResult as RunnerExecutionResult, ExecutionTarget, OutputMode,
     SandboxPolicy, TimeoutConfig, build_command, create_sandbox, detect_target, fixed_env,
@@ -1044,7 +1044,13 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             return Err("coding requires <path> with --from-design-snapshot".to_string());
         };
         let (plan, patches, resolution) = load_patches_from_design_snapshot(&path, snapshot)?;
-        if args.target.is_none() && plan.constraints.target_scope_locked {
+        if args.target.is_none()
+            && plan.constraints.target_scope_locked
+            && !matches!(
+                plan.operation,
+                crate::service::MutationOperation::BreakCycle
+            )
+        {
             args.target = resolution.canonical_target_path.clone();
         }
         (path, patches, Some(resolution))
@@ -1075,16 +1081,15 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
     } else {
         None
     };
-    let changes = if resolved_paths.is_empty() {
-        generate_code_change_set_with_target(&root, &patches, args.target.as_deref())?
-    } else {
-        generate_code_change_set_with_resolved_paths(
-            &root,
-            &patches,
-            args.target.as_deref(),
-            &resolved_paths,
-        )?
-    };
+    let changes = patches_to_change_set(
+        &root,
+        &patches,
+        args.target.as_deref(),
+        &resolved_paths,
+        mutation_resolution
+            .as_ref()
+            .and_then(|resolution| resolution.canonical_target_path.as_deref()),
+    )?;
     let mut execution = execute_code_change_set(
         &root,
         &changes,
@@ -1338,11 +1343,7 @@ fn wizard_mode(args: WizardArgs) -> Result<(), String> {
 
 fn repl_mode(args: ReplArgs) -> Result<(), String> {
     let _ = args;
-    let stdin = stdin();
-    let stdout = stdout();
-    let mut reader = BufReader::new(stdin.lock());
-    let mut writer = stdout.lock();
-    run_repl(&mut reader, &mut writer)
+    run_repl_stdio()
 }
 
 pub fn run_chat_loop() -> Result<(), String> {

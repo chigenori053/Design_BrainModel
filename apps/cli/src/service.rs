@@ -137,11 +137,13 @@ pub fn design_graph_from_analysis(analysis: &AnalysisReport) -> unified_design_i
         });
     }
     for dependency in &analysis.dependencies {
-        builder = builder.add_edge(unified_design_ir::DesignEdge {
-            source: unified_design_ir::DesignNodeId(dependency.from.clone()),
-            target: unified_design_ir::DesignNodeId(dependency.to.clone()),
-            relation: unified_design_ir::DesignRelation::DependsOn,
-        });
+        if dependency.edge_type == DesignEdgeType::Direct {
+            builder = builder.add_edge(unified_design_ir::DesignEdge {
+                source: unified_design_ir::DesignNodeId(dependency.from.clone()),
+                target: unified_design_ir::DesignNodeId(dependency.to.clone()),
+                relation: unified_design_ir::DesignRelation::DependsOn,
+            });
+        }
     }
     builder.build()
 }
@@ -394,6 +396,14 @@ fn build_analysis_report(
             .map(|edge| AnalysisDependency {
                 from: edge.from.clone(),
                 to: edge.to.clone(),
+                edge_type: match edge.edge_type {
+                    crate::dbm::analyzer::DependencyEdgeType::Direct => {
+                        crate::service::DesignEdgeType::Direct
+                    }
+                    crate::dbm::analyzer::DependencyEdgeType::Mediated => {
+                        crate::service::DesignEdgeType::Mediated
+                    }
+                },
             })
             .collect(),
         todo_files,

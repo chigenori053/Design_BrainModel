@@ -87,6 +87,8 @@ pub struct ModuleNode {
 pub struct AnalysisDependency {
     pub from: String,
     pub to: String,
+    #[serde(rename = "type")]
+    pub edge_type: DesignEdgeType,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -110,11 +112,20 @@ pub struct DesignNode {
     pub source_path: String,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DesignEdgeType {
+    Direct,
+    Mediated,
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct DesignEdge {
     pub id: String,
     pub from: String,
     pub to: String,
+    #[serde(rename = "type")]
+    pub edge_type: DesignEdgeType,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,6 +155,7 @@ pub enum MutationOperation {
     RemoveDependency,
     ExtractInterface,
     MoveDependency,
+    BreakCycle,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -152,6 +164,7 @@ pub enum MutationStrategy {
     ExtractInterface,
     ImportRebinding,
     BoundaryMove,
+    ExtractInterfaceBothSides,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]

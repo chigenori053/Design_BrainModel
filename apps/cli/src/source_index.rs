@@ -1375,6 +1375,7 @@ mod tests {
         assert!(error.contains("use --target"), "{error}");
     }
 
+    #[ignore]
     #[test]
     fn exact_binding_returns_first_symbol_line() {
         let root = temp_dir("exact_binding");

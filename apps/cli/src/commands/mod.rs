@@ -1,5 +1,6 @@
 pub mod analyze;
 pub mod coding;
+pub mod commands_app_interface;
 pub mod design;
 pub mod exec;
 pub mod generate;

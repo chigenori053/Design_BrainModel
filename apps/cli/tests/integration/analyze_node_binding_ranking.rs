@@ -182,7 +182,7 @@ fn analyze_node_binding_ranking_keeps_downstream_mutation_on_snapshot_path() {
         },
         "source_path": source_path,
         "snapshot_version": "snapshot-v1",
-        "resolver_version": "snapshot-v1"
+        "resolver_version": "3"
     });
     fs::create_dir_all(root.join(".dbm/design")).expect("design dir");
     fs::write(

@@ -4,6 +4,12 @@ mod analyze_design_json;
 mod analyze_node_binding_ranking;
 #[path = "integration/apply_preview_bridge.rs"]
 mod apply_preview_bridge;
+#[path = "integration/break_cycle_analyzer_semantic_alignment.rs"]
+mod break_cycle_analyzer_semantic_alignment;
+#[path = "integration/break_cycle_change_set_representative_target.rs"]
+mod break_cycle_change_set_representative_target;
+#[path = "integration/break_cycle_mutation.rs"]
+mod break_cycle_mutation;
 #[path = "integration/canonical_patch_stream.rs"]
 mod canonical_patch_stream;
 #[path = "integration/cli_json_canonical_wiring.rs"]

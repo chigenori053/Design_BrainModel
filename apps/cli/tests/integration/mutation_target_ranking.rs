@@ -54,7 +54,7 @@ fn mutation_plan() -> MutationPlan {
         },
         source_path: Some("src/adapter/mod.rs".to_string()),
         snapshot_version: Some("snapshot-v1".to_string()),
-        resolver_version: Some("snapshot-v1".to_string()),
+        resolver_version: Some("3".to_string()),
     }
 }
 

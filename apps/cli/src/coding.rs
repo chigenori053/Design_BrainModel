@@ -1456,6 +1456,13 @@ pub fn execute_code_change_set(
         });
     }
     let diff = compute_diff_report(root, change_set)?;
+    let representative_target = representative_target_file(
+        root,
+        change_set,
+        options.explicit_target.as_deref(),
+        transactional_candidate.map(|candidate| candidate.source_path.as_path()),
+    )
+    .map(|path| path.display().to_string());
     if options.safe_mode {
         validate_diff_report(&diff)?;
     }
@@ -1498,7 +1505,7 @@ pub fn execute_code_change_set(
                 git_commit: None,
                 git_push: None,
                 pull_request: None,
-                canonical_target_path: None,
+                canonical_target_path: representative_target.clone(),
                 legacy_pipeline_hits: 0,
                 fallback_resolution_hits: 0,
                 stale_artifact_detected: false,
@@ -1524,7 +1531,7 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
-            canonical_target_path: None,
+            canonical_target_path: representative_target.clone(),
             legacy_pipeline_hits: 0,
             fallback_resolution_hits: 0,
             stale_artifact_detected: false,
@@ -1734,7 +1741,7 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
-            canonical_target_path: None,
+            canonical_target_path: representative_target.clone(),
             legacy_pipeline_hits: 0,
             fallback_resolution_hits: 0,
             stale_artifact_detected: false,
@@ -1742,6 +1749,11 @@ pub fn execute_code_change_set(
     }
 
     if !options.apply {
+        let git_commit = if options.auto_commit {
+            Some(build_dry_run_commit_preview(root, change_set)?)
+        } else {
+            None
+        };
         return Ok(CodingExecutionResult {
             status: if checked {
                 "checked".to_string()
@@ -1762,10 +1774,10 @@ pub fn execute_code_change_set(
             commit_id: None,
             branch: None,
             transactional_apply: None,
-            git_commit: None,
+            git_commit,
             git_push: None,
             pull_request: None,
-            canonical_target_path: None,
+            canonical_target_path: representative_target.clone(),
             legacy_pipeline_hits: 0,
             fallback_resolution_hits: 0,
             stale_artifact_detected: false,
@@ -1810,7 +1822,7 @@ pub fn execute_code_change_set(
             git_commit: None,
             git_push: None,
             pull_request: None,
-            canonical_target_path: None,
+            canonical_target_path: representative_target.clone(),
             legacy_pipeline_hits: 0,
             fallback_resolution_hits: 0,
             stale_artifact_detected: false,
@@ -1836,7 +1848,7 @@ pub fn execute_code_change_set(
                 git_commit: None,
                 git_push: None,
                 pull_request: None,
-                canonical_target_path: None,
+                canonical_target_path: representative_target,
                 legacy_pipeline_hits: 0,
                 fallback_resolution_hits: 0,
                 stale_artifact_detected: false,
@@ -2365,6 +2377,60 @@ pub fn restricted_commit(
         telemetry_path: Some(telemetry_path),
         warning,
         elapsed_ms: started.elapsed().as_millis(),
+    })
+}
+
+fn build_dry_run_commit_preview(
+    root: &Path,
+    change_set: &CodeChangeSet,
+) -> Result<RestrictedGitCommitResult, String> {
+    let git_root = resolve_git_root(root)?;
+    let status_before = collect_git_status(&git_root)?;
+    let warning = status_before
+        .detached_head
+        .then_some("warning: detached HEAD".to_string());
+    let staged_files = change_set
+        .changes
+        .iter()
+        .map(|change| PathBuf::from(&change.file_path))
+        .collect::<Vec<_>>();
+    let diff_preview = change_set
+        .changes
+        .iter()
+        .map(|change| GitDiffEntry {
+            change_type: match change.change_type {
+                ChangeType::CreateFile => "A",
+                ChangeType::ModifyFile => "M",
+                ChangeType::MoveFile => "D",
+            }
+            .to_string(),
+            path: PathBuf::from(&change.file_path),
+            hunk_count: change.hunks.len(),
+            line_delta: change
+                .hunks
+                .last()
+                .map(|hunk| hunk.replacement.lines().count() as isize - hunk.end_line as isize)
+                .unwrap_or_default(),
+        })
+        .collect::<Vec<_>>();
+    Ok(RestrictedGitCommitResult {
+        staged_files,
+        commit_created: false,
+        commit_hash: None,
+        confirmation_required: false,
+        confirmation_granted: false,
+        dirty_excluded: status_before
+            .dirty_files
+            .iter()
+            .chain(status_before.untracked_files.iter())
+            .cloned()
+            .collect(),
+        status_before,
+        status_after: None,
+        diff_preview,
+        telemetry_path: None,
+        warning,
+        elapsed_ms: 0,
     })
 }
 
@@ -3213,6 +3279,11 @@ enum SemanticCompileError {
         target_file: PathBuf,
         help_use: String,
     },
+    MissingFunction {
+        target_file: PathBuf,
+        symbol: String,
+        help_use: Option<String>,
+    },
     UnresolvedCratePath {
         target_file: PathBuf,
         unresolved_use: String,
@@ -3280,6 +3351,15 @@ fn classify_semantic_compile_error(message: &str) -> Option<SemanticCompileError
             SemanticCompileError::MissingType {
                 target_file,
                 help_use,
+            }
+        });
+    }
+    if message.contains("cannot find function `") && message.contains("in this scope") {
+        return extract_missing_function_name(message).map(|symbol| {
+            SemanticCompileError::MissingFunction {
+                target_file,
+                symbol,
+                help_use: extract_help_use_statement(message),
             }
         });
     }
@@ -3444,6 +3524,50 @@ fn apply_semantic_recovery(
                 },
             ))
         }
+        SemanticCompileError::MissingFunction {
+            target_file,
+            symbol,
+            help_use,
+        } => {
+            let path = project_root.join(&target_file);
+            let content = fs::read_to_string(&path)
+                .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+            let green_state_preserved = preserves_stable_domain_import_hub(&content);
+            let current_id = source_index
+                .qualified_id_for_path(&target_file)
+                .ok_or_else(|| {
+                    format!("failed to resolve module id for {}", target_file.display())
+                })?;
+            let used_rustc_help = help_use.is_some();
+            let preferred_use =
+                crate_root_reexport_use_line(project_root, &current_id.crate_name, &symbol)?
+                    .or(help_use);
+            let updated = if let Some(use_line) = preferred_use {
+                if content.lines().any(|line| line.trim() == use_line) {
+                    content.clone()
+                } else {
+                    insert_use_statement(&content, &use_line)
+                }
+            } else {
+                content.clone()
+            };
+            let applied = updated != content;
+            if applied {
+                fs::write(&path, updated)
+                    .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+            }
+            Ok((
+                applied,
+                SemanticRecoveryTelemetry {
+                    semantic_recovery: SemanticRecoveryTelemetryData {
+                        error_type: "MissingFunction".to_string(),
+                        used_rustc_help,
+                        patch_family: "safe_import_fix".to_string(),
+                        green_state_preserved,
+                    },
+                },
+            ))
+        }
         SemanticCompileError::UnresolvedCratePath {
             target_file,
             unresolved_use,
@@ -3562,6 +3686,18 @@ fn normalize_embedded_use_statement(line: &str) -> Option<String> {
     let start = line.find("use ")?;
     let candidate = line[start..].trim();
     candidate.ends_with(';').then(|| candidate.to_string())
+}
+
+fn extract_missing_function_name(message: &str) -> Option<String> {
+    let section = primary_error_section(message);
+    section.lines().find_map(|line| {
+        let trimmed = line.trim();
+        let start = trimmed.find("cannot find function `")?;
+        let rest = &trimmed[start + "cannot find function `".len()..];
+        let end = rest.find('`')?;
+        let symbol = rest[..end].trim();
+        (!symbol.is_empty()).then(|| symbol.to_string())
+    })
 }
 
 fn insert_use_statement(content: &str, use_line: &str) -> String {
@@ -4580,8 +4716,12 @@ fn rewrite_rust_use_statement(
                 generated_symbol_targets,
                 &symbol,
             )?
-            .or(source_index.resolve_symbol_use_path(root, current_id, &symbol)?)
-            {
+            .or(resolve_symbol_use_path_with_reexports(
+                root,
+                source_index,
+                current_id,
+                &symbol,
+            )?) {
                 if let Some((prefix, resolved_symbol)) = split_symbol_use_path(&use_path) {
                     grouped.entry(prefix).or_default().push(resolved_symbol);
                 } else {
@@ -4616,7 +4756,12 @@ fn rewrite_rust_use_statement(
     if parts.len() == 1 && is_rust_symbol(parts[0]) {
         if let Some(use_path) =
             generated_symbol_use_targets_path(root, current_id, generated_symbol_targets, parts[0])?
-                .or(source_index.resolve_symbol_use_path(root, current_id, parts[0])?)
+                .or(resolve_symbol_use_path_with_reexports(
+                    root,
+                    source_index,
+                    current_id,
+                    parts[0],
+                )?)
         {
             return Ok(format!("use {use_path};"));
         }
@@ -4632,8 +4777,9 @@ fn rewrite_rust_use_statement(
             return Ok(format!("use crate::{rebound}::{last};"));
         }
         if let Some(use_path) =
-            generated_symbol_use_targets_path(root, current_id, generated_symbol_targets, last)?
-                .or(source_index.resolve_symbol_use_path(root, current_id, last)?)
+            generated_symbol_use_targets_path(root, current_id, generated_symbol_targets, last)?.or(
+                resolve_symbol_use_path_with_reexports(root, source_index, current_id, last)?,
+            )
         {
             return Ok(format!("use {use_path};"));
         }
@@ -4646,6 +4792,62 @@ fn rewrite_rust_use_statement(
         return Ok(format!("use crate::{rebound};"));
     }
     Ok(line.to_string())
+}
+
+fn resolve_symbol_use_path_with_reexports(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    current_id: &QualifiedModuleId,
+    symbol: &str,
+) -> Result<Option<String>, String> {
+    if let Some(module_path) = source_index.resolve_symbol_module(
+        root,
+        &current_id.crate_name,
+        Some(&current_id.module_path),
+        symbol,
+    )? {
+        if is_local_symbol_module(&current_id.module_path, &module_path) {
+            return Ok(Some(format!("crate::{module_path}::{symbol}")));
+        }
+        if let Some(use_line) = crate_root_reexport_use_line(root, &current_id.crate_name, symbol)?
+        {
+            let use_path = use_line
+                .trim()
+                .strip_prefix("use ")
+                .and_then(|value| value.strip_suffix(';'))
+                .map(ToString::to_string);
+            if use_path.is_some() {
+                return Ok(use_path);
+            }
+        }
+        return Ok(Some(format!("crate::{module_path}::{symbol}")));
+    }
+    if let Some(use_line) = crate_root_reexport_use_line(root, &current_id.crate_name, symbol)? {
+        let use_path = use_line
+            .trim()
+            .strip_prefix("use ")
+            .and_then(|value| value.strip_suffix(';'))
+            .map(ToString::to_string);
+        if use_path.is_some() {
+            return Ok(use_path);
+        }
+    }
+    source_index.resolve_symbol_use_path(root, current_id, symbol)
+}
+
+fn is_local_symbol_module(current_module: &str, candidate_module: &str) -> bool {
+    if current_module == candidate_module {
+        return true;
+    }
+    let current_parent = current_module
+        .rsplit_once("::")
+        .map(|(parent, _)| parent)
+        .unwrap_or_default();
+    let candidate_parent = candidate_module
+        .rsplit_once("::")
+        .map(|(parent, _)| parent)
+        .unwrap_or_default();
+    current_parent == candidate_parent || current_parent == candidate_module
 }
 
 fn rebind_module_prefix(
@@ -4682,6 +4884,108 @@ fn format_grouped_use_statement(prefix: &str, symbols: &[String]) -> String {
 fn split_symbol_use_path(use_path: &str) -> Option<(String, String)> {
     let (prefix, symbol) = use_path.rsplit_once("::")?;
     Some((prefix.to_string(), symbol.to_string()))
+}
+
+fn crate_root_reexport_use_line(
+    root: &Path,
+    crate_name: &str,
+    symbol: &str,
+) -> Result<Option<String>, String> {
+    let Some(root_module) = crate_root_module_path(root, crate_name) else {
+        return Ok(None);
+    };
+    let content = fs::read_to_string(root.join(&root_module)).map_err(|err| {
+        format!(
+            "failed to read {}: {err}",
+            root.join(&root_module).display()
+        )
+    })?;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        let Some(remainder) = trimmed
+            .strip_prefix("pub use ")
+            .and_then(|value| value.strip_suffix(';'))
+        else {
+            continue;
+        };
+        if reexport_statement_exports_symbol(remainder, symbol) {
+            return Ok(Some(format!("use crate::{symbol};")));
+        }
+    }
+    Ok(None)
+}
+
+fn crate_root_module_path(root: &Path, crate_name: &str) -> Option<PathBuf> {
+    let normalized = crate_name.replace('-', "_");
+    let candidates = [
+        root.join("apps")
+            .join(&normalized)
+            .join("src")
+            .join("lib.rs"),
+        root.join("apps")
+            .join(&normalized)
+            .join("src")
+            .join("main.rs"),
+        root.join("crates")
+            .join(&normalized)
+            .join("src")
+            .join("lib.rs"),
+        root.join("crates")
+            .join(&normalized)
+            .join("src")
+            .join("main.rs"),
+        root.join("core")
+            .join(&normalized)
+            .join("src")
+            .join("lib.rs"),
+        root.join("core")
+            .join(&normalized)
+            .join("src")
+            .join("main.rs"),
+        root.join("contracts")
+            .join(&normalized)
+            .join("src")
+            .join("lib.rs"),
+        root.join("contracts")
+            .join(&normalized)
+            .join("src")
+            .join("main.rs"),
+        root.join("src").join("lib.rs"),
+        root.join("src").join("main.rs"),
+    ];
+    candidates
+        .into_iter()
+        .find(|candidate| candidate.exists())
+        .and_then(|absolute| absolute.strip_prefix(root).ok().map(Path::to_path_buf))
+}
+
+fn reexport_statement_exports_symbol(remainder: &str, symbol: &str) -> bool {
+    if let Some((_, symbols)) = parse_braced_crate_import(remainder) {
+        return symbols
+            .into_iter()
+            .any(|candidate| reexported_symbol_name(&candidate).as_deref() == Some(symbol));
+    }
+    reexported_symbol_name(remainder).as_deref() == Some(symbol)
+}
+
+fn reexported_symbol_name(value: &str) -> Option<String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some((_, alias)) = trimmed.rsplit_once(" as ") {
+        let alias = alias.trim();
+        if !alias.is_empty() && alias != "_" {
+            return Some(alias.to_string());
+        }
+        return None;
+    }
+    trimmed
+        .rsplit("::")
+        .next()
+        .map(str::trim)
+        .filter(|candidate| !candidate.is_empty() && *candidate != "*")
+        .map(ToString::to_string)
 }
 
 fn sort_leading_rust_imports(content: &str) -> String {
@@ -5108,9 +5412,19 @@ fn resolve_root_module_file_for_change_set(
 fn resolve_root_module_file_relative_for_change_set(
     root: &Path,
     change_set: &CodeChangeSet,
-    _candidate: Option<&RefactorCandidate>,
+    candidate: Option<&RefactorCandidate>,
 ) -> Result<PathBuf, String> {
-    if let Some(relative) = representative_module_relative_path(change_set) {
+    if let Some(relative) = representative_module_relative_path(
+        root,
+        change_set,
+        None,
+        candidate.map(|candidate| candidate.source_path.as_path()),
+    ) {
+        if relative.file_name().and_then(|name| name.to_str()) == Some("app.rs")
+            && root.join(&relative).exists()
+        {
+            return Ok(relative);
+        }
         return resolve_root_module_relative_from_target(root, &relative).ok_or_else(|| {
             format!(
                 "failed to resolve root module file from canonical target {}",
@@ -5134,11 +5448,61 @@ fn resolve_root_module_file_relative(root: &Path) -> Result<PathBuf, String> {
     ))
 }
 
-fn representative_module_relative_path(change_set: &CodeChangeSet) -> Option<PathBuf> {
+fn representative_module_relative_path(
+    root: &Path,
+    change_set: &CodeChangeSet,
+    explicit_target: Option<&Path>,
+    last_successful_target: Option<&Path>,
+) -> Option<PathBuf> {
+    representative_target_file(root, change_set, explicit_target, last_successful_target)
+}
+
+fn representative_target_file(
+    root: &Path,
+    change_set: &CodeChangeSet,
+    explicit_target: Option<&Path>,
+    last_successful_target: Option<&Path>,
+) -> Option<PathBuf> {
     change_set
         .canonical_target
-        .clone()
+        .as_deref()
+        .and_then(sanitize_representative_target)
+        .or_else(|| {
+            explicit_target
+                .and_then(|target| normalize_target_scope_path(root, target).ok())
+                .and_then(|target| sanitize_representative_target(&target))
+        })
         .or_else(|| canonical_patch_target_file(&change_set.patches))
+        .or_else(|| {
+            last_successful_target
+                .and_then(|target| normalize_target_scope_path(root, target).ok())
+                .and_then(|target| sanitize_representative_target(&target))
+        })
+        .or_else(|| {
+            best_ranked_change_target(change_set)
+                .and_then(|target| sanitize_representative_target(&target))
+        })
+        .or_else(|| sanitize_representative_target(Path::new("apps/cli/src/app.rs")))
+}
+
+fn sanitize_representative_target(path: &Path) -> Option<PathBuf> {
+    let normalized = normalize_path_for_scope(path);
+    if normalized.as_os_str().is_empty() {
+        None
+    } else {
+        Some(normalized)
+    }
+}
+
+fn best_ranked_change_target(change_set: &CodeChangeSet) -> Option<PathBuf> {
+    change_set
+        .changes
+        .iter()
+        .min_by_key(|change| {
+            let path = Path::new(&change.file_path);
+            (patch_canonical_rank(path), change.file_path.clone())
+        })
+        .map(|change| PathBuf::from(&change.file_path))
 }
 
 /// Returns the best representative target file from a patch set, using canonical rank
@@ -5147,12 +5511,11 @@ fn representative_module_relative_path(change_set: &CodeChangeSet) -> Option<Pat
 fn canonical_patch_target_file(patches: &[CodePatch]) -> Option<PathBuf> {
     patches
         .iter()
-        .filter(|p| !p.target_file.as_os_str().is_empty())
-        .min_by_key(|p| {
-            let rank = patch_canonical_rank(&p.target_file);
-            (rank, p.target_file.as_os_str().to_owned())
+        .filter_map(|patch| sanitize_representative_target(&patch.target_file))
+        .min_by_key(|path| {
+            let rank = patch_canonical_rank(path);
+            (rank, path.as_os_str().to_owned())
         })
-        .map(|p| p.target_file.clone())
 }
 
 /// Rank a patch target file for representative selection.
@@ -5328,24 +5691,9 @@ fn primary_canonical_target(
     change_set: &CodeChangeSet,
     explicit_target: Option<&Path>,
 ) -> Result<PathBuf, String> {
-    if let Some(target) = &change_set.canonical_target {
-        return Ok(target.clone());
-    }
-    if let Some(target) = canonical_patch_target_file(&change_set.patches) {
-        return Ok(target);
-    }
-    if let Some(target) = explicit_target {
-        return normalize_target_scope_path(root, target);
-    }
-    // Fallback for non-mutation patches (e.g. --input): rank changes to avoid
-    // selecting lib.rs / main.rs registration as the canonical target.
-    if let Some(change) = change_set.changes.iter().min_by_key(|c| {
-        let path = Path::new(&c.file_path);
-        (patch_canonical_rank(path), c.file_path.clone())
-    }) {
-        return Ok(PathBuf::from(&change.file_path));
-    }
-    Err("unable to determine canonical target path for transactional apply".to_string())
+    representative_target_file(root, change_set, explicit_target, None).ok_or_else(|| {
+        "unable to determine canonical target path for transactional apply".to_string()
+    })
 }
 
 fn infer_affected_crate_from_workspace_path(
@@ -5900,7 +6248,8 @@ fn interface_is_sibling_module(root: &Path, current_path: &Path, module_leaf: &s
     let Some(parent) = absolute.parent() else {
         return false;
     };
-    parent.join(format!("{module_leaf}.rs")).exists() || parent.join(module_leaf).join("mod.rs").exists()
+    parent.join(format!("{module_leaf}.rs")).exists()
+        || parent.join(module_leaf).join("mod.rs").exists()
 }
 
 fn is_module_root_file(path: &Path) -> bool {
@@ -6003,7 +6352,12 @@ fn imported_trait_methods(
         None => return Ok(None),
     };
     let Some(module_path) = source_index
-        .resolve_symbol_module(root, &current_id.crate_name, Some(&current_id.module_path), symbol)?
+        .resolve_symbol_module(
+            root,
+            &current_id.crate_name,
+            Some(&current_id.module_path),
+            symbol,
+        )?
         .filter(|resolved| resolved == &module_prefix)
         .or(Some(module_prefix))
     else {
@@ -6790,7 +7144,7 @@ mod tests {
             .expect("change set");
 
             assert_eq!(
-                representative_module_relative_path(&change_set),
+                representative_module_relative_path(&root, &change_set, None, None),
                 Some(adapter.clone())
             );
             assert_eq!(
@@ -6803,6 +7157,79 @@ mod tests {
                 registration.clone()
             );
         }
+    }
+
+    #[test]
+    fn plain_check_auto_commit_uses_representative_target() {
+        let root = temp_dir("plain_check_auto_commit_representative_target");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[[bin]]\nname = \"design_cli\"\npath = \"src/app.rs\"\n",
+        )
+        .expect("cli cargo");
+        fs::write(root.join("apps/cli/src/app.rs"), "pub fn run() {}\n").expect("app");
+        init_git_repo(&root);
+
+        let change_set = CodeChangeSet {
+            patches: vec![],
+            changes: vec![],
+            summary: ChangeSummary::default(),
+            canonical_target: Some(PathBuf::from(".")),
+        };
+
+        let result = execute_code_change_set(
+            &root,
+            &change_set,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: true,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: true,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::WorkspaceWide,
+                explicit_target: None,
+            },
+            None,
+        )
+        .expect("execute");
+
+        assert_eq!(result.status, "checked");
+        assert!(result.build_ok);
+        assert_eq!(
+            result.canonical_target_path.as_deref(),
+            Some("apps/cli/src/app.rs")
+        );
+        assert_ne!(result.canonical_target_path.as_deref(), Some("."));
+        assert!(result.git_commit.is_some());
+        assert_eq!(
+            result
+                .git_commit
+                .as_ref()
+                .expect("commit preview")
+                .diff_preview
+                .len(),
+            0
+        );
+        assert_eq!(
+            resolve_root_module_file_relative_for_change_set(&root, &change_set, None)
+                .expect("root module"),
+            PathBuf::from("apps/cli/src/app.rs")
+        );
     }
 
     #[test]
@@ -7437,6 +7864,53 @@ mod tests {
 
         assert!(
             updated.contains("use crate::domain::{AgentInput, AgentOutput, DomainError};"),
+            "{updated}"
+        );
+    }
+
+    #[test]
+    fn crate_root_reexport_imports_prefer_root_symbol_path() {
+        let root = temp_dir("crate_root_reexport_imports");
+        fs::create_dir_all(root.join("src/controller")).expect("controller");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"memory_space\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("cargo");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub mod controller;\npub mod patterns;\npub use patterns::layer_sequence_from_state;\n",
+        )
+        .expect("lib");
+        fs::write(root.join("src/controller/mod.rs"), "pub mod matcher;\n")
+            .expect("controller mod");
+        fs::write(
+            root.join("src/controller/matcher.rs"),
+            "use crate::patterns::layer_sequence_from_state;\npub fn run() {}\n",
+        )
+        .expect("matcher");
+        fs::write(
+            root.join("src/patterns.rs"),
+            "pub fn layer_sequence_from_state() {}\n",
+        )
+        .expect("patterns");
+
+        let index = ModuleSourceIndex::build(&root).expect("index");
+        let current_id = index
+            .qualified_id_for_path(Path::new("src/controller/matcher.rs"))
+            .expect("current id");
+        let updated = rewrite_imports_in_content(
+            &root,
+            &index,
+            &current_id,
+            "use crate::patterns::layer_sequence_from_state;\npub fn run() {}\n",
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .expect("rewrite");
+
+        assert!(
+            updated.contains("use crate::layer_sequence_from_state;"),
             "{updated}"
         );
     }

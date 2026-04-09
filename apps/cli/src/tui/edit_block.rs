@@ -1,0 +1,574 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+
+use ratatui::{
+    Frame,
+    layout::Rect,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+use serde::Deserialize;
+
+use crate::coding::{CodeChange, CodeChangeSet, CodingExecutionResult, DiffHunk};
+use crate::tui::review_batch::{ReviewBatchState, ReviewGroupingStrategy};
+
+const DIFF_CONTEXT: usize = 3;
+const COLLAPSED_DIFF_LINES: usize = 8;
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+pub struct CodingReviewReport {
+    pub root: String,
+    pub execution: CodingExecutionResult,
+    pub changes: CodeChangeSet,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditBlockStatus {
+    Pending,
+    Applied,
+    Discarded,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct EditBlock {
+    pub patch_id: String,
+    pub file_path: String,
+    pub confidence_label: String,
+    pub confidence_score: f32,
+    pub risk_label: String,
+    pub hunk_count: usize,
+    pub operation: String,
+    pub diff_lines: Vec<String>,
+    pub replacement: String,
+    pub expanded: bool,
+    pub status: EditBlockStatus,
+    pub selected_for_batch: bool,
+    pub patch_family: String,
+    pub crate_name: String,
+    pub target_directory: String,
+    pub destructive: bool,
+    pub cross_crate: bool,
+}
+
+pub fn render_edit_blocks(frame: &mut Frame, review: &ReviewBatchState, area: Rect) {
+    if review.blocks.is_empty() || area.height == 0 {
+        return;
+    }
+
+    let mut y = area.y;
+    for (group_index, group) in review.groups.iter().enumerate() {
+        if y >= area.y + area.height {
+            break;
+        }
+        let group_height = 3u16;
+        if y + group_height > area.y + area.height {
+            break;
+        }
+        let group_rect = Rect {
+            x: area.x,
+            y,
+            width: area.width,
+            height: group_height,
+        };
+        render_group_header(
+            frame,
+            group.title.as_str(),
+            review.grouping,
+            group.block_indices.len(),
+            group.selected_count,
+            group.aggregate_risk.as_str(),
+            group_index == review.current_group,
+            group_rect,
+        );
+        y = y.saturating_add(group_height);
+
+        for block_index in &group.block_indices {
+            if y >= area.y + area.height {
+                break;
+            }
+            let block = &review.blocks[*block_index];
+            let visible_lines = block_visible_lines(block);
+            let height = (visible_lines.len() as u16 + 4).min(area.y + area.height - y);
+            let rect = Rect {
+                x: area.x,
+                y,
+                width: area.width,
+                height,
+            };
+            render_edit_block(frame, block, rect, *block_index == review.focused_block);
+            y = y.saturating_add(height);
+        }
+    }
+}
+
+pub fn build_edit_blocks(
+    report: &CodingReviewReport,
+    patch_family: &str,
+) -> Result<Vec<EditBlock>, String> {
+    let root = PathBuf::from(&report.root);
+    let mut blocks = Vec::new();
+    for (index, change) in report.changes.changes.iter().enumerate() {
+        let rank = crate::tui::confidence_rank::rank_edit_block(
+            &change.file_path,
+            operation_label(change).as_str(),
+            change
+                .hunks
+                .last()
+                .map(|hunk| hunk.replacement.as_str())
+                .unwrap_or_default(),
+        );
+        blocks.push(EditBlock {
+            patch_id: deterministic_patch_id(index, change),
+            file_path: change.file_path.clone(),
+            confidence_label: rank.label.to_string(),
+            confidence_score: rank.score,
+            risk_label: rank.risk_label.to_string(),
+            hunk_count: count_hunks(change),
+            operation: operation_label(change),
+            diff_lines: build_unified_diff_lines(&root, change)?,
+            replacement: change
+                .hunks
+                .last()
+                .map(|hunk| hunk.replacement.clone())
+                .unwrap_or_default(),
+            expanded: false,
+            status: EditBlockStatus::Pending,
+            selected_for_batch: false,
+            patch_family: patch_family.to_string(),
+            crate_name: crate_name_for_path(&change.file_path),
+            target_directory: target_directory_for_path(&change.file_path),
+            destructive: rank.destructive,
+            cross_crate: rank.cross_crate,
+        });
+    }
+    Ok(blocks)
+}
+
+pub fn change_set_for_block(block: &EditBlock) -> CodeChangeSet {
+    let change_type = match block.operation.as_str() {
+        "create" => crate::coding::ChangeType::CreateFile,
+        "delete" => crate::coding::ChangeType::MoveFile,
+        _ => crate::coding::ChangeType::ModifyFile,
+    };
+    CodeChangeSet {
+        patches: vec![],
+        changes: vec![CodeChange {
+            file_path: block.file_path.clone(),
+            change_type,
+            hunks: vec![DiffHunk {
+                start_line: 1,
+                end_line: 1,
+                replacement: block.replacement.clone(),
+            }],
+        }],
+        summary: crate::coding::ChangeSummary {
+            total_changes: 1,
+            create_files: usize::from(block.operation == "create"),
+            modify_files: usize::from(block.operation == "modify"),
+            move_files: usize::from(block.operation == "delete"),
+        },
+        canonical_target: Some(PathBuf::from(&block.file_path)),
+    }
+}
+
+fn render_group_header(
+    frame: &mut Frame,
+    title: &str,
+    grouping: ReviewGroupingStrategy,
+    block_count: usize,
+    selected_count: usize,
+    aggregate_risk: &str,
+    focused: bool,
+    area: Rect,
+) {
+    let border_style = if focused {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let line = Line::from(vec![
+        Span::styled(
+            format!("[group:{}]", grouping.as_str()),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::raw(" "),
+        Span::styled(title.to_string(), Style::default().fg(Color::White)),
+        Span::raw("  "),
+        Span::styled(
+            format!("blocks={block_count}"),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("selected={selected_count}"),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw("  "),
+        Span::styled(
+            format!("risk={aggregate_risk}"),
+            risk_style(aggregate_risk).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(
+        Paragraph::new(line).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(border_style),
+        ),
+        area,
+    );
+}
+
+fn render_edit_block(frame: &mut Frame, block: &EditBlock, area: Rect, focused: bool) {
+    let status_badge = match block.status {
+        EditBlockStatus::Pending => "pending",
+        EditBlockStatus::Applied => "applied",
+        EditBlockStatus::Discarded => "discarded",
+    };
+    let title = format!(
+        " {} | conf={} ({:.2}) | {} hunks | {} | {} ",
+        block.file_path,
+        block.confidence_label,
+        block.confidence_score,
+        block.hunk_count,
+        block.operation,
+        block.patch_id
+    );
+    let border_style = if focused {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let dimmed = matches!(
+        block.status,
+        EditBlockStatus::Applied | EditBlockStatus::Discarded
+    );
+    let block_style = if dimmed {
+        Style::default()
+            .fg(Color::DarkGray)
+            .add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+    };
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            format!("[{}]", status_badge),
+            match block.status {
+                EditBlockStatus::Pending => Style::default().fg(Color::Yellow),
+                EditBlockStatus::Applied => Style::default().fg(Color::Green),
+                EditBlockStatus::Discarded => Style::default().fg(Color::Red),
+            },
+        ),
+        Span::raw(" "),
+        Span::styled(
+            if block.selected_for_batch {
+                "[selected]"
+            } else {
+                "[ ]"
+            },
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("crate={} dir={}", block.crate_name, block.target_directory),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ])];
+    lines.extend(
+        block_visible_lines(block)
+            .into_iter()
+            .map(|line| Line::from(styled_diff_line(&line))),
+    );
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .border_style(border_style),
+            )
+            .style(block_style)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn block_visible_lines(block: &EditBlock) -> Vec<String> {
+    if block.expanded || block.diff_lines.len() <= COLLAPSED_DIFF_LINES {
+        return block.diff_lines.clone();
+    }
+    let mut lines = block
+        .diff_lines
+        .iter()
+        .take(COLLAPSED_DIFF_LINES)
+        .cloned()
+        .collect::<Vec<_>>();
+    lines.push("...".to_string());
+    lines
+}
+
+fn styled_diff_line(line: &str) -> Vec<Span<'static>> {
+    let style = if line.starts_with('+') && !line.starts_with("+++") {
+        Style::default().fg(Color::Green)
+    } else if line.starts_with('-') && !line.starts_with("---") {
+        Style::default().fg(Color::Red)
+    } else if line.starts_with("@@") {
+        Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    vec![Span::styled(line.to_string(), style)]
+}
+
+fn risk_style(label: &str) -> Style {
+    match label {
+        "high" => Style::default().fg(Color::Red),
+        "medium" => Style::default().fg(Color::Yellow),
+        _ => Style::default().fg(Color::Green),
+    }
+}
+
+fn operation_label(change: &CodeChange) -> String {
+    match change.change_type {
+        crate::coding::ChangeType::CreateFile => "create".to_string(),
+        crate::coding::ChangeType::ModifyFile => "modify".to_string(),
+        crate::coding::ChangeType::MoveFile => "delete".to_string(),
+    }
+}
+
+fn count_hunks(change: &CodeChange) -> usize {
+    change.hunks.len().max(1)
+}
+
+fn deterministic_patch_id(index: usize, change: &CodeChange) -> String {
+    format!(
+        "patch-{}-{}-{}",
+        index,
+        change.file_path.replace('/', "_"),
+        change.hunks.len()
+    )
+}
+
+fn crate_name_for_path(path: &str) -> String {
+    let parts = path.split('/').collect::<Vec<_>>();
+    if parts.first() == Some(&"crates") && parts.len() > 1 {
+        return parts[1].to_string();
+    }
+    if parts.first() == Some(&"apps") && parts.len() > 1 {
+        return parts[1].to_string();
+    }
+    parts.first().copied().unwrap_or(".").to_string()
+}
+
+fn target_directory_for_path(path: &str) -> String {
+    Path::new(path)
+        .parent()
+        .map(|parent| parent.display().to_string())
+        .unwrap_or_else(|| ".".to_string())
+}
+
+fn build_unified_diff_lines(root: &Path, change: &CodeChange) -> Result<Vec<String>, String> {
+    let (old_lines, new_lines) = build_old_and_new(change, root);
+    Ok(unified_diff_lines(&old_lines, &new_lines))
+}
+
+fn build_old_and_new(change: &CodeChange, root: &Path) -> (Vec<String>, Vec<String>) {
+    let old = fs::read_to_string(root.join(&change.file_path)).unwrap_or_default();
+    let new = change
+        .hunks
+        .last()
+        .map(|hunk| hunk.replacement.clone())
+        .unwrap_or_default();
+    (
+        old.lines().map(ToString::to_string).collect(),
+        new.lines().map(ToString::to_string).collect(),
+    )
+}
+
+fn unified_diff_lines(old_lines: &[String], new_lines: &[String]) -> Vec<String> {
+    let ops = diff_ops(old_lines, new_lines);
+    let hunks = build_hunks(&ops, DIFF_CONTEXT);
+    let mut rendered = Vec::new();
+    for (index, hunk) in hunks.iter().enumerate() {
+        if index > 0 {
+            rendered.push("...".to_string());
+        }
+        rendered.push(format!(
+            "@@ -{},{} +{},{} @@",
+            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
+        ));
+        rendered.extend(hunk.lines.iter().cloned());
+    }
+    rendered
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum DiffOp {
+    Equal(String),
+    Remove(String),
+    Add(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct UnifiedHunk {
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    lines: Vec<String>,
+}
+
+fn diff_ops(old_lines: &[String], new_lines: &[String]) -> Vec<DiffOp> {
+    let mut dp = vec![vec![0usize; new_lines.len() + 1]; old_lines.len() + 1];
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            dp[i][j] = if old_lines[i] == new_lines[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut i = 0;
+    let mut j = 0;
+    let mut ops = Vec::new();
+    while i < old_lines.len() && j < new_lines.len() {
+        if old_lines[i] == new_lines[j] {
+            ops.push(DiffOp::Equal(format!(" {}", old_lines[i])));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            ops.push(DiffOp::Remove(format!("-{}", old_lines[i])));
+            i += 1;
+        } else {
+            ops.push(DiffOp::Add(format!("+{}", new_lines[j])));
+            j += 1;
+        }
+    }
+    while i < old_lines.len() {
+        ops.push(DiffOp::Remove(format!("-{}", old_lines[i])));
+        i += 1;
+    }
+    while j < new_lines.len() {
+        ops.push(DiffOp::Add(format!("+{}", new_lines[j])));
+        j += 1;
+    }
+    ops
+}
+
+fn build_hunks(ops: &[DiffOp], context: usize) -> Vec<UnifiedHunk> {
+    let mut hunks = Vec::new();
+    let mut old_line = 1usize;
+    let mut new_line = 1usize;
+    let mut pending_context = Vec::<String>::new();
+    let mut current: Option<UnifiedHunk> = None;
+    let mut trailing_context = 0usize;
+
+    for op in ops {
+        match op {
+            DiffOp::Equal(line) => {
+                pending_context.push(line.clone());
+                if pending_context.len() > context {
+                    pending_context.remove(0);
+                }
+                if let Some(hunk) = current.as_mut() {
+                    hunk.lines.push(line.clone());
+                    hunk.old_count += 1;
+                    hunk.new_count += 1;
+                    trailing_context += 1;
+                    if trailing_context > context {
+                        hunk.lines.pop();
+                        hunk.old_count -= 1;
+                        hunk.new_count -= 1;
+                        hunks.push(current.take().expect("hunk"));
+                        trailing_context = 0;
+                    }
+                }
+                old_line += 1;
+                new_line += 1;
+            }
+            DiffOp::Remove(line) => {
+                if current.is_none() {
+                    current = Some(UnifiedHunk {
+                        old_start: old_line.saturating_sub(pending_context.len()),
+                        old_count: pending_context.len(),
+                        new_start: new_line.saturating_sub(pending_context.len()),
+                        new_count: pending_context.len(),
+                        lines: pending_context.clone(),
+                    });
+                }
+                let hunk = current.as_mut().expect("hunk");
+                hunk.lines.push(line.clone());
+                hunk.old_count += 1;
+                trailing_context = 0;
+                old_line += 1;
+            }
+            DiffOp::Add(line) => {
+                if current.is_none() {
+                    current = Some(UnifiedHunk {
+                        old_start: old_line.saturating_sub(pending_context.len()),
+                        old_count: pending_context.len(),
+                        new_start: new_line.saturating_sub(pending_context.len()),
+                        new_count: pending_context.len(),
+                        lines: pending_context.clone(),
+                    });
+                }
+                let hunk = current.as_mut().expect("hunk");
+                hunk.lines.push(line.clone());
+                hunk.new_count += 1;
+                trailing_context = 0;
+                new_line += 1;
+            }
+        }
+    }
+
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk);
+    }
+
+    hunks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn edit_block_renders_unified_diff_with_context_three() {
+        let old = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "d".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+        ];
+        let new = vec![
+            "a".to_string(),
+            "b".to_string(),
+            "c".to_string(),
+            "delta".to_string(),
+            "e".to_string(),
+            "f".to_string(),
+            "g".to_string(),
+        ];
+        let diff = unified_diff_lines(&old, &new);
+        assert!(diff.iter().any(|line| line.starts_with("@@ -1,7 +1,7 @@")));
+        assert!(diff.contains(&" a".to_string()));
+        assert!(diff.contains(&" b".to_string()));
+        assert!(diff.contains(&" c".to_string()));
+        assert!(diff.contains(&"-d".to_string()));
+        assert!(diff.contains(&"+delta".to_string()));
+        assert!(diff.contains(&" e".to_string()));
+        assert!(diff.contains(&" f".to_string()));
+        assert!(diff.contains(&" g".to_string()));
+    }
+}

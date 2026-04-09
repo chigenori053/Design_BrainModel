@@ -7,7 +7,16 @@
 /// - panic禁止・すべてResultで処理・不正入力でも継続
 /// - user input のみを session.history に記録する
 /// - REPL output は session.transcript に記録する
-use std::io::{BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
+use std::thread::sleep;
+use std::time::Duration;
+
+use crossterm::{
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    execute,
+    terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
+};
+use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::command::{CommandRegistry, Output};
 use crate::commands::register_defaults;
@@ -17,14 +26,20 @@ use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
 use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
+use crate::nl::types::{CodingOptions as NlCodingOptions, PlannedStep};
 use crate::nl::{
     execute_plan as execute_nl_plan, plan_input_with_v2_fallback, render_plan_summary_with_label,
 };
+use crate::nl_executor::run_design_command;
 use crate::plan::PlanStatus;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
 use crate::session::AgentSession;
 use crate::state::State;
+use crate::tui::composer::{ComposerAction, ComposerViewState, render_composer};
+use crate::tui::edit_block::CodingReviewReport;
+use crate::tui::proc_strip::{DONE_MIN_VISIBLE, ProcPhase, RUNNING_MIN_VISIBLE};
+use crate::tui::review_batch::ReviewBatchState;
 
 /// REPLを起動して入力ループを実行する
 ///
@@ -75,6 +90,47 @@ where
     Ok(())
 }
 
+pub fn run_repl_stdio() -> Result<(), String> {
+    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
+        let stdin = io::stdin();
+        let stdout = io::stdout();
+        let mut reader = io::BufReader::new(stdin.lock());
+        let mut writer = stdout.lock();
+        return run_repl(&mut reader, &mut writer);
+    }
+
+    let mut session = AgentSession::new();
+    let mut conversation = ConversationState::default();
+    let mut registry = CommandRegistry::new();
+    let mut planner_mode = PlannerMode::default();
+    register_defaults(&mut registry);
+
+    enable_raw_mode().map_err(|e| e.to_string())?;
+    let mut stdout = io::stdout();
+    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
+    let backend = CrosstermBackend::new(stdout);
+    let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
+
+    let result = run_interactive_loop(
+        &mut terminal,
+        &mut session,
+        &mut conversation,
+        &registry,
+        &mut planner_mode,
+    );
+
+    disable_raw_mode().ok();
+    execute!(
+        terminal.backend_mut(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )
+    .ok();
+    terminal.show_cursor().ok();
+
+    result
+}
+
 /// 入力をルーティングして処理する
 ///
 /// 戻り値が `true` の場合はREPL終了を示す。
@@ -112,6 +168,470 @@ fn dispatch<W: Write>(
             )?;
             Ok(false)
         }
+    }
+}
+
+fn current_branch_name() -> Option<String> {
+    let output = std::process::Command::new("git")
+        .args(["branch", "--show-current"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!branch.is_empty()).then_some(branch)
+}
+
+fn banner_lines() -> Vec<String> {
+    vec![
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
+        "  DBM_CLI  Design Brain Model".to_string(),
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
+        "  自然言語または /command でアーキテクチャを設計・解析できます。".to_string(),
+        String::new(),
+        "  Enter で送信 / Shift+Enter で改行".to_string(),
+        "  /help でコマンド一覧  /exit で終了".to_string(),
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
+    ]
+}
+
+fn run_interactive_loop(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    registry: &CommandRegistry,
+    planner_mode: &mut PlannerMode,
+) -> Result<(), String> {
+    let mut view = ComposerViewState::new(banner_lines(), session.state);
+    view.sync_context(conversation, current_branch_name(), None);
+
+    loop {
+        view.state = session.state;
+        view.sync_context(conversation, current_branch_name(), None);
+        terminal
+            .draw(|frame| render_composer(frame, &mut view))
+            .map_err(|e| e.to_string())?;
+
+        if !event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
+            continue;
+        }
+
+        match event::read().map_err(|e| e.to_string())? {
+            Event::Key(key) => match key.code {
+                KeyCode::Esc if view.buffer.is_blank() => break,
+                _ if handle_review_key(
+                    key.code,
+                    &mut view,
+                    &mut |view| draw_view(terminal, view),
+                    &mut sleep,
+                )? => {}
+                _ => match view.handle_key_event(key) {
+                    ComposerAction::None => {}
+                    ComposerAction::Exit => break,
+                    ComposerAction::Submit(event) => {
+                        let should_exit = dispatch_submission(
+                            &event.input,
+                            session,
+                            conversation,
+                            registry,
+                            planner_mode,
+                            &mut view,
+                            &mut |view| draw_view(terminal, view),
+                            &mut sleep,
+                        )?;
+                        if should_exit {
+                            break;
+                        }
+                    }
+                },
+            },
+            Event::Mouse(mouse) => match view.handle_mouse_event(mouse) {
+                ComposerAction::None => {}
+                ComposerAction::Exit => break,
+                ComposerAction::Submit(event) => {
+                    let should_exit = dispatch_submission(
+                        &event.input,
+                        session,
+                        conversation,
+                        registry,
+                        planner_mode,
+                        &mut view,
+                        &mut |view| draw_view(terminal, view),
+                        &mut sleep,
+                    )?;
+                    if should_exit {
+                        break;
+                    }
+                }
+            },
+            _ => {}
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_review_key(
+    code: KeyCode,
+    view: &mut ComposerViewState,
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<bool, String> {
+    if !view.buffer.is_blank() {
+        return Ok(false);
+    }
+    let Some(review) = view.review.as_mut() else {
+        return Ok(false);
+    };
+    match code {
+        KeyCode::Char('J') | KeyCode::Down => {
+            review.next_block();
+            Ok(true)
+        }
+        KeyCode::Char('K') | KeyCode::Up => {
+            review.previous_block();
+            Ok(true)
+        }
+        KeyCode::Char('E') | KeyCode::Char('C') => {
+            review.toggle_expand_focused();
+            Ok(true)
+        }
+        KeyCode::Char(' ') => {
+            review.toggle_batch_selected();
+            Ok(true)
+        }
+        KeyCode::Char(']') => {
+            review.next_group();
+            Ok(true)
+        }
+        KeyCode::Char('[') => {
+            review.previous_group();
+            Ok(true)
+        }
+        KeyCode::Char('D') => {
+            let summary = if review.selected_pending_count() > 0 {
+                review.discard_selected_batch()
+            } else {
+                review.discard_focused_block()
+            };
+            if let Some(summary) = summary {
+                view.push_transcript_line(summary);
+            }
+            Ok(true)
+        }
+        KeyCode::Char('A') => {
+            let phases = vec![ProcPhase::WritingEdit];
+            run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
+            if let Some(review) = view.review.as_mut() {
+                let summary = if review.selected_pending_count() > 0 {
+                    review.apply_selected_batch()?
+                } else {
+                    review.apply_focused_block()?
+                };
+                if let Some(applied) = summary {
+                    view.push_transcript_line(applied);
+                }
+            }
+            Ok(true)
+        }
+        KeyCode::Char('R') => {
+            let phases = vec![ProcPhase::WritingEdit];
+            run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
+            if let Some(review) = view.review.as_mut()
+                && let Some(summary) = review.rollback_last_batch()?
+            {
+                view.push_transcript_line(summary);
+            }
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn draw_view(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    view: &mut ComposerViewState,
+) -> Result<(), String> {
+    view.sync_buffer_metadata();
+    terminal
+        .draw(|frame| render_composer(frame, view))
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
+fn dispatch_submission(
+    input: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    registry: &CommandRegistry,
+    planner_mode: &mut PlannerMode,
+    view: &mut ComposerViewState,
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<bool, String> {
+    if input.trim().is_empty() {
+        return Ok(false);
+    }
+    session.record(input);
+    view.review = None;
+    execute_submission_with_proc_strip(
+        input,
+        session,
+        conversation,
+        registry,
+        planner_mode,
+        view,
+        redraw,
+        sleeper,
+    )
+}
+
+fn execute_submission_with_proc_strip(
+    input: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    registry: &CommandRegistry,
+    planner_mode: &mut PlannerMode,
+    view: &mut ComposerViewState,
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<bool, String> {
+    if let Some(should_exit) =
+        try_execute_reviewable_coding(input, session, conversation, view, redraw, sleeper)?
+    {
+        return Ok(should_exit);
+    }
+    let result = run_proc_strip_lifecycle(
+        view,
+        input,
+        &proc_strip_plan(input),
+        redraw,
+        sleeper,
+        &mut |output| dispatch(input, session, conversation, registry, planner_mode, output),
+    )?;
+    view.sync_context(conversation, current_branch_name(), None);
+    Ok(result)
+}
+
+fn try_execute_reviewable_coding(
+    input: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    view: &mut ComposerViewState,
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+) -> Result<Option<bool>, String> {
+    if detect_goal(input).is_some() || !matches!(route(input), Route::Agent(_)) {
+        return Ok(None);
+    }
+
+    session.context.push(input);
+    let (command_plan, planner_label) = plan_input_with_v2_fallback(input, session, conversation);
+    let Some(command_plan) = command_plan else {
+        return Ok(None);
+    };
+    if !command_plan
+        .steps
+        .iter()
+        .all(|step| matches!(step, PlannedStep::Coding(_, _)))
+    {
+        return Ok(None);
+    }
+
+    let mut reviews = Vec::<(CodingReviewReport, String)>::new();
+    run_proc_strip_only(view, &proc_strip_plan(input), redraw, sleeper, &mut || {
+        for step in &command_plan.steps {
+            let PlannedStep::Coding(path, options) = step else {
+                continue;
+            };
+            reviews.push((
+                run_coding_review_command(path, options)?,
+                sanitize_patch_family(input),
+            ));
+        }
+        Ok(())
+    })?;
+
+    let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
+    update_conversation_after_plan(input, &command_plan, conversation);
+    session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+    session.state = State::Completed;
+    conversation.autonomous_label = None;
+
+    let mut review_blocks = 0usize;
+    if let Some(review) = ReviewBatchState::from_coding_reports(&reviews)? {
+        review_blocks = review.blocks.len();
+        view.review = Some(review);
+    }
+    view.sync_context(conversation, current_branch_name(), None);
+    view.push_transcript_line(planner_summary);
+    if review_blocks > 0 {
+        view.push_transcript_line(format!("Review ready: {review_blocks} file patch group(s)"));
+    }
+    Ok(Some(false))
+}
+
+fn run_coding_review_command(
+    path: &std::path::Path,
+    options: &NlCodingOptions,
+) -> Result<CodingReviewReport, String> {
+    let path_str = path.display().to_string();
+    let is_file_target =
+        path_str.ends_with(".rs") || path_str.ends_with(".toml") || path_str.ends_with(".md");
+    let mut args = if is_file_target {
+        vec![".".to_string(), "--target".to_string(), path_str]
+    } else {
+        vec![path_str]
+    };
+    if let Some(request) = &options.request {
+        args.push("--request".to_string());
+        args.push(request.clone());
+    }
+    if options.safe {
+        args.push("--safe".to_string());
+    }
+    if options.check {
+        args.push("--check".to_string());
+    }
+    args.push("--json".to_string());
+    let output = run_design_command("coding", &args)?;
+    let json = output
+        .find('{')
+        .map(|index| &output[index..])
+        .unwrap_or(output.as_str());
+    serde_json::from_str::<CodingReviewReport>(json).map_err(|err| err.to_string())
+}
+
+fn sanitize_patch_family(input: &str) -> String {
+    let first_line = input.lines().next().unwrap_or("coding request").trim();
+    if first_line.is_empty() {
+        "coding request".to_string()
+    } else {
+        first_line.chars().take(48).collect()
+    }
+}
+
+fn append_submission_transcript(view: &mut ComposerViewState, input: &str, output: &[u8]) {
+    view.push_transcript_line(format!("> {}", input.replace('\n', "\n  ")));
+    let rendered = String::from_utf8_lossy(output);
+    for line in rendered.lines() {
+        view.push_transcript_line(line.to_string());
+    }
+}
+
+fn run_proc_strip_lifecycle(
+    view: &mut ComposerViewState,
+    input: &str,
+    phases: &[ProcPhase],
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+    execute: &mut dyn FnMut(&mut Vec<u8>) -> Result<bool, String>,
+) -> Result<bool, String> {
+    let mut output = Vec::new();
+    match run_proc_strip_core(view, phases, redraw, sleeper, &mut || execute(&mut output)) {
+        Ok(should_exit) => {
+            append_submission_transcript(view, input, &output);
+            Ok(should_exit)
+        }
+        Err(err) => {
+            append_submission_transcript(view, input, &output);
+            view.push_transcript_line(format!("Error: {err}"));
+            Ok(false)
+        }
+    }
+}
+
+fn run_proc_strip_only(
+    view: &mut ComposerViewState,
+    phases: &[ProcPhase],
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+    execute: &mut dyn FnMut() -> Result<(), String>,
+) -> Result<(), String> {
+    run_proc_strip_core(view, phases, redraw, sleeper, &mut || {
+        execute()?;
+        Ok(false)
+    })
+    .map(|_| ())
+}
+
+fn run_proc_strip_core(
+    view: &mut ComposerViewState,
+    phases: &[ProcPhase],
+    redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
+    sleeper: &mut dyn FnMut(Duration),
+    execute: &mut dyn FnMut() -> Result<bool, String>,
+) -> Result<bool, String> {
+    view.proc_strip
+        .set(ProcPhase::Running, proc_strip_detail(ProcPhase::Running));
+    redraw(view)?;
+    sleeper(RUNNING_MIN_VISIBLE);
+
+    for phase in phases {
+        view.proc_strip.set(*phase, proc_strip_detail(*phase));
+        redraw(view)?;
+    }
+
+    match execute() {
+        Ok(should_exit) => {
+            view.proc_strip
+                .set(ProcPhase::Done, proc_strip_detail(ProcPhase::Done));
+            redraw(view)?;
+            sleeper(DONE_MIN_VISIBLE);
+            view.proc_strip.reset();
+            redraw(view)?;
+            Ok(should_exit)
+        }
+        Err(err) => {
+            view.proc_strip.set(ProcPhase::Error, err.clone());
+            redraw(view)?;
+            sleeper(DONE_MIN_VISIBLE);
+            view.proc_strip.reset();
+            redraw(view)?;
+            Err(err)
+        }
+    }
+}
+
+fn proc_strip_plan(input: &str) -> Vec<ProcPhase> {
+    let lower = input.to_lowercase();
+    match route(input) {
+        Route::Command { name, .. } => match name.as_str() {
+            "coding" | "diff" | "check" | "apply" | "refactor" => {
+                vec![ProcPhase::ReadingFiles, ProcPhase::WritingEdit]
+            }
+            "analyze" | "validate" | "run" | "design" => vec![ProcPhase::ReadingFiles],
+            _ => vec![ProcPhase::Planning],
+        },
+        Route::Agent(_) => {
+            let mut phases = vec![ProcPhase::Planning];
+            if ["解析", "analyze", "check", "review", "inspect"]
+                .iter()
+                .any(|token| lower.contains(token))
+            {
+                phases.push(ProcPhase::ReadingFiles);
+            }
+            if ["修正", "fix", "edit", "patch", "refactor", "改善", "diff"]
+                .iter()
+                .any(|token| lower.contains(token))
+            {
+                phases.push(ProcPhase::WritingEdit);
+            }
+            phases
+        }
+    }
+}
+
+fn proc_strip_detail(phase: ProcPhase) -> &'static str {
+    match phase {
+        ProcPhase::Idle => "ready",
+        ProcPhase::Running => "execution started...",
+        ProcPhase::ReadingFiles => "reading files...",
+        ProcPhase::Planning => "planning request...",
+        ProcPhase::WritingEdit => "generating edits...",
+        ProcPhase::Done => "execution complete",
+        ProcPhase::Error => "execution failed",
     }
 }
 
@@ -455,46 +975,28 @@ fn emit_output<W: Write>(
     writeln!(writer, "{line}").map_err(|e| e.to_string())
 }
 
+impl Write for ComposerViewState {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let text = String::from_utf8_lossy(buf);
+        for line in text.split('\n') {
+            if line.is_empty() {
+                continue;
+            }
+            self.push_transcript_line(line.to_string());
+        }
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
 /// DBM_CLI バナーを表示する
 fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
-    writeln!(
-        writer,
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(writer, "  DBM_CLI  Design Brain Model").map_err(|e| e.to_string())?;
-    writeln!(
-        writer,
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(
-        writer,
-        "  自然言語または /command でアーキテクチャを設計・解析できます。"
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(writer, "").map_err(|e| e.to_string())?;
-    writeln!(writer, "  自然言語の例:").map_err(|e| e.to_string())?;
-    writeln!(writer, "    このプロジェクト全体を解析して").map_err(|e| e.to_string())?;
-    writeln!(writer, "    GUIで構造を開いて問題ノードを見せて").map_err(|e| e.to_string())?;
-    writeln!(writer, "    Rust unsafe を減らして cargo check して").map_err(|e| e.to_string())?;
-    writeln!(
-        writer,
-        "    さっきの場所を安全に修正して   ← 前回パスを自動使用"
-    )
-    .map_err(|e| e.to_string())?;
-    writeln!(writer, "").map_err(|e| e.to_string())?;
-    writeln!(writer, "  コマンドの例:").map_err(|e| e.to_string())?;
-    writeln!(writer, "    /validate src/lib.rs").map_err(|e| e.to_string())?;
-    writeln!(writer, "    /rules list").map_err(|e| e.to_string())?;
-    writeln!(writer, "    /memory import seeds/knowledge.json").map_err(|e| e.to_string())?;
-    writeln!(writer, "").map_err(|e| e.to_string())?;
-    writeln!(writer, "  /help でコマンド一覧  /exit で終了").map_err(|e| e.to_string())?;
-    writeln!(
-        writer,
-        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-    )
-    .map_err(|e| e.to_string())?;
+    for line in banner_lines() {
+        writeln!(writer, "{line}").map_err(|e| e.to_string())?;
+    }
     writer.flush().map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -886,6 +1388,139 @@ mod tests {
         );
         // "Type /run" は表示されない（自動実行のため）
         assert!(!output.contains("Type /run to execute"));
+    }
+
+    #[test]
+    fn proc_strip_activates_only_on_submit() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        view.buffer.insert_str("first line");
+        assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
+
+        assert_eq!(
+            view.handle_key_event(crossterm::event::KeyEvent::new(
+                KeyCode::Enter,
+                crossterm::event::KeyModifiers::SHIFT,
+            )),
+            ComposerAction::None
+        );
+        assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
+
+        let action = view.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+        assert!(matches!(action, ComposerAction::Submit(_)));
+        assert_eq!(
+            view.proc_strip.phase,
+            ProcPhase::Idle,
+            "submit event is emitted, proc-strip activates only during execution"
+        );
+    }
+
+    #[test]
+    fn proc_strip_running_has_minimum_visibility() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        let mut sleeps = Vec::new();
+        let mut redraws = Vec::new();
+        let result = run_proc_strip_lifecycle(
+            &mut view,
+            "このプロジェクト全体を解析して",
+            &[ProcPhase::Planning],
+            &mut |view| {
+                redraws.push(view.proc_strip.phase);
+                Ok(())
+            },
+            &mut |duration| sleeps.push(duration),
+            &mut |output| {
+                writeln!(output, "analysis complete").expect("write output");
+                Ok(false)
+            },
+        );
+
+        assert!(result.is_ok());
+        assert!(sleeps.contains(&RUNNING_MIN_VISIBLE));
+        assert!(sleeps.contains(&DONE_MIN_VISIBLE));
+        assert_eq!(redraws.first().copied(), Some(ProcPhase::Running));
+    }
+
+    #[test]
+    fn proc_strip_done_precedes_transcript_append() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        let mut redraws = Vec::new();
+        let result = run_proc_strip_lifecycle(
+            &mut view,
+            "design the api",
+            &[ProcPhase::Planning],
+            &mut |view| {
+                redraws.push((view.proc_strip.phase, view.transcript.len()));
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |output| {
+                writeln!(output, "[planner] complete").expect("write output");
+                Ok(false)
+            },
+        );
+
+        assert!(result.is_ok());
+        let done_index = redraws
+            .iter()
+            .position(|(phase, _)| *phase == ProcPhase::Done)
+            .expect("done redraw");
+        assert_eq!(redraws[done_index].1, 0);
+        assert!(
+            view.transcript
+                .iter()
+                .any(|line| line.contains("[planner] complete")),
+            "{:?}",
+            view.transcript
+        );
+    }
+
+    #[test]
+    fn proc_strip_error_resets_to_idle() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        let mut redraws = Vec::new();
+        let result = run_proc_strip_lifecycle(
+            &mut view,
+            "broken input",
+            &[ProcPhase::Planning],
+            &mut |view| {
+                redraws.push(view.proc_strip.phase);
+                Ok(())
+            },
+            &mut |_| {},
+            &mut |_| Err("planner failed".to_string()),
+        );
+
+        assert_eq!(result, Ok(false));
+        assert!(redraws.contains(&ProcPhase::Error));
+        assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
+        assert!(
+            view.transcript
+                .iter()
+                .any(|line| line.contains("Error: planner failed"))
+        );
+    }
+
+    #[test]
+    fn proc_strip_integrates_with_block_apply_lifecycle() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        let mut redraws = Vec::new();
+        run_proc_strip_only(
+            &mut view,
+            &[ProcPhase::WritingEdit],
+            &mut |view| {
+                redraws.push(view.proc_strip.phase);
+                Ok(())
+            },
+            &mut |_| {},
+            &mut || Ok(()),
+        )
+        .expect("lifecycle");
+        assert!(redraws.contains(&ProcPhase::WritingEdit));
+        assert!(redraws.contains(&ProcPhase::Done));
+        assert!(view.transcript.is_empty(), "{:?}", view.transcript);
     }
 
     #[test]

@@ -89,11 +89,15 @@ fn renderer_world_analyzer_semantic_alignment() {
 
     let result = analyzer::analyze_project(root_path.to_str().unwrap()).unwrap();
 
-    assert!(result.dependencies.iter().any(|edge| {
-        edge.from == "renderer"
-            && edge.to == "renderer_world_interface"
-            && edge.edge_type == analyzer::DependencyEdgeType::Mediated
-    }), "{:?}", result.dependencies);
+    assert!(
+        result.dependencies.iter().any(|edge| {
+            edge.from == "renderer"
+                && edge.to == "renderer_world_interface"
+                && edge.edge_type == analyzer::DependencyEdgeType::Mediated
+        }),
+        "{:?}",
+        result.dependencies
+    );
     assert!(result.dependencies.iter().any(|edge| {
         edge.from == "world"
             && edge.to == "world_renderer_interface"
@@ -136,10 +140,25 @@ fn renderer_world_production_tree_analyzer_semantic_alignment() {
 
     let result = analyzer::analyze_project(root_path.to_str().unwrap()).unwrap();
 
-    assert!(result.modules.iter().any(|module| module.name == "renderer"));
+    assert!(
+        result
+            .modules
+            .iter()
+            .any(|module| module.name == "renderer")
+    );
     assert!(result.modules.iter().any(|module| module.name == "world"));
-    assert!(result.modules.iter().any(|module| module.name == "renderer_world_interface"));
-    assert!(result.modules.iter().any(|module| module.name == "world_renderer_interface"));
+    assert!(
+        result
+            .modules
+            .iter()
+            .any(|module| module.name == "renderer_world_interface")
+    );
+    assert!(
+        result
+            .modules
+            .iter()
+            .any(|module| module.name == "world_renderer_interface")
+    );
     assert!(result.dependencies.iter().any(|edge| {
         edge.from == "renderer"
             && edge.to == "renderer_world_interface"

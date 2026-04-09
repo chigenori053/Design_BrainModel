@@ -1447,8 +1447,9 @@ mod tests {
         AnalyzeMode, DecisionContext, DecisionMetrics, UnifiedAnalyzeResult,
     };
     use crate::dbm::analyzer::{
-        Complexity as ProjectComplexity, DependencyEdge, FileAnalysis, Language as ProjectLanguage,
-        Module as ProjectModule, ProjectAnalysisResult, ProjectSummary,
+        Complexity as ProjectComplexity, DependencyEdge, DependencyEdgeType, FileAnalysis,
+        Language as ProjectLanguage, Module as ProjectModule, ProjectAnalysisResult,
+        ProjectSummary,
     };
     use crate::service::dto::{AnalysisReport, AnalysisSummary};
     use integration_layer::{CycleReport, Issue, LayerModel};
@@ -1555,10 +1556,12 @@ mod tests {
                     DependencyEdge {
                         from: "debug".to_string(),
                         to: "renderer".to_string(),
+                        edge_type: DependencyEdgeType::Direct,
                     },
                     DependencyEdge {
                         from: "renderer".to_string(),
                         to: "debug".to_string(),
+                        edge_type: DependencyEdgeType::Direct,
                     },
                 ],
                 modules: vec![

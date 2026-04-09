@@ -100,7 +100,7 @@ fn extract_target_from_validated_path_token(input: &str) -> Option<PathBuf> {
         if token.is_empty() || !is_valid_target_token(token) {
             continue;
         }
-        if Path::new(token).exists() {
+        if is_specific_path_token(token) || Path::new(token).exists() {
             return Some(PathBuf::from(token));
         }
     }
@@ -121,6 +121,16 @@ fn trim_target_token(value: &str) -> &str {
 
 fn is_valid_target_token(token: &str) -> bool {
     !token.is_empty() && !contains_wildcard(token) && is_path_like(token)
+}
+
+fn is_specific_path_token(token: &str) -> bool {
+    token.contains("src/")
+        || token.contains("apps/")
+        || token.contains("crates/")
+        || token.ends_with(".rs")
+        || token.ends_with(".toml")
+        || token.ends_with(".json")
+        || token.ends_with(".md")
 }
 
 fn contains_wildcard(token: &str) -> bool {

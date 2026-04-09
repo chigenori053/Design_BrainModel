@@ -307,14 +307,17 @@ mod tests {
             ],
             dependencies: vec![
                 crate::service::AnalysisDependency {
-                    from: "renderer".to_string(),
-                    to: "debug".to_string(),
-                },
-                crate::service::AnalysisDependency {
                     from: "debug".to_string(),
                     to: "renderer".to_string(),
+                    edge_type: crate::service::DesignEdgeType::Direct,
+                },
+                crate::service::AnalysisDependency {
+                    from: "renderer".to_string(),
+                    to: "debug".to_string(),
+                    edge_type: crate::service::DesignEdgeType::Direct,
                 },
             ],
+
             todo_files: 0,
             cycles: CycleReport {
                 has_cycle: true,
