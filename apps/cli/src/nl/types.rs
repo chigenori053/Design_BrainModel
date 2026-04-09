@@ -2,6 +2,10 @@ use std::path::PathBuf;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum IntentType {
+    RulesLearn,
+    RulesList,
+    CodingEdit,
+    AnalyzeArchitecture,
     Analyze,
     Coding,
     Validate,
@@ -16,6 +20,15 @@ pub enum IntentType {
     Memory,
     GitCommit,
     GitPR,
+    MetaPlannerEdit,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum SupportedLanguage {
+    Japanese,
+    English,
+    #[default]
     Unknown,
 }
 

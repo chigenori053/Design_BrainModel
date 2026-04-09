@@ -3,34 +3,28 @@ use crate::nl::intent::{
     wants_analyze, wants_coding, wants_memory, wants_rules, wants_run, wants_structure_view,
     wants_validate,
 };
+use crate::nl::language_intent_bridge::{PlannerIntent, infer_planner_intent};
+use crate::nl::target::has_explicit_target_reference;
 use crate::session::AgentSession;
 
 use super::session::ConversationState;
-use super::types::{CodingOptions, CommandPlan, PlannedStep};
+use super::types::{
+    CodingOptions, CommandPlan, IntentType, PlannedStep, ResolvedTarget, SupportedLanguage,
+};
 
-/// R1: detect file-path tokens in raw input (.rs / .toml / .md / src/ / apps/ / crates/)
+/// R1: only validated explicit targets can force a targeted coding route.
 fn has_file_path_target(input: &str) -> bool {
-    input.split_whitespace().any(|raw| {
-        let token = raw.trim_matches(|c: char| {
-            matches!(
-                c,
-                ',' | '。' | '.' | '、' | ':' | ';' | '"' | '\'' | '「' | '」' | '(' | ')'
-            )
-        });
-        token.ends_with(".rs")
-            || token.ends_with(".toml")
-            || token.ends_with(".md")
-            || token.contains("src/")
-            || token.contains("apps/")
-            || token.contains("crates/")
-    })
+    has_explicit_target_reference(input)
 }
 
 /// R2: mutation verbs that require Coding intent when a file target is present
 fn wants_mutation_verb(lower: &str) -> bool {
     [
         "修正",
+        "変更",
         "改善",
+        "追加",
+        "追加する",
         "厳密化",
         "除去",
         "最適化",
@@ -84,6 +78,134 @@ fn coding_options_for_request(input: &str) -> CodingOptions {
     }
 }
 
+fn should_use_semantic_frontend(intent: &PlannerIntent) -> bool {
+    intent.mixed_language
+        || intent.detected_language == SupportedLanguage::Japanese
+        || matches!(
+            intent.primary_intent,
+            IntentType::RulesLearn | IntentType::RulesList | IntentType::MetaPlannerEdit
+        )
+        || intent.secondary_intents.iter().any(|secondary| {
+            matches!(
+                secondary,
+                IntentType::RulesLearn | IntentType::MetaPlannerEdit
+            )
+        })
+}
+
+fn planner_edit_target() -> std::path::PathBuf {
+    std::path::PathBuf::from("apps/cli/src/nl/planner_v2.rs")
+}
+
+fn is_meta_planner_intent(intent: &PlannerIntent) -> bool {
+    intent.primary_intent == IntentType::MetaPlannerEdit
+        || intent
+            .secondary_intents
+            .contains(&IntentType::MetaPlannerEdit)
+}
+
+fn generate_multi_step_plan(
+    input: &str,
+    intent: &PlannerIntent,
+    merged: &ResolvedTarget,
+) -> CommandPlan {
+    let coding_target =
+        if is_meta_planner_intent(intent) || intent.primary_intent == IntentType::RulesLearn {
+            planner_edit_target()
+        } else {
+            merged.path.clone()
+        };
+
+    CommandPlan {
+        steps: vec![
+            PlannedStep::Analyze(merged.path.clone()),
+            PlannedStep::Coding(coding_target, coding_options_for_request(input)),
+            PlannedStep::Validate(merged.path.clone()),
+        ],
+    }
+}
+
+fn synthesize_steps_from_intent(
+    intent: &PlannerIntent,
+    input: &str,
+    merged: &ResolvedTarget,
+) -> Option<CommandPlan> {
+    if intent.primary_intent == IntentType::Unknown && intent.secondary_intents.is_empty() {
+        return None;
+    }
+
+    if intent.ambiguity_score > 0.35
+        && (is_meta_planner_intent(intent)
+            || intent.primary_intent == IntentType::RulesLearn
+            || intent.secondary_intents.iter().any(|secondary| {
+                matches!(
+                    secondary,
+                    IntentType::MetaPlannerEdit | IntentType::RulesLearn
+                )
+            }))
+    {
+        return Some(generate_multi_step_plan(input, intent, merged));
+    }
+
+    let mut steps = Vec::new();
+    match intent.primary_intent {
+        IntentType::RulesList => steps.push(PlannedStep::Rules),
+        IntentType::StructureView => steps.push(PlannedStep::StructureView(merged.path.clone())),
+        IntentType::Validate => steps.push(PlannedStep::Validate(merged.path.clone())),
+        IntentType::AnalyzeArchitecture => steps.push(PlannedStep::Analyze(merged.path.clone())),
+        IntentType::CodingEdit => steps.push(PlannedStep::Coding(
+            merged.path.clone(),
+            coding_options_for_request(input),
+        )),
+        IntentType::RulesLearn | IntentType::MetaPlannerEdit => {
+            return Some(generate_multi_step_plan(input, intent, merged));
+        }
+        _ => {}
+    }
+
+    for secondary in &intent.secondary_intents {
+        match secondary {
+            IntentType::AnalyzeArchitecture => {
+                if !steps
+                    .iter()
+                    .any(|step| matches!(step, PlannedStep::Analyze(_)))
+                {
+                    steps.insert(0, PlannedStep::Analyze(merged.path.clone()));
+                }
+            }
+            IntentType::CodingEdit => {
+                if !steps
+                    .iter()
+                    .any(|step| matches!(step, PlannedStep::Coding(_, _)))
+                {
+                    steps.push(PlannedStep::Coding(
+                        merged.path.clone(),
+                        coding_options_for_request(input),
+                    ));
+                }
+            }
+            IntentType::Validate => {
+                if !steps
+                    .iter()
+                    .any(|step| matches!(step, PlannedStep::Validate(_)))
+                {
+                    steps.push(PlannedStep::Validate(merged.path.clone()));
+                }
+            }
+            IntentType::MetaPlannerEdit | IntentType::RulesLearn => {
+                return Some(generate_multi_step_plan(input, intent, merged));
+            }
+            _ => {}
+        }
+    }
+
+    if steps.is_empty() {
+        None
+    } else {
+        Some(CommandPlan { steps })
+    }
+}
+
 pub fn plan_input(
     input: &str,
     session: &AgentSession,
@@ -130,11 +252,6 @@ pub fn plan_input(
         return Some(CommandPlan { steps });
     }
 
-    if wants_rules(&lower) {
-        steps.push(PlannedStep::Rules);
-        return Some(CommandPlan { steps });
-    }
-
     if wants_memory(&lower) {
         steps.push(PlannedStep::Memory(merged.path));
         return Some(CommandPlan { steps });
@@ -143,15 +260,34 @@ pub fn plan_input(
     // R1+R3: file target + mutation verb → force Coding with file target.
     // Previous-target reuse (R4) is handled by merge_target falling back to
     // conversation.last_target when no explicit path is present.
-    if (has_file_path_target(input)
-        || references_previous_target(&lower)
-        || is_targeted_continuation(input, conversation, &merged))
-        && wants_mutation_verb(&lower)
-    {
+    let contextual_mutation_route = wants_mutation_verb(&lower)
+        && (has_file_path_target(input)
+            || references_previous_target(&lower)
+            || is_targeted_continuation(input, conversation, &merged)
+            || conversation.last_target.is_some());
+    if contextual_mutation_route {
         steps.push(PlannedStep::Coding(
             merged.path.clone(),
             coding_options_for_request(input),
         ));
+        return Some(CommandPlan { steps });
+    }
+
+    let has_git_route = lower.contains("commit")
+        || lower.contains("コミット")
+        || mentions_pr(&lower)
+        || lower.contains("pushして");
+    if !has_git_route {
+        let semantic_intent = infer_planner_intent(input, conversation);
+        if should_use_semantic_frontend(&semantic_intent)
+            && let Some(plan) = synthesize_steps_from_intent(&semantic_intent, input, &merged)
+        {
+            return Some(plan);
+        }
+    }
+
+    if wants_rules(&lower) {
+        steps.push(PlannedStep::Rules);
         return Some(CommandPlan { steps });
     }
 
@@ -248,8 +384,16 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::nl::language_intent_bridge::infer_planner_intent;
     use crate::nl::session::ConversationState;
     use crate::nl::types::PlannedStep;
+
+    fn assert_deterministic_intent(input: &str, conversation: &ConversationState) {
+        let intents = std::iter::repeat_with(|| infer_planner_intent(input, conversation))
+            .take(2)
+            .collect::<Vec<_>>();
+        assert!(intents.windows(2).all(|pair| pair[0] == pair[1]));
+    }
 
     #[test]
     fn ambiguous_turn_inherits_target_and_node() {
@@ -317,6 +461,121 @@ mod tests {
                 PathBuf::from("apps/cli/src/coding.rs"),
                 coding_options_for_request("trait + registry に抽象化して")
             )]
+        );
+    }
+
+    #[test]
+    fn explicit_target_sentence_updates_context_target() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/previous.rs")),
+            ..ConversationState::default()
+        };
+        let plan = plan_input(
+            "Semantic Interface Extraction Guard を追加する。\n対象は apps/cli/src/coding.rs。",
+            &session,
+            &conversation,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::Coding(
+                PathBuf::from("apps/cli/src/coding.rs"),
+                coding_options_for_request(
+                    "Semantic Interface Extraction Guard を追加する。\n対象は apps/cli/src/coding.rs。"
+                )
+            )]
+        );
+    }
+
+    #[test]
+    fn previous_canonical_target_survives_multiline_spec() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/coding.rs")),
+            ..ConversationState::default()
+        };
+        let plan = plan_input(
+            "Semantic Interface Extraction Guard を追加する。\nImportRebinding-only の diff では *_interface.rs を生成しない。",
+            &session,
+            &conversation,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::Coding(
+                PathBuf::from("apps/cli/src/coding.rs"),
+                coding_options_for_request(
+                    "Semantic Interface Extraction Guard を追加する。\nImportRebinding-only の diff では *_interface.rs を生成しない。"
+                )
+            )]
+        );
+    }
+
+    #[test]
+    fn wildcard_suffix_in_prose_does_not_update_context_target() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/coding.rs")),
+            ..ConversationState::default()
+        };
+        let plan = plan_input(
+            "ImportRebinding-only の diff では *_interface.rs を生成しないので修正して",
+            &session,
+            &conversation,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::Coding(
+                PathBuf::from("apps/cli/src/coding.rs"),
+                coding_options_for_request(
+                    "ImportRebinding-only の diff では *_interface.rs を生成しないので修正して"
+                )
+            )]
+        );
+    }
+
+    #[test]
+    fn quoted_semantic_learn_routes_to_planner_edit_plan() {
+        let session = AgentSession::new();
+        let conversation = ConversationState::default();
+        let plan = plan_input(
+            "「学習」「失敗から」「ルール生成」で rules learn を優先するよう修正して",
+            &session,
+            &conversation,
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![
+                PlannedStep::Analyze(PathBuf::from(".")),
+                PlannedStep::Coding(
+                    PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
+                    coding_options_for_request(
+                        "「学習」「失敗から」「ルール生成」で rules learn を優先するよう修正して"
+                    )
+                ),
+                PlannedStep::Validate(PathBuf::from(".")),
+            ]
+        );
+    }
+
+    #[test]
+    fn rules_list_remains_single_step() {
+        let session = AgentSession::new();
+        let plan = plan_input("rules list", &session, &ConversationState::default()).expect("plan");
+        assert_eq!(plan.steps, vec![PlannedStep::Rules]);
+    }
+
+    #[test]
+    fn intent_inference_is_deterministic() {
+        assert_deterministic_intent(
+            "さっきの unresolved import 失敗から学習して次回は自動修正して",
+            &ConversationState {
+                last_target: Some(PathBuf::from(".")),
+                ..ConversationState::default()
+            },
         );
     }
 }

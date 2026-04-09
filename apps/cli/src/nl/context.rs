@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use crate::session::AgentSession;
 
 use super::session::ConversationState;
-use super::target::resolve_target;
+use super::target::{has_explicit_target_reference, resolve_target};
 use super::types::ResolvedTarget;
 
 pub fn merge_target(
@@ -12,7 +12,7 @@ pub fn merge_target(
     conversation: &ConversationState,
 ) -> ResolvedTarget {
     let current = resolve_target(input, session);
-    let has_explicit = has_explicit_target(input);
+    let has_explicit = has_explicit_target_reference(input);
 
     ResolvedTarget {
         path: if has_explicit {
@@ -27,15 +27,6 @@ pub fn merge_target(
         node: current.node.or_else(|| conversation.last_node.clone()),
         scope: current.scope,
     }
-}
-
-fn has_explicit_target(input: &str) -> bool {
-    input.split_whitespace().any(|token| {
-        token.contains('/')
-            || token.starts_with('.')
-            || token.ends_with(".rs")
-            || token.ends_with(".toml")
-    })
 }
 
 #[cfg(test)]
@@ -53,5 +44,20 @@ mod tests {
         let merged = merge_target("presentation layer だけ直して", &session, &conversation);
         assert_eq!(merged.path, PathBuf::from("apps/cli"));
         assert_eq!(merged.node.as_deref(), Some("presentation"));
+    }
+
+    #[test]
+    fn wildcard_suffix_in_prose_does_not_override_last_target() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/coding.rs")),
+            ..ConversationState::default()
+        };
+        let merged = merge_target(
+            "ImportRebinding-only の diff では *_interface.rs を生成しない。",
+            &session,
+            &conversation,
+        );
+        assert_eq!(merged.path, PathBuf::from("apps/cli/src/coding.rs"));
     }
 }

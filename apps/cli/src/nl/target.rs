@@ -46,22 +46,85 @@ fn resolve_path(input: &str, session: &AgentSession) -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
-fn extract_explicit_path(input: &str) -> Option<PathBuf> {
+pub fn extract_explicit_path(input: &str) -> Option<PathBuf> {
+    extract_target_from_cli_flag(input)
+        .or_else(|| extract_target_from_explicit_sentence(input))
+        .or_else(|| extract_target_from_validated_path_token(input))
+}
+
+pub fn has_explicit_target_reference(input: &str) -> bool {
+    extract_explicit_path(input).is_some()
+}
+
+fn extract_target_from_cli_flag(input: &str) -> Option<PathBuf> {
+    let tokens = input.split_whitespace().collect::<Vec<_>>();
+    for window in tokens.windows(2) {
+        if window[0] == "--target" {
+            let token = trim_target_token(window[1]);
+            if is_valid_target_token(token) {
+                return Some(PathBuf::from(token));
+            }
+        }
+    }
+    None
+}
+
+fn extract_target_from_explicit_sentence(input: &str) -> Option<PathBuf> {
+    for line in input.lines() {
+        let trimmed = line.trim();
+        if let Some(rest) = trimmed.strip_prefix("対象は") {
+            let token = trim_target_token(rest);
+            if is_valid_target_token(token) {
+                return Some(PathBuf::from(token));
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("target:") {
+            let token = trim_target_token(rest);
+            if is_valid_target_token(token) {
+                return Some(PathBuf::from(token));
+            }
+        }
+        if let Some(rest) = trimmed.strip_prefix("Target:") {
+            let token = trim_target_token(rest);
+            if is_valid_target_token(token) {
+                return Some(PathBuf::from(token));
+            }
+        }
+    }
+    None
+}
+
+fn extract_target_from_validated_path_token(input: &str) -> Option<PathBuf> {
     for raw in input.split_whitespace() {
-        let token = raw.trim_matches(|c: char| {
-            matches!(
-                c,
-                ',' | '。' | '.' | '、' | ':' | ';' | '"' | '\'' | '「' | '」' | '(' | ')'
-            )
-        });
-        if token.is_empty() {
+        let token = trim_target_token(raw);
+        if token.is_empty() || !is_valid_target_token(token) {
             continue;
         }
-        if is_path_like(token) {
+        if Path::new(token).exists() {
             return Some(PathBuf::from(token));
         }
     }
     None
+}
+
+fn trim_target_token(value: &str) -> &str {
+    value
+        .trim()
+        .trim_matches(|c: char| {
+            matches!(
+                c,
+                ',' | '。' | '.' | '、' | ':' | ';' | '"' | '\'' | '「' | '」' | '(' | ')' | '>'
+            )
+        })
+        .trim()
+}
+
+fn is_valid_target_token(token: &str) -> bool {
+    !token.is_empty() && !contains_wildcard(token) && is_path_like(token)
+}
+
+fn contains_wildcard(token: &str) -> bool {
+    token.contains('*') || token.contains('?')
 }
 
 fn is_path_like(token: &str) -> bool {
@@ -70,7 +133,7 @@ fn is_path_like(token: &str) -> bool {
         || token.ends_with(".rs")
         || token.ends_with(".toml")
         || token.ends_with(".json")
-        || Path::new(token).exists()
+        || token.ends_with(".md")
 }
 
 #[cfg(test)]
@@ -90,6 +153,23 @@ mod tests {
         let session = AgentSession::new();
         let target = resolve_target("apps/cli を解析して", &session);
         assert_eq!(target.path, PathBuf::from("apps/cli"));
+    }
+
+    #[test]
+    fn wildcard_suffix_is_not_an_explicit_target() {
+        let session = AgentSession::new();
+        let target = resolve_target(
+            "ImportRebinding-only の diff では *_interface.rs を生成しない",
+            &session,
+        );
+        assert_eq!(target.path, PathBuf::from("."));
+    }
+
+    #[test]
+    fn explicit_target_sentence_is_preferred() {
+        let session = AgentSession::new();
+        let target = resolve_target("対象は apps/cli/src/coding.rs。", &session);
+        assert_eq!(target.path, PathBuf::from("apps/cli/src/coding.rs"));
     }
 
     #[test]
