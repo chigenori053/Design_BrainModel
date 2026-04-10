@@ -22,6 +22,12 @@ pub enum ComposerFocus {
     SendButton,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ComposerUiMode {
+    Idle,
+    PatchReview,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubmitEvent {
     pub input: String,
@@ -58,6 +64,11 @@ impl ComposerBuffer {
 
     pub fn cursor(&self) -> (usize, usize) {
         (self.cursor_row, self.cursor_col)
+    }
+
+    pub fn move_cursor_to_end(&mut self) {
+        self.cursor_row = self.lines.len().saturating_sub(1);
+        self.cursor_col = self.lines[self.cursor_row].chars().count();
     }
 
     pub fn insert_char(&mut self, ch: char) {
@@ -176,6 +187,7 @@ pub struct ComposerViewState {
     pub review: Option<ReviewBatchState>,
     pub proc_strip: ProcStripState,
     pub state: State,
+    pub mode: ComposerUiMode,
     pub focus: ComposerFocus,
     pub send_hovered: bool,
     pub branch: Option<String>,
@@ -196,6 +208,7 @@ impl ComposerViewState {
             review: None,
             proc_strip: ProcStripState::idle(),
             state,
+            mode: ComposerUiMode::Idle,
             focus: ComposerFocus::Editor,
             send_hovered: false,
             branch: None,
@@ -228,6 +241,20 @@ impl ComposerViewState {
 
     pub fn push_transcript_line(&mut self, line: impl Into<String>) {
         self.transcript.push(line.into());
+        self.restore_intent_document_focus();
+    }
+
+    pub fn activate_review(&mut self, review: ReviewBatchState) {
+        self.review = Some(review);
+        self.mode = ComposerUiMode::PatchReview;
+        self.restore_intent_document_focus();
+    }
+
+    pub fn reset_review_session(&mut self) {
+        self.review = None;
+        self.mode = ComposerUiMode::Idle;
+        self.send_hovered = false;
+        self.restore_intent_document_focus();
     }
 
     pub fn sync_buffer_metadata(&mut self) {
@@ -246,6 +273,15 @@ impl ComposerViewState {
         self.file_chips = extract_file_reference_chips(&text);
     }
 
+    pub fn restore_intent_document_focus(&mut self) {
+        self.focus = ComposerFocus::Editor;
+        self.send_hovered = false;
+        self.buffer.move_cursor_to_end();
+        self.ensure_cursor_visible();
+    }
+
+    pub fn ensure_cursor_visible(&mut self) {}
+
     pub fn handle_key_event(&mut self, key: KeyEvent) -> ComposerAction {
         match self.focus {
             ComposerFocus::Editor => self.handle_editor_key(key),
@@ -262,10 +298,13 @@ impl ComposerViewState {
         match mouse.kind {
             MouseEventKind::Down(_) if hovered => {
                 self.focus = ComposerFocus::SendButton;
-                self.buffer
+                let action = self
+                    .buffer
                     .submit_document(false)
                     .map(ComposerAction::Submit)
-                    .unwrap_or(ComposerAction::None)
+                    .unwrap_or(ComposerAction::None);
+                self.restore_intent_document_focus();
+                action
             }
             MouseEventKind::Moved => ComposerAction::None,
             _ => ComposerAction::None,
@@ -289,8 +328,8 @@ impl ComposerViewState {
                 .submit_document(true)
                 .map(ComposerAction::Submit)
                 .unwrap_or(ComposerAction::Exit),
-            KeyCode::Tab => {
-                self.focus = ComposerFocus::SendButton;
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => {
+                self.restore_intent_document_focus();
                 ComposerAction::None
             }
             KeyCode::Backspace => {
@@ -330,8 +369,8 @@ impl ComposerViewState {
 
     fn handle_send_button_key(&mut self, key: KeyEvent) -> ComposerAction {
         match key.code {
-            KeyCode::Tab | KeyCode::Esc => {
-                self.focus = ComposerFocus::Editor;
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => {
+                self.restore_intent_document_focus();
                 ComposerAction::None
             }
             KeyCode::Enter => self
@@ -354,6 +393,7 @@ pub enum ComposerAction {
     None,
     Submit(SubmitEvent),
     Exit,
+    ForceQuit,
 }
 
 pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
@@ -714,5 +754,113 @@ mod tests {
             "Semantic Interface Extraction Guard を追加する。\n対象は apps/cli/src/coding.rs。"
         );
         assert!(state.buffer.is_blank());
+    }
+
+    #[test]
+    fn typing_updates_mode_metadata_without_dispatch() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.focus = ComposerFocus::SendButton;
+        let transcript_before = state.transcript.clone();
+
+        for ch in ['@', 'f', 'i', 'l', 'e'] {
+            assert_eq!(
+                state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                ComposerAction::None
+            );
+        }
+
+        assert_eq!(state.transcript, transcript_before);
+        assert_eq!(state.focus, ComposerFocus::SendButton);
+        assert_eq!(state.buffer.text(), "@file");
+        assert!(
+            !state.command_mode,
+            "typing file mention text must not trigger command dispatch state"
+        );
+
+        state.focus = ComposerFocus::Editor;
+        for ch in "/analyze .".chars() {
+            assert_eq!(
+                state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                ComposerAction::None
+            );
+        }
+
+        assert!(state.command_mode);
+        assert!(state.file_chips.iter().any(|chip| chip == "@file"));
+    }
+
+    #[test]
+    fn transcript_append_restores_editor_focus() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.focus = ComposerFocus::SendButton;
+        state.push_transcript_line("long transcript dump");
+
+        assert_eq!(state.focus, ComposerFocus::Editor);
+        assert_eq!(state.buffer.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn tab_shift_tab_and_esc_never_leave_editor_deadlocked() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.buffer.insert_str("/command");
+
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
+            ComposerAction::None
+        );
+        assert_eq!(state.focus, ComposerFocus::Editor);
+
+        state.focus = ComposerFocus::SendButton;
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT)),
+            ComposerAction::None
+        );
+        assert_eq!(state.focus, ComposerFocus::Editor);
+
+        state.focus = ComposerFocus::SendButton;
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            ComposerAction::None
+        );
+        assert_eq!(state.focus, ComposerFocus::Editor);
+    }
+
+    #[test]
+    fn enter_dispatches_exactly_once_after_typing() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        let transcript_before = state.transcript.clone();
+        for ch in "analyze src/".chars() {
+            assert_eq!(
+                state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                ComposerAction::None
+            );
+        }
+
+        assert_eq!(state.transcript, transcript_before);
+
+        let first = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let ComposerAction::Submit(event) = first else {
+            panic!("expected submit on enter");
+        };
+        assert_eq!(event.input, "analyze src/");
+        assert!(state.buffer.is_blank());
+
+        let second = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert_eq!(second, ComposerAction::None);
+    }
+
+    #[test]
+    fn shift_enter_only_inserts_newline() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.buffer.insert_str("line1");
+        let transcript_before = state.transcript.clone();
+
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            ComposerAction::None
+        );
+
+        assert_eq!(state.transcript, transcript_before);
+        assert_eq!(state.buffer.text(), "line1\n");
     }
 }

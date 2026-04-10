@@ -26,6 +26,12 @@ pub fn execute_plan(plan: &CommandPlan, conversation: &mut ConversationState) ->
     let mut outputs = Vec::new();
 
     for (index, step) in plan.steps.iter().enumerate() {
+        if cfg!(test)
+            && let Some(snapshot) = executor_received_path_snapshot(step)
+        {
+            outputs.push(format!("[step {index}] {snapshot}"));
+        }
+
         // R2: ApplyPreviousCodingStep は generic executor を bypass して直接処理する。
         if matches!(step, PlannedStep::ApplyPreviousCodingStep) {
             let output = execute_apply_previous_coding_step(conversation);
@@ -62,6 +68,30 @@ pub fn execute_plan(plan: &CommandPlan, conversation: &mut ConversationState) ->
     }
 
     outputs
+}
+
+pub fn executor_received_path_snapshot(step: &PlannedStep) -> Option<String> {
+    match step {
+        PlannedStep::Analyze(path)
+        | PlannedStep::Coding(path, _)
+        | PlannedStep::Validate(path)
+        | PlannedStep::StructureView(path)
+        | PlannedStep::StructureEdit(path)
+        | PlannedStep::StructureUndo(path)
+        | PlannedStep::StructureRedo(path)
+        | PlannedStep::Run(path)
+        | PlannedStep::Memory(path)
+        | PlannedStep::GitCommit(path)
+        | PlannedStep::GitPR(path) => Some(format!(
+            "snapshot executor received path: {}",
+            path.display()
+        )),
+        PlannedStep::StructureDiff(path, _) => Some(format!(
+            "snapshot executor received path: {}",
+            path.display()
+        )),
+        PlannedStep::Rules | PlannedStep::ApplyPreviousCodingStep => None,
+    }
 }
 
 /// R4: 前回 checked coding transaction を --apply へ昇格して実行する。
@@ -476,5 +506,26 @@ mod tests {
         assert_eq!(args[0], ".");
         assert_eq!(args[1], "--request");
         assert_eq!(args[2], "repl.rs の planner_v2 接続を修正して");
+    }
+
+    #[test]
+    fn executor_snapshot_preserves_exact_coding_rs_path() {
+        let snapshot = executor_received_path_snapshot(&PlannedStep::Analyze(PathBuf::from(
+            "apps/cli/src/coding.rs",
+        )))
+        .expect("snapshot");
+        assert!(snapshot.ends_with("apps/cli/src/coding.rs"), "{snapshot}");
+    }
+
+    #[test]
+    fn executor_snapshot_preserves_exact_runtime_vm_lib_path() {
+        let snapshot = executor_received_path_snapshot(&PlannedStep::Analyze(PathBuf::from(
+            "crates/runtime/runtime_vm/src/lib.rs",
+        )))
+        .expect("snapshot");
+        assert!(
+            snapshot.ends_with("crates/runtime/runtime_vm/src/lib.rs"),
+            "{snapshot}"
+        );
     }
 }

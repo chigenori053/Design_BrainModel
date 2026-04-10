@@ -11,7 +11,7 @@ use ratatui::{
 use serde::Deserialize;
 
 use crate::coding::{CodeChange, CodeChangeSet, CodingExecutionResult, DiffHunk};
-use crate::tui::review_batch::{ReviewBatchState, ReviewGroupingStrategy};
+use crate::tui::review_batch::ReviewBatchState;
 
 const DIFF_CONTEXT: usize = 3;
 const COLLAPSED_DIFF_LINES: usize = 8;
@@ -73,11 +73,8 @@ pub fn render_edit_blocks(frame: &mut Frame, review: &ReviewBatchState, area: Re
         };
         render_group_header(
             frame,
-            group.title.as_str(),
-            review.grouping,
-            group.block_indices.len(),
-            group.selected_count,
-            group.aggregate_risk.as_str(),
+            review,
+            group,
             group_index == review.current_group,
             group_rect,
         );
@@ -100,6 +97,18 @@ pub fn render_edit_blocks(frame: &mut Frame, review: &ReviewBatchState, area: Re
             y = y.saturating_add(height);
         }
     }
+}
+
+pub fn block_visible_lines_for_test(block: &EditBlock) -> Vec<String> {
+    block_visible_lines(block)
+}
+
+pub fn group_header_summary_for_test(review: &ReviewBatchState, group_index: usize) -> String {
+    review
+        .groups
+        .get(group_index)
+        .map(|group| group_header_summary(review, group))
+        .unwrap_or_default()
 }
 
 pub fn build_edit_blocks(
@@ -174,11 +183,8 @@ pub fn change_set_for_block(block: &EditBlock) -> CodeChangeSet {
 
 fn render_group_header(
     frame: &mut Frame,
-    title: &str,
-    grouping: ReviewGroupingStrategy,
-    block_count: usize,
-    selected_count: usize,
-    aggregate_risk: &str,
+    review: &ReviewBatchState,
+    group: &crate::tui::review_batch::ReviewGroup,
     focused: bool,
     area: Rect,
 ) {
@@ -189,29 +195,7 @@ fn render_group_header(
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    let line = Line::from(vec![
-        Span::styled(
-            format!("[group:{}]", grouping.as_str()),
-            Style::default().fg(Color::Yellow),
-        ),
-        Span::raw(" "),
-        Span::styled(title.to_string(), Style::default().fg(Color::White)),
-        Span::raw("  "),
-        Span::styled(
-            format!("blocks={block_count}"),
-            Style::default().fg(Color::Cyan),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("selected={selected_count}"),
-            Style::default().fg(Color::Green),
-        ),
-        Span::raw("  "),
-        Span::styled(
-            format!("risk={aggregate_risk}"),
-            risk_style(aggregate_risk).add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    let line = Line::from(vec![Span::raw(group_header_summary(review, group))]);
     frame.render_widget(
         Paragraph::new(line).block(
             Block::default()
@@ -220,6 +204,37 @@ fn render_group_header(
         ),
         area,
     );
+}
+
+fn group_header_summary(
+    review: &ReviewBatchState,
+    group: &crate::tui::review_batch::ReviewGroup,
+) -> String {
+    let representative = group
+        .block_indices
+        .first()
+        .and_then(|index| review.blocks.get(*index));
+    let mut summary = format!(
+        "[group:{}] {}  blocks={}  selected={}",
+        review.grouping.as_str(),
+        group.title,
+        group.block_indices.len(),
+        group.selected_count,
+    );
+    if let Some(block) = representative {
+        summary.push_str(&format!(
+            "  file={}  hunks={}  confidence={} ({:.2})  risk={}  type={}",
+            block.file_path,
+            block.hunk_count,
+            block.confidence_label,
+            block.confidence_score,
+            block.risk_label,
+            block.operation,
+        ));
+    } else {
+        summary.push_str(&format!("  risk={}", group.aggregate_risk));
+    }
+    summary
 }
 
 fn render_edit_block(frame: &mut Frame, block: &EditBlock, area: Rect, focused: bool) {
@@ -325,14 +340,6 @@ fn styled_diff_line(line: &str) -> Vec<Span<'static>> {
         Style::default().fg(Color::White)
     };
     vec![Span::styled(line.to_string(), style)]
-}
-
-fn risk_style(label: &str) -> Style {
-    match label {
-        "high" => Style::default().fg(Color::Red),
-        "medium" => Style::default().fg(Color::Yellow),
-        _ => Style::default().fg(Color::Green),
-    }
 }
 
 fn operation_label(change: &CodeChange) -> String {

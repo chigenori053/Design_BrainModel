@@ -8,11 +8,15 @@
 /// - user input のみを session.history に記録する
 /// - REPL output は session.transcript に記録する
 use std::io::{self, BufRead, IsTerminal, Write};
+use std::panic::{self, AssertUnwindSafe};
 use std::thread::sleep;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    cursor::Show,
+    event::{
+        self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent, KeyModifiers,
+    },
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
@@ -26,11 +30,11 @@ use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
 use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
-use crate::nl::types::{CodingOptions as NlCodingOptions, PlannedStep};
+use crate::nl::types::{CodingOptions as NlCodingOptions, CommandPlan, PlannedStep};
 use crate::nl::{
     execute_plan as execute_nl_plan, plan_input_with_v2_fallback, render_plan_summary_with_label,
 };
-use crate::nl_executor::run_design_command;
+use crate::nl_executor::{execute_plan_step, run_design_command};
 use crate::plan::PlanStatus;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
@@ -40,6 +44,29 @@ use crate::tui::composer::{ComposerAction, ComposerViewState, render_composer};
 use crate::tui::edit_block::CodingReviewReport;
 use crate::tui::proc_strip::{DONE_MIN_VISIBLE, ProcPhase, RUNNING_MIN_VISIBLE};
 use crate::tui::review_batch::ReviewBatchState;
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> Result<Self, String> {
+        enable_raw_mode().map_err(|e| e.to_string())?;
+        execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)
+            .map_err(|e| e.to_string())?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = disable_raw_mode();
+        let _ = execute!(
+            io::stdout(),
+            LeaveAlternateScreen,
+            DisableMouseCapture,
+            Show
+        );
+    }
+}
 
 /// REPLを起動して入力ループを実行する
 ///
@@ -105,30 +132,57 @@ pub fn run_repl_stdio() -> Result<(), String> {
     let mut planner_mode = PlannerMode::default();
     register_defaults(&mut registry);
 
-    enable_raw_mode().map_err(|e| e.to_string())?;
-    let mut stdout = io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
+    let terminal_guard = TerminalGuard::enter()?;
+    let stdout = io::stdout();
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
-    let result = run_interactive_loop(
-        &mut terminal,
-        &mut session,
-        &mut conversation,
+    let result = panic::catch_unwind(AssertUnwindSafe(|| {
+        run_interactive_loop(
+            &mut terminal,
+            &mut session,
+            &mut conversation,
+            &registry,
+            &mut planner_mode,
+        )
+    }));
+    let _ = terminal.show_cursor();
+    drop(terminal);
+    drop(terminal_guard);
+
+    match result {
+        Ok(result) => result,
+        Err(payload) => Err(format!(
+            "interactive REPL panicked: {}",
+            panic_payload_message(payload)
+        )),
+    }
+}
+
+pub fn dispatch_repl_input<W: Write>(
+    input: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+    planner_mode: &mut PlannerMode,
+    writer: &mut W,
+) -> Result<bool, String> {
+    let mut registry = CommandRegistry::new();
+    register_defaults(&mut registry);
+    dispatch(
+        input,
+        session,
+        conversation,
         &registry,
-        &mut planner_mode,
-    );
-
-    disable_raw_mode().ok();
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
+        planner_mode,
+        writer,
     )
-    .ok();
-    terminal.show_cursor().ok();
+}
 
-    result
+pub fn reset_review_session(view: &mut ComposerViewState, session: &mut AgentSession) {
+    view.reset_review_session();
+    view.state = State::Idle;
+    session.current_plan = None;
+    session.state = State::Idle;
 }
 
 /// 入力をルーティングして処理する
@@ -218,17 +272,26 @@ fn run_interactive_loop(
         }
 
         match event::read().map_err(|e| e.to_string())? {
-            Event::Key(key) => match key.code {
-                KeyCode::Esc if view.buffer.is_blank() => break,
-                _ if handle_review_key(
+            Event::Key(key) => {
+                if let Some(action) = global_key_action(key, &view) {
+                    match action {
+                        GlobalKeyAction::ForceQuit | GlobalKeyAction::Exit => break,
+                    }
+                }
+
+                if handle_review_key(
                     key.code,
+                    session,
                     &mut view,
                     &mut |view| draw_view(terminal, view),
                     &mut sleep,
-                )? => {}
-                _ => match view.handle_key_event(key) {
+                )? {
+                    continue;
+                }
+
+                match view.handle_key_event(key) {
                     ComposerAction::None => {}
-                    ComposerAction::Exit => break,
+                    ComposerAction::Exit | ComposerAction::ForceQuit => break,
                     ComposerAction::Submit(event) => {
                         let should_exit = dispatch_submission(
                             &event.input,
@@ -244,11 +307,11 @@ fn run_interactive_loop(
                             break;
                         }
                     }
-                },
-            },
+                }
+            }
             Event::Mouse(mouse) => match view.handle_mouse_event(mouse) {
                 ComposerAction::None => {}
-                ComposerAction::Exit => break,
+                ComposerAction::Exit | ComposerAction::ForceQuit => break,
                 ComposerAction::Submit(event) => {
                     let should_exit = dispatch_submission(
                         &event.input,
@@ -272,8 +335,25 @@ fn run_interactive_loop(
     Ok(())
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GlobalKeyAction {
+    Exit,
+    ForceQuit,
+}
+
+fn global_key_action(key: KeyEvent, view: &ComposerViewState) -> Option<GlobalKeyAction> {
+    if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
+        return Some(GlobalKeyAction::ForceQuit);
+    }
+    if key.code == KeyCode::Esc && view.buffer.is_blank() {
+        return Some(GlobalKeyAction::Exit);
+    }
+    None
+}
+
 fn handle_review_key(
     code: KeyCode,
+    session: &mut AgentSession,
     view: &mut ComposerViewState,
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
@@ -317,6 +397,7 @@ fn handle_review_key(
             };
             if let Some(summary) = summary {
                 view.push_transcript_line(summary);
+                reset_review_session(view, session);
             }
             Ok(true)
         }
@@ -331,6 +412,7 @@ fn handle_review_key(
                 };
                 if let Some(applied) = summary {
                     view.push_transcript_line(applied);
+                    reset_review_session(view, session);
                 }
             }
             Ok(true)
@@ -342,6 +424,7 @@ fn handle_review_key(
                 && let Some(summary) = review.rollback_last_batch()?
             {
                 view.push_transcript_line(summary);
+                reset_review_session(view, session);
             }
             Ok(true)
         }
@@ -374,7 +457,7 @@ fn dispatch_submission(
         return Ok(false);
     }
     session.record(input);
-    view.review = None;
+    view.reset_review_session();
     execute_submission_with_proc_strip(
         input,
         session,
@@ -422,12 +505,16 @@ fn try_execute_reviewable_coding(
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
 ) -> Result<Option<bool>, String> {
+    if exact_file_route_plan(input).is_some() {
+        return Ok(None);
+    }
+
     if detect_goal(input).is_some() || !matches!(route(input), Route::Agent(_)) {
         return Ok(None);
     }
 
     session.context.push(input);
-    let (command_plan, planner_label) = plan_input_with_v2_fallback(input, session, conversation);
+    let (command_plan, planner_label) = plan_agent_input(input, session, conversation);
     let Some(command_plan) = command_plan else {
         return Ok(None);
     };
@@ -462,7 +549,7 @@ fn try_execute_reviewable_coding(
     let mut review_blocks = 0usize;
     if let Some(review) = ReviewBatchState::from_coding_reports(&reviews)? {
         review_blocks = review.blocks.len();
-        view.review = Some(review);
+        view.activate_review(review);
     }
     view.sync_context(conversation, current_branch_name(), None);
     view.push_transcript_line(planner_summary);
@@ -518,6 +605,7 @@ fn append_submission_transcript(view: &mut ComposerViewState, input: &str, outpu
     for line in rendered.lines() {
         view.push_transcript_line(line.to_string());
     }
+    view.restore_intent_document_focus();
 }
 
 fn run_proc_strip_lifecycle(
@@ -649,6 +737,11 @@ fn handle_command<W: Write>(
     planner_mode: &mut PlannerMode,
     writer: &mut W,
 ) -> Result<bool, String> {
+    if let Some(output) = execute_direct_subcommand(name, subcommand, args, session, writer)? {
+        writeln!(writer, "{output}").map_err(|e| e.to_string())?;
+        return Ok(false);
+    }
+
     match name.trim() {
         "exit" | "quit" => return Ok(true),
         "help" => {
@@ -702,6 +795,52 @@ fn handle_command<W: Write>(
         }
     }
     Ok(false)
+}
+
+fn execute_direct_subcommand<W: Write>(
+    name: &str,
+    subcommand: Option<&str>,
+    args: &[String],
+    session: &mut AgentSession,
+    _writer: &mut W,
+) -> Result<Option<String>, String> {
+    if !matches!(
+        name,
+        "analyze" | "coding" | "validate" | "structure" | "rules" | "memory" | "simulate"
+    ) {
+        return Ok(None);
+    }
+
+    if let Some(path) = first_path_like_arg(args) {
+        session.context.set_last_path(&path);
+    }
+    session.context.last_command = Some(name.to_string());
+
+    if cfg!(test) {
+        let mut rendered = vec![format!("[direct-dispatch] {name}")];
+        if let Some(sub) = subcommand {
+            rendered.push(sub.to_string());
+        }
+        rendered.extend(args.iter().cloned());
+        session.state = State::Completed;
+        return Ok(Some(rendered.join(" ")));
+    }
+
+    let output = execute_plan_step(name, subcommand, args)?;
+    session.state = State::Completed;
+    Ok(Some(output))
+}
+
+fn first_path_like_arg(args: &[String]) -> Option<String> {
+    args.iter().find_map(|arg| {
+        let looks_like_path = arg.contains('/')
+            || arg.ends_with(".rs")
+            || arg.ends_with(".toml")
+            || arg.ends_with(".json")
+            || arg.ends_with(".md")
+            || arg == ".";
+        looks_like_path.then(|| arg.clone())
+    })
 }
 
 /// /plan コマンド
@@ -859,7 +998,7 @@ fn handle_agent<W: Write>(
         return Ok(());
     }
 
-    let (command_plan, planner_label) = plan_input_with_v2_fallback(input, session, conversation);
+    let (command_plan, planner_label) = plan_agent_input(input, session, conversation);
 
     if let Some(command_plan) = command_plan {
         let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
@@ -966,6 +1105,38 @@ fn print_follow_up_suggestions<W: Write>(
     Ok(())
 }
 
+fn plan_agent_input(
+    input: &str,
+    session: &AgentSession,
+    conversation: &ConversationState,
+) -> (Option<CommandPlan>, &'static str) {
+    if let Some(plan) = exact_file_route_plan(input) {
+        return (Some(plan), "repl_file_route");
+    }
+    plan_input_with_v2_fallback(input, session, conversation)
+}
+
+fn exact_file_route_plan(input: &str) -> Option<CommandPlan> {
+    parse_file_mention_path(input).map(|path| CommandPlan {
+        steps: vec![PlannedStep::Analyze(std::path::PathBuf::from(path))],
+    })
+}
+
+fn parse_file_mention_path(input: &str) -> Option<&str> {
+    let trimmed = input.trim();
+    let rest = trimmed.strip_prefix("@file")?.trim_start();
+    let candidate = rest.split_whitespace().next()?;
+    is_exact_file_route_path(candidate).then_some(candidate)
+}
+
+fn is_exact_file_route_path(candidate: &str) -> bool {
+    candidate.contains('/')
+        || candidate.ends_with(".rs")
+        || candidate.ends_with(".toml")
+        || candidate.ends_with(".json")
+        || candidate.ends_with(".md")
+}
+
 fn emit_output<W: Write>(
     session: &mut AgentSession,
     writer: &mut W,
@@ -973,6 +1144,16 @@ fn emit_output<W: Write>(
 ) -> Result<(), String> {
     session.record_output(line);
     writeln!(writer, "{line}").map_err(|e| e.to_string())
+}
+
+fn panic_payload_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    match payload.downcast::<String>() {
+        Ok(message) => *message,
+        Err(payload) => match payload.downcast::<&'static str>() {
+            Ok(message) => (*message).to_string(),
+            Err(_) => "unknown panic payload".to_string(),
+        },
+    }
 }
 
 impl Write for ComposerViewState {
@@ -1475,6 +1656,7 @@ mod tests {
             "{:?}",
             view.transcript
         );
+        assert_eq!(view.focus, crate::tui::composer::ComposerFocus::Editor);
     }
 
     #[test]
@@ -1620,6 +1802,162 @@ mod tests {
         let (_, session, _) = run_with_session("design something\n/system reset\n");
         assert!(session.current_plan.is_none());
         assert_eq!(session.state, State::Idle);
+    }
+
+    #[test]
+    fn ctrl_q_force_quit_is_global() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        view.focus = crate::tui::composer::ComposerFocus::SendButton;
+        view.buffer.insert_str("/command");
+
+        let action = global_key_action(
+            crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
+            &view,
+        );
+
+        assert_eq!(action, Some(GlobalKeyAction::ForceQuit));
+    }
+
+    #[test]
+    fn blank_escape_exits_but_non_blank_escape_does_not() {
+        let blank_view = ComposerViewState::new(Vec::new(), State::Idle);
+        assert_eq!(
+            global_key_action(
+                crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &blank_view,
+            ),
+            Some(GlobalKeyAction::Exit)
+        );
+
+        let mut non_blank_view = ComposerViewState::new(Vec::new(), State::Idle);
+        non_blank_view.buffer.insert_str("keep editing");
+        assert_eq!(
+            global_key_action(
+                crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+                &non_blank_view,
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn typing_never_dispatches_or_appends_transcript() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        let transcript_before = view.transcript.clone();
+        for ch in ['@', 'f', 'i', 'l', 'e'] {
+            let action = view.handle_key_event(crossterm::event::KeyEvent::new(
+                KeyCode::Char(ch),
+                KeyModifiers::NONE,
+            ));
+            assert_eq!(action, ComposerAction::None);
+        }
+
+        assert_eq!(view.transcript, transcript_before);
+        assert_eq!(view.buffer.text(), "@file");
+    }
+
+    #[test]
+    fn enter_dispatches_once_and_appends_transcript_once() {
+        let mut session = AgentSession::new();
+        let mut conversation = ConversationState::default();
+        let mut registry = CommandRegistry::new();
+        let mut planner_mode = PlannerMode::default();
+        register_defaults(&mut registry);
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        view.buffer.insert_str("/analyze code src/");
+
+        let action = view.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        let ComposerAction::Submit(event) = action else {
+            panic!("expected submit");
+        };
+
+        let should_exit = dispatch_submission(
+            &event.input,
+            &mut session,
+            &mut conversation,
+            &registry,
+            &mut planner_mode,
+            &mut view,
+            &mut |_| Ok(()),
+            &mut |_| {},
+        )
+        .expect("dispatch");
+
+        assert!(!should_exit);
+        assert_eq!(session.history, vec!["/analyze code src/"]);
+        assert_eq!(
+            view.transcript
+                .iter()
+                .filter(|line| line.starts_with("> /analyze code src/"))
+                .count(),
+            1
+        );
+        assert_eq!(
+            view.transcript
+                .iter()
+                .filter(|line| line.contains("[direct-dispatch] analyze code src/"))
+                .count(),
+            1
+        );
+
+        let second = view.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ));
+        assert_eq!(second, ComposerAction::None);
+    }
+
+    #[test]
+    fn shift_enter_only_inserts_newline_without_dispatch() {
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        view.buffer.insert_str("line1");
+        let transcript_before = view.transcript.clone();
+
+        let action = view.handle_key_event(crossterm::event::KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SHIFT,
+        ));
+
+        assert_eq!(action, ComposerAction::None);
+        assert_eq!(view.transcript, transcript_before);
+        assert_eq!(view.buffer.text(), "line1\n");
+    }
+
+    #[test]
+    fn file_route_bypasses_normalization_for_coding_rs() {
+        let (plan, label) = plan_agent_input(
+            "@file apps/cli/src/coding.rs",
+            &AgentSession::new(),
+            &ConversationState::default(),
+        );
+        assert_eq!(label, "repl_file_route");
+        let plan = plan.expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::Analyze(std::path::PathBuf::from(
+                "apps/cli/src/coding.rs"
+            ))]
+        );
+    }
+
+    #[test]
+    fn file_route_bypasses_normalization_for_runtime_vm_lib() {
+        let (plan, label) = plan_agent_input(
+            "@file crates/runtime/runtime_vm/src/lib.rs",
+            &AgentSession::new(),
+            &ConversationState::default(),
+        );
+        assert_eq!(label, "repl_file_route");
+        let plan = plan.expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::Analyze(std::path::PathBuf::from(
+                "crates/runtime/runtime_vm/src/lib.rs"
+            ))]
+        );
     }
 
     #[test]
