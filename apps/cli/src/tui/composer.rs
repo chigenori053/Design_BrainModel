@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 use crate::nl::session::ConversationState;
+use crate::session::sanitize_debug_leakage;
 use crate::state::State;
 use crate::tui::edit_block::render_edit_blocks;
 use crate::tui::proc_strip::{ProcStripState, render_proc_strip};
@@ -240,7 +241,11 @@ impl ComposerViewState {
     }
 
     pub fn push_transcript_line(&mut self, line: impl Into<String>) {
-        self.transcript.push(line.into());
+        let sanitized = sanitize_intent_document(&line.into());
+        if sanitized.is_empty() {
+            return;
+        }
+        self.transcript.push(sanitized);
         self.restore_intent_document_focus();
     }
 
@@ -386,6 +391,10 @@ impl ComposerViewState {
             _ => ComposerAction::None,
         }
     }
+}
+
+fn sanitize_intent_document(input: &str) -> String {
+    sanitize_debug_leakage(input)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -797,6 +806,13 @@ mod tests {
 
         assert_eq!(state.focus, ComposerFocus::Editor);
         assert_eq!(state.buffer.cursor(), (0, 0));
+    }
+
+    #[test]
+    fn transcript_append_filters_debug_leak_prefixes() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.push_transcript_line("visible\nTRACE:R1:ENTER\nDEBUG:hook\nstill visible");
+        assert_eq!(state.transcript, vec!["visible\nstill visible".to_string()]);
     }
 
     #[test]

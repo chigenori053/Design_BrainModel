@@ -73,12 +73,36 @@ impl AgentSession {
     }
 
     pub fn record(&mut self, input: &str) {
-        self.history.push(input.to_string());
+        let sanitized = sanitize_debug_leakage(input);
+        if !sanitized.is_empty() {
+            self.history.push(sanitized);
+        }
     }
 
     pub fn record_output(&mut self, output: impl Into<String>) {
-        self.transcript.push(output.into());
+        let sanitized = sanitize_debug_leakage(&output.into());
+        if !sanitized.is_empty() {
+            self.transcript.push(sanitized);
+        }
     }
+}
+
+const DEBUG_LEAK_PREFIXES: [&str; 7] = ["TRACE:", "DEBUG:", "TEST:", "R1:", "R2:", "R3:", "R4:"];
+
+pub fn sanitize_debug_leakage(input: &str) -> String {
+    input
+        .lines()
+        .filter(|line| {
+            let trimmed = line.trim_start();
+            !DEBUG_LEAK_PREFIXES
+                .iter()
+                .any(|prefix| trimmed.starts_with(prefix))
+        })
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string()
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -156,5 +180,24 @@ fn merge_slot_values<K>(
             continue;
         }
         target.insert(*slot, value.clone());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sanitize_debug_leakage_filters_trace_prefixes() {
+        let sanitized = sanitize_debug_leakage("ok\nTRACE:R1:ENTER\nDEBUG:hook\nstill ok");
+        assert_eq!(sanitized, "ok\nstill ok");
+    }
+
+    #[test]
+    fn session_record_output_rejects_debug_only_lines() {
+        let mut session = AgentSession::new();
+        session.record_output("TRACE:R2:LAST=.");
+        session.record_output("visible");
+        assert_eq!(session.transcript, vec!["visible".to_string()]);
     }
 }
