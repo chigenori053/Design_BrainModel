@@ -61,6 +61,19 @@ pub struct ReviewBatchState {
 }
 
 impl ReviewBatchState {
+    pub fn empty(root: PathBuf) -> Self {
+        Self {
+            root,
+            blocks: Vec::new(),
+            grouping: ReviewGroupingStrategy::ByRiskLabel,
+            groups: Vec::new(),
+            current_group: 0,
+            focused_block: 0,
+            last_batch: None,
+            next_batch_id: 1,
+        }
+    }
+
     pub fn from_coding_reports(
         reports: &[(CodingReviewReport, String)],
     ) -> Result<Option<Self>, String> {
@@ -76,16 +89,8 @@ impl ReviewBatchState {
             return Ok(None);
         }
         sort_edit_blocks(&mut blocks);
-        let mut state = Self {
-            root,
-            blocks,
-            grouping: ReviewGroupingStrategy::ByRiskLabel,
-            groups: Vec::new(),
-            current_group: 0,
-            focused_block: 0,
-            last_batch: None,
-            next_batch_id: 1,
-        };
+        let mut state = Self::empty(root);
+        state.blocks = blocks;
         state.refresh_groups();
         Ok(Some(state))
     }

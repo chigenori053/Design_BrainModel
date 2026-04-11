@@ -15,6 +15,7 @@ path = "src/main.rs"
 [dependencies]
 analysis_tools = { workspace = true }
 agent_core = { workspace = true }
+anyhow = "1"
 bridge = { workspace = true }
 clap = { version = "4", features = ["derive"] }
 design_reasoning = { workspace = true }

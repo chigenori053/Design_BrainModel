@@ -4,6 +4,7 @@ pub mod benchmark;
 pub mod camera;
 pub mod delta_store;
 pub mod graph_2d;
+pub mod input;
 pub mod ir_loader;
 pub mod model;
 pub mod native;

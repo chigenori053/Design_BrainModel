@@ -183,6 +183,45 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
         });
     }
 
+    // Phase G1.2: single-file fallback
+    if root.is_file() {
+        let logical_root = root.parent().unwrap_or(Path::new("."));
+        let mut files = Vec::new();
+        let mut dependencies = Vec::new();
+        let mut modules = Vec::new();
+
+        if let Some((file, deps, _)) = analyze_file_project(root, logical_root) {
+            modules.push(Module {
+                name: module_name_from_relative_path(&file.path),
+                files: vec![file.path.clone()],
+            });
+            files.push(file);
+            dependencies.extend(deps.into_iter().filter_map(|(to, is_interface)| {
+                if to == "root" {
+                    return None;
+                }
+                Some(DependencyEdge {
+                    from: "root".to_string(),
+                    to,
+                    edge_type: if is_interface {
+                        DependencyEdgeType::Mediated
+                    } else {
+                        DependencyEdgeType::Direct
+                    },
+                })
+            }));
+        }
+
+        let summary = build_summary(&files);
+
+        return Ok(ProjectAnalysisResult {
+            files,
+            dependencies,
+            modules,
+            summary,
+        });
+    }
+
     // 1. ディレクトリ走査
     let paths = scan_directory(root)?;
 
@@ -832,6 +871,23 @@ mod tests {
         assert!(result.summary.total_files > 0);
         assert!(!result.modules.is_empty());
         assert!(!result.summary.languages.is_empty());
+    }
+
+    #[test]
+    fn analyze_project_single_rs_file_returns_modules() {
+        let result = analyze_project("src/main.rs").unwrap();
+        assert!(!result.modules.is_empty());
+        assert_eq!(result.summary.total_files, 1);
+        assert_eq!(result.files.len(), 1);
+    }
+
+    #[test]
+    fn analyze_project_src_dir_preserves_existing_behavior() {
+        let result = analyze_project("src/").unwrap();
+        assert!(result.summary.total_files > 0);
+        assert!(!result.files.is_empty());
+        assert!(!result.modules.is_empty());
+        assert!(result.summary.languages.contains(&Language::Rust));
     }
 
     #[test]

@@ -2,6 +2,9 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
+use crate::nl::r#loop::{
+    LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext,
+};
 use crate::commands::analyze::project::UnifiedAnalyzeResult;
 use crate::refactor::{
     ApplyPreviewPlan, GitCommitPreview, PreviewDiff, PromoteResult, RefactorActionKind,
@@ -18,6 +21,7 @@ pub mod benchmark;
 pub mod exporter;
 pub mod function_map;
 pub mod gui_dispatch;
+pub mod keymap;
 pub mod launcher;
 pub mod nl_dispatch;
 pub mod replay;
@@ -113,6 +117,47 @@ impl Default for StructureViewIR {
             design_sync: DesignSyncStatus::default(),
             scene_3d: None,
         }
+    }
+}
+
+impl LoopPromotable for StructureViewIR {
+    fn promote(self) -> anyhow::Result<RepairLoopContext> {
+        let logical_node = self.selection.selected_nodes.first().cloned();
+        let scene = self
+            .scene_3d
+            .ok_or(PromotionError::NonUniqueSourceBinding)?;
+
+        let mut bound_files = self
+            .selection
+            .selected_nodes
+            .iter()
+            .filter_map(|selected| {
+                scene
+                    .graph
+                    .nodes
+                    .iter()
+                    .find(|node| &node.id == selected)
+                    .and_then(|node| node.source_binding.as_ref())
+                    .map(|binding| binding.file.clone())
+            })
+            .collect::<Vec<_>>();
+
+        bound_files.sort();
+        bound_files.dedup();
+
+        if bound_files.len() != 1 {
+            return Err(PromotionError::NonUniqueSourceBinding.into());
+        }
+
+        Ok(RepairLoopContext {
+            target: bound_files.first().cloned(),
+            logical_node,
+            changed_files: Vec::new(),
+            diagnostics: Vec::new(),
+            rollback_token: None,
+            previous_strategy: None,
+            origin: LoopOrigin::Structure,
+        })
     }
 }
 
@@ -1268,6 +1313,11 @@ mod tests {
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
 
+    use super::{
+        Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3,
+        ViewerSelection,
+    };
+    use crate::nl::r#loop::{LoopEntryState, LoopOrigin, LoopPromotable};
     use crate::source_index::ModuleSourceIndex;
     use crate::viewer::{benchmark_structure_replay, export_demo_replay_assets};
 
@@ -1348,5 +1398,102 @@ mod tests {
         assert!(root.join(".dbm/replay/scene_3d.json").exists());
         assert!(root.join(".dbm/replay/timeline.delta").exists());
         assert!(manifest.files.iter().any(|file| file == "benchmark.json"));
+    }
+
+    #[test]
+    fn structure_selection_with_unique_binding_promotes_to_analyze() {
+        let context = StructureViewIR {
+            selection: ViewerSelection {
+                selected_nodes: vec![String::from("determinism")],
+                selected_edges: Vec::new(),
+                selection_mode: "node".to_string(),
+            },
+            scene_3d: Some(Structure3DIr {
+                graph: SemanticGraph3D {
+                    nodes: vec![Node3D {
+                        id: "determinism".to_string(),
+                        label: "determinism".to_string(),
+                        kind: "module".to_string(),
+                        position: Vec3::default(),
+                        size: 1.0,
+                        importance: 1.0,
+                        heat: 0.1,
+                        source_binding: Some(SourceBinding {
+                            file: PathBuf::from("src/runtime/determinism.rs"),
+                            line_start: 1,
+                            line_end: 4,
+                            symbol: Some("check".to_string()),
+                        }),
+                    }],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .promote()
+        .expect("unique binding should promote");
+        assert_eq!(context.origin, LoopOrigin::Structure);
+        assert_eq!(
+            context.suggested_entry_state().unwrap(),
+            LoopEntryState::Analyze
+        );
+        assert_eq!(
+            context.target,
+            Some(PathBuf::from("src/runtime/determinism.rs"))
+        );
+    }
+
+    #[test]
+    fn structure_selection_with_multiple_bindings_is_rejected() {
+        let error = StructureViewIR {
+            selection: ViewerSelection {
+                selected_nodes: vec![String::from("a"), String::from("b")],
+                selected_edges: Vec::new(),
+                selection_mode: "node".to_string(),
+            },
+            scene_3d: Some(Structure3DIr {
+                graph: SemanticGraph3D {
+                    nodes: vec![
+                        Node3D {
+                            id: "a".to_string(),
+                            label: "a".to_string(),
+                            kind: "module".to_string(),
+                            position: Vec3::default(),
+                            size: 1.0,
+                            importance: 1.0,
+                            heat: 0.1,
+                            source_binding: Some(SourceBinding {
+                                file: PathBuf::from("src/a.rs"),
+                                line_start: 1,
+                                line_end: 2,
+                                symbol: None,
+                            }),
+                        },
+                        Node3D {
+                            id: "b".to_string(),
+                            label: "b".to_string(),
+                            kind: "module".to_string(),
+                            position: Vec3::default(),
+                            size: 1.0,
+                            importance: 1.0,
+                            heat: 0.1,
+                            source_binding: Some(SourceBinding {
+                                file: PathBuf::from("src/b.rs"),
+                                line_start: 1,
+                                line_end: 2,
+                                symbol: None,
+                            }),
+                        },
+                    ],
+                    ..Default::default()
+                },
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+        .promote()
+        .expect_err("multiple source bindings must fail");
+        assert!(error.to_string().contains("non-unique source binding"));
     }
 }

@@ -9,6 +9,9 @@ use integration_layer::{CodePatch, PatchOperation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::nl::r#loop::{
+    LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext,
+};
 use crate::refactor::{
     ApplyResolverError, PatchScope, RefactorCandidate, RefactorOperation,
     apply_resolver_error_message, load_matching_refactor_candidate, load_refactor_candidate,
@@ -152,6 +155,96 @@ pub struct TransactionalApplyResult {
     pub cleanup_ms: u128,
     pub cleanup_ok: bool,
     pub rollback_count: usize,
+}
+
+impl LoopPromotable for TransactionalApplyResult {
+    fn promote(self) -> anyhow::Result<RepairLoopContext> {
+        let changed_files = self.modified_files;
+        let diagnostics = self.diagnostics;
+        let rollback_token = Some(self.sandbox_path.display().to_string());
+
+        if !diagnostics.is_empty() {
+            return Ok(RepairLoopContext {
+                target: changed_files.first().cloned(),
+                logical_node: None,
+                changed_files,
+                diagnostics,
+                rollback_token,
+                previous_strategy: None,
+                origin: LoopOrigin::Coding,
+            });
+        }
+
+        if changed_files.is_empty() {
+            return Err(PromotionError::MissingDiagnostics.into());
+        }
+
+        Ok(RepairLoopContext {
+            target: changed_files.first().cloned(),
+            logical_node: None,
+            changed_files,
+            diagnostics,
+            rollback_token: None,
+            previous_strategy: None,
+            origin: LoopOrigin::Coding,
+        })
+    }
+}
+
+#[cfg(test)]
+mod loop_promotion_tests {
+    use super::*;
+    use crate::nl::r#loop::{LoopEntryState, LoopPromotable};
+
+    #[test]
+    fn transactional_apply_with_changed_files_promotes_to_verify() {
+        let context = TransactionalApplyResult {
+            applied: true,
+            build_ok: true,
+            rolled_back: false,
+            sandbox_path: PathBuf::from("/tmp/dbm-sandbox"),
+            modified_files: vec![PathBuf::from("apps/cli/src/repl.rs")],
+            diagnostics: Vec::new(),
+            elapsed_ms: 10,
+            sandbox_elapsed_ms: 5,
+            cargo_check_ms: 3,
+            cleanup_ms: 2,
+            cleanup_ok: true,
+            rollback_count: 0,
+        }
+        .promote()
+        .expect("successful coding promotion should succeed");
+        assert_eq!(context.origin, LoopOrigin::Coding);
+        assert_eq!(
+            context.suggested_entry_state().unwrap(),
+            LoopEntryState::Verify
+        );
+    }
+
+    #[test]
+    fn transactional_apply_with_diagnostics_promotes_to_retry_decision() {
+        let context = TransactionalApplyResult {
+            applied: false,
+            build_ok: false,
+            rolled_back: true,
+            sandbox_path: PathBuf::from("/tmp/dbm-sandbox"),
+            modified_files: vec![PathBuf::from("apps/cli/src/repl.rs")],
+            diagnostics: vec![String::from("cargo check failed")],
+            elapsed_ms: 10,
+            sandbox_elapsed_ms: 5,
+            cargo_check_ms: 3,
+            cleanup_ms: 2,
+            cleanup_ok: true,
+            rollback_count: 1,
+        }
+        .promote()
+        .expect("failing coding promotion should succeed");
+        assert_eq!(context.rollback_token.as_deref(), Some("/tmp/dbm-sandbox"));
+        assert_eq!(
+            context.suggested_entry_state().unwrap(),
+            LoopEntryState::RetryDecision
+        );
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

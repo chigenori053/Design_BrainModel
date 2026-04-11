@@ -74,12 +74,18 @@ mod repl_apply_resolution;
 mod repl_continuation_v2_wiring;
 #[path = "integration/repl_deterministic_v2_wiring.rs"]
 mod repl_deterministic_v2_wiring;
+#[path = "integration/repl_diff_render.rs"]
+mod repl_diff_render;
 #[path = "integration/repl_file_target_routing.rs"]
 mod repl_file_target_routing;
 #[path = "integration/repl_followup_apply_promotion.rs"]
 mod repl_followup_apply_promotion;
 #[path = "integration/repl_semantic_cluster_narrowing.rs"]
 mod repl_semantic_cluster_narrowing;
+#[path = "integration/repl_session_continuity.rs"]
+mod repl_session_continuity;
+#[path = "integration/repl_subcommand_dispatch.rs"]
+mod repl_subcommand_dispatch;
 #[path = "integration/structure_session.rs"]
 mod structure_session;
 #[path = "integration/transaction_execution_bridge.rs"]
@@ -90,5 +96,7 @@ mod transaction_preview_bridge;
 mod transactional_safe_apply;
 #[path = "integration/unified_analyze_cli.rs"]
 mod unified_analyze_cli;
+#[path = "integration/viewer_keymap_isolation.rs"]
+mod viewer_keymap_isolation;
 #[path = "integration/workspace_symbol_rebinding.rs"]
 mod workspace_symbol_rebinding;

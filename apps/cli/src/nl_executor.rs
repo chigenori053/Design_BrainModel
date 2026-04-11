@@ -172,6 +172,7 @@ fn map_invocation_to_cli(
             let path = args.first().cloned().unwrap_or_else(|| ".".to_string());
             Ok(("run".to_string(), vec![path]))
         }
+        "simulate" => Ok(("simulate".to_string(), args.to_vec())),
         "execute" => Ok(("execute".to_string(), args.to_vec())),
         _ => Err(format!("不明なコマンド: {name}")),
     }

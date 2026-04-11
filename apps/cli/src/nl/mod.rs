@@ -10,6 +10,7 @@ pub mod language_intent_bridge;
 pub mod multilingual_router;
 pub mod planner;
 pub mod planner_v2;
+pub mod r#loop;
 pub mod session;
 pub mod target;
 pub mod types;
