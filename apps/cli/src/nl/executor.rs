@@ -2,10 +2,13 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
+use crate::design_delta::{self, bridge::to_command_plan, explain};
 use crate::nl::session::{ConversationState, LastCodingTransaction};
 use crate::nl::types::{CodingOptions, CommandPlan, PlannedStep};
 use crate::nl_executor::run_design_command;
 use crate::refactor::{GuiAction, GuiActionMode};
+use crate::session::AgentSession;
+use crate::state::State;
 
 pub fn render_plan_summary(plan: &CommandPlan) -> String {
     render_plan_summary_with_label(plan, "nl_v2")
@@ -22,7 +25,11 @@ pub fn describe_plan_labels(plan: &CommandPlan) -> Vec<String> {
         .collect()
 }
 
-pub fn execute_plan(plan: &CommandPlan, conversation: &mut ConversationState) -> Vec<String> {
+pub fn execute_plan(
+    plan: &CommandPlan,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+) -> Vec<String> {
     let mut outputs = Vec::new();
 
     for (index, step) in plan.steps.iter().enumerate() {
@@ -36,6 +43,22 @@ pub fn execute_plan(plan: &CommandPlan, conversation: &mut ConversationState) ->
         if matches!(step, PlannedStep::ApplyPreviousCodingStep) {
             let output = execute_apply_previous_coding_step(conversation);
             outputs.push(format!("[step {index}] apply_previous_coding\n{output}"));
+            continue;
+        }
+
+        if let PlannedStep::DesignDeltaReasoning(spec) = step {
+            let output = execute_design_delta_reasoning_step(spec, session, conversation);
+            outputs.push(format!("[step {index}] design_delta_reasoning\n{output}"));
+            continue;
+        }
+        if let PlannedStep::AlternativeMutationSearch(spec) = step {
+            let output = execute_alternative_mutation_search_step(spec, session, conversation);
+            outputs.push(format!("[step {index}] alternative_mutation_search\n{output}"));
+            continue;
+        }
+        if let PlannedStep::ExplainDesignTradeoff(prompt) = step {
+            let output = execute_design_tradeoff_explanation_step(prompt, session, conversation);
+            outputs.push(format!("[step {index}] explain_design_tradeoff\n{output}"));
             continue;
         }
 
@@ -90,7 +113,11 @@ pub fn executor_received_path_snapshot(step: &PlannedStep) -> Option<String> {
             "snapshot executor received path: {}",
             path.display()
         )),
-        PlannedStep::Rules | PlannedStep::ApplyPreviousCodingStep => None,
+        PlannedStep::Rules
+        | PlannedStep::ApplyPreviousCodingStep
+        | PlannedStep::DesignDeltaReasoning(_)
+        | PlannedStep::AlternativeMutationSearch(_)
+        | PlannedStep::ExplainDesignTradeoff(_) => None,
     }
 }
 
@@ -325,6 +352,24 @@ fn to_canonical_command(step: &PlannedStep) -> (&'static str, Vec<String>, Strin
             ),
             true,
         ),
+        PlannedStep::DesignDeltaReasoning(spec) => (
+            "design-delta",
+            vec![spec.clone()],
+            "design delta reasoning loop".to_string(),
+            true,
+        ),
+        PlannedStep::AlternativeMutationSearch(spec) => (
+            "design-delta-search",
+            vec![spec.clone()],
+            "alternative mutation search loop".to_string(),
+            true,
+        ),
+        PlannedStep::ExplainDesignTradeoff(prompt) => (
+            "design-delta-explain",
+            vec![prompt.clone()],
+            "design tradeoff explanation loop".to_string(),
+            true,
+        ),
         // ApplyPreviousCodingStep は execute_plan で直接処理されるため、
         // to_canonical_command には到達しない。describe_plan_labels 用の記述のみ。
         PlannedStep::ApplyPreviousCodingStep => (
@@ -375,6 +420,9 @@ fn update_state_after_step(step: &PlannedStep, conversation: &mut ConversationSt
         | PlannedStep::Memory(path)
         | PlannedStep::GitCommit(path)
         | PlannedStep::GitPR(path) => conversation.last_target = Some(path.clone()),
+        PlannedStep::DesignDeltaReasoning(_)
+        | PlannedStep::AlternativeMutationSearch(_)
+        | PlannedStep::ExplainDesignTradeoff(_) => {}
         PlannedStep::StructureDiff(path, node) => {
             conversation.last_target = Some(path.clone());
             if let Some(node) = node {
@@ -408,6 +456,184 @@ fn update_state_after_step(step: &PlannedStep, conversation: &mut ConversationSt
     {
         conversation.last_viewer_session = Some(session_id.to_string());
     }
+}
+
+fn execute_design_delta_reasoning_step(
+    spec: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+) -> String {
+    let root = session
+        .workspace_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    session.state = State::SpecReceived;
+    let output = match design_delta::run_reasoning_loop(&root, spec) {
+        Ok(output) => output,
+        Err(err) => return format!("Accepted: false\nReason: {err}"),
+    };
+
+    session.state = State::DesignDeltaReady;
+    session.design_baseline = Some(output.baseline.clone());
+    conversation.last_design_delta = Some(output.delta.clone());
+
+    session.state = State::MutationPlanned;
+    session.active_mutation_plan = Some(output.mutation_plan.clone());
+    conversation.active_mutation_plan = Some(output.mutation_plan.clone());
+
+    session.state = State::RationalityScored;
+    session.last_rationality_score = Some(output.rationality.clone());
+    conversation.last_rationality_score = Some(output.rationality.clone());
+
+    if !output.accepted {
+        session.state = State::Error;
+        return format!(
+            "Accepted: false\nRationality total: {:.2}\nFallback retries: {}\nReason: below threshold",
+            output.rationality.total, output.retries
+        );
+    }
+
+    session.state = State::PatchPlanReady;
+    conversation.last_patch_plan = Some(output.patch_plan.clone());
+    conversation.last_analysis_summary = Some(output.patch_plan.summary.clone());
+
+    let mut lines = vec![
+        "Accepted: true".to_string(),
+        format!("Impacted crates: {}", output.delta.impacted_crates.join(", ")),
+        format!("Rationality total: {:.2}", output.rationality.total),
+        format!(
+            "Expected tests: {}",
+            output.patch_plan.expected_tests.join(" | ")
+        ),
+    ];
+
+    session.state = State::TestPlanReady;
+    let follow_up = to_command_plan(&output.mutation_plan, spec);
+    let follow_up_outputs = execute_plan(&follow_up, session, conversation);
+    if follow_up_outputs
+        .iter()
+        .any(|line| line.starts_with("[step") && line.contains("Error:"))
+    {
+        session.state = State::Repairing;
+    } else {
+        session.state = State::CommitReady;
+    }
+    lines.extend(follow_up_outputs);
+    lines.join("\n")
+}
+
+fn execute_alternative_mutation_search_step(
+    spec: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+) -> String {
+    let root = session
+        .workspace_root
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    session.state = State::SpecReceived;
+    let output = match design_delta::run_alternative_search_loop(&root, spec) {
+        Ok(output) => output,
+        Err(err) => return format!("Accepted: false\nReason: {err}"),
+    };
+
+    session.state = State::MutationCandidatesReady;
+    if let Some(search_result) = &output.search_result {
+        session.mutation_candidates = search_result.candidates.clone();
+        conversation.mutation_candidates = search_result.candidates.clone();
+        session.mutation_search_depth = 3;
+        conversation.mutation_search_depth = 3;
+        session.last_mutation_search_result = Some(search_result.clone());
+        conversation.last_mutation_search_result = Some(search_result.clone());
+    }
+
+    session.state = State::MutationRankingReady;
+    if let Some(search_result) = &output.search_result
+        && let Some(selected) = search_result.selected.clone()
+    {
+        session.selected_mutation = Some(selected.clone());
+        conversation.selected_mutation = Some(selected);
+    }
+
+    session.state = State::BestMutationSelected;
+    session.design_baseline = Some(output.baseline.clone());
+    conversation.last_design_delta = Some(output.delta.clone());
+    session.active_mutation_plan = Some(output.mutation_plan.clone());
+    conversation.active_mutation_plan = Some(output.mutation_plan.clone());
+    session.last_rationality_score = Some(output.rationality.clone());
+    conversation.last_rationality_score = Some(output.rationality.clone());
+
+    if !output.accepted {
+        session.state = State::Error;
+        return format!(
+            "Accepted: false\nCandidates: {}\nRationality total: {:.2}\nReason: below search threshold",
+            output
+                .search_result
+                .as_ref()
+                .map(|r| r.candidates.len())
+                .unwrap_or(0),
+            output.rationality.total
+        );
+    }
+
+    session.state = State::PatchPlanReady;
+    conversation.last_patch_plan = Some(output.patch_plan.clone());
+    conversation.last_analysis_summary = Some(output.patch_plan.summary.clone());
+
+    let selected_id = session
+        .selected_mutation
+        .as_ref()
+        .map(|candidate| candidate.id.clone())
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut lines = vec![
+        format!(
+            "Candidates: {}",
+            output
+                .search_result
+                .as_ref()
+                .map(|r| r.candidates.len())
+                .unwrap_or(0)
+        ),
+        format!("Selected mutation: {selected_id}"),
+        format!("Rationality total: {:.2}", output.rationality.total),
+    ];
+
+    session.state = State::TestPlanReady;
+    let follow_up = to_command_plan(&output.mutation_plan, spec);
+    let follow_up_outputs = execute_plan(&follow_up, session, conversation);
+    if follow_up_outputs
+        .iter()
+        .any(|line| line.starts_with("[step") && line.contains("Error:"))
+    {
+        session.state = State::Repairing;
+    } else {
+        session.state = State::CommitReady;
+    }
+    lines.extend(follow_up_outputs);
+    lines.join("\n")
+}
+
+fn execute_design_tradeoff_explanation_step(
+    _prompt: &str,
+    session: &mut AgentSession,
+    conversation: &mut ConversationState,
+) -> String {
+    let search_result = conversation
+        .last_mutation_search_result
+        .clone()
+        .or_else(|| session.last_mutation_search_result.clone());
+    let Some(search_result) = search_result else {
+        return "No tradeoff explanation available. Run alternative mutation search first.".to_string();
+    };
+
+    let Some(explanation) = explain::explain_tradeoff(&search_result) else {
+        return "No tradeoff explanation available. Selected and rejected mutations were not retained.".to_string();
+    };
+    session.last_tradeoff_explanation = Some(explanation.clone());
+    conversation.last_tradeoff_explanation = Some(explanation.clone());
+    explain::render_pr_ready_block(&explanation)
 }
 
 fn ensure_viewer_session_is_fresh(
@@ -452,6 +678,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
+    use crate::design_delta::{
+        DesignDelta, MutationCandidate, MutationPlan, MutationSearchResult, MutationStrategy,
+        RationalityScore,
+    };
     use crate::nl::types::{CodingOptions, PlannedStep};
 
     #[test]
@@ -527,5 +757,57 @@ mod tests {
             snapshot.ends_with("crates/runtime/runtime_vm/src/lib.rs"),
             "{snapshot}"
         );
+    }
+
+    #[test]
+    fn explain_tradeoff_step_emits_pr_ready_block() {
+        let mut session = AgentSession::new();
+        let mut conversation = ConversationState::default();
+        let selected = MutationCandidate {
+            id: "trait-extraction-1".to_string(),
+            plan: MutationPlan {
+                delta: DesignDelta {
+                    impacted_crates: vec!["design_cli".to_string()],
+                    ..DesignDelta::default()
+                },
+                target_files: vec![PathBuf::from("apps/cli/Cargo.toml")],
+                expected_tests: vec!["cargo test -p design_cli".to_string()],
+                rollback_units: vec!["crate::design_cli".to_string()],
+            },
+            expected_score: Some(RationalityScore {
+                maintainability: 0.91,
+                extensibility: 0.92,
+                risk: 0.80,
+                boundary_integrity: 0.93,
+                rollback_complexity: 0.87,
+                total: 0.89,
+            }),
+            strategy: MutationStrategy::TraitExtraction,
+        };
+        let rejected = MutationCandidate {
+            id: "adapter-insertion-1".to_string(),
+            plan: selected.plan.clone(),
+            expected_score: Some(RationalityScore {
+                maintainability: 0.84,
+                extensibility: 0.80,
+                risk: 0.82,
+                boundary_integrity: 0.79,
+                rollback_complexity: 0.86,
+                total: 0.83,
+            }),
+            strategy: MutationStrategy::AdapterInsertion,
+        };
+        conversation.last_mutation_search_result = Some(MutationSearchResult {
+            candidates: vec![selected.clone(), rejected.clone()],
+            selected: Some(selected),
+            rejected: vec![rejected.id.clone()],
+        });
+
+        let output =
+            execute_design_tradeoff_explanation_step("設計トレードオフを要約して", &mut session, &mut conversation);
+        assert!(output.contains("Selected mutation: trait-extraction-1"));
+        assert!(output.contains("Tradeoff summary:"));
+        assert!(output.contains("Rejected:"));
+        assert!(conversation.last_tradeoff_explanation.is_some());
     }
 }

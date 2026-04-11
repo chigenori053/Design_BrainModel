@@ -52,9 +52,20 @@ pub fn print_prompt_with_label<W: Write>(
 ) -> io::Result<()> {
     let indicator = match state {
         State::Idle | State::Completed => "DBM",
-        State::Running | State::Planning => "DBM..",
+        State::Running
+        | State::Planning
+        | State::SpecReceived
+        | State::DesignDeltaReady
+        | State::MutationPlanned
+        | State::MutationCandidatesReady
+        | State::MutationRankingReady
+        | State::BestMutationSelected
+        | State::RationalityScored
+        | State::PatchPlanReady
+        | State::TestPlanReady
+        | State::Repairing => "DBM..",
         State::Error => "DBM!",
-        State::Ready => "DBM?",
+        State::Ready | State::CommitReady => "DBM?",
     };
     match label {
         Some(label) if !label.is_empty() => write!(writer, "{indicator}[{label}] > ")?,

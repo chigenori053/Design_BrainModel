@@ -208,6 +208,18 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
                     ],
                 }),
             ),
+            PlannedStep::AlternativeMutationSearch(spec) => (
+                format!("Alternative mutation search: {spec}"),
+                Some(CommandInvocation::new("analyze", Some("project"), &["."])),
+            ),
+            PlannedStep::DesignDeltaReasoning(spec) => (
+                format!("Design delta reasoning: {spec}"),
+                Some(CommandInvocation::new("analyze", Some("project"), &["."])),
+            ),
+            PlannedStep::ExplainDesignTradeoff(prompt) => (
+                format!("Explain design tradeoff: {prompt}"),
+                Some(CommandInvocation::new("analyze", Some("project"), &["."])),
+            ),
             PlannedStep::ApplyPreviousCodingStep => (
                 "Apply previous coding transaction".to_string(),
                 Some(CommandInvocation {

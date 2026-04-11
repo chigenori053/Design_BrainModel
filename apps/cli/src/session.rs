@@ -1,6 +1,10 @@
 use runtime_core::stable_v03::RuntimeResult;
 use runtime_core::{ChatContext, Clarification, SlotMap, SlotValue};
 
+use crate::design_delta::{
+    DesignGraph, MutationCandidate, MutationPlan, MutationSearchResult, RationalityScore,
+    TradeoffExplanation,
+};
 use crate::plan::Plan;
 use crate::state::{Context, Mode, State};
 
@@ -32,6 +36,15 @@ impl Task {
 /// - `tasks`   : タスクリスト（Phase4で本格実装）
 #[derive(Clone, Debug, Default)]
 pub struct AgentSession {
+    pub workspace_root: Option<std::path::PathBuf>,
+    pub design_baseline: Option<DesignGraph>,
+    pub last_rationality_score: Option<RationalityScore>,
+    pub active_mutation_plan: Option<MutationPlan>,
+    pub mutation_candidates: Vec<MutationCandidate>,
+    pub selected_mutation: Option<MutationCandidate>,
+    pub mutation_search_depth: usize,
+    pub last_mutation_search_result: Option<MutationSearchResult>,
+    pub last_tradeoff_explanation: Option<TradeoffExplanation>,
     /// 現在の状態
     pub state: State,
     /// 実行中のプラン（Phase2で使用）
@@ -53,12 +66,16 @@ impl AgentSession {
         Self::default()
     }
 
-    /// 入力を履歴に記録する
+    pub fn with_root(root: std::path::PathBuf) -> Self {
+        let mut s = Self::new();
+        s.workspace_root = Some(root);
+        s
+    }
+
     pub fn record(&mut self, input: &str) {
         self.history.push(input.to_string());
     }
 
-    /// 出力を transcript に記録する
     pub fn record_output(&mut self, output: impl Into<String>) {
         self.transcript.push(output.into());
     }

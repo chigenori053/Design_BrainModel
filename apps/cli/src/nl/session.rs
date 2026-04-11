@@ -1,5 +1,10 @@
 use std::path::PathBuf;
 
+use crate::design_delta::{
+    CodingPatchPlan, DesignDelta, MutationCandidate, MutationPlan, MutationSearchResult,
+    RationalityScore, TradeoffExplanation,
+};
+
 use super::types::CommandPlan;
 
 /// 直前の Coding dry-run step の状態を保持する。
@@ -15,7 +20,7 @@ pub struct LastCodingTransaction {
     pub applied: bool,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConversationState {
     pub autonomous_label: Option<String>,
     pub last_target: Option<PathBuf>,
@@ -25,6 +30,17 @@ pub struct ConversationState {
     pub last_analysis_summary: Option<String>,
     /// R3: 直前の Coding dry-run transaction。apply promotion に再利用される。
     pub last_coding_transaction: Option<LastCodingTransaction>,
+    pub hook_promotion_count: u64,
+    pub hook_false_promotion_count: u64,
+    pub last_design_delta: Option<DesignDelta>,
+    pub last_patch_plan: Option<CodingPatchPlan>,
+    pub active_mutation_plan: Option<MutationPlan>,
+    pub last_rationality_score: Option<RationalityScore>,
+    pub mutation_candidates: Vec<MutationCandidate>,
+    pub selected_mutation: Option<MutationCandidate>,
+    pub mutation_search_depth: usize,
+    pub last_mutation_search_result: Option<MutationSearchResult>,
+    pub last_tradeoff_explanation: Option<TradeoffExplanation>,
 }
 
 impl PartialEq for LastCodingTransaction {

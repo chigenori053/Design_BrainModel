@@ -19,6 +19,17 @@ pub enum State {
     Completed,
     /// エラー：回復可能なエラー状態
     Error,
+    SpecReceived,
+    DesignDeltaReady,
+    MutationPlanned,
+    MutationCandidatesReady,
+    MutationRankingReady,
+    BestMutationSelected,
+    RationalityScored,
+    PatchPlanReady,
+    TestPlanReady,
+    Repairing,
+    CommitReady,
 }
 
 impl State {
@@ -30,6 +41,17 @@ impl State {
             Self::Running => "running",
             Self::Completed => "completed",
             Self::Error => "error",
+            Self::SpecReceived => "spec_received",
+            Self::DesignDeltaReady => "design_delta_ready",
+            Self::MutationPlanned => "mutation_planned",
+            Self::MutationCandidatesReady => "mutation_candidates_ready",
+            Self::MutationRankingReady => "mutation_ranking_ready",
+            Self::BestMutationSelected => "best_mutation_selected",
+            Self::RationalityScored => "rationality_scored",
+            Self::PatchPlanReady => "patch_plan_ready",
+            Self::TestPlanReady => "test_plan_ready",
+            Self::Repairing => "repairing",
+            Self::CommitReady => "commit_ready",
         }
     }
 }
@@ -93,6 +115,17 @@ mod tests {
         assert_eq!(State::Running.as_str(), "running");
         assert_eq!(State::Completed.as_str(), "completed");
         assert_eq!(State::Error.as_str(), "error");
+        assert_eq!(State::SpecReceived.as_str(), "spec_received");
+        assert_eq!(State::DesignDeltaReady.as_str(), "design_delta_ready");
+        assert_eq!(State::MutationPlanned.as_str(), "mutation_planned");
+        assert_eq!(State::MutationCandidatesReady.as_str(), "mutation_candidates_ready");
+        assert_eq!(State::MutationRankingReady.as_str(), "mutation_ranking_ready");
+        assert_eq!(State::BestMutationSelected.as_str(), "best_mutation_selected");
+        assert_eq!(State::RationalityScored.as_str(), "rationality_scored");
+        assert_eq!(State::PatchPlanReady.as_str(), "patch_plan_ready");
+        assert_eq!(State::TestPlanReady.as_str(), "test_plan_ready");
+        assert_eq!(State::Repairing.as_str(), "repairing");
+        assert_eq!(State::CommitReady.as_str(), "commit_ready");
     }
 
     #[test]

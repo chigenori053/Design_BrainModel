@@ -342,6 +342,8 @@ pub struct WizardArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ReplArgs {
+	#[arg(long)]
+	pub root: Option<std::path::PathBuf>,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -1342,8 +1344,11 @@ fn wizard_mode(args: WizardArgs) -> Result<(), String> {
 }
 
 fn repl_mode(args: ReplArgs) -> Result<(), String> {
-    let _ = args;
-    run_repl_stdio()
+    let workspace_root = args
+    	.root
+    	.clone()
+    	.unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?);
+    run_repl_stdio(workspace_root)
 }
 
 pub fn run_chat_loop() -> Result<(), String> {

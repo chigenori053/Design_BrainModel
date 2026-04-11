@@ -20,6 +20,9 @@ pub enum IntentType {
     Memory,
     GitCommit,
     GitPR,
+    AlternativeMutationSearch,
+    DesignDeltaReasoning,
+    ExplainDesignTradeoff,
     MetaPlannerEdit,
     Unknown,
 }
@@ -71,6 +74,9 @@ pub enum PlannedStep {
     Memory(PathBuf),
     GitCommit(PathBuf),
     GitPR(PathBuf),
+    AlternativeMutationSearch(String),
+    DesignDeltaReasoning(String),
+    ExplainDesignTradeoff(String),
     /// R1: previous coding dry-run transaction を apply へ昇格するステップ。
     /// generic planner を bypass し、前回 checked && !applied の transaction を再利用する。
     ApplyPreviousCodingStep,

@@ -9,6 +9,7 @@
 /// - REPL output は session.transcript に記録する
 use std::io::{self, BufRead, IsTerminal, Write};
 use std::panic::{self, AssertUnwindSafe};
+use std::path::PathBuf;
 use std::thread::sleep;
 use std::time::Duration;
 
@@ -71,12 +72,16 @@ impl Drop for TerminalGuard {
 /// REPLを起動して入力ループを実行する
 ///
 /// `/exit` または EOF (Ctrl+D) で終了する。
-pub fn run_repl<R, W>(reader: &mut R, writer: &mut W) -> Result<(), String>
+pub fn run_repl<R, W>(
+    workspace_root: PathBuf,
+    reader: &mut R,
+    writer: &mut W,
+) -> Result<(), String>
 where
     R: BufRead,
     W: Write,
 {
-    let mut session = AgentSession::new();
+    let mut session = AgentSession::with_root(workspace_root.clone());
     let mut conversation = ConversationState::default();
     let mut registry = CommandRegistry::new();
     let mut planner_mode = PlannerMode::default();
@@ -117,16 +122,16 @@ where
     Ok(())
 }
 
-pub fn run_repl_stdio() -> Result<(), String> {
+pub fn run_repl_stdio(workspace_root: PathBuf) -> Result<(), String> {
     if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
         let stdin = io::stdin();
         let stdout = io::stdout();
         let mut reader = io::BufReader::new(stdin.lock());
         let mut writer = stdout.lock();
-        return run_repl(&mut reader, &mut writer);
+        return run_repl(workspace_root, &mut reader, &mut writer);
     }
 
-    let mut session = AgentSession::new();
+    let mut session = AgentSession::with_root(workspace_root.clone());
     let mut conversation = ConversationState::default();
     let mut registry = CommandRegistry::new();
     let mut planner_mode = PlannerMode::default();
@@ -225,18 +230,25 @@ fn dispatch<W: Write>(
     }
 }
 
-fn current_branch_name() -> Option<String> {
-    let output = std::process::Command::new("git")
+fn current_branch_name(root: &std::path::Path) -> Option<String> {
+    std::process::Command::new("git")
+        .arg("-C")
+        .arg(root)
         .args(["branch", "--show-current"])
         .output()
-        .ok()?;
-    if !output.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    (!branch.is_empty()).then_some(branch)
+        .ok()
+        .and_then(|output| {
+            if !output.status.success() {
+                return None;
+            }
+            let branch = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if branch.is_empty() {
+                None
+            } else {
+                Some(branch)
+            }
+        })
 }
-
 fn banner_lines() -> Vec<String> {
     vec![
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
@@ -258,18 +270,32 @@ fn run_interactive_loop(
     planner_mode: &mut PlannerMode,
 ) -> Result<(), String> {
     let mut view = ComposerViewState::new(banner_lines(), session.state);
-    view.sync_context(conversation, current_branch_name(), None);
+    view.sync_context(
+        conversation,
+        current_branch_name(
+            session
+                .workspace_root
+                .as_deref()
+                .unwrap_or(std::path::Path::new(".")),
+        ),
+        None,
+    );
 
     loop {
         view.state = session.state;
-        view.sync_context(conversation, current_branch_name(), None);
+        view.sync_context(
+            conversation,
+            current_branch_name(
+                session
+                    .workspace_root
+                    .as_deref()
+                    .unwrap_or(std::path::Path::new(".")),
+            ),
+            None,
+        );
         terminal
             .draw(|frame| render_composer(frame, &mut view))
             .map_err(|e| e.to_string())?;
-
-        if !event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
-            continue;
-        }
 
         match event::read().map_err(|e| e.to_string())? {
             Event::Key(key) => {
@@ -493,7 +519,16 @@ fn execute_submission_with_proc_strip(
         sleeper,
         &mut |output| dispatch(input, session, conversation, registry, planner_mode, output),
     )?;
-    view.sync_context(conversation, current_branch_name(), None);
+    view.sync_context(
+        conversation,
+        current_branch_name(
+            session
+                .workspace_root
+                .as_deref()
+                .unwrap_or(std::path::Path::new(".")),
+        ),
+        None,
+    );
     Ok(result)
 }
 
@@ -551,7 +586,16 @@ fn try_execute_reviewable_coding(
         review_blocks = review.blocks.len();
         view.activate_review(review);
     }
-    view.sync_context(conversation, current_branch_name(), None);
+    view.sync_context(
+        conversation,
+        current_branch_name(
+            session
+                .workspace_root
+                .as_deref()
+                .unwrap_or(std::path::Path::new(".")),
+        ),
+        None,
+    );
     view.push_transcript_line(planner_summary);
     if review_blocks > 0 {
         view.push_transcript_line(format!("Review ready: {review_blocks} file patch group(s)"));
@@ -1013,7 +1057,7 @@ fn handle_agent<W: Write>(
         }
 
         session.state = State::Running;
-        for output in execute_nl_plan(&command_plan, conversation) {
+        for output in execute_nl_plan(&command_plan, session, conversation) {
             if !output.trim().is_empty() {
                 emit_output(session, writer, &output)?;
             }
@@ -1312,7 +1356,7 @@ mod tests {
     fn run_with_input(input: &str) -> (String, Result<(), String>) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
         let mut writer = Vec::new();
-        let result = run_repl(&mut reader, &mut writer);
+        let result = run_repl(PathBuf::from("."), &mut reader, &mut writer);
         (String::from_utf8_lossy(&writer).to_string(), result)
     }
 

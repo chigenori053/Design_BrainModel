@@ -78,6 +78,47 @@ fn coding_options_for_request(input: &str) -> CodingOptions {
     }
 }
 
+fn wants_design_delta_reasoning(lower: &str) -> bool {
+    [
+        "最小の設計変更",
+        "設計変更",
+        "設計合理性",
+        "crate 境界",
+        "trait 分離",
+        "責務を崩さず",
+        "architecture-native",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn wants_alternative_mutation_search(lower: &str) -> bool {
+    [
+        "複数の設計変更案",
+        "比較して",
+        "trait分離案",
+        "adapter案",
+        "crate split案",
+        "最適案",
+        "最も保守性の高い案",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn wants_design_tradeoff_explanation(lower: &str) -> bool {
+    [
+        "なぜこの設計案を採択",
+        "棄却した案との違い",
+        "設計トレードオフ",
+        "tradeoff",
+        "採択した理由",
+        "説明して",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
 fn should_use_semantic_frontend(intent: &PlannerIntent) -> bool {
     intent.mixed_language
         || intent.detected_language == SupportedLanguage::Japanese
@@ -157,6 +198,12 @@ fn synthesize_steps_from_intent(
             merged.path.clone(),
             coding_options_for_request(input),
         )),
+        IntentType::DesignDeltaReasoning => {
+            steps.push(PlannedStep::DesignDeltaReasoning(input.to_string()))
+        }
+        IntentType::ExplainDesignTradeoff => {
+            steps.push(PlannedStep::ExplainDesignTradeoff(input.to_string()))
+        }
         IntentType::RulesLearn | IntentType::MetaPlannerEdit => {
             return Some(generate_multi_step_plan(input, intent, merged));
         }
@@ -195,6 +242,12 @@ fn synthesize_steps_from_intent(
             IntentType::MetaPlannerEdit | IntentType::RulesLearn => {
                 return Some(generate_multi_step_plan(input, intent, merged));
             }
+            IntentType::DesignDeltaReasoning => {
+                steps.push(PlannedStep::DesignDeltaReasoning(input.to_string()));
+            }
+            IntentType::ExplainDesignTradeoff => {
+                steps.push(PlannedStep::ExplainDesignTradeoff(input.to_string()));
+            }
             _ => {}
         }
     }
@@ -227,6 +280,22 @@ pub fn plan_input(
         || lower.contains("project .")
     {
         return None;
+    }
+
+    if wants_alternative_mutation_search(&lower) {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::AlternativeMutationSearch(input.to_string())],
+        });
+    }
+    if wants_design_tradeoff_explanation(&lower) {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::ExplainDesignTradeoff(input.to_string())],
+        });
+    }
+    if wants_design_delta_reasoning(&lower) {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::DesignDeltaReasoning(input.to_string())],
+        });
     }
 
     let merged = merge_target(input, session, conversation);
@@ -354,6 +423,9 @@ pub fn update_conversation_after_plan(
             | PlannedStep::StructureUndo(path)
             | PlannedStep::StructureRedo(path)
             | PlannedStep::Coding(path, _) => conversation.last_target = Some(path.clone()),
+            PlannedStep::DesignDeltaReasoning(_)
+            | PlannedStep::AlternativeMutationSearch(_)
+            | PlannedStep::ExplainDesignTradeoff(_) => {}
             PlannedStep::StructureDiff(path, node) => {
                 conversation.last_target = Some(path.clone());
                 if let Some(node) = node {
@@ -566,6 +638,58 @@ mod tests {
         let session = AgentSession::new();
         let plan = plan_input("rules list", &session, &ConversationState::default()).expect("plan");
         assert_eq!(plan.steps, vec![PlannedStep::Rules]);
+    }
+
+    #[test]
+    fn design_delta_reasoning_route_is_selected_for_architecture_native_specs() {
+        let session = AgentSession::new();
+        let plan = plan_input(
+            "責務を崩さず trait 分離して crate 境界を維持して機能追加して",
+            &session,
+            &ConversationState::default(),
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::DesignDeltaReasoning(
+                "責務を崩さず trait 分離して crate 境界を維持して機能追加して".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn alternative_mutation_search_route_is_selected_for_comparison_specs() {
+        let session = AgentSession::new();
+        let plan = plan_input(
+            "複数の設計変更案を比較して最適案で実装して trait分離案とadapter案を比較して",
+            &session,
+            &ConversationState::default(),
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::AlternativeMutationSearch(
+                "複数の設計変更案を比較して最適案で実装して trait分離案とadapter案を比較して"
+                    .to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn design_tradeoff_explanation_route_is_selected_for_follow_up_questions() {
+        let session = AgentSession::new();
+        let plan = plan_input(
+            "棄却した案との違いを説明して",
+            &session,
+            &ConversationState::default(),
+        )
+        .expect("plan");
+        assert_eq!(
+            plan.steps,
+            vec![PlannedStep::ExplainDesignTradeoff(
+                "棄却した案との違いを説明して".to_string()
+            )]
+        );
     }
 
     #[test]
