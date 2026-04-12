@@ -1,0 +1,33 @@
+name: design_cli-helper-regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+jobs:
+  helper-regression:
+    name: helper-regression
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: service patch hunk bounds
+        run: cargo test -p design_cli service_patch_hunks_stay_bounded --locked -- --nocapture
+
+      - name: interface placeholder projection
+        run: cargo test -p design_cli create_interface_uses_deterministic_placeholder_method --locked -- --nocapture
+
+      - name: canonical target relay
+        run: cargo test -p design_cli generated_change_set_has_canonical_target --locked -- --nocapture
+
+      - name: production path snapshot
+        run: cargo test -p design_cli coding_check_json_production_path_snapshot --locked -- --nocapture

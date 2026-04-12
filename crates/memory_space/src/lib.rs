@@ -6,7 +6,6 @@ pub mod pattern_matcher;
 pub mod pattern_store;
 pub mod search_prior;
 pub mod stable_v03;
-
 pub use experience_store::{DesignExperience, ExperienceStore};
 pub use memory_space::space::{embed_architecture, embed_evaluation, embed_intent, embed_template};
 pub use memory_space::{

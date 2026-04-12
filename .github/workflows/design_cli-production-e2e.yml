@@ -1,0 +1,83 @@
+name: design_cli-production-e2e
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "codex/**"
+  workflow_dispatch:
+
+jobs:
+  production-json-e2e:
+    name: production-json-e2e
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Prepare artifact directory
+        run: mkdir -p artifacts
+
+      - name: Generate production CLI dry-run JSON
+        run: |
+          cargo run -p design_cli --locked -- \
+            coding . \
+            --target apps/cli/src/service.rs \
+            --check --json > artifacts/coding_check_service.json
+
+      - name: Assert service hunks are bounded
+        run: |
+          jq -e '
+            [
+              .changes.changes[]
+              | select(.file_path == "apps/cli/src/service.rs")
+              | .hunks[]
+              | (
+                  if .start_line <= .end_line
+                  then (.end_line - .start_line + 1)
+                  else (.replacement | split("\n") | length)
+                  end
+                )
+            ] as $sizes
+            | ($sizes | length) > 0
+            and all($sizes[]; . <= 120)
+            and all(
+              .changes.changes[]
+              | select(.file_path == "apps/cli/src/service.rs")
+              | .hunks[];
+              (.start_line == 1 and .end_line == 700) | not
+            )
+          ' artifacts/coding_check_service.json
+
+      - name: Assert TODO trait stubs are absent
+        run: |
+          if rg -n "TODO: define required methods" artifacts/coding_check_service.json; then
+            echo "legacy TODO trait stub detected"
+            exit 1
+          fi
+
+      - name: Assert canonical target is present
+        run: jq -e '.changes.canonical_target != null' artifacts/coding_check_service.json
+
+      - name: Write service hunk summary
+        run: |
+          jq -r '
+            .changes.changes[]
+            | select(.file_path == "apps/cli/src/service.rs")
+            | .hunks[]
+            | "service.rs:\(.start_line)-\(.end_line)"
+          ' artifacts/coding_check_service.json > artifacts/service_hunk_summary.txt
+
+      - name: Upload production JSON artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: design_cli-production-json
+          path: |
+            artifacts/coding_check_service.json
+            artifacts/service_hunk_summary.txt
+          retention-days: 14

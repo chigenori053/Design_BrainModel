@@ -35,6 +35,18 @@ pub struct SubmitEvent {
     pub eof_submit: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionAppliedFileDiff {
+    pub file_path: String,
+    pub unified_diff_excerpt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionAppliedDiff {
+    pub summary: String,
+    pub files: Vec<SessionAppliedFileDiff>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ComposerBuffer {
     lines: Vec<String>,
@@ -186,6 +198,8 @@ impl ComposerBuffer {
 pub struct ComposerViewState {
     pub transcript: Vec<String>,
     pub review: Option<ReviewBatchState>,
+    pub latest_session_diff: Option<SessionAppliedDiff>,
+    pub next_step_suggestion: Option<String>,
     pub proc_strip: ProcStripState,
     pub state: State,
     pub mode: ComposerUiMode,
@@ -207,6 +221,8 @@ impl ComposerViewState {
         Self {
             transcript,
             review: None,
+            latest_session_diff: None,
+            next_step_suggestion: None,
             proc_strip: ProcStripState::idle(),
             state,
             mode: ComposerUiMode::Idle,
@@ -416,6 +432,7 @@ pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
             Constraint::Length(1),
             Constraint::Length(review_height(state)),
             Constraint::Min(6),
+            Constraint::Length(session_diff_height(state)),
             Constraint::Length(8),
             Constraint::Length(2),
         ])
@@ -427,8 +444,9 @@ pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
         render_edit_blocks(frame, review, vertical[2]);
     }
     render_transcript(frame, state, vertical[3]);
-    render_composer_panel(frame, state, vertical[4]);
-    render_footer_hints(frame, state, vertical[5]);
+    render_session_diff(frame, state, vertical[4]);
+    render_composer_panel(frame, state, vertical[5]);
+    render_footer_hints(frame, state, vertical[6]);
 }
 
 fn review_height(state: &ComposerViewState) -> u16 {
@@ -444,6 +462,14 @@ fn review_height(state: &ComposerViewState) -> u16 {
                 .min(24)
         })
         .unwrap_or(0)
+}
+
+fn session_diff_height(state: &ComposerViewState) -> u16 {
+    if state.latest_session_diff.is_some() {
+        12
+    } else {
+        4
+    }
 }
 
 fn render_context_bar(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
@@ -485,22 +511,89 @@ fn render_context_bar(frame: &mut Frame, state: &ComposerViewState, area: Rect) 
 }
 
 fn render_transcript(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
-    let content = if state.transcript.is_empty() {
+    let available = area.height.saturating_sub(2) as usize;
+    let mut suggestion_lines = state
+        .next_step_suggestion
+        .as_ref()
+        .map(|suggestion| {
+            suggestion
+                .lines()
+                .map(|line| Line::from(line.to_string()))
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let spacer = usize::from(!suggestion_lines.is_empty() && !state.transcript.is_empty());
+    let transcript_budget = available.saturating_sub(suggestion_lines.len() + spacer);
+    let mut content = if transcript_budget == 0 {
+        Vec::new()
+    } else if state.transcript.is_empty() {
         vec![Line::from("")]
     } else {
         state
             .transcript
             .iter()
             .rev()
-            .take(area.height.saturating_sub(2) as usize)
+            .take(transcript_budget)
             .rev()
             .map(|line| Line::from(line.clone()))
             .collect::<Vec<_>>()
     };
+    if !suggestion_lines.is_empty() {
+        if !content.is_empty() && !content[0].spans.is_empty() {
+            content.push(Line::from(""));
+        }
+        content.append(&mut suggestion_lines);
+    }
+    if content.is_empty() {
+        content.push(Line::from(""));
+    }
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
         .title(" Transcript ")
+        .border_style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(
+        Paragraph::new(content)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_session_diff(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let mut content = Vec::new();
+    if let Some(diff) = &state.latest_session_diff {
+        content.push(Line::from(Span::styled(
+            diff.summary.clone(),
+            Style::default().fg(Color::Cyan),
+        )));
+        content.push(Line::from(""));
+        for file in &diff.files {
+            content.push(Line::from(Span::styled(
+                file.file_path.clone(),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            for line in file.unified_diff_excerpt.lines() {
+                let style = if line.starts_with('+') {
+                    Style::default().fg(Color::Green)
+                } else if line.starts_with('-') {
+                    Style::default().fg(Color::Red)
+                } else {
+                    Style::default().fg(Color::DarkGray)
+                };
+                content.push(Line::from(Span::styled(line.to_string(), style)));
+            }
+            content.push(Line::from(""));
+        }
+    } else {
+        content.push(Line::from("No applied diff yet."));
+    }
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_set(border::ROUNDED)
+        .title(" Session Diff (latest) ")
         .border_style(Style::default().fg(Color::DarkGray));
     frame.render_widget(
         Paragraph::new(content)

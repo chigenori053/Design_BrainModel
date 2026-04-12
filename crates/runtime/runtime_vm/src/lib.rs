@@ -8,7 +8,6 @@ pub mod runtime;
 pub mod runtime_context;
 pub mod scheduler;
 pub mod test_support;
-
 pub use adapter::{Phase9RuntimeAdapter, Phase9RuntimeSnapshot};
 pub use agent_registry::AgentRegistry;
 pub use execution_mode::ExecutionMode;

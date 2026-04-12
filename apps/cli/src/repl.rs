@@ -41,8 +41,12 @@ use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
 use crate::session::AgentSession;
 use crate::state::State;
-use crate::tui::composer::{ComposerAction, ComposerViewState, render_composer};
-use crate::tui::edit_block::CodingReviewReport;
+use crate::tui::composer::{
+    ComposerAction, ComposerViewState, SessionAppliedDiff, SessionAppliedFileDiff, render_composer,
+};
+use crate::tui::edit_block::{
+    CodingReviewReport, EditBlockStatus, change_set_for_block,
+};
 use crate::tui::proc_strip::{DONE_MIN_VISIBLE, ProcPhase, RUNNING_MIN_VISIBLE};
 use crate::tui::review_batch::ReviewBatchState;
 
@@ -305,14 +309,17 @@ fn run_interactive_loop(
                     }
                 }
 
-                if handle_review_key(
-                    key.code,
-                    session,
-                    &mut view,
-                    &mut |view| draw_view(terminal, view),
-                    &mut sleep,
-                )? {
-                    continue;
+                if view.review.is_some() && view.buffer.is_blank() {
+                    if handle_review_key(
+                        key.code,
+                        session,
+                        &mut view,
+                        &mut |view| draw_view(terminal, view),
+                        &mut sleep,
+                    )? {
+                        draw_view(terminal, &mut view)?;
+                        continue;
+                    }
                 }
 
                 match view.handle_key_event(key) {
@@ -393,26 +400,32 @@ fn handle_review_key(
     match code {
         KeyCode::Char('J') | KeyCode::Down => {
             review.next_block();
+            redraw(view)?;
             Ok(true)
         }
         KeyCode::Char('K') | KeyCode::Up => {
             review.previous_block();
+            redraw(view)?;
             Ok(true)
         }
         KeyCode::Char('E') | KeyCode::Char('C') => {
             review.toggle_expand_focused();
+            redraw(view)?;
             Ok(true)
         }
         KeyCode::Char(' ') => {
             review.toggle_batch_selected();
+            redraw(view)?;
             Ok(true)
         }
-        KeyCode::Char(']') => {
+        KeyCode::Char(']') | KeyCode::Char('/') => {
             review.next_group();
+            redraw(view)?;
             Ok(true)
         }
         KeyCode::Char('[') => {
             review.previous_group();
+            redraw(view)?;
             Ok(true)
         }
         KeyCode::Char('D') => {
@@ -427,17 +440,20 @@ fn handle_review_key(
             }
             Ok(true)
         }
-        KeyCode::Char('A') => {
+        KeyCode::Char('A') | KeyCode::Enter => {
             let phases = vec![ProcPhase::WritingEdit];
             run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
             if let Some(review) = view.review.as_mut() {
+                let snapshot = build_session_diff_snapshot(review);
                 let summary = if review.selected_pending_count() > 0 {
                     review.apply_selected_batch()?
                 } else {
                     review.apply_focused_block()?
                 };
                 if let Some(applied) = summary {
+                    view.latest_session_diff = snapshot;
                     view.push_transcript_line(applied);
+                    update_next_step_suggestion(view, "coding --apply");
                     reset_review_session(view, session);
                 }
             }
@@ -446,11 +462,13 @@ fn handle_review_key(
         KeyCode::Char('R') => {
             let phases = vec![ProcPhase::WritingEdit];
             run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
-            if let Some(review) = view.review.as_mut()
-                && let Some(summary) = review.rollback_last_batch()?
-            {
-                view.push_transcript_line(summary);
-                reset_review_session(view, session);
+            if let Some(review) = view.review.as_mut() {
+                let snapshot = build_session_diff_snapshot(review);
+                if let Some(summary) = review.rollback_last_batch()? {
+                    view.latest_session_diff = snapshot;
+                    view.push_transcript_line(summary);
+                    reset_review_session(view, session);
+                }
             }
             Ok(true)
         }
@@ -484,7 +502,7 @@ fn dispatch_submission(
     }
     session.record(input);
     view.reset_review_session();
-    execute_submission_with_proc_strip(
+    let result = execute_submission_with_proc_strip(
         input,
         session,
         conversation,
@@ -493,7 +511,15 @@ fn dispatch_submission(
         view,
         redraw,
         sleeper,
-    )
+    )?;
+    if session.state == State::Completed
+        && let Some(completed_step) = completed_step_name(input)
+        && let Some(next_step_text) = update_next_step_suggestion(view, completed_step)
+    {
+        persist_next_step_suggestion(view, next_step_text);
+        redraw(view)?;
+    }
+    Ok(result)
 }
 
 fn execute_submission_with_proc_strip(
@@ -1147,6 +1173,129 @@ fn print_follow_up_suggestions<W: Write>(
         }
     }
     Ok(())
+}
+
+fn update_next_step_suggestion(
+    view: &mut ComposerViewState,
+    completed_step: &str,
+) -> Option<&'static str> {
+    if let Some(suggestion) = next_step_suggestion(completed_step) {
+        view.next_step_suggestion = Some(suggestion.to_string());
+        return Some(suggestion);
+    }
+    None
+}
+
+fn next_step_suggestion(completed_step: &str) -> Option<&'static str> {
+    match completed_step {
+        "analyze" => Some("次のステップ:\nvalidate でアーキテクチャを検証"),
+        "validate" => Some("次のステップ:\nrefactor で改善を提案"),
+        "refactor" => Some("次のステップ:\ncoding --apply で変更を適用"),
+        "coding --apply" => Some("次のステップ:\nvalidate で変更結果を再検証"),
+        _ => None,
+    }
+}
+
+fn completed_step_name(input: &str) -> Option<&'static str> {
+    let lower = input.to_lowercase();
+    if lower.contains("coding") && lower.contains("--apply") {
+        Some("coding --apply")
+    } else if lower.contains("validate") || lower.contains("検証") || lower.contains("チェック") {
+        Some("validate")
+    } else if lower.contains("refactor") || lower.contains("リファクタ") || lower.contains("改善")
+    {
+        Some("refactor")
+    } else if lower.contains("analyze")
+        || lower.contains("分析")
+        || lower.contains("解析")
+        || lower.contains("調べ")
+    {
+        Some("analyze")
+    } else {
+        None
+    }
+}
+
+fn build_session_diff_snapshot(
+    review: &crate::tui::review_batch::ReviewBatchState,
+) -> Option<SessionAppliedDiff> {
+    let mut selected = review
+        .blocks
+        .iter()
+        .filter(|block| {
+            block.selected_for_batch && matches!(block.status, EditBlockStatus::Pending)
+        })
+        .collect::<Vec<_>>();
+    if selected.is_empty()
+        && let Some(block) = review
+            .blocks
+            .get(review.focused_block)
+            .filter(|block| matches!(block.status, EditBlockStatus::Pending))
+    {
+        selected.push(block);
+    }
+    if selected.is_empty()
+        && let Some(batch) = review.last_batch.as_ref()
+    {
+        selected.extend(
+            batch
+                .entries
+                .iter()
+                .filter_map(|entry| review.blocks.get(entry.block_index)),
+        );
+    }
+    let mut files = Vec::new();
+    for block in selected.into_iter().take(3) {
+        let change = change_set_for_block(block).changes.into_iter().next()?;
+        files.push(SessionAppliedFileDiff {
+            file_path: change.file_path.clone(),
+            unified_diff_excerpt: build_unified_diff_excerpt_from_change(&change),
+        });
+    }
+    if files.is_empty() {
+        return None;
+    }
+    Some(SessionAppliedDiff {
+        summary: build_session_diff_summary(&files),
+        files,
+    })
+}
+
+fn build_session_diff_summary(files: &[SessionAppliedFileDiff]) -> String {
+    if files.len() == 1 {
+        format!("latest applied change (1 file)")
+    } else {
+        format!("latest applied changes ({} files)", files.len())
+    }
+}
+
+fn build_unified_diff_excerpt_from_change(change: &crate::coding::CodeChange) -> String {
+    let mut lines = Vec::new();
+    lines.push(format!("file: {}", change.file_path));
+    for hunk in &change.hunks {
+        lines.push(format!("@@ {}-{} @@", hunk.start_line, hunk.end_line));
+        for replacement_line in hunk.replacement.lines().take(10) {
+            lines.push(format!("+ {}", replacement_line));
+            if lines.len() >= 32 {
+                break;
+            }
+        }
+        if lines.len() >= 32 {
+            break;
+        }
+    }
+    if lines.is_empty() {
+        return "summary unavailable".to_string();
+    }
+    lines.truncate(32);
+    lines.join("\n")
+}
+
+fn persist_next_step_suggestion(view: &mut ComposerViewState, suggestion: &str) {
+    if view.transcript.last().is_some_and(|line| line == suggestion) {
+        return;
+    }
+    view.push_transcript_line(suggestion.to_string());
 }
 
 fn plan_agent_input(

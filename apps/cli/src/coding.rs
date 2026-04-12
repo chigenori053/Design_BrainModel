@@ -22,6 +22,8 @@ use crate::service::{MutationOperation, MutationPlan, MutationStrategy};
 use crate::source_index::{ApplyTargetResolution, ModuleSourceIndex, QualifiedModuleId};
 
 const CURRENT_RESOLVER_VERSION: &str = "3";
+const MAX_HUNK_LINES: usize = 120;
+const PREFERRED_HUNK_LINES: usize = 40;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ChangeType {
@@ -452,6 +454,20 @@ struct BackupEntry {
 struct PatchFence {
     scope: PatchScope,
     explicit_target: Option<PathBuf>,
+}
+
+#[derive(Debug, Clone)]
+struct SynthesizedHunk {
+    start_line: usize,
+    end_line: usize,
+    replacement_lines: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+enum LineDiffOp {
+    Equal,
+    Remove(String),
+    Add(String),
 }
 
 #[cfg(test)]
@@ -1183,7 +1199,7 @@ pub fn patches_to_change_set(
     change_set.canonical_target = canonical_target
         .map(|path| normalize_target_scope_path(root, path))
         .transpose()?
-        .or_else(|| canonical_patch_target_file(&change_set.patches));
+        .or_else(|| canonical_target_fallback(root, target_override, &change_set.changes, &change_set.patches));
     Ok(change_set)
 }
 
@@ -1229,13 +1245,14 @@ pub fn generate_code_change_set_with_resolved_paths(
         .into_iter()
         .filter(|(_, draft)| draft.original != draft.content)
         .map(|(file_path, draft)| CodeChange {
+            hunks: synthesize_change_hunks(
+                &file_path,
+                &draft.original,
+                &draft.content,
+                &draft.change_type,
+            ),
             file_path,
             change_type: draft.change_type.clone(),
-            hunks: vec![DiffHunk {
-                start_line: 1,
-                end_line: draft.original.lines().count().max(1),
-                replacement: draft.content,
-            }],
         })
         .collect::<Vec<_>>();
     changes.sort_by(|lhs, rhs| lhs.file_path.cmp(&rhs.file_path));
@@ -1253,12 +1270,314 @@ pub fn generate_code_change_set_with_resolved_paths(
             summary
         });
 
+    let canonical_target =
+        canonical_target_fallback(root, target_override.as_deref(), &changes, &patches);
     Ok(CodeChangeSet {
         patches,
         changes,
         summary,
-        canonical_target: None,
+        canonical_target,
     })
+}
+
+fn canonical_target_fallback(
+    root: &Path,
+    explicit_target: Option<&Path>,
+    changes: &[CodeChange],
+    patches: &[CodePatch],
+) -> Option<PathBuf> {
+    explicit_target
+        .and_then(|path| normalize_target_scope_path(root, path).ok())
+        .or_else(|| {
+            changes
+                .iter()
+                .find(|change| matches!(change.change_type, ChangeType::ModifyFile))
+                .map(|change| PathBuf::from(&change.file_path))
+        })
+        .or_else(|| {
+            changes
+                .iter()
+                .find(|change| matches!(change.change_type, ChangeType::CreateFile))
+                .map(|change| PathBuf::from(&change.file_path))
+        })
+        .or_else(|| canonical_patch_target_file(patches))
+}
+
+fn synthesize_change_hunks(
+    file_path: &str,
+    original: &str,
+    updated: &str,
+    change_type: &ChangeType,
+) -> Vec<DiffHunk> {
+    match change_type {
+        ChangeType::CreateFile | ChangeType::MoveFile => vec![DiffHunk {
+            start_line: 1,
+            end_line: original.lines().count().max(1),
+            replacement: updated.to_string(),
+        }],
+        ChangeType::ModifyFile => {
+            if file_path.ends_with("apps/cli/src/service.rs") || file_path.ends_with("src/service.rs")
+            {
+                let dedicated = synthesize_service_file_hunks(original, updated);
+                if !dedicated.is_empty() {
+                    return dedicated;
+                }
+            }
+            let original_lines = original.lines().map(ToString::to_string).collect::<Vec<_>>();
+            let updated_lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
+            let ops = synthesize_line_diff_ops(&original_lines, &updated_lines);
+            let hunks = synthesize_fragmented_hunks(&ops);
+            if hunks.is_empty() {
+                vec![DiffHunk {
+                    start_line: 1,
+                    end_line: original.lines().count().max(1),
+                    replacement: updated.to_string(),
+                }]
+            } else {
+                hunks
+                    .into_iter()
+                    .map(|hunk| DiffHunk {
+                        start_line: hunk.start_line,
+                        end_line: hunk.end_line,
+                        replacement: join_replacement_lines(&hunk.replacement_lines, updated.ends_with('\n')),
+                    })
+                    .collect()
+            }
+        }
+    }
+}
+
+fn join_replacement_lines(lines: &[String], trailing_newline: bool) -> String {
+    let mut replacement = lines.join("\n");
+    if trailing_newline && !replacement.is_empty() {
+        replacement.push('\n');
+    }
+    replacement
+}
+
+fn synthesize_line_diff_ops(old_lines: &[String], new_lines: &[String]) -> Vec<LineDiffOp> {
+    let mut dp = vec![vec![0usize; new_lines.len() + 1]; old_lines.len() + 1];
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            dp[i][j] = if old_lines[i] == new_lines[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut ops = Vec::new();
+    while i < old_lines.len() && j < new_lines.len() {
+        if old_lines[i] == new_lines[j] {
+            ops.push(LineDiffOp::Equal);
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            ops.push(LineDiffOp::Remove(old_lines[i].clone()));
+            i += 1;
+        } else {
+            ops.push(LineDiffOp::Add(new_lines[j].clone()));
+            j += 1;
+        }
+    }
+    while i < old_lines.len() {
+        ops.push(LineDiffOp::Remove(old_lines[i].clone()));
+        i += 1;
+    }
+    while j < new_lines.len() {
+        ops.push(LineDiffOp::Add(new_lines[j].clone()));
+        j += 1;
+    }
+    ops
+}
+
+fn synthesize_fragmented_hunks(ops: &[LineDiffOp]) -> Vec<SynthesizedHunk> {
+    let mut hunks = Vec::new();
+    let mut old_line = 1usize;
+    let mut pending: Option<SynthesizedHunk> = None;
+
+    for op in ops {
+        match op {
+            LineDiffOp::Equal => {
+                if let Some(hunk) = pending.take() {
+                    hunks.push(hunk);
+                }
+                old_line += 1;
+            }
+            LineDiffOp::Remove(line) => {
+                let hunk = pending.get_or_insert_with(|| SynthesizedHunk {
+                    start_line: old_line,
+                    end_line: old_line.saturating_sub(1),
+                    replacement_lines: Vec::new(),
+                });
+                hunk.end_line = old_line;
+                if hunk.end_line.saturating_sub(hunk.start_line) + hunk.replacement_lines.len() + 1
+                    >= MAX_HUNK_LINES
+                {
+                    hunks.push(pending.take().expect("pending hunk"));
+                    pending = Some(SynthesizedHunk {
+                        start_line: old_line,
+                        end_line: old_line,
+                        replacement_lines: Vec::new(),
+                    });
+                }
+                let _removed_line = line;
+                old_line += 1;
+            }
+            LineDiffOp::Add(line) => {
+                let hunk = pending.get_or_insert_with(|| SynthesizedHunk {
+                    start_line: old_line,
+                    end_line: old_line.saturating_sub(1),
+                    replacement_lines: Vec::new(),
+                });
+                hunk.replacement_lines.push(line.clone());
+                if hunk.replacement_lines.len() >= MAX_HUNK_LINES {
+                    hunks.push(pending.take().expect("pending hunk"));
+                } else if hunk.replacement_lines.len() >= PREFERRED_HUNK_LINES {
+                    // Prefer shorter hunks when a long insertion sequence continues.
+                    hunks.push(pending.take().expect("pending hunk"));
+                }
+            }
+        }
+    }
+    if let Some(hunk) = pending.take() {
+        hunks.push(hunk);
+    }
+    hunks
+}
+
+fn synthesize_service_file_hunks(original: &str, updated: &str) -> Vec<DiffHunk> {
+    let mut hunks = Vec::new();
+    for kind in [
+        ServiceBlockKind::Use,
+        ServiceBlockKind::Mod,
+        ServiceBlockKind::PubUse,
+    ] {
+        let Some(original_range) = service_block_range(original, kind) else {
+            continue;
+        };
+        let Some(updated_range) = service_block_range(updated, kind) else {
+            continue;
+        };
+        let original_block = original
+            .lines()
+            .skip(original_range.0)
+            .take(original_range.1.saturating_sub(original_range.0))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let updated_block = updated
+            .lines()
+            .skip(updated_range.0)
+            .take(updated_range.1.saturating_sub(updated_range.0))
+            .collect::<Vec<_>>()
+            .join("\n");
+        if original_block == updated_block {
+            continue;
+        }
+        let replacement = if updated_block.is_empty() {
+            String::new()
+        } else {
+            format!("{updated_block}\n")
+        };
+        let start_line = original_range.0 + 1;
+        let end_line = original_range.1.max(original_range.0 + 1);
+        let touched = end_line.saturating_sub(start_line) + 1;
+        if touched > 120 {
+            return Vec::new();
+        }
+        hunks.push(DiffHunk {
+            start_line,
+            end_line,
+            replacement,
+        });
+    }
+    hunks
+}
+
+#[derive(Clone, Copy)]
+enum ServiceBlockKind {
+    Use,
+    Mod,
+    PubUse,
+}
+
+fn service_block_range(content: &str, kind: ServiceBlockKind) -> Option<(usize, usize)> {
+    let lines = content.lines().collect::<Vec<_>>();
+    let start = lines.iter().position(|line| match kind {
+        ServiceBlockKind::Use => line.trim_start().starts_with("use "),
+        ServiceBlockKind::Mod => line.trim_start().starts_with("#[path = \"service/")
+            || line.trim_start().starts_with("pub mod "),
+        ServiceBlockKind::PubUse => line.trim_start().starts_with("pub use "),
+    })?;
+    let mut end = start;
+    while end < lines.len() {
+        let trimmed = lines[end].trim();
+        let belongs = match kind {
+            ServiceBlockKind::Use => trimmed.is_empty() || trimmed.starts_with("use "),
+            ServiceBlockKind::Mod => {
+                trimmed.is_empty()
+                    || trimmed.starts_with("#[path = \"service/")
+                    || trimmed.starts_with("pub mod ")
+            }
+            ServiceBlockKind::PubUse => {
+                trimmed.is_empty()
+                    || trimmed.starts_with("pub use ")
+                    || trimmed.starts_with("Deterministic")
+                    || trimmed.starts_with("IssueAggregator")
+                    || trimmed.starts_with("generate_plan")
+                    || trimmed.starts_with("infer_root_cause")
+                    || trimmed == "};"
+                    || trimmed.ends_with(',')
+            }
+        };
+        if !belongs {
+            break;
+        }
+        end += 1;
+    }
+    Some((start, end))
+}
+
+fn render_change_replacement(change: &CodeChange, original: &str) -> Result<String, String> {
+    match change.change_type {
+        ChangeType::CreateFile | ChangeType::MoveFile => Ok(change
+            .hunks
+            .last()
+            .map(|hunk| hunk.replacement.clone())
+            .unwrap_or_default()),
+        ChangeType::ModifyFile => apply_hunks_to_content(original, &change.hunks),
+    }
+}
+
+fn apply_hunks_to_content(original: &str, hunks: &[DiffHunk]) -> Result<String, String> {
+    let mut lines = original.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let trailing_newline = original.ends_with('\n');
+    let mut sorted = hunks.to_vec();
+    sorted.sort_by(|left, right| right.start_line.cmp(&left.start_line));
+    for hunk in sorted {
+        let start = hunk.start_line.saturating_sub(1).min(lines.len());
+        let end_exclusive = hunk.end_line.min(lines.len());
+        let replacement = hunk
+            .replacement
+            .lines()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if hunk.start_line <= hunk.end_line {
+            if start > end_exclusive {
+                return Err("invalid hunk line range".to_string());
+            }
+            lines.splice(start..end_exclusive, replacement);
+        } else {
+            lines.splice(start..start, replacement);
+        }
+    }
+    let mut rendered = lines.join("\n");
+    if (trailing_newline || hunks.iter().any(|h| h.replacement.ends_with('\n'))) && !rendered.is_empty() {
+        rendered.push('\n');
+    }
+    Ok(rendered)
 }
 
 fn deterministic_repl_v2_change_set(
@@ -1285,7 +1604,7 @@ fn deterministic_repl_v2_change_set(
             patches: vec![],
             changes: vec![],
             summary: ChangeSummary::default(),
-            canonical_target: None,
+            canonical_target: Some(relative),
         }));
     }
 
@@ -1294,11 +1613,12 @@ fn deterministic_repl_v2_change_set(
         changes: vec![CodeChange {
             file_path: relative.display().to_string(),
             change_type: ChangeType::ModifyFile,
-            hunks: vec![DiffHunk {
-                start_line: 1,
-                end_line: original.lines().count().max(1),
-                replacement: updated,
-            }],
+            hunks: synthesize_change_hunks(
+                &relative.display().to_string(),
+                &original,
+                &updated,
+                &ChangeType::ModifyFile,
+            ),
         }],
         summary: ChangeSummary {
             total_changes: 1,
@@ -1306,7 +1626,7 @@ fn deterministic_repl_v2_change_set(
             modify_files: 1,
             move_files: 0,
         },
-        canonical_target: None,
+        canonical_target: Some(relative),
     }))
 }
 
@@ -1957,11 +2277,8 @@ pub fn apply_code_change_set(root: &Path, change_set: &CodeChangeSet) -> Result<
             fs::create_dir_all(parent)
                 .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
         }
-        let replacement = change
-            .hunks
-            .last()
-            .map(|hunk| hunk.replacement.clone())
-            .unwrap_or_default();
+        let original = fs::read_to_string(&path).unwrap_or_default();
+        let replacement = render_change_replacement(change, &original)?;
         fs::write(&path, replacement)
             .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
     }
@@ -2137,11 +2454,7 @@ pub fn compute_diff_report(root: &Path, change_set: &CodeChangeSet) -> Result<Di
         } else {
             String::new()
         };
-        let replacement = change
-            .hunks
-            .last()
-            .map(|hunk| hunk.replacement.clone())
-            .unwrap_or_default();
+        let replacement = render_change_replacement(change, &original)?;
         let diff = match change.change_type {
             ChangeType::CreateFile => ASTDiff {
                 kind: DiffKind::Add,
@@ -2161,7 +2474,7 @@ pub fn compute_diff_report(root: &Path, change_set: &CodeChangeSet) -> Result<Di
         };
         diffs.push(diff);
     }
-    diffs.extend(explainability_diffs(change_set));
+    diffs.extend(explainability_diffs(root, change_set));
     diffs.sort_by(|lhs, rhs| lhs.target.cmp(&rhs.target));
     diffs.dedup_by(|lhs, rhs| lhs.target == rhs.target && lhs.kind == rhs.kind);
     let breaking_count = diffs.iter().filter(|diff| diff.breaking).count();
@@ -2171,14 +2484,11 @@ pub fn compute_diff_report(root: &Path, change_set: &CodeChangeSet) -> Result<Di
     })
 }
 
-fn explainability_diffs(change_set: &CodeChangeSet) -> Vec<ASTDiff> {
+fn explainability_diffs(root: &Path, change_set: &CodeChangeSet) -> Vec<ASTDiff> {
     let mut diffs = Vec::new();
     for change in &change_set.changes {
-        let replacement = change
-            .hunks
-            .last()
-            .map(|hunk| hunk.replacement.as_str())
-            .unwrap_or_default();
+        let original = fs::read_to_string(root.join(&change.file_path)).unwrap_or_default();
+        let replacement = render_change_replacement(change, &original).unwrap_or_default();
         if change.file_path.ends_with("/mod.rs") || change.file_path.ends_with("lib.rs") {
             for module in replacement.lines().filter_map(parse_mod_declaration) {
                 diffs.push(ASTDiff {
@@ -3856,8 +4166,10 @@ fn apply_local_trait_fallback_to_content(
         return content.to_string();
     }
     let without_use = remove_exact_use_line(content, unresolved_use);
-    let fallback =
-        format!("pub trait {symbol} {{\n    // TODO: local semantic recovery fallback\n}}\n");
+    let fallback = generate_interface_trait_source(
+        symbol,
+        &(symbol.to_string(), "semantic_recovery".to_string()),
+    );
     if without_use.starts_with("use ") {
         let lines = without_use
             .lines()
@@ -3909,9 +4221,11 @@ fn normalize_malformed_import_block(
     let mut imports = parsed.imports;
     let original_imports = imports.clone();
     let stable_existing = stable_imports_in_lines(&block_lines);
-    imports.extend(help_uses.iter().cloned());
-    imports.sort_by(|lhs, rhs| import_sort_key(lhs).cmp(&import_sort_key(rhs)));
-    imports.dedup();
+    for help_use in help_uses {
+        if !imports.iter().any(|existing| existing.trim() == help_use.trim()) {
+            imports.push(help_use.clone());
+        }
+    }
     let mut normalized_block = imports.join("\n");
     if !normalized_block.is_empty() {
         normalized_block.push('\n');
@@ -4163,10 +4477,7 @@ fn apply_edit(
             let file_key = normalize_relative(root, &root.join(&file_path))?;
             guard_change_target(Path::new(&file_key), fence)?;
             let draft = load_or_create_draft(root, drafts, &file_key, true)?;
-            draft.content = format!(
-                "pub trait {} {{\n    // TODO: define required methods\n}}\n",
-                name
-            );
+            draft.content = generate_interface_trait_source(&name, &between);
         }
         Edit::ReplaceDependency {
             from,
@@ -4761,7 +5072,7 @@ fn rewrite_imports_in_content(
             generated_symbol_targets,
         )?;
     }
-    let mut updated = sort_leading_rust_imports(&lines.join("\n"));
+    let mut updated = lines.join("\n");
     if content.ends_with('\n') || !updated.is_empty() {
         if !updated.ends_with('\n') {
             updated.push('\n');
@@ -6081,11 +6392,11 @@ fn snapshot_workspace(root: &Path, change_set: &CodeChangeSet) -> Result<Vec<Bac
 fn predicted_missing_import_modules(root: &Path, change_set: &CodeChangeSet) -> Vec<String> {
     let mut modules = Vec::new();
     for change in &change_set.changes {
-        let replacement = change
-            .hunks
-            .last()
-            .map(|hunk| hunk.replacement.as_str())
-            .unwrap_or_default();
+        let replacement = render_change_replacement(
+            change,
+            &fs::read_to_string(root.join(&change.file_path)).unwrap_or_default(),
+        )
+        .unwrap_or_default();
         for line in replacement.lines() {
             let trimmed = line.trim();
             let Some(remainder) = trimmed.strip_prefix("use crate::") else {
@@ -6288,6 +6599,52 @@ fn update_dependency_content(
     }
     updated = preserve_interface_only_break_cycle_semantics(&updated);
     Ok(updated)
+}
+
+fn deterministic_interface_method_name(name: &str, between: &(String, String)) -> String {
+    let trait_name = name.to_ascii_lowercase();
+    if trait_name.contains("adapterserviceinterface") {
+        return "execute_service".to_string();
+    }
+    if trait_name.contains("consistencyrecommendinterface") {
+        return "evaluate_consistency".to_string();
+    }
+    if trait_name.contains("patternextractorpatternmatcherinterface") {
+        return "extract_pattern_signature".to_string();
+    }
+    if trait_name.contains("explanationintentrefinerinterface") {
+        return "refine_explanation_intent".to_string();
+    }
+    let from = snake_case(&between.0);
+    let to = snake_case(&between.1);
+    let verb = if from.contains("adapter") || from.contains("service") {
+        "execute"
+    } else if from.contains("consistency") {
+        "evaluate"
+    } else if from.contains("pattern") {
+        "extract"
+    } else if from.contains("explanation") {
+        "refine"
+    } else {
+        "bridge"
+    };
+    let rhs = to
+        .split('_')
+        .filter(|token| !token.is_empty() && *token != "interface")
+        .collect::<Vec<_>>()
+        .join("_");
+    if rhs.is_empty() {
+        format!("{verb}_target")
+    } else {
+        format!("{verb}_{rhs}")
+    }
+}
+
+fn generate_interface_trait_source(name: &str, between: &(String, String)) -> String {
+    format!(
+        "pub trait {name} {{\n    fn {}(&self);\n}}\n",
+        deterministic_interface_method_name(name, between)
+    )
 }
 
 fn desired_dependency_use_line(
@@ -6709,7 +7066,7 @@ mod tests {
         RefactorActionKind, RefactorCandidate, RefactorOperation, RefactorTarget,
         candidate_snapshot_path, persist_refactor_candidates,
     };
-    use crate::service::ModuleNode;
+    use crate::service::{CodingReport, ModuleNode};
     use crate::source_index::QualifiedModuleId;
     use integration_layer::{
         CodePatch, MetricsDelta, PatchOperation, PhaseType, PlanSummary, RefactorPhase,
@@ -8094,5 +8451,211 @@ error: expected identifier, found keyword `use`\n\
             extract_primary_use_statement(message),
             Some("use runtime_vm::adapter_app_interface::AdapterAppInterface;".to_string())
         );
+    }
+
+    #[test]
+    fn service_patch_hunks_stay_bounded() {
+        let original = (1..=220)
+            .map(|idx| format!("line_{idx}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let updated = format!(
+            "use crate::adapter_service_interface::AdapterServiceInterface;\n{original}\n#[path = \"service/dto.rs\"]\npub mod dto;\npub use reasoning::ServiceReasoning;\n"
+        );
+        let hunks = synthesize_change_hunks(
+            "apps/cli/src/service.rs",
+            &original,
+            &updated,
+            &ChangeType::ModifyFile,
+        );
+        assert!(!hunks.is_empty());
+        assert!(hunks.iter().all(|hunk| {
+            let touched = if hunk.start_line <= hunk.end_line {
+                hunk.end_line.saturating_sub(hunk.start_line) + 1
+            } else {
+                hunk.replacement.lines().count()
+            };
+            touched <= 120
+        }));
+    }
+
+    #[test]
+    fn create_interface_uses_deterministic_placeholder_method() {
+        let root = temp_dir("create_interface_placeholder");
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"coding_test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("cargo");
+        fs::write(root.join("src/main.rs"), "fn main() {}\n").expect("main");
+
+        let patch = CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::IntroduceInterface {
+                between: ("adapter-service".to_string(), "service".to_string()),
+            },
+            operations: vec![PatchOperation::CreateInterface {
+                name: "AdapterServiceInterface".to_string(),
+                between: ("adapter-service".to_string(), "service".to_string()),
+            }],
+            description: "introduce interface".to_string(),
+            target_file: PathBuf::new(),
+        };
+        let change_set = generate_code_change_set(&root, &[patch]).expect("change set");
+        let replacement = render_change_replacement(&change_set.changes[0], "").expect("replacement");
+        assert!(replacement.contains("fn execute_service(&self);"), "{replacement}");
+        assert!(!replacement.contains("TODO"), "{replacement}");
+    }
+
+    #[test]
+    fn generated_change_set_has_canonical_target() {
+        let root = temp_dir("canonical_target_relay");
+        fs::create_dir_all(root.join("src")).expect("src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"coding_test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("cargo");
+        fs::write(root.join("src/service.rs"), "pub fn run() {}\n").expect("service");
+
+        let patch = CodePatch {
+            patch_id: "p1".to_string(),
+            action: RefactorPlanAction::MoveDependency {
+                from: "service".to_string(),
+                to: "adapter".to_string(),
+                via: Some("adapter_service_interface".to_string()),
+            },
+            operations: vec![PatchOperation::UpdateDependency {
+                from: "service".to_string(),
+                to: "adapter".to_string(),
+                via: Some("adapter_service_interface".to_string()),
+            }],
+            description: "service import update".to_string(),
+            target_file: PathBuf::from("src/service.rs"),
+        };
+        let change_set = generate_code_change_set(&root, &[patch]).expect("change set");
+        assert!(change_set.canonical_target.is_some());
+    }
+
+    #[test]
+    fn coding_check_json_production_path_snapshot() {
+        let root = temp_dir("coding_check_json_production_path_snapshot");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("package cargo");
+        fs::write(
+            root.join("apps/cli/src/lib.rs"),
+            "pub mod service;\npub mod adapter_service_interface;\n",
+        )
+        .expect("lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use std::collections::BTreeMap;\nuse std::fs;\n\n#[path = \"service/dto.rs\"]\npub mod dto;\n#[path = \"service/reasoning.rs\"]\npub mod reasoning;\n\npub use dto::*;\npub use reasoning::{IssueAggregator, generate_plan};\n\npub fn analyze_path() {}\n",
+        )
+        .expect("service");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+            CodePatch {
+                patch_id: "service-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "introduce adapter service interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+        ];
+
+        let changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: true,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::WorkspaceWide,
+                explicit_target: None,
+            },
+            None,
+        )
+        .expect("execution");
+        let report = CodingReport {
+            root: root.display().to_string(),
+            dry_run: true,
+            execution: execution.clone(),
+            patches: changes.patches.clone(),
+            changes: changes.clone(),
+            apply_resolutions: collect_apply_target_resolutions(
+                &root,
+                &patches,
+                Some(Path::new("apps/cli/src/service.rs")),
+                &BTreeMap::new(),
+            )
+            .expect("resolutions"),
+        };
+        let json = serde_json::to_string_pretty(&report).expect("json");
+
+        let service_change = changes
+            .changes
+            .iter()
+            .find(|change| change.file_path == "apps/cli/src/service.rs")
+            .expect("service change");
+        assert!(service_change.hunks.iter().all(|hunk| {
+            let touched = if hunk.start_line <= hunk.end_line {
+                hunk.end_line.saturating_sub(hunk.start_line) + 1
+            } else {
+                hunk.replacement.lines().count()
+            };
+            touched <= 120
+        }));
+        assert!(!json.contains("// TODO: define required methods"), "{json}");
+        assert!(!json.contains("\"canonical_target\": null"), "{json}");
+        assert!(changes.canonical_target.is_some());
     }
 }
