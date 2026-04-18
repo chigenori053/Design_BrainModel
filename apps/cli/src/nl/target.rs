@@ -25,13 +25,21 @@ pub fn resolve_target(input: &str, session: &AgentSession) -> ResolvedTarget {
 }
 
 fn resolve_path(input: &str, session: &AgentSession) -> PathBuf {
+    let lower = input.to_lowercase();
+
+    // "このプロジェクト" / "全体" anchor the workspace root to ".".
+    // Checked before extract_explicit_path so that an explicit file target in the same
+    // sentence (e.g. "coding check して target は apps/cli/src/coding.rs") does not
+    // override the workspace root — the file is the coding target, not the workspace root.
+    if lower.contains("このプロジェクト") || lower.contains("全体") {
+        return PathBuf::from(".");
+    }
+
     if let Some(explicit) = extract_explicit_path(input) {
         return explicit;
     }
 
-    let lower = input.to_lowercase();
-    if lower.contains("このプロジェクト") || lower.contains("project") || lower.contains("全体")
-    {
+    if lower.contains("project") {
         return PathBuf::from(".");
     }
     if lower.contains("apps/cli") {

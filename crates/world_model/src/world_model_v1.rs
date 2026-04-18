@@ -148,18 +148,13 @@ pub struct Size {
     pub height: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum AlgorithmType {
+    #[default]
     RuleBased,
     Heuristic,
     SearchOptimized,
     Custom(String),
-}
-
-impl Default for AlgorithmType {
-    fn default() -> Self {
-        Self::RuleBased
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

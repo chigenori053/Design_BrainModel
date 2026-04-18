@@ -228,6 +228,14 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
                     args: vec!["--apply".to_string()],
                 }),
             ),
+            PlannedStep::RollbackCurrentTransaction => (
+                "Rollback current IR transaction".to_string(),
+                Some(CommandInvocation {
+                    name: "rollback".to_string(),
+                    subcommand: None,
+                    args: Vec::new(),
+                }),
+            ),
         };
         steps.push(Step::new(index, description, command));
     }
@@ -235,6 +243,10 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
     let mut plan = Plan::new("nl-plan", steps);
     plan.status = PlanStatus::Ready;
     plan
+}
+
+pub fn to_runtime_plan(command_plan: &CommandPlan) -> Plan {
+    to_legacy_plan(command_plan)
 }
 
 #[cfg(test)]

@@ -131,6 +131,8 @@ mod tests {
             operation: operation.to_string(),
             diff_lines: vec![],
             replacement: replacement.to_string(),
+            added_lines: 0,
+            removed_lines: 0,
             expanded: false,
             status: EditBlockStatus::Pending,
             selected_for_batch: false,

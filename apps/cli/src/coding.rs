@@ -9,9 +9,7 @@ use integration_layer::{CodePatch, PatchOperation};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::nl::r#loop::{
-    LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext,
-};
+use crate::nl::r#loop::{LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext};
 use crate::refactor::{
     ApplyResolverError, PatchScope, RefactorCandidate, RefactorOperation,
     apply_resolver_error_message, load_matching_refactor_candidate, load_refactor_candidate,
@@ -54,6 +52,14 @@ pub struct ChangeSummary {
     pub move_files: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct CanonicalizationTelemetry {
+    pub normalization_path_used: bool,
+    pub normalization_issue_count: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub normalization_issues: Vec<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CodeChangeSet {
     /// Canonical narrowed patches: post bootstrap-policy + semantic-cluster prune.
@@ -65,6 +71,47 @@ pub struct CodeChangeSet {
     /// `MutationResolutionTelemetry::canonical_target_path` when available.
     #[serde(default)]
     pub canonical_target: Option<PathBuf>,
+}
+
+const UNIFIED_DIFF_CONTEXT_LINES: usize = 3;
+pub const MAX_UNIFIED_DIFF_PREVIEW_LINES: usize = 1000;
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UnifiedDiffPreview {
+    pub files: Vec<CodeDiff>,
+    pub summary: UnifiedDiffSummary,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CodeDiff {
+    pub file: PathBuf,
+    pub before_label: String,
+    pub after_label: String,
+    pub hunks: Vec<Hunk>,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Hunk {
+    pub header: String,
+    pub lines: Vec<DiffLine>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiffLine {
+    Added(String),
+    Removed(String),
+    Context(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct UnifiedDiffSummary {
+    pub file_count: usize,
+    pub added_lines: usize,
+    pub removed_lines: usize,
+    pub skipped_binary_files: usize,
+    pub truncated: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -130,16 +177,16 @@ pub struct CodingExecutionResult {
     pub git_push: Option<RestrictedGitPushResult>,
     pub pull_request: Option<RestrictedPullRequestResult>,
     pub canonical_target_path: Option<String>,
-    pub legacy_pipeline_hits: u64,
-    pub fallback_resolution_hits: u64,
+    pub resolution_pipeline_hits: u64,
+    pub degraded_resolution_hits: u64,
     pub stale_artifact_detected: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MutationResolutionTelemetry {
     pub canonical_target_path: Option<PathBuf>,
-    pub legacy_pipeline_hits: u64,
-    pub fallback_resolution_hits: u64,
+    pub resolution_pipeline_hits: u64,
+    pub degraded_resolution_hits: u64,
     pub stale_artifact_detected: bool,
 }
 
@@ -865,8 +912,8 @@ fn resolve_mutation_target(
 
     Ok(MutationResolutionTelemetry {
         canonical_target_path,
-        legacy_pipeline_hits: 1,
-        fallback_resolution_hits: if matches!(plan.operation, MutationOperation::BreakCycle) {
+        resolution_pipeline_hits: 1,
+        degraded_resolution_hits: if matches!(plan.operation, MutationOperation::BreakCycle) {
             0
         } else {
             1
@@ -1199,7 +1246,14 @@ pub fn patches_to_change_set(
     change_set.canonical_target = canonical_target
         .map(|path| normalize_target_scope_path(root, path))
         .transpose()?
-        .or_else(|| canonical_target_fallback(root, target_override, &change_set.changes, &change_set.patches));
+        .or_else(|| {
+            canonical_target_fallback(
+                root,
+                target_override,
+                &change_set.changes,
+                &change_set.patches,
+            )
+        });
     Ok(change_set)
 }
 
@@ -1236,7 +1290,11 @@ pub fn generate_code_change_set_with_resolved_paths(
             resolved_paths,
         )?;
     }
-    if fence.scope != PatchScope::ExplicitTargetOnly {
+    if fence.scope != PatchScope::ExplicitTargetOnly
+        || drafts
+            .values()
+            .any(|draft| draft.change_type == ChangeType::CreateFile)
+    {
         rewrite_crate_imports_for_created_drafts(root, &source_index, &mut drafts)?;
         register_generated_submodules(root, &mut drafts)?;
     }
@@ -1316,35 +1374,82 @@ fn synthesize_change_hunks(
             replacement: updated.to_string(),
         }],
         ChangeType::ModifyFile => {
-            if file_path.ends_with("apps/cli/src/service.rs") || file_path.ends_with("src/service.rs")
+            if file_path.ends_with("apps/cli/src/service.rs")
+                || file_path.ends_with("src/service.rs")
             {
                 let dedicated = synthesize_service_file_hunks(original, updated);
                 if !dedicated.is_empty() {
                     return dedicated;
                 }
             }
-            let original_lines = original.lines().map(ToString::to_string).collect::<Vec<_>>();
+            let original_lines = original
+                .lines()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>();
             let updated_lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
             let ops = synthesize_line_diff_ops(&original_lines, &updated_lines);
             let hunks = synthesize_fragmented_hunks(&ops);
             if hunks.is_empty() {
-                vec![DiffHunk {
-                    start_line: 1,
-                    end_line: original.lines().count().max(1),
-                    replacement: updated.to_string(),
-                }]
+                synthesize_bounded_full_replacement_hunks(original, updated)
             } else {
                 hunks
                     .into_iter()
                     .map(|hunk| DiffHunk {
                         start_line: hunk.start_line,
                         end_line: hunk.end_line,
-                        replacement: join_replacement_lines(&hunk.replacement_lines, updated.ends_with('\n')),
+                        replacement: join_replacement_lines(
+                            &hunk.replacement_lines,
+                            updated.ends_with('\n'),
+                        ),
                     })
                     .collect()
             }
         }
     }
+}
+
+fn synthesize_bounded_full_replacement_hunks(original: &str, updated: &str) -> Vec<DiffHunk> {
+    let updated_lines = updated.lines().map(ToString::to_string).collect::<Vec<_>>();
+    if updated_lines.is_empty() {
+        return vec![DiffHunk {
+            start_line: 1,
+            end_line: original.lines().count().max(1),
+            replacement: String::new(),
+        }];
+    }
+
+    let original_total = original.lines().count().max(1);
+    let trailing_newline = updated.ends_with('\n');
+    let mut hunks = Vec::new();
+    let mut old_cursor = 1usize;
+    let mut offset = 0usize;
+
+    while offset < updated_lines.len() {
+        let next = (offset + MAX_HUNK_LINES).min(updated_lines.len());
+        let is_last = next == updated_lines.len();
+        let replacement_lines = &updated_lines[offset..next];
+        let covered_lines = if is_last {
+            original_total.saturating_sub(old_cursor).saturating_add(1)
+        } else {
+            replacement_lines
+                .len()
+                .min(original_total.saturating_sub(old_cursor).saturating_add(1))
+        };
+        let end_line = if covered_lines == 0 {
+            old_cursor.saturating_sub(1)
+        } else {
+            old_cursor + covered_lines - 1
+        };
+        hunks.push(DiffHunk {
+            start_line: old_cursor,
+            end_line,
+            replacement: join_replacement_lines(replacement_lines, trailing_newline && is_last),
+        });
+        old_cursor = end_line.saturating_add(1);
+        offset = next;
+    }
+
+    hunks
 }
 
 fn join_replacement_lines(lines: &[String], trailing_newline: bool) -> String {
@@ -1507,8 +1612,10 @@ fn service_block_range(content: &str, kind: ServiceBlockKind) -> Option<(usize, 
     let lines = content.lines().collect::<Vec<_>>();
     let start = lines.iter().position(|line| match kind {
         ServiceBlockKind::Use => line.trim_start().starts_with("use "),
-        ServiceBlockKind::Mod => line.trim_start().starts_with("#[path = \"service/")
-            || line.trim_start().starts_with("pub mod "),
+        ServiceBlockKind::Mod => {
+            line.trim_start().starts_with("#[path = \"service/")
+                || line.trim_start().starts_with("pub mod ")
+        }
         ServiceBlockKind::PubUse => line.trim_start().starts_with("pub use "),
     })?;
     let mut end = start;
@@ -1552,7 +1659,10 @@ fn render_change_replacement(change: &CodeChange, original: &str) -> Result<Stri
 }
 
 fn apply_hunks_to_content(original: &str, hunks: &[DiffHunk]) -> Result<String, String> {
-    let mut lines = original.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let mut lines = original
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
     let trailing_newline = original.ends_with('\n');
     let mut sorted = hunks.to_vec();
     sorted.sort_by(|left, right| right.start_line.cmp(&left.start_line));
@@ -1574,10 +1684,303 @@ fn apply_hunks_to_content(original: &str, hunks: &[DiffHunk]) -> Result<String, 
         }
     }
     let mut rendered = lines.join("\n");
-    if (trailing_newline || hunks.iter().any(|h| h.replacement.ends_with('\n'))) && !rendered.is_empty() {
+    if (trailing_newline || hunks.iter().any(|h| h.replacement.ends_with('\n')))
+        && !rendered.is_empty()
+    {
         rendered.push('\n');
     }
     Ok(rendered)
+}
+
+pub fn build_unified_diff_preview(
+    root: &Path,
+    change_set: &CodeChangeSet,
+) -> Result<UnifiedDiffPreview, String> {
+    let mut files = Vec::new();
+    let mut summary = UnifiedDiffSummary::default();
+
+    for change in &change_set.changes {
+        match build_code_diff(root, change)? {
+            Some(diff) => {
+                summary.file_count += 1;
+                summary.added_lines += diff.added_lines;
+                summary.removed_lines += diff.removed_lines;
+                files.push(diff);
+            }
+            None => {
+                summary.skipped_binary_files += 1;
+            }
+        }
+    }
+
+    Ok(UnifiedDiffPreview { files, summary })
+}
+
+pub fn render_code_diff_lines(diff: &CodeDiff) -> Vec<String> {
+    let mut rendered = vec![
+        format!("--- {}", diff.before_label),
+        format!("+++ {}", diff.after_label),
+    ];
+    for hunk in &diff.hunks {
+        rendered.push(String::new());
+        rendered.push(hunk.header.clone());
+        rendered.extend(hunk.lines.iter().map(render_diff_line));
+    }
+    rendered
+}
+
+pub fn render_unified_diff_excerpt(
+    preview: &UnifiedDiffPreview,
+    file_limit: usize,
+    line_limit: usize,
+) -> Vec<(String, String)> {
+    let mut excerpts = Vec::new();
+    let mut remaining = line_limit;
+
+    for diff in preview.files.iter().take(file_limit) {
+        if remaining == 0 {
+            break;
+        }
+        let lines = render_code_diff_lines(diff);
+        let total_lines = lines.len();
+        let take = remaining.min(total_lines);
+        let mut excerpt = lines.into_iter().take(take).collect::<Vec<_>>();
+        remaining = remaining.saturating_sub(take);
+        if take == 0 {
+            break;
+        }
+        if take < total_lines {
+            excerpt.push("... diff truncated ...".to_string());
+        }
+        excerpts.push((diff.file.display().to_string(), excerpt.join("\n")));
+    }
+
+    excerpts
+}
+
+pub fn format_unified_diff_summary(summary: &UnifiedDiffSummary) -> String {
+    let mut rendered = format!(
+        "{} files changed, +{} -{} lines",
+        summary.file_count, summary.added_lines, summary.removed_lines
+    );
+    if summary.skipped_binary_files > 0 {
+        rendered.push_str(&format!(
+            " ({} binary skipped)",
+            summary.skipped_binary_files
+        ));
+    }
+    if summary.truncated {
+        rendered.push_str(" [truncated]");
+    }
+    rendered
+}
+
+fn build_code_diff(root: &Path, change: &CodeChange) -> Result<Option<CodeDiff>, String> {
+    let path = root.join(&change.file_path);
+    let old = read_diff_text(&path)?;
+    let Some(old) = old else {
+        return Ok(None);
+    };
+    let new = render_change_replacement(change, &old)?;
+    let old_lines = old.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let new_lines = new.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let ops = diff_ops(&old_lines, &new_lines);
+    let hunks = build_unified_hunks(&ops, UNIFIED_DIFF_CONTEXT_LINES);
+    let added_lines = ops
+        .iter()
+        .filter(|op| matches!(op, UnifiedDiffOp::Add(_)))
+        .count();
+    let removed_lines = ops
+        .iter()
+        .filter(|op| matches!(op, UnifiedDiffOp::Remove(_)))
+        .count();
+
+    let (before_label, after_label) = match change.change_type {
+        ChangeType::CreateFile => ("/dev/null".to_string(), format!("b/{}", change.file_path)),
+        ChangeType::MoveFile => (format!("a/{}", change.file_path), "/dev/null".to_string()),
+        ChangeType::ModifyFile => (
+            format!("a/{}", change.file_path),
+            format!("b/{}", change.file_path),
+        ),
+    };
+
+    Ok(Some(CodeDiff {
+        file: PathBuf::from(&change.file_path),
+        before_label,
+        after_label,
+        hunks,
+        added_lines,
+        removed_lines,
+    }))
+}
+
+fn read_diff_text(path: &Path) -> Result<Option<String>, String> {
+    match fs::read(path) {
+        Ok(bytes) => match String::from_utf8(bytes) {
+            Ok(text) => Ok(Some(text)),
+            Err(_) => Ok(None),
+        },
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(Some(String::new())),
+        Err(err) => Err(format!("failed to read {}: {err}", path.display())),
+    }
+}
+
+fn render_diff_line(line: &DiffLine) -> String {
+    match line {
+        DiffLine::Added(value) => format!("+{value}"),
+        DiffLine::Removed(value) => format!("-{value}"),
+        DiffLine::Context(value) => format!(" {value}"),
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum UnifiedDiffOp {
+    Equal(String),
+    Remove(String),
+    Add(String),
+}
+
+fn diff_ops(old_lines: &[String], new_lines: &[String]) -> Vec<UnifiedDiffOp> {
+    let mut dp = vec![vec![0usize; new_lines.len() + 1]; old_lines.len() + 1];
+    for i in (0..old_lines.len()).rev() {
+        for j in (0..new_lines.len()).rev() {
+            dp[i][j] = if old_lines[i] == new_lines[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+
+    let mut i = 0usize;
+    let mut j = 0usize;
+    let mut ops = Vec::new();
+    while i < old_lines.len() && j < new_lines.len() {
+        if old_lines[i] == new_lines[j] {
+            ops.push(UnifiedDiffOp::Equal(old_lines[i].clone()));
+            i += 1;
+            j += 1;
+        } else if dp[i + 1][j] >= dp[i][j + 1] {
+            ops.push(UnifiedDiffOp::Remove(old_lines[i].clone()));
+            i += 1;
+        } else {
+            ops.push(UnifiedDiffOp::Add(new_lines[j].clone()));
+            j += 1;
+        }
+    }
+    while i < old_lines.len() {
+        ops.push(UnifiedDiffOp::Remove(old_lines[i].clone()));
+        i += 1;
+    }
+    while j < new_lines.len() {
+        ops.push(UnifiedDiffOp::Add(new_lines[j].clone()));
+        j += 1;
+    }
+    ops
+}
+
+fn build_unified_hunks(ops: &[UnifiedDiffOp], context: usize) -> Vec<Hunk> {
+    let mut hunks = Vec::new();
+    let mut old_line = 1usize;
+    let mut new_line = 1usize;
+    let mut pending_context = Vec::<String>::new();
+    let mut current: Option<PendingUnifiedHunk> = None;
+    let mut trailing_context = 0usize;
+
+    for op in ops {
+        match op {
+            UnifiedDiffOp::Equal(line) => {
+                pending_context.push(line.clone());
+                if pending_context.len() > context {
+                    pending_context.remove(0);
+                }
+                if let Some(hunk) = current.as_mut() {
+                    hunk.lines.push(DiffLine::Context(line.clone()));
+                    hunk.old_count += 1;
+                    hunk.new_count += 1;
+                    trailing_context += 1;
+                    if trailing_context > context {
+                        hunk.lines.pop();
+                        hunk.old_count -= 1;
+                        hunk.new_count -= 1;
+                        hunks.push(current.take().expect("hunk").finish());
+                        trailing_context = 0;
+                    }
+                }
+                old_line += 1;
+                new_line += 1;
+            }
+            UnifiedDiffOp::Remove(line) => {
+                if current.is_none() {
+                    current = Some(PendingUnifiedHunk::new(
+                        old_line.saturating_sub(pending_context.len()),
+                        new_line.saturating_sub(pending_context.len()),
+                        pending_context.clone(),
+                    ));
+                }
+                let hunk = current.as_mut().expect("hunk");
+                hunk.lines.push(DiffLine::Removed(line.clone()));
+                hunk.old_count += 1;
+                trailing_context = 0;
+                old_line += 1;
+            }
+            UnifiedDiffOp::Add(line) => {
+                if current.is_none() {
+                    current = Some(PendingUnifiedHunk::new(
+                        old_line.saturating_sub(pending_context.len()),
+                        new_line.saturating_sub(pending_context.len()),
+                        pending_context.clone(),
+                    ));
+                }
+                let hunk = current.as_mut().expect("hunk");
+                hunk.lines.push(DiffLine::Added(line.clone()));
+                hunk.new_count += 1;
+                trailing_context = 0;
+                new_line += 1;
+            }
+        }
+    }
+
+    if let Some(hunk) = current.take() {
+        hunks.push(hunk.finish());
+    }
+
+    hunks
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingUnifiedHunk {
+    old_start: usize,
+    old_count: usize,
+    new_start: usize,
+    new_count: usize,
+    lines: Vec<DiffLine>,
+}
+
+impl PendingUnifiedHunk {
+    fn new(old_start: usize, new_start: usize, context_lines: Vec<String>) -> Self {
+        let context_count = context_lines.len();
+        Self {
+            old_start,
+            old_count: context_count,
+            new_start,
+            new_count: context_count,
+            lines: context_lines
+                .into_iter()
+                .map(DiffLine::Context)
+                .collect::<Vec<_>>(),
+        }
+    }
+
+    fn finish(self) -> Hunk {
+        Hunk {
+            header: format!(
+                "@@ -{},{} +{},{} @@",
+                self.old_start, self.old_count, self.new_start, self.new_count
+            ),
+            lines: self.lines,
+        }
+    }
 }
 
 fn deterministic_repl_v2_change_set(
@@ -1663,9 +2066,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
     {
         content
     } else {
-        return Err(
-            "deterministic repl_v2 rewrite: missing legacy planner import block".to_string(),
-        );
+        return Err("deterministic repl_v2 rewrite: missing planner import block".to_string());
     };
 
     let old_flow = r#"    if let Some(command_plan) = plan_nl_input_v2(input, session, conversation) {
@@ -1674,7 +2075,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
         update_conversation_after_plan(input, &command_plan, conversation);
 
         if cfg!(test) {
-            session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+            session.current_plan = Some(crate::nl::to_runtime_plan(&command_plan));
             session.state = State::Completed;
             emit_output(session, writer, "[test] planner-only mode")?;
             return Ok(());
@@ -1687,7 +2088,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
             }
         }
         session.state = State::Completed;
-        session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+        session.current_plan = Some(crate::nl::to_runtime_plan(&command_plan));
         conversation.autonomous_label = None;
         print_follow_up_suggestions(input, session, writer)?;
         return Ok(());
@@ -1697,7 +2098,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
     let planner_label = if command_plan_v2.is_some() {
         "nl_v2"
     } else {
-        "nl_fallback"
+        "nl_rule_based"
     };
     let command_plan =
         command_plan_v2.or_else(|| plan_nl_input(input, session));
@@ -1708,7 +2109,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
         update_conversation_after_plan(input, &command_plan, conversation);
 
         if cfg!(test) {
-            session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+            session.current_plan = Some(crate::nl::to_runtime_plan(&command_plan));
             session.state = State::Completed;
             emit_output(session, writer, "[test] planner-only mode")?;
             return Ok(());
@@ -1721,7 +2122,7 @@ fn rewrite_repl_v2_source(content: &str) -> Result<String, String> {
             }
         }
         session.state = State::Completed;
-        session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+        session.current_plan = Some(crate::nl::to_runtime_plan(&command_plan));
         conversation.autonomous_label = None;
         print_follow_up_suggestions(input, session, writer)?;
         return Ok(());
@@ -1790,42 +2191,248 @@ pub fn collect_apply_target_resolutions(
     let target_override = resolve_target_override(root, target_override)?;
     let mut resolutions = BTreeMap::<String, ApplyTargetResolution>::new();
     for patch in &patches {
-        let Some(module) = patch_target_module(patch) else {
-            continue;
-        };
-        let resolution = if let Some(path) = target_override.as_deref() {
-            let relative = normalize_relative(root, path).map(PathBuf::from)?;
-            ApplyTargetResolution {
-                module: module.clone(),
-                resolution_strategy: "target_override".to_string(),
+        for resolution in expand_companion_targets(
+            root,
+            &source_index,
+            patch,
+            target_override.as_deref(),
+            resolved_paths,
+        )? {
+            resolutions
+                .entry(resolution.module.clone())
+                .or_insert(resolution);
+        }
+    }
+    Ok(resolutions.into_values().collect())
+}
+
+pub fn build_apply_resolutions(
+    root: &Path,
+    change_set: &CodeChangeSet,
+    target_override: Option<&Path>,
+    resolved_paths: &BTreeMap<String, PathBuf>,
+) -> Result<Vec<ApplyTargetResolution>, String> {
+    collect_apply_target_resolutions(root, &change_set.patches, target_override, resolved_paths)
+}
+
+pub fn attach_sandbox_paths_to_apply_resolutions(
+    root: &Path,
+    resolutions: &mut [ApplyTargetResolution],
+    transactional: &TransactionalApplyResult,
+) {
+    for resolution in resolutions {
+        resolution.sandbox_path =
+            resolve_sandbox_module_file(&resolution.module, root, &transactional.sandbox_path)
+                .ok()
+                .or_else(|| {
+                    Some(
+                        transactional
+                            .sandbox_path
+                            .join(&resolution.resolved_relative_path),
+                    )
+                });
+    }
+}
+
+pub fn build_canonicalization_telemetry(
+    change_set: &CodeChangeSet,
+    apply_resolutions: &[ApplyTargetResolution],
+    execution: &CodingExecutionResult,
+) -> CanonicalizationTelemetry {
+    let mut normalization_issues = Vec::new();
+
+    if execution.resolution_pipeline_hits > 0 {
+        normalization_issues.push("mutation_resolution_pipeline".to_string());
+    }
+    if execution.degraded_resolution_hits > 0 {
+        normalization_issues.push("degraded_resolution_path".to_string());
+    }
+    if change_set.canonical_target.is_none() {
+        normalization_issues.push("canonical_target_relay_drift".to_string());
+    }
+    if change_set.changes.iter().any(|change| {
+        change.file_path == "apps/cli/src/service.rs"
+            && change.hunks.iter().any(|hunk| {
+                let touched = if hunk.start_line <= hunk.end_line {
+                    hunk.end_line.saturating_sub(hunk.start_line) + 1
+                } else {
+                    hunk.replacement.lines().count()
+                };
+                touched > MAX_HUNK_LINES
+            })
+    }) {
+        normalization_issues.push("generic_full_file_regeneration".to_string());
+    }
+    if change_set.changes.iter().any(|change| {
+        change
+            .hunks
+            .iter()
+            .any(|hunk| hunk.replacement.contains("TODO: define required methods"))
+    }) {
+        normalization_issues.push("todo_trait_template".to_string());
+    }
+
+    for patch in &change_set.patches {
+        for operation in &patch.operations {
+            if let PatchOperation::CreateInterface { name, .. } = operation {
+                let module = snake_case(name);
+                let expected_suffix = format!("{module}.rs");
+                let resolution = apply_resolutions
+                    .iter()
+                    .find(|resolution| resolution.module == module);
+                match resolution {
+                    Some(resolution)
+                        if resolution
+                            .resolved_relative_path
+                            .to_string_lossy()
+                            .ends_with(&expected_suffix) => {}
+                    Some(_) => {
+                        normalization_issues.push("explicit_target_companion_collapse".to_string())
+                    }
+                    None => normalization_issues
+                        .push("create_interface_materialization_drop".to_string()),
+                }
+            }
+        }
+    }
+
+    normalization_issues.sort();
+    normalization_issues.dedup();
+    CanonicalizationTelemetry {
+        normalization_path_used: !normalization_issues.is_empty(),
+        normalization_issue_count: normalization_issues.len() as u64,
+        normalization_issues,
+    }
+}
+
+pub fn normalization_issue_count(telemetry: &CanonicalizationTelemetry) -> u64 {
+    telemetry.normalization_issue_count
+}
+
+pub fn ensure_canonical_target_dto_continuity(
+    root: &Path,
+    change_set: &mut CodeChangeSet,
+    execution: &CodingExecutionResult,
+    explicit_target: Option<&Path>,
+) -> Result<(), String> {
+    change_set.canonical_target = change_set
+        .canonical_target
+        .clone()
+        .or_else(|| {
+            execution
+                .canonical_target_path
+                .as_deref()
+                .map(PathBuf::from)
+        })
+        .or_else(|| explicit_target.and_then(|path| normalize_target_scope_path(root, path).ok()));
+    Ok(())
+}
+
+fn expand_companion_targets(
+    root: &Path,
+    source_index: &ModuleSourceIndex,
+    patch: &CodePatch,
+    target_override: Option<&Path>,
+    resolved_paths: &BTreeMap<String, PathBuf>,
+) -> Result<Vec<ApplyTargetResolution>, String> {
+    let mut resolutions = Vec::new();
+    let Some(operation) = patch.operations.first() else {
+        return Ok(resolutions);
+    };
+    match operation {
+        PatchOperation::CreateInterface { name, between } => {
+            let module = snake_case(name);
+            let file_name = format!("{module}.rs");
+            let resolved = resolved_paths
+                .get(&module)
+                .cloned()
+                .or_else(|| {
+                    resolved_paths
+                        .get(&between.0)
+                        .map(|path| source_index.generated_path_from_source(root, path, &file_name))
+                })
+                .unwrap_or_else(|| source_index.generated_path(root, &between.0, &file_name));
+            let relative = normalize_target_scope_path(root, &resolved)?;
+            resolutions.push(ApplyTargetResolution {
+                module,
+                resolution_strategy: "companion_create_file".to_string(),
                 resolved_relative_path: relative.clone(),
                 resolved_path: relative,
                 sandbox_path: None,
-            }
-        } else if !patch.target_file.as_os_str().is_empty() {
-            ApplyTargetResolution {
-                module: module.clone(),
-                resolution_strategy: "canonical_target_file".to_string(),
-                resolved_relative_path: patch.target_file.clone(),
-                resolved_path: patch.target_file.clone(),
-                sandbox_path: None,
-            }
-        } else if let Some(path) = resolved_paths.get(&module) {
-            ApplyTargetResolution {
-                module: module.clone(),
-                resolution_strategy: "candidate_snapshot".to_string(),
-                resolved_relative_path: path.clone(),
-                resolved_path: path.clone(),
-                sandbox_path: None,
-            }
-        } else if let Some(resolution) = source_index.resolve_apply_target(&module) {
-            resolution
-        } else {
-            continue;
-        };
-        resolutions.entry(module).or_insert(resolution);
+            });
+        }
+        PatchOperation::UpdateDependency { from, .. } => {
+            let module = from.clone();
+            let resolution = if let Some(path) = target_override {
+                let relative = normalize_relative(root, path).map(PathBuf::from)?;
+                ApplyTargetResolution {
+                    module,
+                    resolution_strategy: "target_override".to_string(),
+                    resolved_relative_path: relative.clone(),
+                    resolved_path: relative,
+                    sandbox_path: None,
+                }
+            } else if !patch.target_file.as_os_str().is_empty() {
+                ApplyTargetResolution {
+                    module,
+                    resolution_strategy: "canonical_target_file".to_string(),
+                    resolved_relative_path: patch.target_file.clone(),
+                    resolved_path: patch.target_file.clone(),
+                    sandbox_path: None,
+                }
+            } else if let Some(path) = resolved_paths.get(from) {
+                ApplyTargetResolution {
+                    module,
+                    resolution_strategy: "candidate_snapshot".to_string(),
+                    resolved_relative_path: path.clone(),
+                    resolved_path: path.clone(),
+                    sandbox_path: None,
+                }
+            } else if let Some(resolution) = source_index.resolve_apply_target(from) {
+                resolution
+            } else {
+                return Ok(resolutions);
+            };
+            resolutions.push(resolution);
+        }
+        _ => {
+            let Some(module) = patch_target_module(patch) else {
+                return Ok(resolutions);
+            };
+            let resolution = if let Some(path) = target_override {
+                let relative = normalize_relative(root, path).map(PathBuf::from)?;
+                ApplyTargetResolution {
+                    module: module.clone(),
+                    resolution_strategy: "target_override".to_string(),
+                    resolved_relative_path: relative.clone(),
+                    resolved_path: relative,
+                    sandbox_path: None,
+                }
+            } else if !patch.target_file.as_os_str().is_empty() {
+                ApplyTargetResolution {
+                    module: module.clone(),
+                    resolution_strategy: "canonical_target_file".to_string(),
+                    resolved_relative_path: patch.target_file.clone(),
+                    resolved_path: patch.target_file.clone(),
+                    sandbox_path: None,
+                }
+            } else if let Some(path) = resolved_paths.get(&module) {
+                ApplyTargetResolution {
+                    module: module.clone(),
+                    resolution_strategy: "candidate_snapshot".to_string(),
+                    resolved_relative_path: path.clone(),
+                    resolved_path: path.clone(),
+                    sandbox_path: None,
+                }
+            } else if let Some(resolution) = source_index.resolve_apply_target(&module) {
+                resolution
+            } else {
+                return Ok(resolutions);
+            };
+            resolutions.push(resolution);
+        }
     }
-    Ok(resolutions.into_values().collect())
+    Ok(resolutions)
 }
 
 pub fn execute_code_change_set(
@@ -1863,8 +2470,8 @@ pub fn execute_code_change_set(
             git_push: None,
             pull_request: None,
             canonical_target_path: None,
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         });
     }
@@ -1919,8 +2526,8 @@ pub fn execute_code_change_set(
                 git_push: None,
                 pull_request: None,
                 canonical_target_path: representative_target.clone(),
-                legacy_pipeline_hits: 0,
-                fallback_resolution_hits: 0,
+                resolution_pipeline_hits: 0,
+                degraded_resolution_hits: 0,
                 stale_artifact_detected: false,
             });
         }
@@ -1945,8 +2552,8 @@ pub fn execute_code_change_set(
             git_push: None,
             pull_request: None,
             canonical_target_path: representative_target.clone(),
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         };
         if options.auto_commit {
@@ -2155,8 +2762,8 @@ pub fn execute_code_change_set(
             git_push: None,
             pull_request: None,
             canonical_target_path: representative_target.clone(),
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         });
     }
@@ -2191,8 +2798,8 @@ pub fn execute_code_change_set(
             git_push: None,
             pull_request: None,
             canonical_target_path: representative_target.clone(),
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         });
     }
@@ -2236,8 +2843,8 @@ pub fn execute_code_change_set(
             git_push: None,
             pull_request: None,
             canonical_target_path: representative_target.clone(),
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         }),
         Err(err) => {
@@ -2262,8 +2869,8 @@ pub fn execute_code_change_set(
                 git_push: None,
                 pull_request: None,
                 canonical_target_path: representative_target,
-                legacy_pipeline_hits: 0,
-                fallback_resolution_hits: 0,
+                resolution_pipeline_hits: 0,
+                degraded_resolution_hits: 0,
                 stale_artifact_detected: false,
             })
         }
@@ -4222,7 +4829,10 @@ fn normalize_malformed_import_block(
     let original_imports = imports.clone();
     let stable_existing = stable_imports_in_lines(&block_lines);
     for help_use in help_uses {
-        if !imports.iter().any(|existing| existing.trim() == help_use.trim()) {
+        if !imports
+            .iter()
+            .any(|existing| existing.trim() == help_use.trim())
+        {
             imports.push(help_use.clone());
         }
     }
@@ -4597,7 +5207,7 @@ fn prune_patch_candidates(
         let Some(explicit_target) = fence.explicit_target.as_ref() else {
             return Ok(None);
         };
-        candidates.retain(|candidate| candidate == explicit_target);
+        candidates.retain(|candidate| explicit_scope_allows_target(explicit_target, candidate));
     }
     Ok(candidates.into_iter().next())
 }
@@ -6488,7 +7098,7 @@ fn guard_change_target(target_path: &Path, fence: &PatchFence) -> Result<(), Str
     };
     let target = normalize_path_for_scope(target_path);
     let expected = normalize_path_for_scope(explicit_target);
-    if target == expected {
+    if explicit_scope_allows_target(&expected, &target) {
         Ok(())
     } else {
         Err(format!(
@@ -6518,6 +7128,29 @@ fn normalize_path_for_scope(path: &Path) -> PathBuf {
             }
             normalized
         })
+}
+
+fn explicit_scope_allows_target(explicit_target: &Path, candidate: &Path) -> bool {
+    let explicit = normalize_path_for_scope(explicit_target);
+    let candidate = normalize_path_for_scope(candidate);
+    if candidate == explicit {
+        return true;
+    }
+    if matches!(
+        candidate.file_name().and_then(|value| value.to_str()),
+        Some("lib.rs" | "main.rs")
+    ) {
+        return true;
+    }
+    let is_interface_file = candidate
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .map(|stem| stem.ends_with("_interface"))
+        .unwrap_or(false);
+    if is_interface_file {
+        return true;
+    }
+    candidate.parent() == explicit.parent()
 }
 
 fn normalize_target_scope_path(root: &Path, path: &Path) -> Result<PathBuf, String> {
@@ -6615,28 +7248,16 @@ fn deterministic_interface_method_name(name: &str, between: &(String, String)) -
     if trait_name.contains("explanationintentrefinerinterface") {
         return "refine_explanation_intent".to_string();
     }
-    let from = snake_case(&between.0);
     let to = snake_case(&between.1);
-    let verb = if from.contains("adapter") || from.contains("service") {
-        "execute"
-    } else if from.contains("consistency") {
-        "evaluate"
-    } else if from.contains("pattern") {
-        "extract"
-    } else if from.contains("explanation") {
-        "refine"
-    } else {
-        "bridge"
-    };
     let rhs = to
         .split('_')
         .filter(|token| !token.is_empty() && *token != "interface")
         .collect::<Vec<_>>()
         .join("_");
     if rhs.is_empty() {
-        format!("{verb}_target")
+        "handle_target".to_string()
     } else {
-        format!("{verb}_{rhs}")
+        format!("handle_{rhs}")
     }
 }
 
@@ -6658,7 +7279,15 @@ fn desired_dependency_use_line(
         Some(via) if via.ends_with("Interface") => {
             if let Some(current_id) = source_index.qualified_id_for_path(current_path) {
                 let module_leaf = snake_case(via);
-                interface_use_line_for_target(root, current_path, &current_id, &module_leaf, via)
+                interface_use_line_for_target(
+                    root,
+                    source_index,
+                    current_path,
+                    &current_id,
+                    target,
+                    &module_leaf,
+                    via,
+                )
             } else {
                 format!("use crate::{}::{};", snake_case(via), via)
             }
@@ -6673,24 +7302,41 @@ fn desired_dependency_use_line(
 
 fn interface_use_line_for_target(
     root: &Path,
+    source_index: &ModuleSourceIndex,
     current_path: &Path,
     current_id: &QualifiedModuleId,
+    target: &str,
     module_leaf: &str,
     interface_name: &str,
 ) -> String {
-    if interface_is_sibling_module(root, current_path, module_leaf)
-        && !is_module_root_file(current_path)
+    if let Some(target_path) = source_index
+        .resolve_apply_target(target)
+        .map(|resolution| resolution.resolved_relative_path)
+        .or_else(|| source_index.resolve(target).ok().flatten())
+        && let Some(target_id) = source_index.qualified_id_for_path(&target_path)
     {
-        return format!("use super::{module_leaf}::{interface_name};");
-    }
+        if target_id.crate_name == current_id.crate_name {
+            if interface_is_sibling_module(root, current_path, module_leaf)
+                && !is_module_root_file(current_path)
+            {
+                return format!("use super::{module_leaf}::{interface_name};");
+            }
 
-    match parent_module_root(current_path, current_id) {
-        Some(parent) if parent == current_id.crate_name => {
-            format!("use crate::{module_leaf}::{interface_name};")
+            return match parent_module_root(current_path, current_id) {
+                Some(parent) if parent == current_id.crate_name => {
+                    format!("use crate::{module_leaf}::{interface_name};")
+                }
+                Some(parent) => format!("use crate::{parent}::{module_leaf}::{interface_name};"),
+                None => format!("use crate::{module_leaf}::{interface_name};"),
+            };
         }
-        Some(parent) => format!("use crate::{parent}::{module_leaf}::{interface_name};"),
-        None => format!("use crate::{module_leaf}::{interface_name};"),
+
+        return format!(
+            "use {}::{module_leaf}::{interface_name};",
+            target_id.crate_name
+        );
     }
+    format!("use crate::{module_leaf}::{interface_name};")
 }
 
 fn interface_is_sibling_module(root: &Path, current_path: &Path, module_leaf: &str) -> bool {
@@ -8503,8 +9149,12 @@ error: expected identifier, found keyword `use`\n\
             target_file: PathBuf::new(),
         };
         let change_set = generate_code_change_set(&root, &[patch]).expect("change set");
-        let replacement = render_change_replacement(&change_set.changes[0], "").expect("replacement");
-        assert!(replacement.contains("fn execute_service(&self);"), "{replacement}");
+        let replacement =
+            render_change_replacement(&change_set.changes[0], "").expect("replacement");
+        assert!(
+            replacement.contains("fn execute_service(&self);"),
+            "{replacement}"
+        );
         assert!(!replacement.contains("TODO"), "{replacement}");
     }
 
@@ -8631,13 +9281,24 @@ error: expected identifier, found keyword `use`\n\
             execution: execution.clone(),
             patches: changes.patches.clone(),
             changes: changes.clone(),
-            apply_resolutions: collect_apply_target_resolutions(
+            apply_resolutions: build_apply_resolutions(
                 &root,
-                &patches,
+                &changes,
                 Some(Path::new("apps/cli/src/service.rs")),
                 &BTreeMap::new(),
             )
             .expect("resolutions"),
+            telemetry: build_canonicalization_telemetry(
+                &changes,
+                &build_apply_resolutions(
+                    &root,
+                    &changes,
+                    Some(Path::new("apps/cli/src/service.rs")),
+                    &BTreeMap::new(),
+                )
+                .expect("telemetry resolutions"),
+                &execution,
+            ),
         };
         let json = serde_json::to_string_pretty(&report).expect("json");
 
@@ -8646,6 +9307,7 @@ error: expected identifier, found keyword `use`\n\
             .iter()
             .find(|change| change.file_path == "apps/cli/src/service.rs")
             .expect("service change");
+        assert!(changes.summary.create_files > 0);
         assert!(service_change.hunks.iter().all(|hunk| {
             let touched = if hunk.start_line <= hunk.end_line {
                 hunk.end_line.saturating_sub(hunk.start_line) + 1
@@ -8657,5 +9319,984 @@ error: expected identifier, found keyword `use`\n\
         assert!(!json.contains("// TODO: define required methods"), "{json}");
         assert!(!json.contains("\"canonical_target\": null"), "{json}");
         assert!(changes.canonical_target.is_some());
+    }
+
+    #[test]
+    fn coding_check_json_create_interface_materialization_e2e() {
+        let root = temp_dir("coding_check_json_create_interface_materialization_e2e");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("package cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use std::collections::BTreeMap;\n\npub fn analyze_path() -> BTreeMap<String, String> { BTreeMap::new() }\n",
+        )
+        .expect("service");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "service-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "introduce adapter service interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+        ];
+
+        let changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        assert!(changes.summary.create_files > 0);
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.file_path.ends_with("adapter_service_interface.rs"))
+        );
+        let lib_change = changes
+            .changes
+            .iter()
+            .find(|change| change.file_path == "apps/cli/src/lib.rs")
+            .expect("crate root registration");
+        let lib_after =
+            render_change_replacement(lib_change, "pub mod service;\n").expect("lib after");
+        assert!(
+            lib_after.contains("pub mod adapter_service_interface;"),
+            "{lib_after}"
+        );
+
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::ExplicitTargetOnly,
+                explicit_target: Some(PathBuf::from("apps/cli/src/service.rs")),
+            },
+            None,
+        )
+        .expect("execution");
+        assert!(execution.build_ok, "{:?}", execution.reason);
+        assert!(
+            execution
+                .reason
+                .as_deref()
+                .map(|reason| !reason.contains("E0432"))
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn coding_check_json_explicit_target_companion_override_e2e() {
+        let root = temp_dir("coding_check_json_explicit_target_companion_override_e2e");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("package cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use std::collections::BTreeMap;\n\npub fn analyze_path() -> BTreeMap<String, String> { BTreeMap::new() }\n",
+        )
+        .expect("service");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "service-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "introduce adapter service interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+        ];
+
+        let changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::ExplicitTargetOnly,
+                explicit_target: Some(PathBuf::from("apps/cli/src/service.rs")),
+            },
+            None,
+        )
+        .expect("execution");
+        let report = CodingReport {
+            root: root.display().to_string(),
+            dry_run: true,
+            execution: execution.clone(),
+            patches: changes.patches.clone(),
+            changes: changes.clone(),
+            apply_resolutions: build_apply_resolutions(
+                &root,
+                &changes,
+                Some(Path::new("apps/cli/src/service.rs")),
+                &BTreeMap::new(),
+            )
+            .expect("resolutions"),
+            telemetry: build_canonicalization_telemetry(
+                &changes,
+                &build_apply_resolutions(
+                    &root,
+                    &changes,
+                    Some(Path::new("apps/cli/src/service.rs")),
+                    &BTreeMap::new(),
+                )
+                .expect("telemetry resolutions"),
+                &execution,
+            ),
+        };
+        let json = serde_json::to_string_pretty(&report).expect("json");
+        let interface_resolution = report
+            .apply_resolutions
+            .iter()
+            .find(|resolution| resolution.module == "adapter_service_interface")
+            .expect("interface resolution");
+        let service_resolution = report
+            .apply_resolutions
+            .iter()
+            .find(|resolution| resolution.module == "service")
+            .expect("service resolution");
+
+        assert!(changes.summary.create_files > 0);
+        assert!(
+            changes
+                .changes
+                .iter()
+                .any(|change| change.file_path.ends_with("adapter_service_interface.rs"))
+        );
+        assert_eq!(
+            interface_resolution.resolved_relative_path,
+            PathBuf::from("apps/cli/src/adapter_service_interface.rs")
+        );
+        assert_eq!(
+            interface_resolution.resolution_strategy,
+            "companion_create_file"
+        );
+        assert_eq!(
+            service_resolution.resolved_relative_path,
+            PathBuf::from("apps/cli/src/service.rs")
+        );
+        assert_eq!(service_resolution.resolution_strategy, "target_override");
+        assert!(!json.contains("\"module\": \"*\""), "{json}");
+        assert!(!json.contains("// TODO: define required methods"), "{json}");
+        assert!(execution.build_ok, "{:?}", execution.reason);
+        assert!(
+            execution
+                .reason
+                .as_deref()
+                .map(|reason| !reason.contains("E0432"))
+                .unwrap_or(true)
+        );
+    }
+
+    #[test]
+    fn canonicalization_issue_count_must_be_zero() {
+        let root = temp_dir("canonicalization_issue_count_must_be_zero");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("package cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use std::collections::BTreeMap;\n\npub fn analyze_path() -> BTreeMap<String, String> { BTreeMap::new() }\n",
+        )
+        .expect("service");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "service-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "introduce adapter service interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+        ];
+
+        let changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::ExplicitTargetOnly,
+                explicit_target: Some(PathBuf::from("apps/cli/src/service.rs")),
+            },
+            None,
+        )
+        .expect("execution");
+        let apply_resolutions = build_apply_resolutions(
+            &root,
+            &changes,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+        )
+        .expect("apply resolutions");
+        let telemetry = build_canonicalization_telemetry(&changes, &apply_resolutions, &execution);
+
+        assert_eq!(normalization_issue_count(&telemetry), 0, "{telemetry:?}");
+        assert!(!telemetry.normalization_path_used, "{telemetry:?}");
+    }
+
+    #[test]
+    fn coding_check_json_explicit_target_cross_crate_import_coherence() {
+        let root = temp_dir("coding_check_json_explicit_target_cross_crate_import_coherence");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::create_dir_all(root.join("crates/architecture_search/src")).expect("arch src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\", \"crates/architecture_search\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n\n[dependencies]\narchitecture_search = { path = \"../../crates/architecture_search\" }\n",
+        )
+        .expect("cli cargo");
+        fs::write(
+            root.join("crates/architecture_search/Cargo.toml"),
+            "[package]\nname = \"architecture_search\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("arch cargo");
+        fs::write(
+            root.join("apps/cli/src/lib.rs"),
+            "pub mod service;\npub use architecture_search::grammar;\n",
+        )
+        .expect("cli lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use crate::grammar;\n\npub fn bridge(_bridge: &dyn GrammarGrammarEngineInterface) {}\n",
+        )
+        .expect("service");
+        fs::write(
+            root.join("crates/architecture_search/src/lib.rs"),
+            "pub mod grammar;\npub mod grammar_engine;\n",
+        )
+        .expect("arch lib");
+        fs::write(
+            root.join("crates/architecture_search/src/grammar.rs"),
+            "pub fn parse() -> &'static str { \"ok\" }\n",
+        )
+        .expect("grammar");
+        fs::write(
+            root.join("crates/architecture_search/src/grammar_engine.rs"),
+            "pub fn evaluate() -> &'static str { \"ok\" }\n",
+        )
+        .expect("grammar engine");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "grammar-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("grammar".to_string(), "grammar_engine".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "GrammarGrammarEngineInterface".to_string(),
+                    between: ("grammar".to_string(), "grammar_engine".to_string()),
+                }],
+                description: "introduce grammar/grammar_engine interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "grammar".to_string(),
+                    via: Some("GrammarGrammarEngineInterface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "grammar".to_string(),
+                    via: Some("GrammarGrammarEngineInterface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+        ];
+
+        let changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::ExplicitTargetOnly,
+                explicit_target: Some(PathBuf::from("apps/cli/src/service.rs")),
+            },
+            None,
+        )
+        .expect("execution");
+        let apply_resolutions = build_apply_resolutions(
+            &root,
+            &changes,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+        )
+        .expect("apply resolutions");
+        let report = CodingReport {
+            root: root.display().to_string(),
+            dry_run: true,
+            execution: execution.clone(),
+            patches: changes.patches.clone(),
+            changes: changes.clone(),
+            apply_resolutions: apply_resolutions.clone(),
+            telemetry: build_canonicalization_telemetry(&changes, &apply_resolutions, &execution),
+        };
+
+        let service_change = report
+            .changes
+            .changes
+            .iter()
+            .find(|change| change.file_path == "apps/cli/src/service.rs")
+            .expect("service change");
+        let replacement = service_change
+            .hunks
+            .iter()
+            .map(|hunk| hunk.replacement.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(report.execution.build_ok, "{:?}", report.execution.reason);
+        assert_eq!(report.telemetry.normalization_issue_count, 0);
+        assert!(
+            report
+                .changes
+                .changes
+                .iter()
+                .any(|change| change.file_path == "apps/cli/src/service.rs")
+        );
+        assert!(
+            !replacement.contains("use crate::grammar_grammar_engine_interface"),
+            "{replacement}"
+        );
+        assert!(
+            replacement.contains(
+                "use architecture_search::grammar_grammar_engine_interface::GrammarGrammarEngineInterface;"
+            ),
+            "{replacement}"
+        );
+        assert!(report.changes.summary.create_files > 0);
+        assert_eq!(
+            report.changes.canonical_target.as_deref(),
+            Some(Path::new("apps/cli/src/service.rs"))
+        );
+        assert!(report.changes.changes.iter().any(|change| {
+            change.file_path == "crates/architecture_search/src/grammar_grammar_engine_interface.rs"
+        }));
+    }
+
+    #[test]
+    fn coding_check_json_canonical_target_dto_continuity_e2e() {
+        let root = temp_dir("coding_check_json_canonical_target_dto_continuity_e2e");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("package cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "use std::collections::BTreeMap;\n\npub fn analyze_path() -> BTreeMap<String, String> { BTreeMap::new() }\n",
+        )
+        .expect("service");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "service-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "introduce adapter service interface".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "service-import".to_string(),
+                action: RefactorPlanAction::MoveDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                },
+                operations: vec![PatchOperation::UpdateDependency {
+                    from: "service".to_string(),
+                    to: "adapter".to_string(),
+                    via: Some("adapter_service_interface".to_string()),
+                }],
+                description: "service import update".to_string(),
+                target_file: PathBuf::from("apps/cli/src/service.rs"),
+            },
+        ];
+
+        let mut changes = patches_to_change_set(
+            &root,
+            &patches,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+            None,
+        )
+        .expect("change set");
+        changes.canonical_target = None;
+        let execution = execute_code_change_set(
+            &root,
+            &changes,
+            &CodingOptions {
+                apply: false,
+                check: true,
+                no_build: false,
+                backup: false,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: PatchScope::ExplicitTargetOnly,
+                explicit_target: Some(PathBuf::from("apps/cli/src/service.rs")),
+            },
+            None,
+        )
+        .expect("execution");
+        ensure_canonical_target_dto_continuity(
+            &root,
+            &mut changes,
+            &execution,
+            Some(Path::new("apps/cli/src/service.rs")),
+        )
+        .expect("continuity");
+        let apply_resolutions = build_apply_resolutions(
+            &root,
+            &changes,
+            Some(Path::new("apps/cli/src/service.rs")),
+            &BTreeMap::new(),
+        )
+        .expect("apply resolutions");
+        let report = CodingReport {
+            root: root.display().to_string(),
+            dry_run: true,
+            execution: execution.clone(),
+            patches: changes.patches.clone(),
+            changes: changes.clone(),
+            apply_resolutions: apply_resolutions.clone(),
+            telemetry: build_canonicalization_telemetry(&changes, &apply_resolutions, &execution),
+        };
+
+        assert_eq!(
+            report.execution.canonical_target_path.as_deref(),
+            Some("apps/cli/src/service.rs")
+        );
+        assert_eq!(
+            report.changes.canonical_target.as_deref(),
+            Some(Path::new("apps/cli/src/service.rs"))
+        );
+        assert_eq!(
+            report.execution.canonical_target_path.as_deref(),
+            report
+                .changes
+                .canonical_target
+                .as_deref()
+                .and_then(|path| path.to_str())
+        );
+    }
+
+    #[test]
+    fn coding_check_json_no_todo_trait_stub_production_e2e() {
+        let root = temp_dir("coding_check_json_no_todo_trait_stub_production_e2e");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::create_dir_all(root.join("crates/recomposer/src")).expect("recomposer src");
+        fs::create_dir_all(root.join("crates/runtime/runtime_core/src/intent_refiner"))
+            .expect("runtime core src");
+        fs::create_dir_all(root.join("crates/memory_space/src")).expect("memory space src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\", \"crates/recomposer\", \"crates/runtime/runtime_core\", \"crates/memory_space\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("cli cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("cli lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "pub fn analyze_path() {}\n",
+        )
+        .expect("service");
+        fs::write(
+            root.join("crates/recomposer/Cargo.toml"),
+            "[package]\nname = \"recomposer\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("recomposer cargo");
+        fs::write(
+            root.join("crates/recomposer/src/lib.rs"),
+            "pub mod recommend;\n",
+        )
+        .expect("recomposer lib");
+        fs::write(
+            root.join("crates/recomposer/src/recommend.rs"),
+            "pub fn recommend() {}\n",
+        )
+        .expect("recommend");
+        fs::write(
+            root.join("crates/runtime/runtime_core/Cargo.toml"),
+            "[package]\nname = \"runtime_core\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("runtime cargo");
+        fs::write(
+            root.join("crates/runtime/runtime_core/src/lib.rs"),
+            "pub mod intent_refiner;\n",
+        )
+        .expect("runtime lib");
+        fs::write(
+            root.join("crates/runtime/runtime_core/src/intent_refiner/mod.rs"),
+            "pub fn refine() {}\n",
+        )
+        .expect("intent refiner");
+        fs::write(
+            root.join("crates/memory_space/Cargo.toml"),
+            "[package]\nname = \"memory_space\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("memory cargo");
+        fs::write(
+            root.join("crates/memory_space/src/lib.rs"),
+            "pub mod pattern_matcher;\n",
+        )
+        .expect("memory lib");
+        fs::write(
+            root.join("crates/memory_space/src/pattern_matcher.rs"),
+            "pub fn match_patterns() {}\n",
+        )
+        .expect("pattern matcher");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "adapter-service".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "adapter service".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "consistency-recommend".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("consistency".to_string(), "recommend".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "ConsistencyRecommendInterface".to_string(),
+                    between: ("consistency".to_string(), "recommend".to_string()),
+                }],
+                description: "consistency recommend".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "explanation-intent".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("explanation".to_string(), "intent_refiner".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "ExplanationIntentRefinerInterface".to_string(),
+                    between: ("explanation".to_string(), "intent_refiner".to_string()),
+                }],
+                description: "explanation intent".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "pattern-extractor-matcher".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: (
+                        "pattern_extractor".to_string(),
+                        "pattern_matcher".to_string(),
+                    ),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "PatternExtractorPatternMatcherInterface".to_string(),
+                    between: (
+                        "pattern_extractor".to_string(),
+                        "pattern_matcher".to_string(),
+                    ),
+                }],
+                description: "pattern extractor matcher".to_string(),
+                target_file: PathBuf::new(),
+            },
+        ];
+
+        let changes = generate_code_change_set(&root, &patches).expect("change set");
+        let json = serde_json::to_string_pretty(&changes).expect("json");
+
+        assert!(!json.contains("TODO: define required methods"), "{json}");
+    }
+
+    #[test]
+    fn coding_check_json_trait_placeholder_method_determinism_e2e() {
+        let root = temp_dir("coding_check_json_trait_placeholder_method_determinism_e2e");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
+        fs::create_dir_all(root.join("crates/recomposer/src")).expect("recomposer src");
+        fs::create_dir_all(root.join("crates/runtime/runtime_core/src/intent_refiner"))
+            .expect("runtime core src");
+        fs::create_dir_all(root.join("crates/memory_space/src")).expect("memory space src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\", \"crates/recomposer\", \"crates/runtime/runtime_core\", \"crates/memory_space\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("apps/cli/Cargo.toml"),
+            "[package]\nname = \"design_cli\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("cli cargo");
+        fs::write(root.join("apps/cli/src/lib.rs"), "pub mod service;\n").expect("cli lib");
+        fs::write(
+            root.join("apps/cli/src/service.rs"),
+            "pub fn analyze_path() {}\n",
+        )
+        .expect("service");
+        fs::write(
+            root.join("crates/recomposer/Cargo.toml"),
+            "[package]\nname = \"recomposer\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("recomposer cargo");
+        fs::write(
+            root.join("crates/recomposer/src/lib.rs"),
+            "pub mod recommend;\n",
+        )
+        .expect("recomposer lib");
+        fs::write(
+            root.join("crates/recomposer/src/recommend.rs"),
+            "pub fn recommend() {}\n",
+        )
+        .expect("recommend");
+        fs::write(
+            root.join("crates/runtime/runtime_core/Cargo.toml"),
+            "[package]\nname = \"runtime_core\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("runtime cargo");
+        fs::write(
+            root.join("crates/runtime/runtime_core/src/lib.rs"),
+            "pub mod intent_refiner;\n",
+        )
+        .expect("runtime lib");
+        fs::write(
+            root.join("crates/runtime/runtime_core/src/intent_refiner/mod.rs"),
+            "pub fn refine() {}\n",
+        )
+        .expect("intent refiner");
+        fs::write(
+            root.join("crates/memory_space/Cargo.toml"),
+            "[package]\nname = \"memory_space\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("memory cargo");
+        fs::write(
+            root.join("crates/memory_space/src/lib.rs"),
+            "pub mod pattern_matcher;\n",
+        )
+        .expect("memory lib");
+        fs::write(
+            root.join("crates/memory_space/src/pattern_matcher.rs"),
+            "pub fn match_patterns() {}\n",
+        )
+        .expect("pattern matcher");
+
+        let patches = vec![
+            CodePatch {
+                patch_id: "adapter-service".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "AdapterServiceInterface".to_string(),
+                    between: ("adapter-service".to_string(), "service".to_string()),
+                }],
+                description: "adapter service".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "consistency-recommend".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("consistency".to_string(), "recommend".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "ConsistencyRecommendInterface".to_string(),
+                    between: ("consistency".to_string(), "recommend".to_string()),
+                }],
+                description: "consistency recommend".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "explanation-intent".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("explanation".to_string(), "intent_refiner".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "ExplanationIntentRefinerInterface".to_string(),
+                    between: ("explanation".to_string(), "intent_refiner".to_string()),
+                }],
+                description: "explanation intent".to_string(),
+                target_file: PathBuf::new(),
+            },
+            CodePatch {
+                patch_id: "pattern-extractor-matcher".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: (
+                        "pattern_extractor".to_string(),
+                        "pattern_matcher".to_string(),
+                    ),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "PatternExtractorPatternMatcherInterface".to_string(),
+                    between: (
+                        "pattern_extractor".to_string(),
+                        "pattern_matcher".to_string(),
+                    ),
+                }],
+                description: "pattern extractor matcher".to_string(),
+                target_file: PathBuf::new(),
+            },
+        ];
+
+        let changes = generate_code_change_set(&root, &patches).expect("change set");
+        let json = serde_json::to_string_pretty(&changes).expect("json");
+
+        assert!(json.contains("fn execute_service(&self);"), "{json}");
+        assert!(json.contains("fn evaluate_consistency(&self);"), "{json}");
+        assert!(
+            json.contains("fn refine_explanation_intent(&self);"),
+            "{json}"
+        );
+        assert!(
+            json.contains("fn extract_pattern_signature(&self);"),
+            "{json}"
+        );
+    }
+
+    #[test]
+    fn coding_check_json_trait_fallback_pair_method_name_e2e() {
+        let root = temp_dir("coding_check_json_trait_fallback_pair_method_name_e2e");
+        fs::create_dir_all(root.join("crates/architecture_search/src")).expect("arch src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[workspace]\nmembers = [\"crates/architecture_search\"]\nresolver = \"2\"\n",
+        )
+        .expect("workspace cargo");
+        fs::write(
+            root.join("crates/architecture_search/Cargo.toml"),
+            "[package]\nname = \"architecture_search\"\nversion = \"0.1.0\"\nedition = \"2024\"\n\n[lib]\npath = \"src/lib.rs\"\n",
+        )
+        .expect("arch cargo");
+        fs::write(
+            root.join("crates/architecture_search/src/lib.rs"),
+            "pub mod grammar;\npub mod grammar_engine;\n",
+        )
+        .expect("arch lib");
+        fs::write(
+            root.join("crates/architecture_search/src/grammar.rs"),
+            "pub fn parse() {}\n",
+        )
+        .expect("grammar");
+        fs::write(
+            root.join("crates/architecture_search/src/grammar_engine.rs"),
+            "pub fn eval() {}\n",
+        )
+        .expect("grammar engine");
+
+        let changes = generate_code_change_set(
+            &root,
+            &[CodePatch {
+                patch_id: "grammar-interface".to_string(),
+                action: RefactorPlanAction::IntroduceInterface {
+                    between: ("grammar".to_string(), "grammar_engine".to_string()),
+                },
+                operations: vec![PatchOperation::CreateInterface {
+                    name: "GrammarGrammarEngineInterface".to_string(),
+                    between: ("grammar".to_string(), "grammar_engine".to_string()),
+                }],
+                description: "grammar interface".to_string(),
+                target_file: PathBuf::new(),
+            }],
+        )
+        .expect("change set");
+        let json = serde_json::to_string_pretty(&changes).expect("json");
+
+        assert!(json.contains("fn handle_grammar_engine(&self);"), "{json}");
     }
 }

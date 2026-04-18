@@ -2,11 +2,7 @@ use super::state::{PatchStrategy, RepairTrajectory};
 
 pub trait TrajectoryStore {
     fn record(&mut self, trajectory: RepairTrajectory);
-    fn recall(
-        &self,
-        failure_signature: &str,
-        target_shape: &str,
-    ) -> Option<&RepairTrajectory>;
+    fn recall(&self, failure_signature: &str, target_shape: &str) -> Option<&RepairTrajectory>;
 }
 
 #[derive(Clone, Debug, Default)]
@@ -45,11 +41,7 @@ impl TrajectoryStore for InMemoryTrajectoryStore {
         self.trajectories.push(trajectory);
     }
 
-    fn recall(
-        &self,
-        failure_signature: &str,
-        target_shape: &str,
-    ) -> Option<&RepairTrajectory> {
+    fn recall(&self, failure_signature: &str, target_shape: &str) -> Option<&RepairTrajectory> {
         self.trajectories
             .iter()
             .filter(|trajectory| trajectory.converged)

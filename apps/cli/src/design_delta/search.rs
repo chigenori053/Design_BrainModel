@@ -8,7 +8,11 @@ use super::{
 const MAX_DEPTH: usize = 3;
 const BEAM_WIDTH: usize = 4;
 
-pub fn search_mutations(graph: &DesignGraph, delta: &DesignDelta, spec: &str) -> MutationSearchResult {
+pub fn search_mutations(
+    graph: &DesignGraph,
+    delta: &DesignDelta,
+    spec: &str,
+) -> MutationSearchResult {
     let generated = generate_candidates(graph, delta, spec);
     let mut frontier = generated.clone();
     let mut rejected = Vec::new();
@@ -98,43 +102,50 @@ fn tune_plan_for_strategy(plan: &mut MutationPlan, strategy: MutationStrategy, s
             }
         }
         MutationStrategy::TraitExtraction => {
-            plan.delta
-                .introduced_interfaces
-                .extend(plan.delta.impacted_crates.iter().map(|krate| {
-                    format!("{krate}::TraitFacade")
-                }));
-            plan.expected_tests.push("cargo check --workspace".to_string());
+            plan.delta.introduced_interfaces.extend(
+                plan.delta
+                    .impacted_crates
+                    .iter()
+                    .map(|krate| format!("{krate}::TraitFacade")),
+            );
+            plan.expected_tests
+                .push("cargo check --workspace".to_string());
         }
         MutationStrategy::AdapterInsertion => {
-            plan.delta
-                .introduced_interfaces
-                .extend(plan.delta.impacted_crates.iter().map(|krate| {
-                    format!("{krate}::Adapter")
-                }));
+            plan.delta.introduced_interfaces.extend(
+                plan.delta
+                    .impacted_crates
+                    .iter()
+                    .map(|krate| format!("{krate}::Adapter")),
+            );
             if plan.delta.impacted_crates.len() > 1 {
                 plan.delta.impacted_crates.truncate(2);
                 plan.target_files.truncate(2);
             }
         }
         MutationStrategy::CrateSplit => {
-            let base = plan.delta.impacted_crates.first().cloned().unwrap_or_default();
+            let base = plan
+                .delta
+                .impacted_crates
+                .first()
+                .cloned()
+                .unwrap_or_default();
             if !base.is_empty() {
-                plan.delta
-                    .api_changes
-                    .push(super::ApiChange {
-                        crate_name: base.clone(),
-                        surface: "module-boundary".to_string(),
-                        change: "crate-split".to_string(),
-                    });
+                plan.delta.api_changes.push(super::ApiChange {
+                    crate_name: base.clone(),
+                    surface: "module-boundary".to_string(),
+                    change: "crate-split".to_string(),
+                });
                 plan.rollback_units.push(format!("split::{base}"));
             }
         }
         MutationStrategy::InterfacePromotion => {
-            plan.delta
-                .introduced_interfaces
-                .extend(plan.delta.impacted_crates.iter().map(|krate| {
-                    format!("{krate}::PromotedInterface")
-                }));
+            plan.delta.introduced_interfaces.extend(
+                plan.delta
+                    .impacted_crates
+                    .iter()
+                    .map(|krate| format!("{krate}::PromotedInterface")),
+            );
         }
         MutationStrategy::DependencyInversion => {
             if plan.delta.dependency_moves.is_empty() && plan.delta.impacted_crates.len() >= 2 {
@@ -146,7 +157,8 @@ fn tune_plan_for_strategy(plan: &mut MutationPlan, strategy: MutationStrategy, s
                     .collect();
             }
             if spec.to_lowercase().contains("adapter") {
-                plan.expected_tests.push("cargo test --workspace".to_string());
+                plan.expected_tests
+                    .push("cargo test --workspace".to_string());
             }
         }
     }
@@ -303,10 +315,8 @@ mod tests {
     #[test]
     fn ranking_is_stable_across_reruns() {
         let graph = sample_graph();
-        let delta = planner::extract_design_delta(
-            &graph,
-            "複数の設計変更案を比較して最適案で実装して",
-        );
+        let delta =
+            planner::extract_design_delta(&graph, "複数の設計変更案を比較して最適案で実装して");
         let first = search_mutations(&graph, &delta, "比較して");
         let second = search_mutations(&graph, &delta, "比較して");
         assert_eq!(

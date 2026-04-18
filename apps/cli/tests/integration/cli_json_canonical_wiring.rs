@@ -268,7 +268,9 @@ fn canonical_patches_in_change_set_equals_prune_result() {
 // ─── Case 3: renderer text output shows canonical count ───────────────────────
 
 fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport {
-    use design_cli::coding::{ChangeSummary, ChangeType, CodeChange, CodeChangeSet, DiffHunk};
+    use design_cli::coding::{
+        CanonicalizationTelemetry, ChangeSummary, ChangeType, CodeChange, CodeChangeSet, DiffHunk,
+    };
 
     let changes: Vec<CodeChange> = (0..changes_len)
         .map(|i| CodeChange {
@@ -325,8 +327,8 @@ fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport
             git_push: None,
             pull_request: None,
             canonical_target_path: None,
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
             reason: None,
             sandbox_root: None,
@@ -339,6 +341,7 @@ fn minimal_coding_report(patches_len: usize, changes_len: usize) -> CodingReport
             canonical_target: None,
         },
         apply_resolutions: vec![],
+        telemetry: CanonicalizationTelemetry::default(),
     }
 }
 

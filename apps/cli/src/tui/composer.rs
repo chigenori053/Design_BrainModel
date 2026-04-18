@@ -11,6 +11,7 @@ use ratatui::{
 };
 
 use crate::nl::session::ConversationState;
+use crate::service::dto::{IRState, SessionAppliedDiff};
 use crate::session::sanitize_debug_leakage;
 use crate::state::State;
 use crate::tui::edit_block::render_edit_blocks;
@@ -35,59 +36,41 @@ pub struct SubmitEvent {
     pub eof_submit: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionAppliedFileDiff {
-    pub file_path: String,
-    pub unified_diff_excerpt: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SessionAppliedDiff {
-    pub summary: String,
-    pub files: Vec<SessionAppliedFileDiff>,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ComposerBuffer {
-    lines: Vec<String>,
-    cursor_row: usize,
-    cursor_col: usize,
+    content: String,
+    cursor: usize,
 }
 
 impl ComposerBuffer {
     pub fn new() -> Self {
         Self {
-            lines: vec![String::new()],
-            cursor_row: 0,
-            cursor_col: 0,
+            content: String::new(),
+            cursor: 0,
         }
     }
 
     pub fn text(&self) -> String {
-        self.lines.join("\n")
+        self.content.clone()
     }
 
     pub fn is_blank(&self) -> bool {
-        self.lines.iter().all(|line| line.trim().is_empty())
-    }
-
-    pub fn lines(&self) -> &[String] {
-        &self.lines
+        self.content.trim().is_empty()
     }
 
     pub fn cursor(&self) -> (usize, usize) {
-        (self.cursor_row, self.cursor_col)
+        (0, self.cursor)
     }
 
     pub fn move_cursor_to_end(&mut self) {
-        self.cursor_row = self.lines.len().saturating_sub(1);
-        self.cursor_col = self.lines[self.cursor_row].chars().count();
+        self.cursor = self.content.chars().count();
+        self.assert_invariant();
     }
 
     pub fn insert_char(&mut self, ch: char) {
-        let col = self.current_line_byte_col();
-        self.lines[self.cursor_row].insert(col, ch);
-        self.cursor_col += 1;
+        self.content.push(ch);
+        self.cursor = self.content.chars().count();
+        self.assert_invariant();
     }
 
     pub fn insert_str(&mut self, value: &str) {
@@ -96,81 +79,12 @@ impl ComposerBuffer {
         }
     }
 
-    pub fn insert_newline(&mut self) {
-        let split = self.current_line_byte_col();
-        let tail = self.lines[self.cursor_row].split_off(split);
-        self.cursor_row += 1;
-        self.cursor_col = 0;
-        self.lines.insert(self.cursor_row, tail);
-    }
-
     pub fn backspace(&mut self) {
-        if self.cursor_col > 0 {
-            let remove_at = self.current_line_byte_col_before_cursor();
-            self.lines[self.cursor_row].remove(remove_at);
-            self.cursor_col -= 1;
-            return;
+        if !self.content.is_empty() {
+            self.content.pop();
         }
-        if self.cursor_row == 0 {
-            return;
-        }
-        let current = self.lines.remove(self.cursor_row);
-        self.cursor_row -= 1;
-        self.cursor_col = self.lines[self.cursor_row].chars().count();
-        self.lines[self.cursor_row].push_str(&current);
-    }
-
-    pub fn delete(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            let idx = self.current_line_byte_col();
-            self.lines[self.cursor_row].remove(idx);
-            return;
-        }
-        if self.cursor_row + 1 >= self.lines.len() {
-            return;
-        }
-        let next = self.lines.remove(self.cursor_row + 1);
-        self.lines[self.cursor_row].push_str(&next);
-    }
-
-    pub fn move_left(&mut self) {
-        if self.cursor_col > 0 {
-            self.cursor_col -= 1;
-        } else if self.cursor_row > 0 {
-            self.cursor_row -= 1;
-            self.cursor_col = self.lines[self.cursor_row].chars().count();
-        }
-    }
-
-    pub fn move_right(&mut self) {
-        let line_len = self.lines[self.cursor_row].chars().count();
-        if self.cursor_col < line_len {
-            self.cursor_col += 1;
-        } else if self.cursor_row + 1 < self.lines.len() {
-            self.cursor_row += 1;
-            self.cursor_col = 0;
-        }
-    }
-
-    pub fn move_up(&mut self) {
-        if self.cursor_row == 0 {
-            return;
-        }
-        self.cursor_row -= 1;
-        self.cursor_col = self
-            .cursor_col
-            .min(self.lines[self.cursor_row].chars().count());
-    }
-
-    pub fn move_down(&mut self) {
-        if self.cursor_row + 1 >= self.lines.len() {
-            return;
-        }
-        self.cursor_row += 1;
-        self.cursor_col = self
-            .cursor_col
-            .min(self.lines[self.cursor_row].chars().count());
+        self.cursor = self.content.chars().count();
+        self.assert_invariant();
     }
 
     pub fn submit_document(&mut self, eof_submit: bool) -> Option<SubmitEvent> {
@@ -182,15 +96,8 @@ impl ComposerBuffer {
         Some(SubmitEvent { input, eof_submit })
     }
 
-    fn current_line_byte_col(&self) -> usize {
-        char_to_byte_index(&self.lines[self.cursor_row], self.cursor_col)
-    }
-
-    fn current_line_byte_col_before_cursor(&self) -> usize {
-        char_to_byte_index(
-            &self.lines[self.cursor_row],
-            self.cursor_col.saturating_sub(1),
-        )
+    fn assert_invariant(&self) {
+        debug_assert_eq!(self.cursor, self.content.chars().count());
     }
 }
 
@@ -198,8 +105,9 @@ impl ComposerBuffer {
 pub struct ComposerViewState {
     pub transcript: Vec<String>,
     pub review: Option<ReviewBatchState>,
-    pub latest_session_diff: Option<SessionAppliedDiff>,
-    pub next_step_suggestion: Option<String>,
+    pub ir_state: IRState,
+    pub execution_result: Option<ExecutionResult>,
+    pub detail_expanded: bool,
     pub proc_strip: ProcStripState,
     pub state: State,
     pub mode: ComposerUiMode,
@@ -221,8 +129,9 @@ impl ComposerViewState {
         Self {
             transcript,
             review: None,
-            latest_session_diff: None,
-            next_step_suggestion: None,
+            ir_state: IRState::default(),
+            execution_result: None,
+            detail_expanded: false,
             proc_strip: ProcStripState::idle(),
             state,
             mode: ComposerUiMode::Idle,
@@ -253,6 +162,7 @@ impl ComposerViewState {
             .map(|path| path.display().to_string());
         self.selected_snapshot = selected_snapshot;
         self.prompt_header = conversation.prompt_label().map(ToString::to_string);
+        self.ir_state = conversation.ir_state.clone();
         self.sync_buffer_metadata();
     }
 
@@ -269,6 +179,10 @@ impl ComposerViewState {
         self.review = Some(review);
         self.mode = ComposerUiMode::PatchReview;
         self.restore_intent_document_focus();
+    }
+
+    pub fn set_execution_result(&mut self, result: ExecutionResult) {
+        self.execution_result = Some(result);
     }
 
     pub fn reset_review_session(&mut self) {
@@ -334,11 +248,11 @@ impl ComposerViewState {
 
     fn handle_editor_key(&mut self, key: KeyEvent) -> ComposerAction {
         match key.code {
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.buffer.insert_newline();
-                self.sync_buffer_metadata();
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.detail_expanded = !self.detail_expanded;
                 ComposerAction::None
             }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => ComposerAction::None,
             KeyCode::Enter => self
                 .buffer
                 .submit_document(false)
@@ -358,27 +272,6 @@ impl ComposerViewState {
                 self.sync_buffer_metadata();
                 ComposerAction::None
             }
-            KeyCode::Delete => {
-                self.buffer.delete();
-                self.sync_buffer_metadata();
-                ComposerAction::None
-            }
-            KeyCode::Left => {
-                self.buffer.move_left();
-                ComposerAction::None
-            }
-            KeyCode::Right => {
-                self.buffer.move_right();
-                ComposerAction::None
-            }
-            KeyCode::Up => {
-                self.buffer.move_up();
-                ComposerAction::None
-            }
-            KeyCode::Down => {
-                self.buffer.move_down();
-                ComposerAction::None
-            }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.buffer.insert_char(ch);
                 self.sync_buffer_metadata();
@@ -390,6 +283,10 @@ impl ComposerViewState {
 
     fn handle_send_button_key(&mut self, key: KeyEvent) -> ComposerAction {
         match key.code {
+            KeyCode::Char('l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.detail_expanded = !self.detail_expanded;
+                ComposerAction::None
+            }
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => {
                 self.restore_intent_document_focus();
                 ComposerAction::None
@@ -431,8 +328,10 @@ pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
             Constraint::Length(3),
             Constraint::Length(1),
             Constraint::Length(review_height(state)),
-            Constraint::Min(6),
-            Constraint::Length(session_diff_height(state)),
+            Constraint::Length(plan_height(state)),
+            Constraint::Length(diff_height(state)),
+            Constraint::Length(result_height()),
+            Constraint::Length(detail_height(state)),
             Constraint::Length(8),
             Constraint::Length(2),
         ])
@@ -443,10 +342,12 @@ pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
     if let Some(review) = &state.review {
         render_edit_blocks(frame, review, vertical[2]);
     }
-    render_transcript(frame, state, vertical[3]);
-    render_session_diff(frame, state, vertical[4]);
-    render_composer_panel(frame, state, vertical[5]);
-    render_footer_hints(frame, state, vertical[6]);
+    render_plan_panel(frame, state, vertical[3]);
+    render_diff_panel(frame, state, vertical[4]);
+    render_result_panel(frame, state, vertical[5]);
+    render_detail_panel(frame, state, vertical[6]);
+    render_composer_panel(frame, state, vertical[7]);
+    render_footer_hints(frame, state, vertical[8]);
 }
 
 fn review_height(state: &ComposerViewState) -> u16 {
@@ -464,12 +365,22 @@ fn review_height(state: &ComposerViewState) -> u16 {
         .unwrap_or(0)
 }
 
-fn session_diff_height(state: &ComposerViewState) -> u16 {
-    if state.latest_session_diff.is_some() {
-        12
-    } else {
-        4
-    }
+fn plan_height(state: &ComposerViewState) -> u16 {
+    let body = plan_lines(state).len().max(1) as u16;
+    (body + 2).clamp(3, 6)
+}
+
+fn diff_height(state: &ComposerViewState) -> u16 {
+    let body_lines = diff_panel_lines(state).len().max(1) as u16;
+    (body_lines + 2).clamp(8, 22)
+}
+
+fn result_height() -> u16 {
+    6
+}
+
+fn detail_height(state: &ComposerViewState) -> u16 {
+    if state.detail_expanded { 10 } else { 4 }
 }
 
 fn render_context_bar(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
@@ -510,48 +421,77 @@ fn render_context_bar(frame: &mut Frame, state: &ComposerViewState, area: Rect) 
     );
 }
 
-fn render_transcript(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
-    let available = area.height.saturating_sub(2) as usize;
-    let mut suggestion_lines = state
-        .next_step_suggestion
-        .as_ref()
-        .map(|suggestion| {
-            suggestion
-                .lines()
-                .map(|line| Line::from(line.to_string()))
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-    let spacer = usize::from(!suggestion_lines.is_empty() && !state.transcript.is_empty());
-    let transcript_budget = available.saturating_sub(suggestion_lines.len() + spacer);
-    let mut content = if transcript_budget == 0 {
-        Vec::new()
-    } else if state.transcript.is_empty() {
-        vec![Line::from("")]
+fn render_plan_panel(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let lines = plan_lines(state)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    render_section_panel(frame, area, lines, "[PLAN]", Color::Blue);
+}
+
+fn render_diff_panel(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let content = diff_panel_lines(state)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    render_section_panel(frame, area, content, "[DIFF]", Color::Cyan);
+}
+
+fn render_result_panel(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let content = format_execution_result(execution_result_for_view(state))
+        .lines()
+        .map(|line| Line::from(line.to_string()))
+        .collect::<Vec<_>>();
+    render_section_panel(frame, area, content, "[RESULT]", Color::Yellow);
+}
+
+fn render_detail_panel(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let content = if state.detail_expanded {
+        detail_lines_expanded(state)
     } else {
-        state
-            .transcript
-            .iter()
-            .rev()
-            .take(transcript_budget)
-            .rev()
-            .map(|line| Line::from(line.clone()))
-            .collect::<Vec<_>>()
-    };
-    if !suggestion_lines.is_empty() {
-        if !content.is_empty() && !content[0].spans.is_empty() {
-            content.push(Line::from(""));
+        detail_lines_collapsed(state)
+    }
+    .into_iter()
+    .map(Line::from)
+    .collect::<Vec<_>>();
+    render_section_panel(frame, area, content, "[DETAIL]", Color::DarkGray);
+}
+
+fn diff_panel_lines(state: &ComposerViewState) -> Vec<String> {
+    let mut content = Vec::new();
+    content.push("================================".to_string());
+    if let Some((title, diff)) = active_diff_panel(state) {
+        content.push(title);
+        content.push(diff.summary.clone());
+        content.push("================================".to_string());
+        for file in &diff.files {
+            content.push(format!("File: {}", file.file_path));
+            content.push("--------------------------------".to_string());
+            for line in file.unified_diff_excerpt.lines() {
+                content.push(line.to_string());
+            }
+            content.push(String::new());
         }
-        content.append(&mut suggestion_lines);
+    } else {
+        content.push("No changes detected.".to_string());
+        content.push("Run `apply` or `refactor` to generate changes.".to_string());
+        content.push("================================".to_string());
     }
-    if content.is_empty() {
-        content.push(Line::from(""));
-    }
+    content
+}
+
+fn render_section_panel(
+    frame: &mut Frame,
+    area: Rect,
+    content: Vec<Line<'static>>,
+    title: &str,
+    color: Color,
+) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_set(border::ROUNDED)
-        .title(" Transcript ")
-        .border_style(Style::default().fg(Color::DarkGray));
+        .title(format!(" {title} "))
+        .border_style(Style::default().fg(color));
     frame.render_widget(
         Paragraph::new(content)
             .block(block)
@@ -560,47 +500,157 @@ fn render_transcript(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
     );
 }
 
-fn render_session_diff(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
-    let mut content = Vec::new();
-    if let Some(diff) = &state.latest_session_diff {
-        content.push(Line::from(Span::styled(
-            diff.summary.clone(),
-            Style::default().fg(Color::Cyan),
-        )));
-        content.push(Line::from(""));
-        for file in &diff.files {
-            content.push(Line::from(Span::styled(
-                file.file_path.clone(),
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for line in file.unified_diff_excerpt.lines() {
-                let style = if line.starts_with('+') {
-                    Style::default().fg(Color::Green)
-                } else if line.starts_with('-') {
-                    Style::default().fg(Color::Red)
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                };
-                content.push(Line::from(Span::styled(line.to_string(), style)));
-            }
-            content.push(Line::from(""));
-        }
-    } else {
-        content.push(Line::from("No applied diff yet."));
+fn plan_lines(state: &ComposerViewState) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(target) = &state.current_target {
+        lines.push(format!("Target: {target}"));
     }
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_set(border::ROUNDED)
-        .title(" Session Diff (latest) ")
-        .border_style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(
-        Paragraph::new(content)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+    if let Some(header) = &state.prompt_header {
+        lines.push(format!("Focus: {header}"));
+    }
+    if state.ir_state.next_allowed_actions.is_empty() {
+        if lines.is_empty() {
+            lines.push("No active plan.".to_string());
+        }
+        return lines;
+    }
+    lines.push(format!(
+        "Next: {}",
+        state
+            .ir_state
+            .next_allowed_actions
+            .iter()
+            .map(|action| action.as_label())
+            .collect::<Vec<_>>()
+            .join(" / ")
+    ));
+    lines
+}
+
+fn active_diff_ref(state: &ComposerViewState) -> Option<&SessionAppliedDiff> {
+    state
+        .ir_state
+        .active_transaction
+        .as_ref()
+        .and_then(|tx| tx.latest_diff_ref.as_ref())
+}
+
+fn active_diff_panel(state: &ComposerViewState) -> Option<(String, SessionAppliedDiff)> {
+    if let Some(review) = &state.review
+        && let Some(diff) = review.preview_diff_snapshot()
+    {
+        return Some(("[DIFF] Preview".to_string(), diff));
+    }
+    active_diff_ref(state)
+        .cloned()
+        .map(|diff| ("[DIFF] Latest Applied".to_string(), diff))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionResult {
+    Success {
+        files_changed: usize,
+        lines_added: usize,
+        lines_removed: usize,
+    },
+    Failure {
+        reason: String,
+    },
+    NoOp,
+    RolledBack {
+        reason: String,
+    },
+}
+
+pub fn format_execution_result(result: ExecutionResult) -> String {
+    match result {
+        ExecutionResult::Success {
+            files_changed,
+            lines_added,
+            lines_removed,
+        } => format!(
+            "Refactoring applied successfully.\n{files_changed} files changed, +{lines_added} -{lines_removed} lines."
+        ),
+        ExecutionResult::Failure { reason } => {
+            let trimmed = reason.trim();
+            if trimmed.is_empty() || trimmed == "validation_failed" {
+                "Validation failed. Changes were not applied.".to_string()
+            } else {
+                format!("Execution failed: {trimmed}")
+            }
+        }
+        ExecutionResult::NoOp => "No changes detected.".to_string(),
+        ExecutionResult::RolledBack { reason } => {
+            let trimmed = reason.trim();
+            if trimmed == "validation_failed" {
+                "Rolled back due to validation failure.".to_string()
+            } else {
+                "Changes were rolled back.".to_string()
+            }
+        }
+    }
+}
+
+fn execution_result_for_view(state: &ComposerViewState) -> ExecutionResult {
+    state
+        .execution_result
+        .clone()
+        .or_else(|| active_diff_ref(state).map(success_result_from_diff))
+        .or_else(|| {
+            state
+                .review
+                .as_ref()
+                .and_then(|review| review.preview_diff_snapshot())
+                .map(|diff| success_result_from_diff(&diff))
+        })
+        .unwrap_or(ExecutionResult::NoOp)
+}
+
+fn success_result_from_diff(diff: &SessionAppliedDiff) -> ExecutionResult {
+    ExecutionResult::Success {
+        files_changed: diff.files_changed,
+        lines_added: diff.lines_added,
+        lines_removed: diff.lines_removed,
+    }
+}
+
+fn detail_lines_collapsed(state: &ComposerViewState) -> Vec<String> {
+    let count = state.transcript.len();
+    let latest = state.transcript.last().cloned().unwrap_or_default();
+    let summary = if count == 0 {
+        "No detail logs.".to_string()
+    } else {
+        format!("{count} detail line(s) available.")
+    };
+    let preview = if latest.is_empty() {
+        "Press Ctrl+L to expand detail.".to_string()
+    } else {
+        format!("Latest: {}", latest.lines().next().unwrap_or_default())
+    };
+    vec![
+        summary,
+        preview,
+        "Press Ctrl+L to expand detail.".to_string(),
+    ]
+}
+
+fn detail_lines_expanded(state: &ComposerViewState) -> Vec<String> {
+    if state.transcript.is_empty() {
+        return vec![
+            "No detail logs.".to_string(),
+            "Press Ctrl+L to collapse detail.".to_string(),
+        ];
+    }
+    let mut lines = state
+        .transcript
+        .iter()
+        .rev()
+        .take(6)
+        .rev()
+        .cloned()
+        .collect::<Vec<_>>();
+    lines.push("Press Ctrl+L to collapse detail.".to_string());
+    lines
 }
 
 fn render_composer_panel(frame: &mut Frame, state: &mut ComposerViewState, area: Rect) {
@@ -655,9 +705,18 @@ fn render_composer_panel(frame: &mut Frame, state: &mut ComposerViewState, area:
         .border_style(focus_style);
     let editor_inner = editor_block.inner(body[0]);
     frame.render_widget(
-        Paragraph::new(state.buffer.lines().join("\n"))
-            .block(editor_block)
-            .wrap(Wrap { trim: false }),
+        Paragraph::new(if state.buffer.is_blank() {
+            "> Type a command (analyze / refactor / apply)".to_string()
+        } else {
+            state.buffer.text()
+        })
+        .style(if state.buffer.is_blank() {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::White)
+        })
+        .block(editor_block)
+        .wrap(Wrap { trim: false }),
         body[0],
     );
 
@@ -685,7 +744,7 @@ fn render_composer_panel(frame: &mut Frame, state: &mut ComposerViewState, area:
     );
 
     let hint = if state.focus == ComposerFocus::Editor {
-        "Shift+Enter inserts newline"
+        "Single-line input, cursor follows the tail"
     } else {
         "Tab/Esc returns to editor"
     };
@@ -708,7 +767,7 @@ fn render_footer_hints(frame: &mut Frame, state: &ComposerViewState, area: Rect)
         Span::raw("  "),
         Span::styled("Enter send", Style::default().fg(Color::Green)),
         Span::raw("  "),
-        Span::styled("Shift+Enter newline", Style::default().fg(Color::Yellow)),
+        Span::styled("Ctrl+L detail", Style::default().fg(Color::Blue)),
     ];
     if state.review.is_some() {
         segments.extend([
@@ -775,34 +834,21 @@ fn point_in_rect(column: u16, row: u16, rect: Rect) -> bool {
     column >= rect.x && column < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
-fn char_to_byte_index(value: &str, char_index: usize) -> usize {
-    value
-        .char_indices()
-        .nth(char_index)
-        .map(|(idx, _)| idx)
-        .unwrap_or(value.len())
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::PathBuf;
 
     use crate::nl::session::ConversationState;
+    use crate::service::dto::{ActionKind, IRActiveTransaction, SessionAppliedFileDiff};
 
     use super::*;
 
     #[test]
-    fn composer_shift_enter_preserves_multiline_intent() {
+    fn composer_buffer_appends_at_tail_and_keeps_cursor_in_sync() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        state.buffer.insert_str("first line");
-        assert_eq!(
-            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
-            ComposerAction::None
-        );
-        state.buffer.insert_str("second line");
-
-        let submit = state.buffer.submit_document(false).expect("submit event");
-        assert_eq!(submit.input, "first line\nsecond line");
+        state.buffer.insert_str("abc");
+        assert_eq!(state.buffer.text(), "abc");
+        assert_eq!(state.buffer.cursor(), (0, 3));
     }
 
     #[test]
@@ -831,16 +877,14 @@ mod tests {
     }
 
     #[test]
-    fn multiline_spec_executes_only_on_submit() {
+    fn single_line_spec_executes_only_on_submit() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
         let mut executions = Vec::new();
 
-        state
-            .buffer
-            .insert_str("Semantic Interface Extraction Guard を追加する。");
+        state.buffer.insert_str(
+            "Semantic Interface Extraction Guard を追加する。 対象は apps/cli/src/coding.rs。",
+        );
         assert!(executions.is_empty());
-        state.buffer.insert_newline();
-        state.buffer.insert_str("対象は apps/cli/src/coding.rs。");
         assert!(executions.is_empty());
 
         let submit = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
@@ -853,7 +897,7 @@ mod tests {
         assert_eq!(executions.len(), 1);
         assert_eq!(
             executions[0],
-            "Semantic Interface Extraction Guard を追加する。\n対象は apps/cli/src/coding.rs。"
+            "Semantic Interface Extraction Guard を追加する。 対象は apps/cli/src/coding.rs。"
         );
         assert!(state.buffer.is_blank());
     }
@@ -873,7 +917,7 @@ mod tests {
 
         assert_eq!(state.transcript, transcript_before);
         assert_eq!(state.focus, ComposerFocus::SendButton);
-        assert_eq!(state.buffer.text(), "@file");
+        assert!(state.buffer.is_blank());
         assert!(
             !state.command_mode,
             "typing file mention text must not trigger command dispatch state"
@@ -888,7 +932,7 @@ mod tests {
         }
 
         assert!(state.command_mode);
-        assert!(state.file_chips.iter().any(|chip| chip == "@file"));
+        assert!(state.file_chips.is_empty());
     }
 
     #[test]
@@ -959,17 +1003,147 @@ mod tests {
     }
 
     #[test]
-    fn shift_enter_only_inserts_newline() {
+    fn enter_on_blank_buffer_is_no_op() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        state.buffer.insert_str("line1");
-        let transcript_before = state.transcript.clone();
-
         assert_eq!(
-            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT)),
+            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ComposerAction::None
         );
+        assert!(state.buffer.is_blank());
+    }
 
-        assert_eq!(state.transcript, transcript_before);
-        assert_eq!(state.buffer.text(), "line1\n");
+    #[test]
+    fn backspace_removes_from_tail_only() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.buffer.insert_str("abc");
+
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+            ComposerAction::None
+        );
+        assert_eq!(state.buffer.text(), "ab");
+        assert_eq!(state.buffer.cursor(), (0, 2));
+    }
+
+    #[test]
+    fn cursor_invariant_holds_after_supported_operations() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        for ch in "hello".chars() {
+            assert_eq!(
+                state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
+                ComposerAction::None
+            );
+            assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+        }
+
+        assert_eq!(
+            state.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
+            ComposerAction::None
+        );
+        assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        assert!(matches!(action, ComposerAction::Submit(_)));
+        assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+    }
+
+    #[test]
+    fn plan_uses_ir_next_actions_only() {
+        let mut state = ComposerViewState::new(vec!["existing".to_string()], State::Idle);
+        state.ir_state.next_allowed_actions = vec![ActionKind::Apply, ActionKind::Validate];
+
+        let lines = plan_lines(&state);
+
+        assert_eq!(lines, vec!["Next: apply / validate".to_string()]);
+    }
+
+    #[test]
+    fn session_diff_reads_ir_transaction_only() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.ir_state.active_transaction = Some(IRActiveTransaction {
+            transaction_id: "tx:apps/cli/src/repl.rs".to_string(),
+            canonical_target: PathBuf::from("apps/cli/src/repl.rs"),
+            pending: false,
+            applied: true,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(SessionAppliedDiff {
+                summary: "latest applied change (1 file)".to_string(),
+                files: vec![SessionAppliedFileDiff {
+                    file_path: "apps/cli/src/repl.rs".to_string(),
+                    unified_diff_excerpt: "+ updated".to_string(),
+                }],
+                files_changed: 1,
+                lines_added: 1,
+                lines_removed: 0,
+            }),
+            latest_build_ok: None,
+        });
+
+        assert_eq!(diff_height(&state), 10);
+        assert_eq!(
+            active_diff_ref(&state).map(|diff| diff.summary.as_str()),
+            Some("latest applied change (1 file)")
+        );
+    }
+
+    #[test]
+    fn formatter_renders_success_in_two_lines() {
+        let rendered = format_execution_result(ExecutionResult::Success {
+            files_changed: 2,
+            lines_added: 12,
+            lines_removed: 5,
+        });
+        assert_eq!(
+            rendered,
+            "Refactoring applied successfully.\n2 files changed, +12 -5 lines."
+        );
+    }
+
+    #[test]
+    fn formatter_renders_noop_and_rollback_messages() {
+        assert_eq!(
+            format_execution_result(ExecutionResult::NoOp),
+            "No changes detected."
+        );
+        assert_eq!(
+            format_execution_result(ExecutionResult::RolledBack {
+                reason: "validation_failed".to_string(),
+            }),
+            "Rolled back due to validation failure."
+        );
+    }
+
+    #[test]
+    fn execution_result_defaults_from_active_diff_counts() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.ir_state.active_transaction = Some(IRActiveTransaction {
+            transaction_id: "tx:apps/cli/src/repl.rs".to_string(),
+            canonical_target: PathBuf::from("apps/cli/src/repl.rs"),
+            pending: false,
+            applied: true,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(SessionAppliedDiff {
+                summary: "1 files changed, +12 -5 lines".to_string(),
+                files: vec![SessionAppliedFileDiff {
+                    file_path: "apps/cli/src/repl.rs".to_string(),
+                    unified_diff_excerpt: "+ updated".to_string(),
+                }],
+                files_changed: 1,
+                lines_added: 12,
+                lines_removed: 5,
+            }),
+            latest_build_ok: None,
+        });
+
+        assert_eq!(
+            execution_result_for_view(&state),
+            ExecutionResult::Success {
+                files_changed: 1,
+                lines_added: 12,
+                lines_removed: 5,
+            }
+        );
     }
 }

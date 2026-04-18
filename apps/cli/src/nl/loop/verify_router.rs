@@ -14,7 +14,10 @@ impl VerifyRouter {
         affected_crates: &[String],
         changed_files: &[String],
     ) -> VerificationRoute {
-        if changed_files.iter().any(|file| file.contains("viewer_core")) {
+        if changed_files
+            .iter()
+            .any(|file| file.contains("viewer_core"))
+        {
             return VerificationRoute {
                 command: "cargo test -p viewer_core --test integration".to_string(),
                 scope: "viewer_core integration".to_string(),
@@ -25,7 +28,10 @@ impl VerifyRouter {
             PatchStrategy::TraitExtraction => VerificationRoute {
                 command: format!(
                     "cargo check -p {}",
-                    affected_crates.first().map(String::as_str).unwrap_or("design_cli")
+                    affected_crates
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("design_cli")
                 ),
                 scope: "trait change".to_string(),
             },
@@ -36,7 +42,10 @@ impl VerifyRouter {
             _ => VerificationRoute {
                 command: format!(
                     "cargo check -p {}",
-                    affected_crates.first().map(String::as_str).unwrap_or("design_cli")
+                    affected_crates
+                        .first()
+                        .map(String::as_str)
+                        .unwrap_or("design_cli")
                 ),
                 scope: "crate-local".to_string(),
             },

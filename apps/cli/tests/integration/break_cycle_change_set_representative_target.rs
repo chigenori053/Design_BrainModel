@@ -47,8 +47,8 @@ fn write_nested_workspace(root: &Path) {
 fn break_cycle_resolution() -> design_cli::coding::MutationResolutionTelemetry {
     design_cli::coding::MutationResolutionTelemetry {
         canonical_target_path: Some(PathBuf::from("crates/runtime/runtime_vm/src/adapter.rs")),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     }
 }

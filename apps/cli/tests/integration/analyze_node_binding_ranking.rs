@@ -122,14 +122,14 @@ fn analyze_node_binding_ranking_prefers_production_over_fixture() {
     assert_eq!(adapter_source_path(&snapshot), "src/adapter/mod.rs");
     assert_eq!(
         snapshot
-            .get("analyze_legacy_binding_hits")
+            .get("graph_binding_debug_hits")
             .and_then(Value::as_u64),
         Some(0),
         "stdout: {stdout}"
     );
     assert_eq!(
         snapshot
-            .get("analyze_fallback_hits")
+            .get("graph_binding_resolution_hits")
             .and_then(Value::as_u64),
         Some(0),
         "stdout: {stdout}"
@@ -207,7 +207,7 @@ fn analyze_node_binding_ranking_keeps_downstream_mutation_on_snapshot_path() {
     assert_eq!(
         report
             .get("execution")
-            .and_then(|value| value.get("fallback_resolution_hits"))
+            .and_then(|value| value.get("degraded_resolution_hits"))
             .and_then(Value::as_u64),
         Some(0),
         "stdout: {stdout}"

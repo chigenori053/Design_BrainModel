@@ -1,11 +1,12 @@
 use std::collections::BTreeMap;
+use std::path::PathBuf;
 
 use integration_layer::{
     CycleReport, Issue, LayerModel, LayerViolation, Pattern, RoleAssignment, SemanticLayer,
 };
 use serde::{Deserialize, Serialize};
 
-use crate::coding::{CodeChangeSet, CodingExecutionResult};
+use crate::coding::{CanonicalizationTelemetry, CodeChangeSet, CodingExecutionResult};
 use crate::runner::{CpuReleaseTelemetry, MemoryUsage, OutputMeta, SandboxMode};
 use crate::source_index::{ApplyTargetResolution, QualifiedModuleId};
 
@@ -15,6 +16,86 @@ pub struct AnalyzeResultDTO {
     pub issues: Vec<IssueDTO>,
     pub root_cause: Option<RootCause>,
     pub plan: Vec<RefactorStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionAppliedFileDiff {
+    pub file_path: String,
+    pub unified_diff_excerpt: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SessionAppliedDiff {
+    pub summary: String,
+    pub files: Vec<SessionAppliedFileDiff>,
+    #[serde(default)]
+    pub files_changed: usize,
+    #[serde(default)]
+    pub lines_added: usize,
+    #[serde(default)]
+    pub lines_removed: usize,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ActionKind {
+    CodingPreview,
+    Apply,
+    Validate,
+    Rollback,
+    Analyze,
+    Refactor,
+}
+
+impl ActionKind {
+    pub fn as_label(self) -> &'static str {
+        match self {
+            Self::CodingPreview => "coding preview",
+            Self::Apply => "apply",
+            Self::Validate => "validate",
+            Self::Rollback => "rollback",
+            Self::Analyze => "analyze",
+            Self::Refactor => "refactor",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct TransactionIR {
+    pub transaction_id: String,
+    pub canonical_target: PathBuf,
+    pub pending: bool,
+    pub applied: bool,
+    pub validated: bool,
+    pub rollback_available: bool,
+    pub latest_diff_ref: Option<SessionAppliedDiff>,
+    pub latest_build_ok: Option<bool>,
+}
+
+pub type IRActiveTransaction = TransactionIR;
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IRState {
+    pub session_id: String,
+    pub workspace_root: PathBuf,
+    pub current_target: Option<PathBuf>,
+    pub validation_scope: PathBuf,
+    pub active_transaction: Option<TransactionIR>,
+    #[serde(default)]
+    pub next_allowed_actions: Vec<ActionKind>,
+}
+
+impl Default for IRState {
+    fn default() -> Self {
+        Self {
+            session_id: String::new(),
+            workspace_root: PathBuf::from("."),
+            current_target: None,
+            validation_scope: PathBuf::from("."),
+            active_transaction: None,
+            next_allowed_actions: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,9 +179,9 @@ pub struct DesignSnapshot {
     pub cycles: Vec<Vec<String>>,
     pub violations: Vec<DesignViolation>,
     #[serde(default)]
-    pub analyze_legacy_binding_hits: u64,
+    pub graph_binding_debug_hits: u64,
     #[serde(default)]
-    pub analyze_fallback_hits: u64,
+    pub graph_binding_resolution_hits: u64,
     #[serde(default)]
     pub fixture_binding_detected: bool,
 }
@@ -218,6 +299,7 @@ pub struct CodingReport {
     pub patches: Vec<integration_layer::CodePatch>,
     pub changes: CodeChangeSet,
     pub apply_resolutions: Vec<ApplyTargetResolution>,
+    pub telemetry: CanonicalizationTelemetry,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -283,7 +365,7 @@ pub struct RulesReport {
     pub active: Vec<RuleReport>,
     pub candidate: Vec<RuleReport>,
     pub validated: Vec<ValidatedRuleReport>,
-    pub deprecated: Vec<RuleReport>,
+    pub retired: Vec<RuleReport>,
     pub message: Option<String>,
 }
 

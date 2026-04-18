@@ -1,6 +1,7 @@
 use crate::command::{
     CommandError, CommandHandler, CommandPlugin, CommandRegistry, Output, SubCommandHandler,
 };
+use crate::service::dto::RuleReport;
 use crate::session::AgentSession;
 
 pub struct RulesPlugin;
@@ -60,6 +61,28 @@ fn rollback(args: &[String], _session: &mut AgentSession) -> Result<Output, Comm
     crate::nl_executor::run_design_command("rules", &cli_args)
         .map(Output::text)
         .map_err(CommandError::ExecutionError)
+}
+
+pub fn retired_rule_reports(
+    store: &code_language_core::stable_v03::dynamic_ir::RuleStore,
+) -> Vec<RuleReport> {
+    store
+        .deprecated_rules
+        .iter()
+        .map(|record| RuleReport {
+            id: record.rule.id.clone(),
+            priority: record.rule.priority,
+            confidence: record.rule.confidence,
+            usage_count: record.rule.usage_count,
+            source: match &record.rule.source {
+                code_language_core::stable_v03::dynamic_ir::RuleSource::Static => "static",
+                code_language_core::stable_v03::dynamic_ir::RuleSource::Learned => "learned",
+                code_language_core::stable_v03::dynamic_ir::RuleSource::User => "user",
+            }
+            .to_string(),
+            bucket: "retired".to_string(),
+        })
+        .collect()
 }
 
 #[cfg(test)]

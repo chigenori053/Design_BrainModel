@@ -44,6 +44,8 @@ mod cycle_recommendation_bridge;
 mod git_commit_preview;
 #[path = "integration/gui_viewer.rs"]
 mod gui_viewer;
+#[path = "integration/ir_route_cleanup.rs"]
+mod ir_route_cleanup;
 #[path = "integration/legacy_pipeline_elimination.rs"]
 mod legacy_pipeline_elimination;
 #[path = "integration/mutation_apply_parity.rs"]

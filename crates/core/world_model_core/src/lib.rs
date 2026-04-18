@@ -248,15 +248,14 @@ impl WorldState {
             Action::SplitStructure => {
                 next.architecture.ensure_seeded();
                 let class = &mut next.architecture.classes[0];
-                if let Some(source) = class.structures.first_mut() {
-                    if source.design_units.len() > 1 {
-                        let split_from =
-                            source.design_units.split_off(source.design_units.len() / 2);
-                        let mut structure =
-                            StructureUnit::new(class.structures.len() as u64 + 1, "split_2");
-                        structure.design_units = split_from;
-                        class.structures.push(structure);
-                    }
+                if let Some(source) = class.structures.first_mut()
+                    && source.design_units.len() > 1
+                {
+                    let split_from = source.design_units.split_off(source.design_units.len() / 2);
+                    let mut structure =
+                        StructureUnit::new(class.structures.len() as u64 + 1, "split_2");
+                    structure.design_units = split_from;
+                    class.structures.push(structure);
                 }
             }
             Action::MergeStructure => {

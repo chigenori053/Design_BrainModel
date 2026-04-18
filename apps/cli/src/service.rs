@@ -3,8 +3,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::coding::{
-    CodingOptions, collect_apply_target_resolutions, execute_code_change_set,
-    generate_code_change_set, resolve_sandbox_module_file,
+    CodingOptions, attach_sandbox_paths_to_apply_resolutions, build_apply_resolutions,
+    build_canonicalization_telemetry, ensure_canonical_target_dto_continuity,
+    execute_code_change_set, generate_code_change_set,
 };
 use crate::dbm::ProjectAnalysisResult;
 use crate::source_index::ModuleSourceIndex;
@@ -66,24 +67,19 @@ pub fn build_refactoring_report(
     let analysis = analyze_path(path)?;
     let design_graph = design_graph_from_analysis(&analysis);
     let structural = structural_analysis(&design_graph);
-    let changes = generate_code_change_set(path, &structural.code_patches)?;
+    let mut changes = generate_code_change_set(path, &structural.code_patches)?;
     let execution = execute_code_change_set(path, &changes, options, None)?;
-    let mut apply_resolutions =
-        collect_apply_target_resolutions(path, &structural.code_patches, None, &BTreeMap::new())?;
+    let mut apply_resolutions = build_apply_resolutions(path, &changes, None, &BTreeMap::new())?;
     if let Some(transactional) = execution.transactional_apply.as_ref() {
-        for resolution in &mut apply_resolutions {
-            resolution.sandbox_path =
-                resolve_sandbox_module_file(&resolution.module, path, &transactional.sandbox_path)
-                    .ok()
-                    .or_else(|| {
-                        Some(
-                            transactional
-                                .sandbox_path
-                                .join(&resolution.resolved_relative_path),
-                        )
-                    });
-        }
+        attach_sandbox_paths_to_apply_resolutions(path, &mut apply_resolutions, transactional);
     }
+    ensure_canonical_target_dto_continuity(
+        path,
+        &mut changes,
+        &execution,
+        options.explicit_target.as_deref(),
+    )?;
+    let telemetry = build_canonicalization_telemetry(&changes, &apply_resolutions, &execution);
     Ok(CodingReport {
         root: path.display().to_string(),
         dry_run,
@@ -91,6 +87,7 @@ pub fn build_refactoring_report(
         patches: changes.patches.clone(),
         changes,
         apply_resolutions,
+        telemetry,
     })
 }
 

@@ -99,11 +99,10 @@ impl ArchitectureIR {
             .components
             .iter_mut()
             .find(|component| component.id == interface.owner_component)
+            && !component.interfaces.contains(&interface.id)
         {
-            if !component.interfaces.contains(&interface.id) {
-                component.interfaces.push(interface.id);
-                component.interfaces.sort_unstable();
-            }
+            component.interfaces.push(interface.id);
+            component.interfaces.sort_unstable();
         }
         self.interfaces.push(interface);
     }

@@ -1,8 +1,6 @@
 use serde::Serialize;
 
-use crate::nl::r#loop::{
-    LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext,
-};
+use crate::nl::r#loop::{LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext};
 
 use super::{RefactorPlan, RefactorTarget};
 

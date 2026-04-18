@@ -132,7 +132,8 @@ pub fn discover_workspace_graph(workspace_root: &Path) -> Result<DesignGraph, St
         .filter_map(|manifest| {
             let name = planner::manifest_package_name(&manifest).ok().flatten()?;
             let internal_dependencies =
-                planner::manifest_internal_dependencies(&manifest, &crate_names).unwrap_or_default();
+                planner::manifest_internal_dependencies(&manifest, &crate_names)
+                    .unwrap_or_default();
             Some(CrateNode {
                 name,
                 manifest_path: manifest,
@@ -159,7 +160,10 @@ pub fn discover_workspace_graph(workspace_root: &Path) -> Result<DesignGraph, St
     })
 }
 
-pub fn run_reasoning_loop(workspace_root: &Path, spec: &str) -> Result<DesignDeltaLoopOutput, String> {
+pub fn run_reasoning_loop(
+    workspace_root: &Path,
+    spec: &str,
+) -> Result<DesignDeltaLoopOutput, String> {
     let baseline = discover_workspace_graph(workspace_root)?;
     let delta = planner::extract_design_delta(&baseline, spec);
 
@@ -218,9 +222,10 @@ pub fn run_alternative_search_loop(
         });
     };
 
-    let rationality = selected.expected_score.clone().unwrap_or_else(|| {
-        rationality::score_mutation_plan(&baseline, &selected.plan)
-    });
+    let rationality = selected
+        .expected_score
+        .clone()
+        .unwrap_or_else(|| rationality::score_mutation_plan(&baseline, &selected.plan));
     let patch_plan = bridge::to_coding_patch_plan(&selected.plan);
     Ok(DesignDeltaLoopOutput {
         baseline,

@@ -21,14 +21,17 @@ use serde_json::json;
 
 use crate::autonomous_execute::{GitIntegrationOptions, execute_autonomous_command_with_options};
 use crate::coding::{
-    CodingOptions, apply_bootstrap_safety_policy, collect_apply_target_resolutions,
-    deterministic_repl_v2_wiring_patches, execute_code_change_set,
-    load_patches_from_design_snapshot, load_patches_from_json, patches_to_change_set,
-    resolve_apply_paths_for_patches, resolve_sandbox_module_file,
+    CodingOptions, apply_bootstrap_safety_policy, attach_sandbox_paths_to_apply_resolutions,
+    build_apply_resolutions, build_canonicalization_telemetry,
+    deterministic_repl_v2_wiring_patches, ensure_canonical_target_dto_continuity,
+    execute_code_change_set, load_patches_from_design_snapshot, load_patches_from_json,
+    patches_to_change_set, resolve_apply_paths_for_patches,
     resolve_transactional_candidate_for_patches,
 };
 use crate::commands::analyze::project::{self, AnalyzeMode};
+use crate::commands::rules::retired_rule_reports;
 use crate::execution_foundation::{ExecAction, ExecReport, ExecutionFoundation};
+use crate::ir::IRPersistenceStore;
 use crate::r#loop::run_loop;
 use crate::refactor::{
     PatchScope, RefactorApplyReport, RefactorPreviewReport, RefactorRuntimeOptions,
@@ -84,6 +87,7 @@ enum Commands {
     Run(RunArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
+    Replay(ReplayArgs),
     /// Launch the interactive TUI for a saved UI payload JSON.
     Tui(TuiArgs),
     Structure(StructureArgs),
@@ -342,8 +346,43 @@ pub struct WizardArgs {
 
 #[derive(clap::Args, Debug, Clone)]
 pub struct ReplArgs {
-	#[arg(long)]
-	pub root: Option<std::path::PathBuf>,
+    #[arg(long)]
+    pub root: Option<std::path::PathBuf>,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ReplayArgs {
+    #[command(subcommand)]
+    pub command: ReplayCommands,
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ReplayCommands {
+    Session(ReplaySessionArgs),
+    Export(ReplayExportArgs),
+    Step(ReplayStepArgs),
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ReplaySessionArgs {
+    pub id: String,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ReplayExportArgs {
+    pub id: String,
+    #[arg(long, default_value_t = false)]
+    pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct ReplayStepArgs {
+    pub id: String,
+    pub step: usize,
     #[arg(long, default_value_t = false)]
     pub json: bool,
 }
@@ -507,6 +546,7 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Run(args)) => execute_run(args),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
+        Some(Commands::Replay(args)) => execute_replay(args),
         Some(Commands::Tui(args)) => execute_tui(args),
         Some(Commands::Structure(args)) => execute_structure(args),
         Some(Commands::Rules(args)) => execute_rules(args),
@@ -1083,7 +1123,7 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
     } else {
         None
     };
-    let changes = patches_to_change_set(
+    let mut changes = patches_to_change_set(
         &root,
         &patches,
         args.target.as_deref(),
@@ -1124,8 +1164,8 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
             .canonical_target_path
             .as_ref()
             .map(|path| path.display().to_string());
-        execution.legacy_pipeline_hits = resolution.legacy_pipeline_hits;
-        execution.fallback_resolution_hits = resolution.fallback_resolution_hits;
+        execution.resolution_pipeline_hits = resolution.resolution_pipeline_hits;
+        execution.degraded_resolution_hits = resolution.degraded_resolution_hits;
         execution.stale_artifact_detected = resolution.stale_artifact_detected;
         if resolution.stale_artifact_detected {
             execution.reason = Some(match execution.reason.take() {
@@ -1137,21 +1177,17 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
         }
     }
     let mut apply_resolutions =
-        collect_apply_target_resolutions(&root, &patches, args.target.as_deref(), &resolved_paths)?;
+        build_apply_resolutions(&root, &changes, args.target.as_deref(), &resolved_paths)?;
     if let Some(transactional) = execution.transactional_apply.as_ref() {
-        for resolution in &mut apply_resolutions {
-            resolution.sandbox_path =
-                resolve_sandbox_module_file(&resolution.module, &root, &transactional.sandbox_path)
-                    .ok()
-                    .or_else(|| {
-                        Some(
-                            transactional
-                                .sandbox_path
-                                .join(&resolution.resolved_relative_path),
-                        )
-                    });
-        }
+        attach_sandbox_paths_to_apply_resolutions(&root, &mut apply_resolutions, transactional);
     }
+    ensure_canonical_target_dto_continuity(
+        &root,
+        &mut changes,
+        &execution,
+        args.target.as_deref(),
+    )?;
+    let telemetry = build_canonicalization_telemetry(&changes, &apply_resolutions, &execution);
     let coding_report = CodingReport {
         root: root.display().to_string(),
         dry_run: !args.apply,
@@ -1161,6 +1197,7 @@ fn execute_coding(mut args: CodingArgs, mode: CodingMode) -> Result<(), String> 
         patches: changes.patches.clone(),
         changes,
         apply_resolutions,
+        telemetry,
     };
     if args.json {
         println!(
@@ -1345,10 +1382,74 @@ fn wizard_mode(args: WizardArgs) -> Result<(), String> {
 
 fn repl_mode(args: ReplArgs) -> Result<(), String> {
     let workspace_root = args
-    	.root
-    	.clone()
-    	.unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?);
+        .root
+        .clone()
+        .unwrap_or(std::env::current_dir().map_err(|e| e.to_string())?);
     run_repl_stdio(workspace_root)
+}
+
+fn execute_replay(args: ReplayArgs) -> Result<(), String> {
+    let workspace_root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let store = IRPersistenceStore::new(workspace_root);
+    match args.command {
+        ReplayCommands::Session(args) => {
+            let recovered = store.load_latest(&args.id)?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&serde_json::json!({
+                        "session_id": args.id,
+                        "recovered_step": recovered.recovered_step,
+                        "fallback_used": recovered.fallback_used,
+                        "state": recovered.state,
+                    }))
+                    .map_err(|err| err.to_string())?
+                );
+                return Ok(());
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "session_id": args.id,
+                    "recovered_step": recovered.recovered_step,
+                    "fallback_used": recovered.fallback_used,
+                    "state": recovered.state,
+                }))
+                .map_err(|err| err.to_string())?
+            );
+            Ok(())
+        }
+        ReplayCommands::Export(args) => {
+            let timeline = store.export_timeline(&args.id)?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&timeline).map_err(|err| err.to_string())?
+                );
+                return Ok(());
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&timeline).map_err(|err| err.to_string())?
+            );
+            Ok(())
+        }
+        ReplayCommands::Step(args) => {
+            let state = store.rebuild_at_step(&args.id, args.step)?;
+            if args.json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&state).map_err(|err| err.to_string())?
+                );
+                return Ok(());
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&state).map_err(|err| err.to_string())?
+            );
+            Ok(())
+        }
+    }
 }
 
 pub fn run_chat_loop() -> Result<(), String> {
@@ -1573,11 +1674,7 @@ fn rules_report_from_store(
                 source: rule_source_label(&record.rule.source).to_string(),
             })
             .collect(),
-        deprecated: store
-            .deprecated_rules
-            .iter()
-            .map(|record| rule_report(&record.rule, "deprecated"))
-            .collect(),
+        retired: retired_rule_reports(&store),
         message,
     }
 }

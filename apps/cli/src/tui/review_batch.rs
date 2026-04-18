@@ -2,7 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
-use crate::coding::apply_code_change_set;
+use crate::coding::{
+    MAX_UNIFIED_DIFF_PREVIEW_LINES, UnifiedDiffSummary, apply_code_change_set,
+    format_unified_diff_summary,
+};
+use crate::service::dto::{SessionAppliedDiff, SessionAppliedFileDiff};
 use crate::tui::confidence_rank::sort_edit_blocks;
 use crate::tui::edit_block::{
     CodingReviewReport, EditBlock, EditBlockStatus, build_edit_blocks, change_set_for_block,
@@ -197,6 +201,35 @@ impl ReviewBatchState {
             .unwrap_or(false)
     }
 
+    pub fn preview_diff_snapshot(&self) -> Option<SessionAppliedDiff> {
+        let mut selected = self
+            .blocks
+            .iter()
+            .filter(|block| {
+                block.selected_for_batch && matches!(block.status, EditBlockStatus::Pending)
+            })
+            .collect::<Vec<_>>();
+        if selected.is_empty()
+            && let Some(block) = self
+                .blocks
+                .get(self.focused_block)
+                .filter(|block| matches!(block.status, EditBlockStatus::Pending))
+        {
+            selected.push(block);
+        }
+        build_snapshot_from_blocks(selected)
+    }
+
+    pub fn last_batch_diff_snapshot(&self) -> Option<SessionAppliedDiff> {
+        let batch = self.last_batch.as_ref()?;
+        let selected = batch
+            .entries
+            .iter()
+            .filter_map(|entry| self.blocks.get(entry.block_index))
+            .collect::<Vec<_>>();
+        build_snapshot_from_blocks(selected)
+    }
+
     pub fn apply_focused_block(&mut self) -> Result<Option<String>, String> {
         let (file_path, hunk_count) = {
             let Some(block) = self.blocks.get_mut(self.focused_block) else {
@@ -377,6 +410,52 @@ fn risk_order(label: &str) -> u8 {
     }
 }
 
+fn build_snapshot_from_blocks(blocks: Vec<&EditBlock>) -> Option<SessionAppliedDiff> {
+    if blocks.is_empty() {
+        return None;
+    }
+
+    let mut files = Vec::new();
+    let mut summary = UnifiedDiffSummary::default();
+    let mut remaining_lines = MAX_UNIFIED_DIFF_PREVIEW_LINES;
+
+    for block in blocks {
+        if remaining_lines == 0 {
+            summary.truncated = true;
+            break;
+        }
+
+        let take = remaining_lines.min(block.diff_lines.len());
+        let mut lines = block
+            .diff_lines
+            .iter()
+            .take(take)
+            .cloned()
+            .collect::<Vec<_>>();
+        remaining_lines = remaining_lines.saturating_sub(take);
+        if take < block.diff_lines.len() {
+            lines.push("... diff truncated ...".to_string());
+            summary.truncated = true;
+        }
+
+        summary.file_count += 1;
+        summary.added_lines += block.added_lines;
+        summary.removed_lines += block.removed_lines;
+        files.push(SessionAppliedFileDiff {
+            file_path: block.file_path.clone(),
+            unified_diff_excerpt: lines.join("\n"),
+        });
+    }
+
+    Some(SessionAppliedDiff {
+        summary: format_unified_diff_summary(&summary),
+        files,
+        files_changed: summary.file_count,
+        lines_added: summary.added_lines,
+        lines_removed: summary.removed_lines,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -520,6 +599,38 @@ mod tests {
         assert!(state.blocks[focused_before].selected_for_batch);
     }
 
+    #[test]
+    fn preview_diff_snapshot_renders_unified_headers_and_summary() {
+        let root = temp_root("preview_diff_snapshot");
+        fs::create_dir_all(root.join("apps/cli/src")).expect("mkdir");
+        fs::write(root.join("apps/cli/src/repl.rs"), "old line\nkeep\n").expect("seed");
+        let report = sample_report(
+            &root,
+            vec![("apps/cli/src/repl.rs", "new line\n", ChangeType::ModifyFile)],
+        );
+        let state = ReviewBatchState::from_coding_reports(&[(report, "family".to_string())])
+            .expect("state")
+            .expect("some");
+
+        let snapshot = state.preview_diff_snapshot().expect("snapshot");
+        assert_eq!(snapshot.summary, "1 files changed, +1 -1 lines");
+        assert!(
+            snapshot.files[0]
+                .unified_diff_excerpt
+                .contains("--- a/apps/cli/src/repl.rs")
+        );
+        assert!(
+            snapshot.files[0]
+                .unified_diff_excerpt
+                .contains("+++ b/apps/cli/src/repl.rs")
+        );
+        assert!(
+            snapshot.files[0]
+                .unified_diff_excerpt
+                .contains("@@ -1,2 +1,2 @@")
+        );
+    }
+
     fn sample_report(
         root: &std::path::Path,
         changes: Vec<(&str, &str, ChangeType)>,
@@ -585,8 +696,8 @@ mod tests {
             git_push: None,
             pull_request: None,
             canonical_target_path: None,
-            legacy_pipeline_hits: 0,
-            fallback_resolution_hits: 0,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
             stale_artifact_detected: false,
         }
     }

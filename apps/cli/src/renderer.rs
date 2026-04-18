@@ -1262,11 +1262,13 @@ pub fn render_coding_report<W: Write>(writer: &mut W, report: &CodingReport) -> 
     if report.execution.stale_artifact_detected {
         writeln!(writer, "Warning: stale snapshot artifact detected")?;
     }
-    if report.execution.legacy_pipeline_hits > 0 || report.execution.fallback_resolution_hits > 0 {
+    if report.execution.resolution_pipeline_hits > 0
+        || report.execution.degraded_resolution_hits > 0
+    {
         writeln!(
             writer,
-            "Legacy pipeline hits: {} (fallback={})",
-            report.execution.legacy_pipeline_hits, report.execution.fallback_resolution_hits
+            "Resolution pipeline hits: {} (degraded={})",
+            report.execution.resolution_pipeline_hits, report.execution.degraded_resolution_hits
         )?;
     }
     if let Some(transactional) = &report.execution.transactional_apply {
@@ -1356,7 +1358,7 @@ pub fn render_rules_report<W: Write>(writer: &mut W, report: &RulesReport) -> io
     writeln!(writer, "Active: {}", report.active.len())?;
     writeln!(writer, "Candidate: {}", report.candidate.len())?;
     writeln!(writer, "Validated: {}", report.validated.len())?;
-    writeln!(writer, "Deprecated: {}", report.deprecated.len())?;
+    writeln!(writer, "Retired: {}", report.retired.len())?;
     if !report.active.is_empty() {
         writeln!(writer, "Active Rules:")?;
         for rule in &report.active {
@@ -1390,9 +1392,9 @@ pub fn render_rules_report<W: Write>(writer: &mut W, report: &RulesReport) -> io
             )?;
         }
     }
-    if !report.deprecated.is_empty() {
-        writeln!(writer, "Deprecated Rules:")?;
-        for rule in &report.deprecated {
+    if !report.retired.is_empty() {
+        writeln!(writer, "Retired Rules:")?;
+        for rule in &report.retired {
             writeln!(
                 writer,
                 "- {} [{}] conf={:.2} usage={}",

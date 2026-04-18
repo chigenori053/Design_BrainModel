@@ -2,11 +2,20 @@ use std::path::PathBuf;
 
 use serde_json::Value;
 
-use crate::design_delta::{self, bridge::to_command_plan, explain};
-use crate::nl::session::{ConversationState, LastCodingTransaction};
+use crate::coding::{
+    apply_code_change_set, build_unified_diff_preview, generate_code_change_set,
+    render_code_diff_lines,
+};
+use crate::design_delta::{self, explain};
+use crate::ir::{IRPersistenceArtifact, persist_ir_transition};
+use crate::nl::session::ConversationState;
 use crate::nl::types::{CodingOptions, CommandPlan, PlannedStep};
 use crate::nl_executor::run_design_command;
-use crate::refactor::{GuiAction, GuiActionMode};
+use crate::refactor::{GuiAction, GuiActionMode, RefactorTarget, create_refactor_plan};
+use crate::service::{
+    AnalysisDependency, AnalysisModule, analyze_path,
+    dto::{ActionKind, SessionAppliedDiff, SessionAppliedFileDiff},
+};
 use crate::session::AgentSession;
 use crate::state::State;
 
@@ -45,6 +54,13 @@ pub fn execute_plan(
             outputs.push(format!("[step {index}] apply_previous_coding\n{output}"));
             continue;
         }
+        if matches!(step, PlannedStep::RollbackCurrentTransaction) {
+            let output = execute_ir_rollback(conversation);
+            outputs.push(format!(
+                "[step {index}] rollback_current_transaction\n{output}"
+            ));
+            continue;
+        }
 
         if let PlannedStep::DesignDeltaReasoning(spec) = step {
             let output = execute_design_delta_reasoning_step(spec, session, conversation);
@@ -53,7 +69,9 @@ pub fn execute_plan(
         }
         if let PlannedStep::AlternativeMutationSearch(spec) = step {
             let output = execute_alternative_mutation_search_step(spec, session, conversation);
-            outputs.push(format!("[step {index}] alternative_mutation_search\n{output}"));
+            outputs.push(format!(
+                "[step {index}] alternative_mutation_search\n{output}"
+            ));
             continue;
         }
         if let PlannedStep::ExplainDesignTradeoff(prompt) = step {
@@ -115,6 +133,7 @@ pub fn executor_received_path_snapshot(step: &PlannedStep) -> Option<String> {
         )),
         PlannedStep::Rules
         | PlannedStep::ApplyPreviousCodingStep
+        | PlannedStep::RollbackCurrentTransaction
         | PlannedStep::DesignDeltaReasoning(_)
         | PlannedStep::AlternativeMutationSearch(_)
         | PlannedStep::ExplainDesignTradeoff(_) => None,
@@ -126,21 +145,21 @@ pub fn executor_received_path_snapshot(step: &PlannedStep) -> Option<String> {
 /// R5: patch_count == 0 → no-op
 /// R6: applied == true → no-op
 fn execute_apply_previous_coding_step(conversation: &mut ConversationState) -> String {
-    let tx = match conversation.last_coding_transaction.as_ref() {
+    let tx = match conversation.active_transaction() {
         Some(tx) => tx.clone(),
         None => return "Applied: false\nReason: no previous coding transaction".to_string(),
     };
 
-    if tx.applied {
+    if tx.applied && !tx.pending {
         return "Applied: false\nReason: already applied".to_string();
     }
 
-    if tx.patch_count == 0 {
-        return "Applied: false\nReason: no pending canonical patches".to_string();
-    }
+    let Some((path, request, safe)) = last_preview_coding_context(conversation) else {
+        return "Applied: false\nReason: missing preview context".to_string();
+    };
 
-    // R4: --check → --apply の deterministic 変換。target / request は R3 で保持済み。
-    let path_str = tx.target.display().to_string();
+    // R4: --check → --apply の deterministic 変換。canonical path / request は last_plan から再構築する。
+    let path_str = path.display().to_string();
     let is_file_target =
         path_str.ends_with(".rs") || path_str.ends_with(".toml") || path_str.ends_with(".md");
     let mut args = if is_file_target {
@@ -148,62 +167,82 @@ fn execute_apply_previous_coding_step(conversation: &mut ConversationState) -> S
     } else {
         vec![path_str]
     };
-    if let Some(request) = &tx.request {
+    if let Some(request) = request {
         args.push("--request".to_string());
-        args.push(request.clone());
+        args.push(request);
     }
-    if tx.safe {
+    if safe {
         args.push("--safe".to_string());
     }
     args.push("--apply".to_string());
 
     match run_design_command("coding", &args) {
         Ok(output) => {
-            // R6: apply 済みとしてマークし、重複 apply を防止する。
-            if let Some(tx) = conversation.last_coding_transaction.as_mut() {
-                tx.applied = true;
-            }
-            // R3: target continuity を維持する。
-            conversation.last_target = Some(tx.target.clone());
+            let before = conversation.ir_state.clone();
+            conversation.mark_transaction_applied(None);
+            conversation.note_target(tx.canonical_target.clone());
+            let _ = persist_ir_transition(
+                &before,
+                &conversation.ir_state,
+                crate::service::dto::ActionKind::Apply,
+                "apply_previous_coding",
+                IRPersistenceArtifact::default(),
+            );
             format!("Applied: true\n{output}")
         }
         Err(err) => format!("Applied: false\nReason: {err}"),
     }
 }
 
-/// Coding dry-run 後に `LastCodingTransaction` を conversation に記録する (R3)。
-///
-/// patch_count は JSON 出力から `patches` 配列長で取得する。
-/// パース失敗時は 1 (non-zero) にフォールバックして apply を許可する。
+fn last_preview_coding_context(
+    conversation: &ConversationState,
+) -> Option<(PathBuf, Option<String>, bool)> {
+    let step = conversation
+        .last_plan
+        .as_ref()?
+        .steps
+        .iter()
+        .rev()
+        .find_map(|step| {
+            if let PlannedStep::Coding(path, opts) = step {
+                Some((path.clone(), opts.clone()))
+            } else {
+                None
+            }
+        })?;
+    Some((step.0, step.1.request, step.1.safe))
+}
+
+fn execute_ir_rollback(conversation: &mut ConversationState) -> String {
+    let before = conversation.ir_state.clone();
+    conversation.rollback_current_transaction();
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        crate::service::dto::ActionKind::Rollback,
+        "rollback_current_transaction",
+        IRPersistenceArtifact::default(),
+    );
+    "[rollback] reverted current IR transaction".to_string()
+}
+
 fn record_coding_transaction(
     path: &PathBuf,
     opts: &CodingOptions,
     output: &str,
     conversation: &mut ConversationState,
 ) {
-    let patch_count = serde_json::from_str::<Value>(output)
-        .ok()
-        .and_then(|v| {
-            // CodingReport.patches または changes.patches を優先的に参照する。
-            v.get("patches")
-                .and_then(|p| p.as_array())
-                .map(|a| a.len())
-                .or_else(|| {
-                    v.get("changes")
-                        .and_then(|c| c.get("patches"))
-                        .and_then(|p| p.as_array())
-                        .map(|a| a.len())
-                })
-        })
-        .unwrap_or(1); // パース不能時は non-zero にして apply を許可する
-
-    conversation.last_coding_transaction = Some(LastCodingTransaction {
-        target: path.clone(),
-        request: opts.request.clone(),
-        safe: opts.safe,
-        patch_count,
-        applied: false,
-    });
+    let _ = serde_json::from_str::<Value>(output).ok();
+    let _ = opts;
+    let before = conversation.ir_state.clone();
+    conversation.start_preview_transaction(path.clone());
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        crate::service::dto::ActionKind::CodingPreview,
+        format!("preview {}", path.display()),
+        IRPersistenceArtifact::default(),
+    );
 }
 
 fn to_canonical_command(step: &PlannedStep) -> (&'static str, Vec<String>, String, bool) {
@@ -378,6 +417,12 @@ fn to_canonical_command(step: &PlannedStep) -> (&'static str, Vec<String>, Strin
             "design_cli coding --apply [previous transaction]".to_string(),
             true,
         ),
+        PlannedStep::RollbackCurrentTransaction => (
+            "rollback",
+            Vec::new(),
+            "design_cli rollback [ir transaction]".to_string(),
+            true,
+        ),
     }
 }
 
@@ -422,7 +467,8 @@ fn update_state_after_step(step: &PlannedStep, conversation: &mut ConversationSt
         | PlannedStep::GitPR(path) => conversation.last_target = Some(path.clone()),
         PlannedStep::DesignDeltaReasoning(_)
         | PlannedStep::AlternativeMutationSearch(_)
-        | PlannedStep::ExplainDesignTradeoff(_) => {}
+        | PlannedStep::ExplainDesignTradeoff(_)
+        | PlannedStep::RollbackCurrentTransaction => {}
         PlannedStep::StructureDiff(path, node) => {
             conversation.last_target = Some(path.clone());
             if let Some(node) = node {
@@ -463,6 +509,7 @@ fn execute_design_delta_reasoning_step(
     session: &mut AgentSession,
     conversation: &mut ConversationState,
 ) -> String {
+    log::debug!("Executing DesignDeltaReasoning");
     let root = session
         .workspace_root
         .clone()
@@ -500,7 +547,10 @@ fn execute_design_delta_reasoning_step(
 
     let mut lines = vec![
         "Accepted: true".to_string(),
-        format!("Impacted crates: {}", output.delta.impacted_crates.join(", ")),
+        format!(
+            "Impacted crates: {}",
+            output.delta.impacted_crates.join(", ")
+        ),
         format!("Rationality total: {:.2}", output.rationality.total),
         format!(
             "Expected tests: {}",
@@ -509,17 +559,18 @@ fn execute_design_delta_reasoning_step(
     ];
 
     session.state = State::TestPlanReady;
-    let follow_up = to_command_plan(&output.mutation_plan, spec);
-    let follow_up_outputs = execute_plan(&follow_up, session, conversation);
-    if follow_up_outputs
-        .iter()
-        .any(|line| line.starts_with("[step") && line.contains("Error:"))
-    {
+    let execution_output = execute_design_delta_refactor(
+        spec,
+        &output.delta,
+        &output.mutation_plan,
+        conversation,
+    );
+    if execution_output.contains("Error:") {
         session.state = State::Repairing;
     } else {
         session.state = State::CommitReady;
     }
-    lines.extend(follow_up_outputs);
+    lines.push(execution_output);
     lines.join("\n")
 }
 
@@ -601,18 +652,227 @@ fn execute_alternative_mutation_search_step(
     ];
 
     session.state = State::TestPlanReady;
-    let follow_up = to_command_plan(&output.mutation_plan, spec);
-    let follow_up_outputs = execute_plan(&follow_up, session, conversation);
-    if follow_up_outputs
-        .iter()
-        .any(|line| line.starts_with("[step") && line.contains("Error:"))
-    {
+    let execution_output = execute_design_delta_refactor(
+        spec,
+        &output.delta,
+        &output.mutation_plan,
+        conversation,
+    );
+    if execution_output.contains("Error:") {
         session.state = State::Repairing;
     } else {
         session.state = State::CommitReady;
     }
-    lines.extend(follow_up_outputs);
+    lines.push(execution_output);
     lines.join("\n")
+}
+
+fn execute_design_delta_refactor(
+    spec: &str,
+    delta: &design_delta::DesignDelta,
+    _mutation_plan: &design_delta::MutationPlan,
+    conversation: &mut ConversationState,
+) -> String {
+    let root = if delta.workspace_root.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        delta.workspace_root.clone()
+    };
+    let analysis = match analyze_path(&root) {
+        Ok(report) => report,
+        Err(err) => return format!("Error: failed to analyze design delta target: {err}"),
+    };
+    let target = select_design_delta_target(&analysis.modules, &analysis.dependencies, spec, delta);
+    let plan = match create_refactor_plan(&analysis, target) {
+        Ok(plan) => plan,
+        Err(err) => return format!("Error: failed to create refactor plan: {err}"),
+    };
+    let change_set = match generate_code_change_set(&plan.root, &plan.patches) {
+        Ok(change_set) => change_set,
+        Err(err) => return format!("Error: failed to generate change_set: {err}"),
+    };
+    if change_set.changes.is_empty() {
+        return "No changes detected.".to_string();
+    }
+
+    let diff_preview = match build_unified_diff_preview(&plan.root, &change_set) {
+        Ok(preview) => preview,
+        Err(err) => return format!("Error: failed to generate diff: {err}"),
+    };
+    let snapshot = build_session_diff_snapshot(&diff_preview);
+    let diff_text = render_design_delta_diff(&diff_preview);
+    let canonical_target = change_set
+        .canonical_target
+        .clone()
+        .or_else(|| {
+            change_set
+                .changes
+                .first()
+                .map(|change| PathBuf::from(&change.file_path))
+        })
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let before = conversation.ir_state.clone();
+    conversation.start_preview_transaction(canonical_target.clone());
+    match apply_code_change_set(&plan.root, &change_set) {
+        Ok(()) => {
+            conversation.note_target(canonical_target);
+            conversation.mark_transaction_applied(Some(snapshot.clone()));
+            let _ = persist_ir_transition(
+                &before,
+                &conversation.ir_state,
+                ActionKind::Apply,
+                "design_delta_reasoning",
+                IRPersistenceArtifact {
+                    diff_ref: Some(snapshot.clone()),
+                    build_ok: None,
+                    ..IRPersistenceArtifact::default()
+                },
+            );
+            format!(
+                "DIFF\n{diff_text}\nRESULT\nRefactoring applied successfully.\n{} files changed, +{} -{} lines.",
+                snapshot.files_changed, snapshot.lines_added, snapshot.lines_removed
+            )
+        }
+        Err(err) => format!("Error: failed to apply change_set: {err}"),
+    }
+}
+
+fn select_design_delta_target(
+    modules: &[AnalysisModule],
+    dependencies: &[AnalysisDependency],
+    spec: &str,
+    delta: &design_delta::DesignDelta,
+) -> RefactorTarget {
+    let lower = spec.to_lowercase();
+    let module_name = select_impacted_module(modules, delta)
+        .or_else(|| modules.first().map(|module| module.name.clone()))
+        .unwrap_or_else(|| "core".to_string());
+    let edge = select_impacted_dependency(dependencies, delta)
+        .or_else(|| {
+            dependencies
+                .first()
+                .map(|dependency| (dependency.from.clone(), dependency.to.clone()))
+        })
+        .unwrap_or_else(|| (module_name.clone(), "ports".to_string()));
+
+    if lower.contains("splitmodule")
+        || lower.contains("module split")
+        || lower.contains("split module")
+        || lower.contains("分割")
+    {
+        return RefactorTarget::ModuleSplit(module_name);
+    }
+    if lower.contains("removedependency")
+        || lower.contains("remove dependency")
+        || lower.contains("依存")
+    {
+        return RefactorTarget::RemoveDependency {
+            from: edge.0,
+            to: edge.1,
+        };
+    }
+    if lower.contains("extractinterface")
+        || lower.contains("extract interface")
+        || lower.contains("trait")
+        || lower.contains("interface")
+        || lower.contains("抽象")
+    {
+        return RefactorTarget::ExtractInterface {
+            from: edge.0,
+            to: edge.1,
+        };
+    }
+    if !delta.introduced_interfaces.is_empty() {
+        return RefactorTarget::ExtractInterface {
+            from: edge.0,
+            to: edge.1,
+        };
+    }
+    if !delta.dependency_moves.is_empty() {
+        return RefactorTarget::RemoveDependency {
+            from: edge.0,
+            to: edge.1,
+        };
+    }
+    RefactorTarget::ModuleSplit(module_name)
+}
+
+fn select_impacted_module(
+    modules: &[AnalysisModule],
+    delta: &design_delta::DesignDelta,
+) -> Option<String> {
+    modules
+        .iter()
+        .find(|module| {
+            delta.impacted_crates.iter().any(|crate_name| {
+                module.name.eq_ignore_ascii_case(crate_name)
+                    || module
+                        .source_path
+                        .to_lowercase()
+                        .contains(&crate_name.to_lowercase())
+            })
+        })
+        .map(|module| module.name.clone())
+}
+
+fn select_impacted_dependency(
+    dependencies: &[AnalysisDependency],
+    delta: &design_delta::DesignDelta,
+) -> Option<(String, String)> {
+    dependencies
+        .iter()
+        .find(|dependency| {
+            delta.impacted_crates.iter().any(|crate_name| {
+                dependency.from.eq_ignore_ascii_case(crate_name)
+                    || dependency.to.eq_ignore_ascii_case(crate_name)
+                    || dependency
+                        .from
+                        .to_lowercase()
+                        .contains(&crate_name.to_lowercase())
+                    || dependency
+                        .to
+                        .to_lowercase()
+                        .contains(&crate_name.to_lowercase())
+            })
+        })
+        .map(|dependency| (dependency.from.clone(), dependency.to.clone()))
+}
+
+fn build_session_diff_snapshot(
+    diff_preview: &crate::coding::UnifiedDiffPreview,
+) -> SessionAppliedDiff {
+    SessionAppliedDiff {
+        summary: format!(
+            "{} files changed, +{} -{} lines",
+            diff_preview.summary.file_count,
+            diff_preview.summary.added_lines,
+            diff_preview.summary.removed_lines
+        ),
+        files: diff_preview
+            .files
+            .iter()
+            .map(|diff| SessionAppliedFileDiff {
+                file_path: diff.file.display().to_string(),
+                unified_diff_excerpt: render_code_diff_lines(diff).join("\n"),
+            })
+            .collect(),
+        files_changed: diff_preview.summary.file_count,
+        lines_added: diff_preview.summary.added_lines,
+        lines_removed: diff_preview.summary.removed_lines,
+    }
+}
+
+fn render_design_delta_diff(diff_preview: &crate::coding::UnifiedDiffPreview) -> String {
+    let mut lines = Vec::new();
+    for diff in &diff_preview.files {
+        lines.extend(render_code_diff_lines(diff));
+    }
+    if lines.is_empty() {
+        "(empty diff)".to_string()
+    } else {
+        lines.join("\n")
+    }
 }
 
 fn execute_design_tradeoff_explanation_step(
@@ -625,7 +885,8 @@ fn execute_design_tradeoff_explanation_step(
         .clone()
         .or_else(|| session.last_mutation_search_result.clone());
     let Some(search_result) = search_result else {
-        return "No tradeoff explanation available. Run alternative mutation search first.".to_string();
+        return "No tradeoff explanation available. Run alternative mutation search first."
+            .to_string();
     };
 
     let Some(explanation) = explain::explain_tradeoff(&search_result) else {
@@ -675,6 +936,7 @@ fn ensure_viewer_session_is_fresh(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
     use std::path::PathBuf;
 
     use super::*;
@@ -683,6 +945,8 @@ mod tests {
         RationalityScore,
     };
     use crate::nl::types::{CodingOptions, PlannedStep};
+    use crate::service::dto::{ActionKind, IRActiveTransaction};
+    use tempfile::tempdir;
 
     #[test]
     fn summary_uses_nl_label() {
@@ -803,11 +1067,107 @@ mod tests {
             rejected: vec![rejected.id.clone()],
         });
 
-        let output =
-            execute_design_tradeoff_explanation_step("設計トレードオフを要約して", &mut session, &mut conversation);
+        let output = execute_design_tradeoff_explanation_step(
+            "設計トレードオフを要約して",
+            &mut session,
+            &mut conversation,
+        );
         assert!(output.contains("Selected mutation: trait-extraction-1"));
         assert!(output.contains("Tradeoff summary:"));
         assert!(output.contains("Rejected:"));
         assert!(conversation.last_tradeoff_explanation.is_some());
+    }
+
+    #[test]
+    fn rollback_current_transaction_clears_ir_state() {
+        let mut conversation = ConversationState::default();
+        conversation.last_target = Some(PathBuf::from("src/previous.rs"));
+        conversation.set_active_transaction(IRActiveTransaction {
+            transaction_id: "tx:src/coding.rs".to_string(),
+            canonical_target: PathBuf::from("src/coding.rs"),
+            pending: false,
+            applied: true,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: None,
+            latest_build_ok: None,
+        });
+
+        let output = execute_ir_rollback(&mut conversation);
+
+        assert_eq!(output, "[rollback] reverted current IR transaction");
+        assert!(conversation.active_transaction().is_none());
+        assert_eq!(conversation.last_target, Some(PathBuf::from(".")));
+        assert_eq!(
+            conversation.ir_state.next_allowed_actions,
+            vec![
+                ActionKind::CodingPreview,
+                ActionKind::Analyze,
+                ActionKind::Refactor
+            ]
+        );
+    }
+
+    #[test]
+    fn rollback_executor_route_is_direct() {
+        let source = include_str!("executor.rs");
+        let token_a = ["com", "pat"].concat();
+        let token_b = ["sh", "im"].concat();
+        let token_c = ["fall", "back route"].concat();
+        assert!(!source.contains(&token_a));
+        assert!(!source.contains(&token_b));
+        assert!(!source.contains(&token_c));
+    }
+
+    #[test]
+    fn design_delta_reasoning_executes_refactor_and_emits_diff() {
+        let temp = tempdir().expect("tempdir");
+        let root = temp.path();
+        fs::create_dir_all(root.join("src")).expect("mkdir src");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"apply_cycle\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("write cargo");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub mod renderer;\npub mod debug;\n",
+        )
+        .expect("write lib");
+        fs::write(
+            root.join("src/renderer.rs"),
+            "use crate::debug;\npub fn render() {}\n",
+        )
+        .expect("write renderer");
+        fs::write(
+            root.join("src/debug.rs"),
+            "use crate::renderer;\npub fn debug() {}\n",
+        )
+        .expect("write debug");
+
+        let mut conversation = ConversationState::default();
+        let delta = DesignDelta {
+            workspace_root: root.to_path_buf(),
+            impacted_crates: vec!["apply_cycle".to_string()],
+            introduced_interfaces: vec!["renderer_debug_interface".to_string()],
+            ..DesignDelta::default()
+        };
+        let output = execute_design_delta_refactor(
+            "ExtractInterface(renderer -> debug) を適用して",
+            &delta,
+            &MutationPlan::default(),
+            &mut conversation,
+        );
+
+        assert!(output.contains("DIFF"));
+        assert!(output.contains("--- "));
+        assert!(output.contains("RESULT"));
+        assert!(output.contains("Refactoring applied successfully."));
+        assert!(
+            conversation
+                .active_transaction()
+                .and_then(|tx| tx.latest_diff_ref.as_ref())
+                .is_some()
+        );
     }
 }

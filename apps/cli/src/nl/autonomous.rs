@@ -7,13 +7,12 @@ use std::path::{Path, PathBuf};
 
 use crate::coding::TransactionalApplyResult;
 use crate::nl::r#loop::{
-    AnalyzeResult, LoopOrigin, LoopOutcome, LoopPromotable, PromotionGuard,
-    RepairLoopController, RetryEvaluator,
+    AnalyzeResult, LoopOrigin, LoopOutcome, LoopPromotable, PromotionGuard, RepairLoopController,
+    RetryEvaluator,
 };
 use crate::session::AgentSession;
 use crate::viewer::{
-    Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3,
-    ViewerSelection,
+    Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3, ViewerSelection,
 };
 
 use super::convergence::{ConvergenceMetrics, goal_reached};
@@ -167,7 +166,10 @@ fn maybe_promote_with_origin<T: LoopPromotable>(
             return Ok(None);
         }
     };
-    if context.validate_with_guard(PromotionGuard::default()).is_err() {
+    if context
+        .validate_with_guard(PromotionGuard::default())
+        .is_err()
+    {
         record_hook_telemetry(
             &telemetry_root,
             &HookTelemetry {
@@ -204,7 +206,10 @@ fn maybe_promote_with_origin<T: LoopPromotable>(
         &HookTelemetry {
             origin: context.origin,
             promoted: true,
-            converged: !matches!(outcome.status.state, super::r#loop::ReplLoopState::Escalated),
+            converged: !matches!(
+                outcome.status.state,
+                super::r#loop::ReplLoopState::Escalated
+            ),
             retries: 0,
             false_promotion: false,
             rollback_used: context.rollback_token.is_some(),
@@ -310,40 +315,40 @@ fn maybe_promote_step(
 ) -> Result<Option<LoopOutcome>> {
     match step {
         PlannedStep::Analyze(path) => {
-            let mut controller = RepairLoopController::new(RetryEvaluator::retry_policy_for_origin(
-                LoopOrigin::Analyze,
-            ));
+            let mut controller = RepairLoopController::new(
+                RetryEvaluator::retry_policy_for_origin(LoopOrigin::Analyze),
+            );
             maybe_promote_with_origin(
-            AnalyzeResult {
-                target: path.clone(),
-                affected_crates: vec!["design_cli".to_string()],
-                confidence: 1.0,
-                logical_node: conversation.last_node.clone().or_else(|| {
-                    path.file_stem()
-                        .and_then(|stem| stem.to_str())
-                        .map(ToOwned::to_owned)
-                }),
-                ambiguous: !path.is_file(),
-            },
-            Some(LoopOrigin::Analyze),
-            &mut controller,
-        )
+                AnalyzeResult {
+                    target: path.clone(),
+                    affected_crates: vec!["design_cli".to_string()],
+                    confidence: 1.0,
+                    logical_node: conversation.last_node.clone().or_else(|| {
+                        path.file_stem()
+                            .and_then(|stem| stem.to_str())
+                            .map(ToOwned::to_owned)
+                    }),
+                    ambiguous: !path.is_file(),
+                },
+                Some(LoopOrigin::Analyze),
+                &mut controller,
+            )
         }
         PlannedStep::Coding(_, _) => {
-            let Some(tx) = conversation.last_coding_transaction.clone() else {
+            let Some(tx) = conversation.active_transaction().cloned() else {
                 return Ok(None);
             };
-            let mut controller = RepairLoopController::new(RetryEvaluator::retry_policy_for_origin(
-                LoopOrigin::Coding,
-            ));
+            let mut controller = RepairLoopController::new(
+                RetryEvaluator::retry_policy_for_origin(LoopOrigin::Coding),
+            );
             maybe_promote_with_origin(
                 TransactionalApplyResult {
                     applied: tx.applied,
                     build_ok: true,
                     rolled_back: false,
-                    sandbox_path: tx.target.clone(),
-                    modified_files: if tx.patch_count > 0 {
-                        vec![tx.target.clone()]
+                    sandbox_path: tx.canonical_target.clone(),
+                    modified_files: if tx.applied {
+                        vec![tx.canonical_target.clone()]
                     } else {
                         Vec::new()
                     },
@@ -364,9 +369,9 @@ fn maybe_promote_step(
             let Some(node_id) = node.clone() else {
                 return Ok(None);
             };
-            let mut controller = RepairLoopController::new(RetryEvaluator::retry_policy_for_origin(
-                LoopOrigin::Structure,
-            ));
+            let mut controller = RepairLoopController::new(
+                RetryEvaluator::retry_policy_for_origin(LoopOrigin::Structure),
+            );
             maybe_promote_with_origin(
                 StructureViewIR {
                     selection: ViewerSelection {
@@ -509,7 +514,10 @@ fn compute_kpi_snapshot(records: &[HookTelemetry]) -> KpiSnapshot {
         .collect::<Vec<_>>();
 
     KpiSnapshot {
-        analyze_convergence: ratio(analyze.iter().filter(|r| r.converged).count(), analyze.len()),
+        analyze_convergence: ratio(
+            analyze.iter().filter(|r| r.converged).count(),
+            analyze.len(),
+        ),
         coding_retry_success: ratio(coding.iter().filter(|r| r.converged).count(), coding.len()),
         validate_self_heal: ratio(
             validate.iter().filter(|r| r.converged).count(),
@@ -536,7 +544,8 @@ impl PolicyOptimizer {
         let mut analyze_threshold =
             RetryEvaluator::confidence_policy_for_origin(LoopOrigin::Analyze).promote_threshold;
         let mut memory_threshold =
-            RetryEvaluator::confidence_policy_for_origin(LoopOrigin::MemoryRecall).promote_threshold;
+            RetryEvaluator::confidence_policy_for_origin(LoopOrigin::MemoryRecall)
+                .promote_threshold;
         let mut retry_budget_overrides = HashMap::new();
 
         let analyze_false_promotions = records
@@ -583,7 +592,9 @@ impl PolicyOptimizer {
     }
 }
 
-pub fn write_origin_benchmark_snapshot(records: &[HookTelemetry]) -> Result<OriginBenchmarkSnapshot> {
+pub fn write_origin_benchmark_snapshot(
+    records: &[HookTelemetry],
+) -> Result<OriginBenchmarkSnapshot> {
     let root = benchmark_root();
     fs::create_dir_all(&root)?;
     let snapshot = OriginBenchmarkSnapshot {
@@ -595,7 +606,9 @@ pub fn write_origin_benchmark_snapshot(records: &[HookTelemetry]) -> Result<Orig
             records
                 .iter()
                 .filter(|record| {
-                    record.origin == LoopOrigin::MemoryRecall && record.promoted && record.retries == 0
+                    record.origin == LoopOrigin::MemoryRecall
+                        && record.promoted
+                        && record.retries == 0
                 })
                 .count(),
             records
@@ -618,15 +631,24 @@ pub fn write_architecture_surgery_snapshot(
     fs::create_dir_all(&root)?;
     let snapshot = ArchitectureSurgerySnapshot {
         compile_pass_rate: ratio(
-            scenarios.iter().filter(|scenario| scenario.compile_pass).count(),
+            scenarios
+                .iter()
+                .filter(|scenario| scenario.compile_pass)
+                .count(),
             scenarios.len(),
         ),
         minimal_diff_rate: ratio(
-            scenarios.iter().filter(|scenario| scenario.minimal_diff).count(),
+            scenarios
+                .iter()
+                .filter(|scenario| scenario.minimal_diff)
+                .count(),
             scenarios.len(),
         ),
         rollback_rate: ratio(
-            scenarios.iter().filter(|scenario| scenario.rollback_used).count(),
+            scenarios
+                .iter()
+                .filter(|scenario| scenario.rollback_used)
+                .count(),
             scenarios.len(),
         ),
         cycle_break_success: ratio(
@@ -661,7 +683,10 @@ pub fn write_regression_scorecard(
     let previous_kpi_path = telemetry_root().join("phase_e_kpi_snapshot.json");
     let previous_kpi: KpiSnapshot = serde_json::from_str(&fs::read_to_string(previous_kpi_path)?)?;
 
-    let retry_sum = current_records.iter().map(|record| u64::from(record.retries)).sum::<u64>();
+    let retry_sum = current_records
+        .iter()
+        .map(|record| u64::from(record.retries))
+        .sum::<u64>();
     let retry_median = if current_records.is_empty() {
         0.0
     } else {
@@ -674,10 +699,12 @@ pub fn write_regression_scorecard(
         baseline_hook_sensitive: baseline.hook_sensitive_failures,
         current_hook_sensitive,
         failure_delta: current_failed as i64 - baseline.failed_tests as i64,
-        hook_sensitive_delta: current_hook_sensitive as i64 - baseline.hook_sensitive_failures as i64,
+        hook_sensitive_delta: current_hook_sensitive as i64
+            - baseline.hook_sensitive_failures as i64,
         convergence_delta: current_kpi.analyze_convergence - previous_kpi.analyze_convergence,
         retry_median_delta: retry_median,
-        false_promotion_delta: current_kpi.memory_false_promotion - previous_kpi.memory_false_promotion,
+        false_promotion_delta: current_kpi.memory_false_promotion
+            - previous_kpi.memory_false_promotion,
     };
 
     let body = format!(
@@ -1233,7 +1260,10 @@ mod tests {
                 memory_false_promotion: 0.0,
             },
         );
-        assert_eq!(tuned.retry_budget_overrides.get(&LoopOrigin::Analyze), Some(&4));
+        assert_eq!(
+            tuned.retry_budget_overrides.get(&LoopOrigin::Analyze),
+            Some(&4)
+        );
     }
 
     #[test]
@@ -1265,6 +1295,9 @@ mod tests {
                 memory_false_promotion: 0.0,
             },
         );
-        assert_eq!(tuned.retry_budget_overrides.get(&LoopOrigin::Coding), Some(&1));
+        assert_eq!(
+            tuned.retry_budget_overrides.get(&LoopOrigin::Coding),
+            Some(&1)
+        );
     }
 }

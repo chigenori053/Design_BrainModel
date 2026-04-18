@@ -4,7 +4,7 @@ use crate::nl::intent::{
     wants_validate,
 };
 use crate::nl::language_intent_bridge::{PlannerIntent, infer_planner_intent};
-use crate::nl::target::has_explicit_target_reference;
+use crate::nl::target::{extract_explicit_path, has_explicit_target_reference};
 use crate::session::AgentSession;
 
 use super::session::ConversationState;
@@ -78,6 +78,59 @@ fn coding_options_for_request(input: &str) -> CodingOptions {
     }
 }
 
+/// Returns true only when the input is the exact canonical apply command.
+/// Nothing else qualifies as "apply intent" — even partial matches must not fire.
+fn is_explicit_apply_intent(input: &str) -> bool {
+    input.trim() == "coding --apply"
+}
+
+fn is_rollback_command(input: &str) -> bool {
+    let trimmed = input.trim().to_lowercase();
+    trimmed == "rollback"
+}
+
+/// Returns true when the input contains an explicit new coding or refactor request.
+/// Such requests must NEVER be preempted by `ApplyPreviousCodingStep`.
+///
+/// - mutation verbs ("refactor", "fix", "修正", …) indicate new work
+/// - "coding" without "--apply" means a new coding check, not apply-previous
+fn is_new_coding_or_refactor_request(lower: &str) -> bool {
+    wants_mutation_verb(lower) || (wants_coding(lower) && !lower.contains("--apply"))
+}
+
+/// Resolve the path to store in PlannedStep::Coding.
+///
+/// When workspace root is "." (e.g. anchored by "このプロジェクト") but the input
+/// contains an explicit file target, the file path is returned so the executor can
+/// remap `Coding(file.rs, _)` → `coding . --target file.rs`.
+/// For all other cases the resolved workspace path is returned unchanged.
+fn coding_path(input: &str, merged: &ResolvedTarget) -> std::path::PathBuf {
+    if merged.path == std::path::PathBuf::from(".") {
+        if let Some(file_path) = extract_explicit_path(input) {
+            return file_path;
+        }
+    }
+    merged.path.clone()
+}
+
+/// Resolve the workspace root for non-coding steps (Validate, Analyze, Run, …).
+///
+/// These commands require a directory argument. When the REPL context carries a file
+/// target (e.g. `last_target = apps/cli/src/coding.rs` from a prior coding apply),
+/// using it directly causes "path is not a directory". This helper normalises any
+/// file path to `"."` so those steps always receive a valid workspace root.
+fn workspace_path(merged: &ResolvedTarget) -> std::path::PathBuf {
+    let ext = merged.path.extension().and_then(|e| e.to_str());
+    if matches!(
+        ext,
+        Some("rs" | "toml" | "md" | "json" | "lock" | "yaml" | "yml")
+    ) {
+        std::path::PathBuf::from(".")
+    } else {
+        merged.path.clone()
+    }
+}
+
 fn wants_design_delta_reasoning(lower: &str) -> bool {
     [
         "最小の設計変更",
@@ -119,6 +172,43 @@ fn wants_design_tradeoff_explanation(lower: &str) -> bool {
     .any(|keyword| lower.contains(keyword))
 }
 
+fn wants_issue_driven_refactor(lower: &str) -> bool {
+    [
+        "問題",
+        "issue",
+        "coupling",
+        "依存",
+        "edge",
+        "cycle",
+        "循環",
+        "修正して",
+        "直して",
+        "refactor",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn heuristic_issue_spec(
+    input: &str,
+    merged: &ResolvedTarget,
+    conversation: &ConversationState,
+) -> String {
+    let target = if merged.path == std::path::PathBuf::from(".") {
+        conversation
+            .last_target
+            .clone()
+            .unwrap_or_else(|| std::path::PathBuf::from("."))
+    } else {
+        merged.path.clone()
+    };
+    format!(
+        "Analyze dependency edges for {:?}. Generate one concrete issue from the strongest coupling or cycle, map it to an action (ExtractInterface, RemoveDependency, or SplitModule), and prepare a refactor plan for: {}",
+        target.display().to_string(),
+        input
+    )
+}
+
 fn should_use_semantic_frontend(intent: &PlannerIntent) -> bool {
     intent.mixed_language
         || intent.detected_language == SupportedLanguage::Japanese
@@ -154,14 +244,14 @@ fn generate_multi_step_plan(
         if is_meta_planner_intent(intent) || intent.primary_intent == IntentType::RulesLearn {
             planner_edit_target()
         } else {
-            merged.path.clone()
+            coding_path(input, merged)
         };
 
     CommandPlan {
         steps: vec![
-            PlannedStep::Analyze(merged.path.clone()),
+            PlannedStep::Analyze(workspace_path(merged)),
             PlannedStep::Coding(coding_target, coding_options_for_request(input)),
-            PlannedStep::Validate(merged.path.clone()),
+            PlannedStep::Validate(workspace_path(merged)),
         ],
     }
 }
@@ -191,11 +281,11 @@ fn synthesize_steps_from_intent(
     let mut steps = Vec::new();
     match intent.primary_intent {
         IntentType::RulesList => steps.push(PlannedStep::Rules),
-        IntentType::StructureView => steps.push(PlannedStep::StructureView(merged.path.clone())),
-        IntentType::Validate => steps.push(PlannedStep::Validate(merged.path.clone())),
-        IntentType::AnalyzeArchitecture => steps.push(PlannedStep::Analyze(merged.path.clone())),
+        IntentType::StructureView => steps.push(PlannedStep::StructureView(workspace_path(merged))),
+        IntentType::Validate => steps.push(PlannedStep::Validate(workspace_path(merged))),
+        IntentType::AnalyzeArchitecture => steps.push(PlannedStep::Analyze(workspace_path(merged))),
         IntentType::CodingEdit => steps.push(PlannedStep::Coding(
-            merged.path.clone(),
+            coding_path(input, merged),
             coding_options_for_request(input),
         )),
         IntentType::DesignDeltaReasoning => {
@@ -217,7 +307,7 @@ fn synthesize_steps_from_intent(
                     .iter()
                     .any(|step| matches!(step, PlannedStep::Analyze(_)))
                 {
-                    steps.insert(0, PlannedStep::Analyze(merged.path.clone()));
+                    steps.insert(0, PlannedStep::Analyze(workspace_path(merged)));
                 }
             }
             IntentType::CodingEdit => {
@@ -226,7 +316,7 @@ fn synthesize_steps_from_intent(
                     .any(|step| matches!(step, PlannedStep::Coding(_, _)))
                 {
                     steps.push(PlannedStep::Coding(
-                        merged.path.clone(),
+                        coding_path(input, merged),
                         coding_options_for_request(input),
                     ));
                 }
@@ -236,7 +326,7 @@ fn synthesize_steps_from_intent(
                     .iter()
                     .any(|step| matches!(step, PlannedStep::Validate(_)))
                 {
-                    steps.push(PlannedStep::Validate(merged.path.clone()));
+                    steps.push(PlannedStep::Validate(workspace_path(merged)));
                 }
             }
             IntentType::MetaPlannerEdit | IntentType::RulesLearn => {
@@ -264,17 +354,30 @@ pub fn plan_input(
     session: &AgentSession,
     conversation: &ConversationState,
 ) -> Option<CommandPlan> {
-    // R1: continuation 上の exact "coding --apply" → ApplyPreviousCodingStep へ昇格。
-    // generic planner を bypass し、前回 dry-run transaction を再利用する (R2)。
-    if input.trim() == "coding --apply"
-        && (conversation.has_pending_coding_transaction() || conversation.has_reapply_guard())
+    let lower = input.to_lowercase();
+
+    if is_rollback_command(input) {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::RollbackCurrentTransaction],
+        });
+    }
+
+    // R1: "coding --apply" with a pending (not-yet-applied) transaction →
+    // ApplyPreviousCodingStep, bypassing the generic planner (R2).
+    //
+    // Guard: `is_new_coding_or_refactor_request` ensures that an explicit new
+    // coding/refactor input (e.g. "refactor ...", "coding check ...") is NEVER
+    // preempted by apply_previous, even when a pending transaction exists.
+    // Priority: explicit coding/refactor > apply_previous route.
+    if is_explicit_apply_intent(input)
+        && !is_new_coding_or_refactor_request(&lower)
+        && conversation.has_pending_transaction()
     {
         return Some(CommandPlan {
             steps: vec![PlannedStep::ApplyPreviousCodingStep],
         });
     }
 
-    let lower = input.to_lowercase();
     if lower.contains("whole project")
         || lower.contains("analyze project")
         || lower.contains("project .")
@@ -301,23 +404,54 @@ pub fn plan_input(
     let merged = merge_target(input, session, conversation);
     let mut steps = Vec::new();
 
+    if (wants_analyze(&lower) || lower.contains("問題を") || lower.contains("issue"))
+        && wants_issue_driven_refactor(&lower)
+    {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::DesignDeltaReasoning(heuristic_issue_spec(
+                input,
+                &merged,
+                conversation,
+            ))],
+        });
+    }
+
+    if conversation.last_analysis_summary.is_some()
+        && wants_issue_driven_refactor(&lower)
+        && !wants_validate(&lower)
+        && !wants_run(&lower)
+        && !wants_rules(&lower)
+        && !wants_memory(&lower)
+    {
+        return Some(CommandPlan {
+            steps: vec![PlannedStep::DesignDeltaReasoning(heuristic_issue_spec(
+                input,
+                &merged,
+                conversation,
+            ))],
+        });
+    }
+
     if lower.contains("undo") || lower.contains("戻して") {
-        steps.push(PlannedStep::StructureUndo(merged.path));
+        steps.push(PlannedStep::StructureUndo(workspace_path(&merged)));
         return Some(CommandPlan { steps });
     }
     if lower.contains("redo") || lower.contains("やり直") {
-        steps.push(PlannedStep::StructureRedo(merged.path));
+        steps.push(PlannedStep::StructureRedo(workspace_path(&merged)));
         return Some(CommandPlan { steps });
     }
     if (lower.contains("gui") || lower.contains("viewer") || lower.contains("差分"))
         && (lower.contains("diff") || lower.contains("差分"))
     {
-        steps.push(PlannedStep::StructureDiff(merged.path, merged.node.clone()));
+        steps.push(PlannedStep::StructureDiff(
+            workspace_path(&merged),
+            merged.node.clone(),
+        ));
         return Some(CommandPlan { steps });
     }
 
     if wants_structure_view(&lower) {
-        steps.push(PlannedStep::StructureView(merged.path));
+        steps.push(PlannedStep::StructureView(workspace_path(&merged)));
         return Some(CommandPlan { steps });
     }
 
@@ -336,7 +470,7 @@ pub fn plan_input(
             || conversation.last_target.is_some());
     if contextual_mutation_route {
         steps.push(PlannedStep::Coding(
-            merged.path.clone(),
+            coding_path(input, &merged),
             coding_options_for_request(input),
         ));
         return Some(CommandPlan { steps });
@@ -367,34 +501,34 @@ pub fn plan_input(
                 .any(|keyword| lower.contains(keyword)));
 
     if analyze_first {
-        steps.push(PlannedStep::Analyze(merged.path.clone()));
+        steps.push(PlannedStep::Analyze(workspace_path(&merged)));
     }
 
     if wants_coding(&lower) {
         steps.push(PlannedStep::Coding(
-            merged.path.clone(),
+            coding_path(input, &merged),
             coding_options_for_request(input),
         ));
     }
 
     if wants_validate(&lower) {
-        steps.push(PlannedStep::Validate(merged.path.clone()));
+        steps.push(PlannedStep::Validate(workspace_path(&merged)));
     }
 
     if lower.contains("commit") || lower.contains("コミット") {
-        steps.push(PlannedStep::GitCommit(merged.path.clone()));
+        steps.push(PlannedStep::GitCommit(workspace_path(&merged)));
     }
 
     if mentions_pr(&lower) || lower.contains("pushして") {
-        steps.push(PlannedStep::GitPR(merged.path.clone()));
+        steps.push(PlannedStep::GitPR(workspace_path(&merged)));
     }
 
     if wants_run(&lower) {
-        steps.push(PlannedStep::Run(merged.path.clone()));
+        steps.push(PlannedStep::Run(workspace_path(&merged)));
     }
 
     if steps.is_empty() && wants_analyze(&lower) {
-        steps.push(PlannedStep::Analyze(merged.path));
+        steps.push(PlannedStep::Analyze(workspace_path(&merged)));
     }
 
     if steps.is_empty() {
@@ -422,12 +556,16 @@ pub fn update_conversation_after_plan(
             | PlannedStep::StructureEdit(path)
             | PlannedStep::StructureUndo(path)
             | PlannedStep::StructureRedo(path)
-            | PlannedStep::Coding(path, _) => conversation.last_target = Some(path.clone()),
+            | PlannedStep::Coding(path, _) => {
+                conversation.clear_transaction_for_new_target(path);
+                conversation.note_target(path.clone());
+            }
             PlannedStep::DesignDeltaReasoning(_)
             | PlannedStep::AlternativeMutationSearch(_)
             | PlannedStep::ExplainDesignTradeoff(_) => {}
             PlannedStep::StructureDiff(path, node) => {
-                conversation.last_target = Some(path.clone());
+                conversation.clear_transaction_for_new_target(path);
+                conversation.note_target(path.clone());
                 if let Some(node) = node {
                     conversation.last_node = Some(node.clone());
                 }
@@ -435,7 +573,7 @@ pub fn update_conversation_after_plan(
             PlannedStep::Rules => {}
             // R2: ApplyPreviousCodingStep は last_target を更新しない。
             // 前回 Coding step が設定した last_target を continuity のためそのまま保持する (R3)。
-            PlannedStep::ApplyPreviousCodingStep => {}
+            PlannedStep::ApplyPreviousCodingStep | PlannedStep::RollbackCurrentTransaction => {}
         }
     }
 
@@ -557,6 +695,34 @@ mod tests {
                     "Semantic Interface Extraction Guard を追加する。\n対象は apps/cli/src/coding.rs。"
                 )
             )]
+        );
+    }
+
+    #[test]
+    fn analyze_issue_prompt_produces_actionable_refactor_plan() {
+        let session = AgentSession::new();
+        let conversation = ConversationState::default();
+
+        let plan = plan_input("設計上の問題を1つ挙げて", &session, &conversation).expect("plan");
+
+        assert!(
+            matches!(plan.steps.as_slice(), [PlannedStep::DesignDeltaReasoning(spec)] if spec.contains("Generate one concrete issue"))
+        );
+    }
+
+    #[test]
+    fn followup_fix_after_analysis_stays_on_refactor_path() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_analysis_summary: Some("High coupling between adapter and world".to_string()),
+            last_target: Some(PathBuf::from("apps/cli/src/nl/planner_v2.rs")),
+            ..ConversationState::default()
+        };
+
+        let plan = plan_input("その問題を修正して", &session, &conversation).expect("plan");
+
+        assert!(
+            matches!(plan.steps.as_slice(), [PlannedStep::DesignDeltaReasoning(spec)] if spec.contains("ExtractInterface"))
         );
     }
 
@@ -689,6 +855,181 @@ mod tests {
             vec![PlannedStep::ExplainDesignTradeoff(
                 "棄却した案との違いを説明して".to_string()
             )]
+        );
+    }
+
+    /// Regression: REPL NL coding request with explicit file target must not rebind
+    /// the workspace root to the file path.
+    ///
+    /// Invariants:
+    ///   - PlannedStep::Coding must carry the explicit file path (executor remaps to
+    ///     `coding . --target <file>`).
+    ///   - PlannedStep::Validate/Analyze must use "." (workspace root), never the file path.
+    #[test]
+    fn repl_single_file_coding_target_does_not_rebind_root() {
+        let session = AgentSession::new();
+        let conversation = ConversationState::default();
+        let plan = plan_input(
+            "このプロジェクトを coding check して target は apps/cli/src/coding.rs",
+            &session,
+            &conversation,
+        )
+        .expect("plan must be produced");
+
+        // The Coding step must preserve the explicit file path so the executor can
+        // remap it to `coding . --target apps/cli/src/coding.rs`.
+        let coding_step = plan
+            .steps
+            .iter()
+            .find(|s| matches!(s, PlannedStep::Coding(_, _)));
+        let Some(PlannedStep::Coding(coding_target, _)) = coding_step else {
+            panic!("expected at least one Coding step in plan: {plan:?}");
+        };
+        assert_eq!(
+            coding_target,
+            &std::path::PathBuf::from("apps/cli/src/coding.rs"),
+            "explicit file target must be preserved in Coding step"
+        );
+
+        // Non-coding steps must use workspace root "."; the file path must never appear
+        // as a directory argument to Analyze or Validate.
+        for step in &plan.steps {
+            match step {
+                PlannedStep::Analyze(path) | PlannedStep::Validate(path) => {
+                    assert_eq!(
+                        path,
+                        &std::path::PathBuf::from("."),
+                        "workspace root must remain '.' for {:?}, got: {}",
+                        step,
+                        path.display()
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Regression: a pending coding transaction must NEVER preempt an explicit new
+    /// coding or refactor request.
+    ///
+    /// The ApplyPreviousCodingStep route must only fire for the exact "coding --apply"
+    /// command. Any new coding/refactor work must produce a Coding step instead.
+    #[test]
+    fn no_dual_authority_pending_transaction_path() {
+        use crate::service::dto::{IRActiveTransaction, IRState};
+
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            ir_state: IRState {
+                active_transaction: Some(IRActiveTransaction {
+                    transaction_id: "tx:apps/cli/src/repl.rs".to_string(),
+                    canonical_target: PathBuf::from("apps/cli/src/repl.rs"),
+                    pending: true,
+                    applied: false,
+                    validated: false,
+                    rollback_available: false,
+                    latest_diff_ref: None,
+                    latest_build_ok: None,
+                }),
+                next_allowed_actions: Vec::new(),
+                ..IRState::default()
+            },
+            last_target: Some(PathBuf::from("apps/cli/src/repl.rs")),
+            ..ConversationState::default()
+        };
+
+        let new_requests = [
+            "refactor apps/cli/src/repl.rs",
+            "このプロジェクトを coding check して",
+            "coding check apps/cli",
+            "fix the planner routing",
+        ];
+
+        for input in &new_requests {
+            let plan = plan_input(input, &session, &conversation)
+                .unwrap_or_else(|| panic!("plan must be produced for: {input}"));
+
+            let hijacked = plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, PlannedStep::ApplyPreviousCodingStep));
+            assert!(
+                !hijacked,
+                "pending transaction must NOT hijack new request '{input}': got {:?}",
+                plan.steps
+            );
+
+            let has_coding = plan
+                .steps
+                .iter()
+                .any(|s| matches!(s, PlannedStep::Coding(_, _)));
+            assert!(
+                has_coding,
+                "new request '{input}' must produce a Coding step, got: {:?}",
+                plan.steps
+            );
+        }
+    }
+
+    #[test]
+    fn rollback_route_test() {
+        let session = AgentSession::new();
+        let plan =
+            plan_input("rollback", &session, &ConversationState::default()).expect("rollback plan");
+        assert_eq!(plan.steps, vec![PlannedStep::RollbackCurrentTransaction]);
+    }
+
+    #[test]
+    fn rollback_route_skips_analyze() {
+        let session = AgentSession::new();
+        let plan =
+            plan_input("rollback", &session, &ConversationState::default()).expect("rollback plan");
+        assert!(
+            !plan
+                .steps
+                .iter()
+                .any(|step| matches!(step, PlannedStep::Analyze(_))),
+            "rollback must never fall back to analyze: {:?}",
+            plan.steps
+        );
+    }
+
+    #[test]
+    fn planner_precedence_tree_is_ir_only() {
+        let source = include_str!("planner_v2.rs");
+        let alias = ["/coding", " rollback"].concat();
+        let phrase = ["undo previous", " transaction"].concat();
+        let token = ["\"un", "do\" |"].concat();
+        assert!(!source.contains(&alias));
+        assert!(!source.contains(&phrase));
+        assert!(!source.contains(&token));
+    }
+
+    /// After a single-file coding apply, `last_target` holds a file path.
+    /// The validate route must NOT inherit that file path — it must use workspace root ".".
+    #[test]
+    fn repl_validate_after_single_file_coding_apply_uses_workspace_root() {
+        let session = AgentSession::new();
+        // Simulate post-coding state: last_target = single file
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/coding.rs")),
+            ..ConversationState::default()
+        };
+
+        let plan = plan_input("validate", &session, &conversation).expect("plan must succeed");
+
+        let validate_path = plan.steps.iter().find_map(|s| {
+            if let PlannedStep::Validate(p) = s {
+                Some(p.clone())
+            } else {
+                None
+            }
+        });
+        assert!(validate_path.is_some(), "plan must contain a Validate step");
+        assert_eq!(
+            validate_path.unwrap(),
+            PathBuf::from("."),
+            "Validate step must use workspace root '.', not the last file path"
         );
     }
 

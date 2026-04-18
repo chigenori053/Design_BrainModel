@@ -17,21 +17,11 @@ pub struct IntentState {
     pub tokens: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArchitectureState {
     pub graph: ArchitectureGraph,
     pub candidate_id: Option<String>,
     pub score: Option<f64>,
-}
-
-impl Default for ArchitectureState {
-    fn default() -> Self {
-        Self {
-            graph: ArchitectureGraph::default(),
-            candidate_id: None,
-            score: None,
-        }
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

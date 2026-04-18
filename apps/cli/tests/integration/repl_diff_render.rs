@@ -24,6 +24,14 @@ fn sample_block(
         operation: operation.to_string(),
         diff_lines: diff_lines.iter().map(|line| line.to_string()).collect(),
         replacement: "replacement".to_string(),
+        added_lines: diff_lines
+            .iter()
+            .filter(|line| line.starts_with('+') && !line.starts_with("+++"))
+            .count(),
+        removed_lines: diff_lines
+            .iter()
+            .filter(|line| line.starts_with('-') && !line.starts_with("---"))
+            .count(),
         expanded: true,
         status: EditBlockStatus::Pending,
         selected_for_batch: false,

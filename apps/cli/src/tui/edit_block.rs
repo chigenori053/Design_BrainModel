@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 
 use ratatui::{
@@ -10,10 +9,11 @@ use ratatui::{
 };
 use serde::Deserialize;
 
-use crate::coding::{CodeChange, CodeChangeSet, CodingExecutionResult, DiffHunk};
+use crate::coding::{
+    CodeChange, CodeChangeSet, CodingExecutionResult, DiffHunk, build_unified_diff_preview,
+    render_code_diff_lines,
+};
 use crate::tui::review_batch::ReviewBatchState;
-
-const DIFF_CONTEXT: usize = 3;
 const COLLAPSED_DIFF_LINES: usize = 8;
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -41,6 +41,8 @@ pub struct EditBlock {
     pub operation: String,
     pub diff_lines: Vec<String>,
     pub replacement: String,
+    pub added_lines: usize,
+    pub removed_lines: usize,
     pub expanded: bool,
     pub status: EditBlockStatus,
     pub selected_for_batch: bool,
@@ -127,6 +129,35 @@ pub fn build_edit_blocks(
                 .map(|hunk| hunk.replacement.as_str())
                 .unwrap_or_default(),
         );
+        let diff = build_unified_diff_preview(
+            &root,
+            &CodeChangeSet {
+                patches: vec![],
+                changes: vec![change.clone()],
+                summary: crate::coding::ChangeSummary {
+                    total_changes: 1,
+                    create_files: usize::from(matches!(
+                        change.change_type,
+                        crate::coding::ChangeType::CreateFile
+                    )),
+                    modify_files: usize::from(matches!(
+                        change.change_type,
+                        crate::coding::ChangeType::ModifyFile
+                    )),
+                    move_files: usize::from(matches!(
+                        change.change_type,
+                        crate::coding::ChangeType::MoveFile
+                    )),
+                },
+                canonical_target: Some(PathBuf::from(&change.file_path)),
+            },
+        )?;
+        let rendered_diff = diff
+            .files
+            .first()
+            .map(render_code_diff_lines)
+            .unwrap_or_default();
+        let diff_counts = diff.files.first();
         blocks.push(EditBlock {
             patch_id: deterministic_patch_id(index, change),
             file_path: change.file_path.clone(),
@@ -135,12 +166,14 @@ pub fn build_edit_blocks(
             risk_label: rank.risk_label.to_string(),
             hunk_count: count_hunks(change),
             operation: operation_label(change),
-            diff_lines: build_unified_diff_lines(&root, change)?,
+            diff_lines: rendered_diff,
             replacement: change
                 .hunks
                 .last()
                 .map(|hunk| hunk.replacement.clone())
                 .unwrap_or_default(),
+            added_lines: diff_counts.map(|entry| entry.added_lines).unwrap_or(0),
+            removed_lines: diff_counts.map(|entry| entry.removed_lines).unwrap_or(0),
             expanded: false,
             status: EditBlockStatus::Pending,
             selected_for_batch: false,
@@ -244,12 +277,14 @@ fn render_edit_block(frame: &mut Frame, block: &EditBlock, area: Rect, focused: 
         EditBlockStatus::Discarded => "discarded",
     };
     let title = format!(
-        " {} | conf={} ({:.2}) | {} hunks | {} | {} ",
+        " {} | conf={} ({:.2}) | {} hunks | {} | +{} -{} | {} ",
         block.file_path,
         block.confidence_label,
         block.confidence_score,
         block.hunk_count,
         block.operation,
+        block.added_lines,
+        block.removed_lines,
         block.patch_id
     );
     let border_style = if focused {
@@ -332,12 +367,12 @@ fn styled_diff_line(line: &str) -> Vec<Span<'static>> {
         Style::default().fg(Color::Green)
     } else if line.starts_with('-') && !line.starts_with("---") {
         Style::default().fg(Color::Red)
-    } else if line.starts_with("@@") {
+    } else if line.starts_with("@@") || line.starts_with("---") || line.starts_with("+++") {
         Style::default()
-            .fg(Color::Yellow)
+            .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::White)
+        Style::default().fg(Color::DarkGray)
     };
     vec![Span::styled(line.to_string(), style)]
 }
@@ -381,201 +416,15 @@ fn target_directory_for_path(path: &str) -> String {
         .unwrap_or_else(|| ".".to_string())
 }
 
-fn build_unified_diff_lines(root: &Path, change: &CodeChange) -> Result<Vec<String>, String> {
-    let (old_lines, new_lines) = build_old_and_new(change, root);
-    Ok(unified_diff_lines(&old_lines, &new_lines))
-}
-
-fn build_old_and_new(change: &CodeChange, root: &Path) -> (Vec<String>, Vec<String>) {
-    let old = fs::read_to_string(root.join(&change.file_path)).unwrap_or_default();
-    let new = change
-        .hunks
-        .last()
-        .map(|hunk| hunk.replacement.clone())
-        .unwrap_or_default();
-    (
-        old.lines().map(ToString::to_string).collect(),
-        new.lines().map(ToString::to_string).collect(),
-    )
-}
-
-fn unified_diff_lines(old_lines: &[String], new_lines: &[String]) -> Vec<String> {
-    let ops = diff_ops(old_lines, new_lines);
-    let hunks = build_hunks(&ops, DIFF_CONTEXT);
-    let mut rendered = Vec::new();
-    for (index, hunk) in hunks.iter().enumerate() {
-        if index > 0 {
-            rendered.push("...".to_string());
-        }
-        rendered.push(format!(
-            "@@ -{},{} +{},{} @@",
-            hunk.old_start, hunk.old_count, hunk.new_start, hunk.new_count
-        ));
-        rendered.extend(hunk.lines.iter().cloned());
-    }
-    rendered
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum DiffOp {
-    Equal(String),
-    Remove(String),
-    Add(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct UnifiedHunk {
-    old_start: usize,
-    old_count: usize,
-    new_start: usize,
-    new_count: usize,
-    lines: Vec<String>,
-}
-
-fn diff_ops(old_lines: &[String], new_lines: &[String]) -> Vec<DiffOp> {
-    let mut dp = vec![vec![0usize; new_lines.len() + 1]; old_lines.len() + 1];
-    for i in (0..old_lines.len()).rev() {
-        for j in (0..new_lines.len()).rev() {
-            dp[i][j] = if old_lines[i] == new_lines[j] {
-                dp[i + 1][j + 1] + 1
-            } else {
-                dp[i + 1][j].max(dp[i][j + 1])
-            };
-        }
-    }
-    let mut i = 0;
-    let mut j = 0;
-    let mut ops = Vec::new();
-    while i < old_lines.len() && j < new_lines.len() {
-        if old_lines[i] == new_lines[j] {
-            ops.push(DiffOp::Equal(format!(" {}", old_lines[i])));
-            i += 1;
-            j += 1;
-        } else if dp[i + 1][j] >= dp[i][j + 1] {
-            ops.push(DiffOp::Remove(format!("-{}", old_lines[i])));
-            i += 1;
-        } else {
-            ops.push(DiffOp::Add(format!("+{}", new_lines[j])));
-            j += 1;
-        }
-    }
-    while i < old_lines.len() {
-        ops.push(DiffOp::Remove(format!("-{}", old_lines[i])));
-        i += 1;
-    }
-    while j < new_lines.len() {
-        ops.push(DiffOp::Add(format!("+{}", new_lines[j])));
-        j += 1;
-    }
-    ops
-}
-
-fn build_hunks(ops: &[DiffOp], context: usize) -> Vec<UnifiedHunk> {
-    let mut hunks = Vec::new();
-    let mut old_line = 1usize;
-    let mut new_line = 1usize;
-    let mut pending_context = Vec::<String>::new();
-    let mut current: Option<UnifiedHunk> = None;
-    let mut trailing_context = 0usize;
-
-    for op in ops {
-        match op {
-            DiffOp::Equal(line) => {
-                pending_context.push(line.clone());
-                if pending_context.len() > context {
-                    pending_context.remove(0);
-                }
-                if let Some(hunk) = current.as_mut() {
-                    hunk.lines.push(line.clone());
-                    hunk.old_count += 1;
-                    hunk.new_count += 1;
-                    trailing_context += 1;
-                    if trailing_context > context {
-                        hunk.lines.pop();
-                        hunk.old_count -= 1;
-                        hunk.new_count -= 1;
-                        hunks.push(current.take().expect("hunk"));
-                        trailing_context = 0;
-                    }
-                }
-                old_line += 1;
-                new_line += 1;
-            }
-            DiffOp::Remove(line) => {
-                if current.is_none() {
-                    current = Some(UnifiedHunk {
-                        old_start: old_line.saturating_sub(pending_context.len()),
-                        old_count: pending_context.len(),
-                        new_start: new_line.saturating_sub(pending_context.len()),
-                        new_count: pending_context.len(),
-                        lines: pending_context.clone(),
-                    });
-                }
-                let hunk = current.as_mut().expect("hunk");
-                hunk.lines.push(line.clone());
-                hunk.old_count += 1;
-                trailing_context = 0;
-                old_line += 1;
-            }
-            DiffOp::Add(line) => {
-                if current.is_none() {
-                    current = Some(UnifiedHunk {
-                        old_start: old_line.saturating_sub(pending_context.len()),
-                        old_count: pending_context.len(),
-                        new_start: new_line.saturating_sub(pending_context.len()),
-                        new_count: pending_context.len(),
-                        lines: pending_context.clone(),
-                    });
-                }
-                let hunk = current.as_mut().expect("hunk");
-                hunk.lines.push(line.clone());
-                hunk.new_count += 1;
-                trailing_context = 0;
-                new_line += 1;
-            }
-        }
-    }
-
-    if let Some(hunk) = current.take() {
-        hunks.push(hunk);
-    }
-
-    hunks
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn edit_block_renders_unified_diff_with_context_three() {
-        let old = vec![
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "d".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "g".to_string(),
-        ];
-        let new = vec![
-            "a".to_string(),
-            "b".to_string(),
-            "c".to_string(),
-            "delta".to_string(),
-            "e".to_string(),
-            "f".to_string(),
-            "g".to_string(),
-        ];
-        let diff = unified_diff_lines(&old, &new);
-        assert!(diff.iter().any(|line| line.starts_with("@@ -1,7 +1,7 @@")));
-        assert!(diff.contains(&" a".to_string()));
-        assert!(diff.contains(&" b".to_string()));
-        assert!(diff.contains(&" c".to_string()));
-        assert!(diff.contains(&"-d".to_string()));
-        assert!(diff.contains(&"+delta".to_string()));
-        assert!(diff.contains(&" e".to_string()));
-        assert!(diff.contains(&" f".to_string()));
-        assert!(diff.contains(&" g".to_string()));
+        let line = styled_diff_line("@@ -1,7 +1,7 @@");
+        assert_eq!(line[0].style.fg, Some(Color::Cyan));
+        let context = styled_diff_line(" unchanged");
+        assert_eq!(context[0].style.fg, Some(Color::DarkGray));
     }
 }

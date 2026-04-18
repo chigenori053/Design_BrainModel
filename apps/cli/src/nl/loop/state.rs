@@ -258,7 +258,10 @@ mod promotion_tests {
         .promote()
         .expect("memory promotion should succeed");
         assert_eq!(context.origin, LoopOrigin::MemoryRecall);
-        assert_eq!(context.previous_strategy, Some(PatchStrategy::BorrowScopeShrink));
+        assert_eq!(
+            context.previous_strategy,
+            Some(PatchStrategy::BorrowScopeShrink)
+        );
         assert_eq!(
             context.suggested_entry_state().unwrap(),
             LoopEntryState::PlanPatch

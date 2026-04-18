@@ -8,10 +8,12 @@ pub fn explain_tradeoff(search_result: &MutationSearchResult) -> Option<Tradeoff
         .iter()
         .filter(|candidate| candidate.id != selected.id)
         .collect::<Vec<_>>();
-    let benchmark = rejected
-        .first()
-        .copied()
-        .or_else(|| search_result.candidates.iter().find(|c| c.id != selected.id))?;
+    let benchmark = rejected.first().copied().or_else(|| {
+        search_result
+            .candidates
+            .iter()
+            .find(|c| c.id != selected.id)
+    })?;
 
     let tradeoff_points = vec![
         make_point("boundary integrity", selected, benchmark),
@@ -80,10 +82,7 @@ fn make_point(
     let rejected_score = dimension_score(dimension, rejected);
     let delta = selected_score - rejected_score;
     let explanation = if delta >= 0.0 {
-        format!(
-            "Better {dimension} ({:+.2}) versus {}",
-            delta, rejected.id
-        )
+        format!("Better {dimension} ({:+.2}) versus {}", delta, rejected.id)
     } else {
         format!(
             "Slightly weaker {dimension} ({:+.2}) than {} but accepted for overall ranking",
@@ -119,7 +118,12 @@ mod tests {
         DesignDelta, MutationPlan, MutationSearchResult, MutationStrategy, RationalityScore,
     };
 
-    fn candidate(id: &str, strategy: MutationStrategy, boundary: f32, extensibility: f32) -> MutationCandidate {
+    fn candidate(
+        id: &str,
+        strategy: MutationStrategy,
+        boundary: f32,
+        extensibility: f32,
+    ) -> MutationCandidate {
         MutationCandidate {
             id: id.to_string(),
             strategy,
@@ -145,8 +149,18 @@ mod tests {
 
     #[test]
     fn explanation_contains_five_tradeoff_dimensions() {
-        let selected = candidate("trait-extraction-1", MutationStrategy::TraitExtraction, 0.92, 0.91);
-        let rejected = candidate("adapter-insertion-1", MutationStrategy::AdapterInsertion, 0.81, 0.80);
+        let selected = candidate(
+            "trait-extraction-1",
+            MutationStrategy::TraitExtraction,
+            0.92,
+            0.91,
+        );
+        let rejected = candidate(
+            "adapter-insertion-1",
+            MutationStrategy::AdapterInsertion,
+            0.81,
+            0.80,
+        );
         let explanation = explain_tradeoff(&MutationSearchResult {
             candidates: vec![selected.clone(), rejected.clone()],
             selected: Some(selected),

@@ -1342,6 +1342,7 @@ dependencies = [
  "integration_layer",
  "language_core",
  "language_reasoning",
+ "log",
  "memory_persistence",
  "memory_space_phase14",
  "ratatui",

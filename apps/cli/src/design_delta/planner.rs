@@ -247,7 +247,10 @@ mod tests {
             "design_cli に trait を追加して crate 境界を維持する",
         );
         assert_eq!(delta.impacted_crates, vec!["design_cli".to_string()]);
-        assert_eq!(delta.introduced_interfaces, vec!["design_cli::DesignBoundary"]);
+        assert_eq!(
+            delta.introduced_interfaces,
+            vec!["design_cli::DesignBoundary"]
+        );
     }
 
     #[test]

@@ -98,19 +98,23 @@ impl RepairLoopController {
         }
     }
 
-    pub fn apply(
-        &mut self,
-        event: RepairLoopEvent,
-    ) -> Result<StateTransition, TransitionError> {
+    pub fn apply(&mut self, event: RepairLoopEvent) -> Result<StateTransition, TransitionError> {
         let from = self.state;
         let to = match (self.state, &event) {
-            (ReplLoopState::Idle, RepairLoopEvent::PromptAccepted | RepairLoopEvent::SessionResumed) => {
-                ReplLoopState::Analyze
+            (
+                ReplLoopState::Idle,
+                RepairLoopEvent::PromptAccepted | RepairLoopEvent::SessionResumed,
+            ) => ReplLoopState::Analyze,
+            (ReplLoopState::Analyze, RepairLoopEvent::AnalysisSucceeded) => {
+                ReplLoopState::PlanPatch
             }
-            (ReplLoopState::Analyze, RepairLoopEvent::AnalysisSucceeded) => ReplLoopState::PlanPatch,
-            (ReplLoopState::Analyze, RepairLoopEvent::AnalysisAmbiguous) => ReplLoopState::Escalated,
+            (ReplLoopState::Analyze, RepairLoopEvent::AnalysisAmbiguous) => {
+                ReplLoopState::Escalated
+            }
             (ReplLoopState::Analyze, RepairLoopEvent::AnalysisUnsafe) => ReplLoopState::Escalated,
-            (ReplLoopState::PlanPatch, RepairLoopEvent::PatchPlanned) => ReplLoopState::ApplySandbox,
+            (ReplLoopState::PlanPatch, RepairLoopEvent::PatchPlanned) => {
+                ReplLoopState::ApplySandbox
+            }
             (ReplLoopState::PlanPatch, RepairLoopEvent::PatchUnsafe) => ReplLoopState::Escalated,
             (ReplLoopState::PlanPatch, RepairLoopEvent::NoViablePatch) => ReplLoopState::Escalated,
             (ReplLoopState::ApplySandbox, RepairLoopEvent::SandboxApplied) => ReplLoopState::Verify,
@@ -142,7 +146,10 @@ impl RepairLoopController {
                 ReplLoopState::Escalated
             }
             _ => {
-                return Err(TransitionError::InvalidTransition { state: self.state, event });
+                return Err(TransitionError::InvalidTransition {
+                    state: self.state,
+                    event,
+                });
             }
         };
 
@@ -173,10 +180,7 @@ impl RepairLoopController {
         }
     }
 
-    pub fn commit_outcome(
-        &self,
-        decision: CommitGuardDecision,
-    ) -> ReplLoopState {
+    pub fn commit_outcome(&self, decision: CommitGuardDecision) -> ReplLoopState {
         match decision {
             CommitGuardDecision::Allow { .. } => ReplLoopState::CommitLocal,
             CommitGuardDecision::Reject { .. } => ReplLoopState::Completed,
@@ -194,10 +198,7 @@ impl RepairLoopController {
         }
     }
 
-    pub fn evaluate_commit(
-        &self,
-        context: &super::state::CommitDecisionContext,
-    ) -> ReplLoopState {
+    pub fn evaluate_commit(&self, context: &super::state::CommitDecisionContext) -> ReplLoopState {
         self.commit_outcome(CommitGuard::evaluate(context))
     }
 }
@@ -225,7 +226,9 @@ mod tests {
     fn happy_path_reaches_commit_decision() {
         let mut controller = RepairLoopController::new(RetryPolicy::default());
         controller.apply(RepairLoopEvent::PromptAccepted).unwrap();
-        controller.apply(RepairLoopEvent::AnalysisSucceeded).unwrap();
+        controller
+            .apply(RepairLoopEvent::AnalysisSucceeded)
+            .unwrap();
         controller.apply(RepairLoopEvent::PatchPlanned).unwrap();
         controller.apply(RepairLoopEvent::SandboxApplied).unwrap();
         controller.apply(RepairLoopEvent::VerifyPassed).unwrap();

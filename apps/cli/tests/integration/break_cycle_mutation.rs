@@ -618,7 +618,7 @@ fn break_cycle_runtime_vm_avoids_stale_warning_and_fixture_paths() {
     assert_eq!(
         parsed
             .get("execution")
-            .and_then(|value| value.get("fallback_resolution_hits"))
+            .and_then(|value| value.get("degraded_resolution_hits"))
             .and_then(Value::as_u64),
         Some(0),
         "stdout: {stdout}"
@@ -685,8 +685,8 @@ fn break_cycle_missing_world_peer_layout_uses_interface_only_branch() {
     };
     let resolution = design_cli::coding::MutationResolutionTelemetry {
         canonical_target_path: Some(PathBuf::from("src/adapter.rs")),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     };
     let patches = mutation_plan_to_patches(&root, &plan, &resolution).expect("patches");
@@ -736,8 +736,8 @@ fn break_cycle_semantic_preservation_integration() {
     };
     let resolution = design_cli::coding::MutationResolutionTelemetry {
         canonical_target_path: Some(PathBuf::from("src/adapter.rs")),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     };
     let patches = mutation_plan_to_patches(&root, &plan, &resolution).expect("patches");
@@ -795,8 +795,8 @@ fn controller_replay_break_cycle_trait_preservation() {
         canonical_target_path: Some(PathBuf::from(
             "crates/execution_stability_core/src/controller/execution_controller.rs",
         )),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     };
     let patches = mutation_plan_to_patches(&root, &plan, &resolution).expect("patches");
@@ -836,8 +836,8 @@ fn break_cycle_runtime_vm_real_adapter_fixture() {
     };
     let resolution = design_cli::coding::MutationResolutionTelemetry {
         canonical_target_path: Some(PathBuf::from("crates/runtime/runtime_vm/src/adapter.rs")),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     };
     let patches = mutation_plan_to_patches(&root, &plan, &resolution).expect("patches");
@@ -898,8 +898,8 @@ fn break_cycle_workspace_nested_root_resolution() {
     };
     let resolution = design_cli::coding::MutationResolutionTelemetry {
         canonical_target_path: Some(PathBuf::from("crates/runtime/runtime_vm/src/adapter.rs")),
-        legacy_pipeline_hits: 0,
-        fallback_resolution_hits: 0,
+        resolution_pipeline_hits: 0,
+        degraded_resolution_hits: 0,
         stale_artifact_detected: false,
     };
     let patches = mutation_plan_to_patches(&root, &plan, &resolution).expect("patches");

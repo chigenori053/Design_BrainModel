@@ -219,9 +219,9 @@ pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) ->
 
 fn build_design_snapshot(root: &str, result: &ProjectAnalysisResult) -> DesignSnapshot {
     let index = ModuleSourceIndex::build(std::path::Path::new(root)).unwrap_or_default();
-    let debug_fallback = analyze_debug_fallback_enabled();
-    let (nodes, analyze_legacy_binding_hits, analyze_fallback_hits) =
-        build_design_nodes(result, &index, debug_fallback);
+    let debug_lookup_enabled = analyze_debug_lookup_enabled();
+    let (nodes, graph_binding_debug_hits, graph_binding_resolution_hits) =
+        build_design_nodes(result, &index, debug_lookup_enabled);
     let fixture_binding_detected = nodes.iter().any(|node| {
         let path = node.source_path.replace('\\', "/");
         path.contains("/tests/") || path.contains("/fixtures/") || path.contains("/examples/")
@@ -231,8 +231,8 @@ fn build_design_snapshot(root: &str, result: &ProjectAnalysisResult) -> DesignSn
         edges: build_design_edges(result),
         cycles: collect_cycle_paths(result),
         violations: collect_design_violations(result),
-        analyze_legacy_binding_hits,
-        analyze_fallback_hits,
+        graph_binding_debug_hits,
+        graph_binding_resolution_hits,
         fixture_binding_detected,
     }
 }
@@ -240,20 +240,20 @@ fn build_design_snapshot(root: &str, result: &ProjectAnalysisResult) -> DesignSn
 fn build_design_nodes(
     result: &ProjectAnalysisResult,
     index: &ModuleSourceIndex,
-    debug_fallback: bool,
+    debug_lookup_enabled: bool,
 ) -> (Vec<DesignNode>, u64, u64) {
-    let mut analyze_legacy_binding_hits = 0_u64;
-    let mut analyze_fallback_hits = 0_u64;
+    let mut graph_binding_debug_hits = 0_u64;
+    let mut graph_binding_resolution_hits = 0_u64;
     let mut nodes = result
         .modules
         .iter()
         .map(|module| {
             let source_path = if let Some((_, path)) = index.bind_graph_node(&module.name) {
                 path.display().to_string()
-            } else if debug_fallback {
+            } else if debug_lookup_enabled {
                 if let Some((_, path)) = index.bind_graph_node_debug_fallback(&module.name) {
-                    analyze_legacy_binding_hits += 1;
-                    analyze_fallback_hits += 1;
+                    graph_binding_debug_hits += 1;
+                    graph_binding_resolution_hits += 1;
                     path.display().to_string()
                 } else {
                     module
@@ -279,10 +279,14 @@ fn build_design_nodes(
         })
         .collect::<Vec<_>>();
     nodes.sort_by(|left, right| left.id.cmp(&right.id));
-    (nodes, analyze_legacy_binding_hits, analyze_fallback_hits)
+    (
+        nodes,
+        graph_binding_debug_hits,
+        graph_binding_resolution_hits,
+    )
 }
 
-fn analyze_debug_fallback_enabled() -> bool {
+fn analyze_debug_lookup_enabled() -> bool {
     matches!(
         std::env::var("DBM_ENABLE_ANALYZE_DEBUG_FALLBACK")
             .ok()

@@ -20,18 +20,13 @@ pub struct KnowledgeQuery {
     pub confidence_threshold: f64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub enum KnowledgeSource {
     WebSearch,
+    #[default]
     LocalDocument,
     ExperienceDerived,
     Inferred,
-}
-
-impl Default for KnowledgeSource {
-    fn default() -> Self {
-        Self::LocalDocument
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -72,18 +67,13 @@ pub struct KnowledgeEntity {
     pub label: String,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum RelationType {
+    #[default]
     Supports,
     Requires,
     Constrains,
     Recommends,
-}
-
-impl Default for RelationType {
-    fn default() -> Self {
-        Self::Supports
-    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -829,43 +819,51 @@ impl KnowledgeParser {
             let inference_confidence = doc.metadata.reliability_hint.clamp(0.0, 1.0);
             infer_relation(
                 &mut graph,
-                "rest",
-                "stateless",
-                RelationType::Constrains,
-                doc.source.clone(),
-                inference_confidence,
-                timestamp,
-                source_reliability,
+                InferredRelation {
+                    source_label: "rest",
+                    target_label: "stateless",
+                    relation_type: RelationType::Constrains,
+                    knowledge_source: doc.source.clone(),
+                    inference_confidence,
+                    timestamp,
+                    source_reliability,
+                },
             );
             infer_relation(
                 &mut graph,
-                "api_gateway",
-                "service_discovery",
-                RelationType::Requires,
-                doc.source.clone(),
-                inference_confidence,
-                timestamp,
-                source_reliability,
+                InferredRelation {
+                    source_label: "api_gateway",
+                    target_label: "service_discovery",
+                    relation_type: RelationType::Requires,
+                    knowledge_source: doc.source.clone(),
+                    inference_confidence,
+                    timestamp,
+                    source_reliability,
+                },
             );
             infer_relation(
                 &mut graph,
-                "scalable",
-                "cache_strategy",
-                RelationType::Recommends,
-                doc.source.clone(),
-                inference_confidence,
-                timestamp,
-                source_reliability,
+                InferredRelation {
+                    source_label: "scalable",
+                    target_label: "cache_strategy",
+                    relation_type: RelationType::Recommends,
+                    knowledge_source: doc.source.clone(),
+                    inference_confidence,
+                    timestamp,
+                    source_reliability,
+                },
             );
             infer_relation(
                 &mut graph,
-                "layered_architecture",
-                "service",
-                RelationType::Supports,
-                doc.source.clone(),
-                inference_confidence,
-                timestamp,
-                source_reliability,
+                InferredRelation {
+                    source_label: "layered_architecture",
+                    target_label: "service",
+                    relation_type: RelationType::Supports,
+                    knowledge_source: doc.source.clone(),
+                    inference_confidence,
+                    timestamp,
+                    source_reliability,
+                },
             );
         }
         graph.entities.sort_by_key(|entity| entity.id);
@@ -1116,20 +1114,21 @@ fn ensure_entity(graph: &mut KnowledgeGraph, label: &str) -> EntityId {
     id
 }
 
-fn infer_relation(
-    graph: &mut KnowledgeGraph,
-    source_label: &str,
-    target_label: &str,
+struct InferredRelation<'a> {
+    source_label: &'a str,
+    target_label: &'a str,
     relation_type: RelationType,
     knowledge_source: KnowledgeSource,
     inference_confidence: f64,
     timestamp: u64,
     source_reliability: f64,
-) {
+}
+
+fn infer_relation(graph: &mut KnowledgeGraph, relation: InferredRelation<'_>) {
     let Some(source) = graph
         .entities
         .iter()
-        .find(|entity| entity.label == source_label)
+        .find(|entity| entity.label == relation.source_label)
         .map(|entity| entity.id)
     else {
         return;
@@ -1137,7 +1136,7 @@ fn infer_relation(
     let Some(target) = graph
         .entities
         .iter()
-        .find(|entity| entity.label == target_label)
+        .find(|entity| entity.label == relation.target_label)
         .map(|entity| entity.id)
     else {
         return;
@@ -1145,13 +1144,16 @@ fn infer_relation(
     graph.relations.push(KnowledgeRelation {
         source,
         target,
-        relation_type,
-        confidence: KnowledgeConfidence::new(inference_confidence, source_reliability),
+        relation_type: relation.relation_type,
+        confidence: KnowledgeConfidence::new(
+            relation.inference_confidence,
+            relation.source_reliability,
+        ),
         provenance: KnowledgeProvenance {
-            source: knowledge_source,
-            timestamp,
+            source: relation.knowledge_source,
+            timestamp: relation.timestamp,
             usage_count: 1,
-            last_used: timestamp,
+            last_used: relation.timestamp,
         },
     });
 }

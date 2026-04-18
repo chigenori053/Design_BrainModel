@@ -14,6 +14,7 @@ Core:
   coding         Generate or safely apply code changes
   validate       Validate design and runtime constraints
   structure      Open structure viewer and edit sessions
+  replay         Replay persisted IR sessions and export timelines
 
 Workflow:
   repl           Interactive natural language and command workflow
@@ -60,6 +61,8 @@ enum Commands {
     Validate(PassThroughArgs),
     #[command(about = "Open structure viewer and edit sessions")]
     Structure(PassThroughArgs),
+    #[command(about = "Replay persisted IR sessions and export timelines")]
+    Replay(PassThroughArgs),
     #[command(about = "Interactive natural language and command workflow")]
     Repl(PassThroughArgs),
     #[command(about = "Execute controlled project workflows")]
@@ -183,6 +186,7 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
         Some(Commands::Coding(args)) => pass_through_app_command("coding", args),
         Some(Commands::Validate(args)) => pass_through_app_command("validate", args),
         Some(Commands::Structure(args)) => pass_through_app_command("structure", args),
+        Some(Commands::Replay(args)) => pass_through_app_command("replay", args),
         Some(Commands::Repl(args)) => pass_through_app_command("repl", args),
         Some(Commands::Run(args)) => pass_through_app_command("run", args),
         Some(Commands::Rules(args)) => pass_through_app_command("rules", args),
@@ -248,6 +252,7 @@ fn should_use_legacy_app(args: &[OsString]) -> bool {
             | "repl"
             | "tui"
             | "structure"
+            | "replay"
             | "rules"
     )
 }

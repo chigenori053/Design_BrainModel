@@ -118,9 +118,18 @@ mod tests {
         assert_eq!(State::SpecReceived.as_str(), "spec_received");
         assert_eq!(State::DesignDeltaReady.as_str(), "design_delta_ready");
         assert_eq!(State::MutationPlanned.as_str(), "mutation_planned");
-        assert_eq!(State::MutationCandidatesReady.as_str(), "mutation_candidates_ready");
-        assert_eq!(State::MutationRankingReady.as_str(), "mutation_ranking_ready");
-        assert_eq!(State::BestMutationSelected.as_str(), "best_mutation_selected");
+        assert_eq!(
+            State::MutationCandidatesReady.as_str(),
+            "mutation_candidates_ready"
+        );
+        assert_eq!(
+            State::MutationRankingReady.as_str(),
+            "mutation_ranking_ready"
+        );
+        assert_eq!(
+            State::BestMutationSelected.as_str(),
+            "best_mutation_selected"
+        );
         assert_eq!(State::RationalityScored.as_str(), "rationality_scored");
         assert_eq!(State::PatchPlanReady.as_str(), "patch_plan_ready");
         assert_eq!(State::TestPlanReady.as_str(), "test_plan_ready");

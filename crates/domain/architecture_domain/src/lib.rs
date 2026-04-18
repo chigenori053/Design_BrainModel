@@ -39,7 +39,7 @@ pub struct ArchitectureMetrics {
     pub layering_score: f64,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct ArchitectureState {
     pub components: Vec<Component>,
     pub dependencies: Vec<Dependency>,
@@ -102,18 +102,6 @@ impl Default for DeploymentModel {
         Self {
             topology: "monolith".to_string(),
             replicas: 1,
-        }
-    }
-}
-
-impl Default for ArchitectureState {
-    fn default() -> Self {
-        Self {
-            components: Vec::new(),
-            dependencies: Vec::new(),
-            deployment: DeploymentModel::default(),
-            constraints: Vec::new(),
-            metrics: ArchitectureMetrics::default(),
         }
     }
 }

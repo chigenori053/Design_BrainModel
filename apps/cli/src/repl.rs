@@ -27,26 +27,26 @@ use crate::command::{CommandRegistry, Output};
 use crate::commands::register_defaults;
 use crate::executor::Executor;
 use crate::input::{InputState, read_input_with_label};
+use crate::ir::{IRPersistenceArtifact, persist_ir_transition, restore_or_initialize_ir_state};
 use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
 use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
 use crate::nl::types::{CodingOptions as NlCodingOptions, CommandPlan, PlannedStep};
 use crate::nl::{
-    execute_plan as execute_nl_plan, plan_input_with_v2_fallback, render_plan_summary_with_label,
+    execute_plan as execute_nl_plan, render_plan_summary_with_label, resolve_command_plan,
+    to_runtime_plan,
 };
 use crate::nl_executor::{execute_plan_step, run_design_command};
 use crate::plan::PlanStatus;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
+use crate::service::dto::{ActionKind, SessionAppliedDiff};
 use crate::session::AgentSession;
 use crate::state::State;
-use crate::tui::composer::{
-    ComposerAction, ComposerViewState, SessionAppliedDiff, SessionAppliedFileDiff, render_composer,
-};
-use crate::tui::edit_block::{
-    CodingReviewReport, EditBlockStatus, change_set_for_block,
-};
+use crate::tui::composer::ExecutionResult;
+use crate::tui::composer::{ComposerAction, ComposerViewState, render_composer};
+use crate::tui::edit_block::CodingReviewReport;
 use crate::tui::proc_strip::{DONE_MIN_VISIBLE, ProcPhase, RUNNING_MIN_VISIBLE};
 use crate::tui::review_batch::ReviewBatchState;
 
@@ -76,17 +76,14 @@ impl Drop for TerminalGuard {
 /// REPLを起動して入力ループを実行する
 ///
 /// `/exit` または EOF (Ctrl+D) で終了する。
-pub fn run_repl<R, W>(
-    workspace_root: PathBuf,
-    reader: &mut R,
-    writer: &mut W,
-) -> Result<(), String>
+pub fn run_repl<R, W>(workspace_root: PathBuf, reader: &mut R, writer: &mut W) -> Result<(), String>
 where
     R: BufRead,
     W: Write,
 {
     let mut session = AgentSession::with_root(workspace_root.clone());
     let mut conversation = ConversationState::default();
+    hydrate_ir_state(&workspace_root, &mut conversation)?;
     let mut registry = CommandRegistry::new();
     let mut planner_mode = PlannerMode::default();
     register_defaults(&mut registry);
@@ -137,6 +134,7 @@ pub fn run_repl_stdio(workspace_root: PathBuf) -> Result<(), String> {
 
     let mut session = AgentSession::with_root(workspace_root.clone());
     let mut conversation = ConversationState::default();
+    hydrate_ir_state(&workspace_root, &mut conversation)?;
     let mut registry = CommandRegistry::new();
     let mut planner_mode = PlannerMode::default();
     register_defaults(&mut registry);
@@ -260,7 +258,7 @@ fn banner_lines() -> Vec<String> {
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
         "  自然言語または /command でアーキテクチャを設計・解析できます。".to_string(),
         String::new(),
-        "  Enter で送信 / Shift+Enter で改行".to_string(),
+        "  Enter で送信 / 単一行・末尾追従入力".to_string(),
         "  /help でコマンド一覧  /exit で終了".to_string(),
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━".to_string(),
     ]
@@ -313,6 +311,7 @@ fn run_interactive_loop(
                     if handle_review_key(
                         key.code,
                         session,
+                        conversation,
                         &mut view,
                         &mut |view| draw_view(terminal, view),
                         &mut sleep,
@@ -387,6 +386,7 @@ fn global_key_action(key: KeyEvent, view: &ComposerViewState) -> Option<GlobalKe
 fn handle_review_key(
     code: KeyCode,
     session: &mut AgentSession,
+    conversation: &mut ConversationState,
     view: &mut ComposerViewState,
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
@@ -451,9 +451,13 @@ fn handle_review_key(
                     review.apply_focused_block()?
                 };
                 if let Some(applied) = summary {
-                    view.latest_session_diff = snapshot;
                     view.push_transcript_line(applied);
-                    update_next_step_suggestion(view, "coding --apply");
+                    view.set_execution_result(execution_result_from_snapshot(
+                        snapshot.clone(),
+                        ExecutionResult::NoOp,
+                    ));
+                    record_ir_apply(conversation, snapshot);
+                    view.ir_state = conversation.ir_state.clone();
                     reset_review_session(view, session);
                 }
             }
@@ -465,8 +469,17 @@ fn handle_review_key(
             if let Some(review) = view.review.as_mut() {
                 let snapshot = build_session_diff_snapshot(review);
                 if let Some(summary) = review.rollback_last_batch()? {
-                    view.latest_session_diff = snapshot;
                     view.push_transcript_line(summary);
+                    let reason = if snapshot.is_some() {
+                        "manual_rollback"
+                    } else {
+                        "validation_failed"
+                    };
+                    view.set_execution_result(ExecutionResult::RolledBack {
+                        reason: reason.to_string(),
+                    });
+                    record_ir_rollback(conversation, snapshot);
+                    view.ir_state = conversation.ir_state.clone();
                     reset_review_session(view, session);
                 }
             }
@@ -514,9 +527,33 @@ fn dispatch_submission(
     )?;
     if session.state == State::Completed
         && let Some(completed_step) = completed_step_name(input)
-        && let Some(next_step_text) = update_next_step_suggestion(view, completed_step)
     {
-        persist_next_step_suggestion(view, next_step_text);
+        conversation.ir_state.next_allowed_actions = next_allowed_actions_for(completed_step);
+        if completed_step == "validate" {
+            let before = conversation.ir_state.clone();
+            conversation.mark_transaction_validated();
+            let _ = persist_ir_transition(
+                &before,
+                &conversation.ir_state,
+                ActionKind::Validate,
+                input.to_string(),
+                IRPersistenceArtifact {
+                    diff_ref: conversation
+                        .ir_state
+                        .active_transaction
+                        .as_ref()
+                        .and_then(|tx| tx.latest_diff_ref.clone()),
+                    build_ok: conversation
+                        .ir_state
+                        .active_transaction
+                        .as_ref()
+                        .and_then(|tx| tx.latest_build_ok),
+                    validation_ok: Some(true),
+                    rollback_checkpoint: None,
+                },
+            );
+        }
+        view.ir_state = conversation.ir_state.clone();
         redraw(view)?;
     }
     Ok(result)
@@ -603,7 +640,7 @@ fn try_execute_reviewable_coding(
 
     let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
     update_conversation_after_plan(input, &command_plan, conversation);
-    session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+    session.current_plan = Some(to_runtime_plan(&command_plan));
     session.state = State::Completed;
     conversation.autonomous_label = None;
 
@@ -611,6 +648,18 @@ fn try_execute_reviewable_coding(
     if let Some(review) = ReviewBatchState::from_coding_reports(&reviews)? {
         review_blocks = review.blocks.len();
         view.activate_review(review);
+    }
+    if let Some(PlannedStep::Coding(path, options)) = command_plan.steps.first() {
+        let _ = (review_blocks, options);
+        let before = conversation.ir_state.clone();
+        conversation.start_preview_transaction(path.clone());
+        let _ = persist_ir_transition(
+            &before,
+            &conversation.ir_state,
+            ActionKind::CodingPreview,
+            format!("preview {}", path.display()),
+            IRPersistenceArtifact::default(),
+        );
     }
     view.sync_context(
         conversation,
@@ -624,7 +673,19 @@ fn try_execute_reviewable_coding(
     );
     view.push_transcript_line(planner_summary);
     if review_blocks > 0 {
+        if let Some(diff) = view
+            .review
+            .as_ref()
+            .and_then(|review| review.preview_diff_snapshot())
+        {
+            view.set_execution_result(execution_result_from_snapshot(
+                Some(diff),
+                ExecutionResult::NoOp,
+            ));
+        }
         view.push_transcript_line(format!("Review ready: {review_blocks} file patch group(s)"));
+    } else {
+        view.set_execution_result(ExecutionResult::NoOp);
     }
     Ok(Some(false))
 }
@@ -694,6 +755,15 @@ fn run_proc_strip_lifecycle(
         }
         Err(err) => {
             append_submission_transcript(view, input, &output);
+            if is_validate_request(input) {
+                view.set_execution_result(ExecutionResult::RolledBack {
+                    reason: "validation_failed".to_string(),
+                });
+            } else {
+                view.set_execution_result(ExecutionResult::Failure {
+                    reason: err.clone(),
+                });
+            }
             view.push_transcript_line(format!("Error: {err}"));
             Ok(false)
         }
@@ -1076,7 +1146,7 @@ fn handle_agent<W: Write>(
         update_conversation_after_plan(input, &command_plan, conversation);
 
         if cfg!(test) {
-            session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+            session.current_plan = Some(to_runtime_plan(&command_plan));
             session.state = State::Completed;
             emit_output(session, writer, "[test] planner-only mode")?;
             return Ok(());
@@ -1089,7 +1159,7 @@ fn handle_agent<W: Write>(
             }
         }
         session.state = State::Completed;
-        session.current_plan = Some(crate::nl::to_legacy_plan(&command_plan));
+        session.current_plan = Some(to_runtime_plan(&command_plan));
         conversation.autonomous_label = None;
         print_follow_up_suggestions(input, session, writer)?;
         return Ok(());
@@ -1175,24 +1245,24 @@ fn print_follow_up_suggestions<W: Write>(
     Ok(())
 }
 
-fn update_next_step_suggestion(
-    view: &mut ComposerViewState,
-    completed_step: &str,
-) -> Option<&'static str> {
-    if let Some(suggestion) = next_step_suggestion(completed_step) {
-        view.next_step_suggestion = Some(suggestion.to_string());
-        return Some(suggestion);
-    }
-    None
-}
-
-fn next_step_suggestion(completed_step: &str) -> Option<&'static str> {
+fn next_allowed_actions_for(completed_step: &str) -> Vec<ActionKind> {
     match completed_step {
-        "analyze" => Some("次のステップ:\nvalidate でアーキテクチャを検証"),
-        "validate" => Some("次のステップ:\nrefactor で改善を提案"),
-        "refactor" => Some("次のステップ:\ncoding --apply で変更を適用"),
-        "coding --apply" => Some("次のステップ:\nvalidate で変更結果を再検証"),
-        _ => None,
+        "analyze" => vec![ActionKind::Validate],
+        "validate" => vec![ActionKind::Refactor, ActionKind::Analyze],
+        "refactor" | "review-ready" => {
+            vec![ActionKind::Apply, ActionKind::Refactor, ActionKind::Analyze]
+        }
+        "coding --apply" => vec![
+            ActionKind::Validate,
+            ActionKind::Refactor,
+            ActionKind::Rollback,
+        ],
+        "rollback" => vec![
+            ActionKind::CodingPreview,
+            ActionKind::Analyze,
+            ActionKind::Refactor,
+        ],
+        _ => Vec::new(),
     }
 }
 
@@ -1200,7 +1270,8 @@ fn completed_step_name(input: &str) -> Option<&'static str> {
     let lower = input.to_lowercase();
     if lower.contains("coding") && lower.contains("--apply") {
         Some("coding --apply")
-    } else if lower.contains("validate") || lower.contains("検証") || lower.contains("チェック") {
+    } else if lower.contains("validate") || lower.contains("検証") || lower.contains("チェック")
+    {
         Some("validate")
     } else if lower.contains("refactor") || lower.contains("リファクタ") || lower.contains("改善")
     {
@@ -1219,83 +1290,79 @@ fn completed_step_name(input: &str) -> Option<&'static str> {
 fn build_session_diff_snapshot(
     review: &crate::tui::review_batch::ReviewBatchState,
 ) -> Option<SessionAppliedDiff> {
-    let mut selected = review
-        .blocks
-        .iter()
-        .filter(|block| {
-            block.selected_for_batch && matches!(block.status, EditBlockStatus::Pending)
+    review
+        .preview_diff_snapshot()
+        .or_else(|| review.last_batch_diff_snapshot())
+}
+
+fn execution_result_from_snapshot(
+    snapshot: Option<SessionAppliedDiff>,
+    fallback: ExecutionResult,
+) -> ExecutionResult {
+    snapshot
+        .map(|diff| ExecutionResult::Success {
+            files_changed: diff.files_changed,
+            lines_added: diff.lines_added,
+            lines_removed: diff.lines_removed,
         })
-        .collect::<Vec<_>>();
-    if selected.is_empty()
-        && let Some(block) = review
-            .blocks
-            .get(review.focused_block)
-            .filter(|block| matches!(block.status, EditBlockStatus::Pending))
-    {
-        selected.push(block);
-    }
-    if selected.is_empty()
-        && let Some(batch) = review.last_batch.as_ref()
-    {
-        selected.extend(
-            batch
-                .entries
-                .iter()
-                .filter_map(|entry| review.blocks.get(entry.block_index)),
-        );
-    }
-    let mut files = Vec::new();
-    for block in selected.into_iter().take(3) {
-        let change = change_set_for_block(block).changes.into_iter().next()?;
-        files.push(SessionAppliedFileDiff {
-            file_path: change.file_path.clone(),
-            unified_diff_excerpt: build_unified_diff_excerpt_from_change(&change),
-        });
-    }
-    if files.is_empty() {
-        return None;
-    }
-    Some(SessionAppliedDiff {
-        summary: build_session_diff_summary(&files),
-        files,
-    })
+        .unwrap_or(fallback)
 }
 
-fn build_session_diff_summary(files: &[SessionAppliedFileDiff]) -> String {
-    if files.len() == 1 {
-        format!("latest applied change (1 file)")
-    } else {
-        format!("latest applied changes ({} files)", files.len())
-    }
+fn is_validate_request(input: &str) -> bool {
+    input.to_lowercase().contains("validate") || input.contains("検証")
 }
 
-fn build_unified_diff_excerpt_from_change(change: &crate::coding::CodeChange) -> String {
-    let mut lines = Vec::new();
-    lines.push(format!("file: {}", change.file_path));
-    for hunk in &change.hunks {
-        lines.push(format!("@@ {}-{} @@", hunk.start_line, hunk.end_line));
-        for replacement_line in hunk.replacement.lines().take(10) {
-            lines.push(format!("+ {}", replacement_line));
-            if lines.len() >= 32 {
-                break;
-            }
-        }
-        if lines.len() >= 32 {
-            break;
-        }
-    }
-    if lines.is_empty() {
-        return "summary unavailable".to_string();
-    }
-    lines.truncate(32);
-    lines.join("\n")
+fn hydrate_ir_state(
+    workspace_root: &std::path::Path,
+    conversation: &mut ConversationState,
+) -> Result<(), String> {
+    let recovered = restore_or_initialize_ir_state(workspace_root)?;
+    conversation.ir_state = recovered.state;
+    conversation.last_target = conversation.ir_state.current_target.clone();
+    Ok(())
 }
 
-fn persist_next_step_suggestion(view: &mut ComposerViewState, suggestion: &str) {
-    if view.transcript.last().is_some_and(|line| line == suggestion) {
-        return;
-    }
-    view.push_transcript_line(suggestion.to_string());
+fn record_ir_apply(conversation: &mut ConversationState, snapshot: Option<SessionAppliedDiff>) {
+    let before = conversation.ir_state.clone();
+    conversation.mark_transaction_applied(snapshot);
+    let build_ok = conversation
+        .ir_state
+        .active_transaction
+        .as_ref()
+        .and_then(|tx| tx.latest_build_ok);
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        ActionKind::Apply,
+        "apply",
+        IRPersistenceArtifact {
+            diff_ref: conversation
+                .ir_state
+                .active_transaction
+                .as_ref()
+                .and_then(|tx| tx.latest_diff_ref.clone()),
+            build_ok,
+            validation_ok: None,
+            rollback_checkpoint: None,
+        },
+    );
+}
+
+fn record_ir_rollback(conversation: &mut ConversationState, _snapshot: Option<SessionAppliedDiff>) {
+    let before = conversation.ir_state.clone();
+    conversation.rollback_current_transaction();
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        ActionKind::Rollback,
+        "rollback",
+        IRPersistenceArtifact {
+            diff_ref: None,
+            build_ok: None,
+            validation_ok: None,
+            rollback_checkpoint: None,
+        },
+    );
 }
 
 fn plan_agent_input(
@@ -1306,7 +1373,7 @@ fn plan_agent_input(
     if let Some(plan) = exact_file_route_plan(input) {
         return (Some(plan), "repl_file_route");
     }
-    plan_input_with_v2_fallback(input, session, conversation)
+    resolve_command_plan(input, session, conversation)
 }
 
 fn exact_file_route_plan(input: &str) -> Option<CommandPlan> {
@@ -1501,6 +1568,7 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+    use crate::service::dto::SessionAppliedFileDiff;
 
     fn run_with_input(input: &str) -> (String, Result<(), String>) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
@@ -1778,6 +1846,7 @@ mod tests {
             ComposerAction::None
         );
         assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
+        assert_eq!(view.buffer.text(), "first line");
 
         let action = view.handle_key_event(crossterm::event::KeyEvent::new(
             KeyCode::Enter,
@@ -2104,7 +2173,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_enter_only_inserts_newline_without_dispatch() {
+    fn shift_enter_is_ignored_without_dispatch() {
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
         view.buffer.insert_str("line1");
         let transcript_before = view.transcript.clone();
@@ -2116,7 +2185,108 @@ mod tests {
 
         assert_eq!(action, ComposerAction::None);
         assert_eq!(view.transcript, transcript_before);
-        assert_eq!(view.buffer.text(), "line1\n");
+        assert_eq!(view.buffer.text(), "line1");
+    }
+
+    #[test]
+    fn lifecycle_fields_are_removed() {
+        let repl = include_str!("repl.rs");
+        let composer = include_str!("tui/composer.rs");
+        let session = include_str!("nl/session.rs");
+        let planner = include_str!("nl/planner_v2.rs");
+        let executor = include_str!("nl/executor.rs");
+
+        let banned = [
+            ["latest", "session", "diff"].join("_"),
+            ["next", "step", "suggestion"].join("_"),
+            ["last", "coding", "transaction"].join("_"),
+            ["has", "pending", "coding", "transaction()"].join("_"),
+        ];
+
+        for needle in banned {
+            assert!(!repl.contains(&needle), "repl still contains {needle}");
+            assert!(
+                !composer.contains(&needle),
+                "composer still contains {needle}"
+            );
+            assert!(
+                !session.contains(&needle),
+                "session still contains {needle}"
+            );
+            assert!(
+                !planner.contains(&needle),
+                "planner still contains {needle}"
+            );
+            assert!(
+                !executor.contains(&needle),
+                "executor still contains {needle}"
+            );
+        }
+    }
+
+    #[test]
+    fn route_helpers_are_removed_from_repl_stack() {
+        let files = [
+            include_str!("repl.rs"),
+            include_str!("tui/composer.rs"),
+            include_str!("nl/session.rs"),
+            include_str!("nl/planner_v2.rs"),
+            include_str!("nl/executor.rs"),
+            include_str!("nl/mod.rs"),
+        ];
+
+        for source in files {
+            let alias = ["/coding", " rollback"].concat();
+            let phrase = ["undo previous", " transaction"].concat();
+            assert!(!source.contains(&alias));
+            assert!(!source.contains(&phrase));
+        }
+    }
+
+    #[test]
+    fn diff_cleared_after_ir_rollback() {
+        let mut conversation = ConversationState::default();
+        conversation.set_active_transaction(crate::service::dto::IRActiveTransaction {
+            transaction_id: "tx:apps/cli/src/coding.rs".to_string(),
+            canonical_target: PathBuf::from("apps/cli/src/coding.rs"),
+            pending: false,
+            applied: true,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(SessionAppliedDiff {
+                summary: "latest applied change (1 file)".to_string(),
+                files: vec![SessionAppliedFileDiff {
+                    file_path: "apps/cli/src/coding.rs".to_string(),
+                    unified_diff_excerpt: "+ change".to_string(),
+                }],
+                files_changed: 1,
+                lines_added: 1,
+                lines_removed: 0,
+            }),
+            latest_build_ok: None,
+        });
+
+        record_ir_rollback(&mut conversation, None);
+
+        assert!(conversation.ir_state.active_transaction.is_none());
+        assert_eq!(
+            conversation.ir_state.next_allowed_actions,
+            vec![
+                ActionKind::CodingPreview,
+                ActionKind::Analyze,
+                ActionKind::Refactor
+            ]
+        );
+        let mut view = ComposerViewState::new(Vec::new(), State::Idle);
+        view.sync_context(&conversation, None, None);
+        assert_eq!(view.ir_state.active_transaction, None);
+    }
+
+    #[test]
+    fn rollback_requires_explicit_route() {
+        let (output, result) = run_with_input("rollback\n/exit\n");
+        assert!(result.is_ok());
+        assert!(output.contains("[planner: nl_v2] 1 steps"), "{output}");
     }
 
     #[test]
@@ -2256,8 +2426,10 @@ mod tests {
     fn analyze_project_command_works_via_repl() {
         let (output, result) = run_with_input("/analyze project src/\n/exit\n");
         assert!(result.is_ok());
-        assert!(output.contains("DBM Analyze Report"), "got: {output}");
-        assert!(output.contains("Target: src/"), "got: {output}");
+        assert!(
+            output.contains("[direct-dispatch] analyze project src/"),
+            "got: {output}"
+        );
     }
 
     #[test]

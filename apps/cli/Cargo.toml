@@ -44,3 +44,4 @@ ctrlc = "3.4"
 ratatui = { workspace = true }
 serde_yaml = "0.9"
 tempfile = "3"
+log = "0.4"

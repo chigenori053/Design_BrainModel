@@ -2,10 +2,8 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-use crate::nl::r#loop::{
-    LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext,
-};
 use crate::commands::analyze::project::UnifiedAnalyzeResult;
+use crate::nl::r#loop::{LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext};
 use crate::refactor::{
     ApplyPreviewPlan, GitCommitPreview, PreviewDiff, PromoteResult, RefactorActionKind,
     RefactorCandidate, RefactorOperation, RefactorTarget, StructureEdge,

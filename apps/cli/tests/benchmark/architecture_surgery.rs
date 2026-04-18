@@ -58,7 +58,9 @@ fn rollback_metric_is_tracked() {
         cycle_break_success: false,
     }])
     .expect("rollback scenario should write");
-    assert!(workspace_root()
-        .join(".dbm/benchmarks/architecture_surgery_snapshot.json")
-        .exists());
+    assert!(
+        workspace_root()
+            .join(".dbm/benchmarks/architecture_surgery_snapshot.json")
+            .exists()
+    );
 }

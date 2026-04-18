@@ -37,9 +37,11 @@ fn origin_snapshots_written() {
     ];
     let snapshot = write_origin_benchmark_snapshot(&records).expect("snapshot should write");
     assert_eq!(snapshot.analyze_convergence, 1.0);
-    assert!(workspace_root()
-        .join(".dbm/benchmarks/origin_benchmark_snapshot.json")
-        .exists());
+    assert!(
+        workspace_root()
+            .join(".dbm/benchmarks/origin_benchmark_snapshot.json")
+            .exists()
+    );
 }
 
 #[test]
@@ -78,7 +80,10 @@ fn baseline_comparison_and_scorecard_are_generated() {
     let scorecard =
         write_regression_scorecard(11, 4, &current_kpi, &records).expect("scorecard should write");
     assert_eq!(scorecard.hook_sensitive_delta, 0);
-    assert!(root.join(".dbm/benchmarks/regression_scorecard.md").exists());
+    assert!(
+        root.join(".dbm/benchmarks/regression_scorecard.md")
+            .exists()
+    );
 }
 
 #[test]

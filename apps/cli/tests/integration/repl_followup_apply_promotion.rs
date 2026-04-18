@@ -20,6 +20,7 @@ fn temp_project(name: &str) -> std::path::PathBuf {
     .expect("write cargo");
     fs::write(dir.join("src/lib.rs"), "pub mod coding;\n").expect("write lib");
     fs::write(dir.join("src/coding.rs"), "pub fn code() -> i32 { 0 }\n").expect("write coding");
+    fs::write(dir.join("src/other.rs"), "pub fn other() -> i32 { 1 }\n").expect("write other");
     dir
 }
 
@@ -163,5 +164,42 @@ coding --apply
     assert!(
         stdout.contains("Applied:"),
         "Applied: output missing\nstdout: {stdout}"
+    );
+}
+
+#[test]
+fn preview_apply_rollback_analyze_new_target_starts_cleanly() {
+    let dir = temp_project("rollback_chain");
+    let input = "\
+src/coding.rs を改善して
+coding --apply
+rollback
+@file src/other.rs
+/exit
+";
+    let (code, stdout, stderr) = run_repl(&dir, input);
+    assert_eq!(code, 0, "stderr: {stderr}");
+
+    assert!(
+        stdout.contains("rollback_current_transaction"),
+        "rollback step label missing\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("[rollback] reverted current IR transaction"),
+        "rollback transcript missing\nstdout: {stdout}"
+    );
+    assert!(
+        !stdout.contains("[step 0] rollback_current_transaction\n[step 0] design_cli analyze ."),
+        "rollback must not fall back to analyze .\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("snapshot executor received path: src/other.rs")
+            || stdout.contains("Analyzing code at: src/other.rs")
+            || stdout.contains("design_cli analyze src/other.rs"),
+        "post-rollback analyze did not start cleanly on the new target\nstdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("DBM[other.rs] >"),
+        "rollback continuity kept a stale target prompt\nstdout: {stdout}"
     );
 }
