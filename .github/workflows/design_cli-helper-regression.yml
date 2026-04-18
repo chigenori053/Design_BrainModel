@@ -31,3 +31,21 @@ jobs:
 
       - name: production path snapshot
         run: cargo test -p design_cli coding_check_json_production_path_snapshot --locked -- --nocapture
+
+      - name: legacy lowering usage
+        run: cargo test -p design_cli legacy_lowering_usage_must_be_zero --locked -- --nocapture
+
+      - name: explicit target cross-crate import coherence
+        run: cargo test -p design_cli coding_check_json_explicit_target_cross_crate_import_coherence --locked -- --nocapture
+
+      - name: canonical target dto continuity
+        run: cargo test -p design_cli coding_check_json_canonical_target_dto_continuity_e2e --locked -- --nocapture
+
+      - name: trait placeholder no todo
+        run: cargo test -p design_cli coding_check_json_no_todo_trait_stub_production_e2e --locked -- --nocapture
+
+      - name: trait placeholder determinism
+        run: cargo test -p design_cli coding_check_json_trait_placeholder_method_determinism_e2e --locked -- --nocapture
+
+      - name: trait placeholder fallback pair
+        run: cargo test -p design_cli coding_check_json_trait_fallback_pair_method_name_e2e --locked -- --nocapture

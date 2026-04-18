@@ -60,9 +60,31 @@ jobs:
             echo "legacy TODO trait stub detected"
             exit 1
           fi
+          jq -e 'tostring | contains("TODO: define required methods") | not' artifacts/coding_check_service.json
+
+      - name: Assert cross-crate imports use external crate paths
+        run: |
+          if rg -n "use crate::[a-z0-9_]+_interface::" artifacts/coding_check_service.json; then
+            echo "crate-root external interface import detected"
+            exit 1
+          fi
+          rg -n "use architecture_search::" artifacts/coding_check_service.json
 
       - name: Assert canonical target is present
         run: jq -e '.changes.canonical_target != null' artifacts/coding_check_service.json
+
+      - name: Assert canonical target continuity
+        run: |
+          jq -e '
+            .execution.canonical_target_path
+            ==
+            .changes.canonical_target
+          ' artifacts/coding_check_service.json
+
+      - name: Assert legacy lowering telemetry is zero
+        run: |
+          jq -e '.telemetry.legacy_lowering_path_used == false' artifacts/coding_check_service.json
+          jq -e '.telemetry.legacy_lowering_usage_count == 0' artifacts/coding_check_service.json
 
       - name: Write service hunk summary
         run: |
