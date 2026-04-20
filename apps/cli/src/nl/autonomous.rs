@@ -6,6 +6,9 @@ use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use crate::coding::TransactionalApplyResult;
+use crate::ir::{
+    emit_intent_captured, emit_plan_accepted, emit_plan_proposed, restore_or_initialize_ir_state,
+};
 use crate::nl::r#loop::{
     AnalyzeResult, LoopOrigin, LoopOutcome, LoopPromotable, PromotionGuard, RepairLoopController,
     RetryEvaluator,
@@ -16,8 +19,7 @@ use crate::viewer::{
 };
 
 use super::convergence::{ConvergenceMetrics, goal_reached};
-use super::executor::describe_plan_labels;
-use super::executor::execute_plan;
+use super::executor::{describe_plan_labels, execute_ir_plan};
 use super::goal::{GoalType, goal_label};
 use super::planner_v2::update_conversation_after_plan;
 use super::session::ConversationState;
@@ -220,10 +222,23 @@ fn maybe_promote_with_origin<T: LoopPromotable>(
 
 pub fn run_goal_loop(
     goal: GoalType,
-    _session: &mut AgentSession,
+    session: &mut AgentSession,
     conversation: &mut ConversationState,
     config: AutonomousLoop,
 ) -> AutonomousResult {
+    if conversation.ir_state.session_id.is_empty() {
+        let workspace_root = session
+            .workspace_root
+            .clone()
+            .or_else(|| std::env::current_dir().ok());
+        if let Some(workspace_root) = workspace_root
+            && let Ok(recovered) = restore_or_initialize_ir_state(&workspace_root)
+        {
+            conversation.ir_state = recovered.state;
+            conversation.last_target = conversation.ir_state.current_target.clone();
+        }
+    }
+
     let mut outputs = vec![format!("[autonomous goal: {}]", goal_label(goal))];
     let mut completed = false;
     let mut last_target = conversation
@@ -234,16 +249,37 @@ pub fn run_goal_loop(
     for iteration in 1..=config.max_iterations {
         let before = estimate_before(goal, iteration);
         let plan = build_goal_plan(goal, &last_target, iteration);
+        let mut accepted_plan_id = None;
+        if !conversation.ir_state.session_id.is_empty() {
+            let _ = emit_intent_captured(
+                &conversation.ir_state,
+                format!("autonomous:{}:iteration:{iteration}", goal_label(goal)),
+                plan.intent.clone(),
+            );
+            if let Ok(plan_id) = emit_plan_proposed(
+                &conversation.ir_state,
+                plan.clone(),
+                format!("autonomous:{}", goal_label(goal)),
+            ) {
+                let _ = emit_plan_accepted(&conversation.ir_state, plan_id);
+                accepted_plan_id = Some(plan_id);
+            }
+        }
+        conversation.last_accepted_plan_id = accepted_plan_id;
         conversation.last_plan = Some(plan.clone());
         update_conversation_after_plan(goal_label(goal), &plan, conversation);
         outputs.push(format!("iteration {iteration}/{}", config.max_iterations));
         outputs.extend(describe_plan_labels(&plan));
         for step in &plan.steps {
-            outputs.extend(execute_plan(
+            let plan_id = accepted_plan_id
+                .expect("Forbidden: direct execution path. Use IR-based execution.");
+            outputs.extend(execute_ir_plan(
+                plan_id,
                 &CommandPlan {
+                    intent: None,
                     steps: vec![step.clone()],
                 },
-                _session,
+                session,
                 conversation,
             ));
 
@@ -794,7 +830,10 @@ fn build_goal_plan(goal: GoalType, target: &std::path::Path, iteration: usize) -
         steps.push(PlannedStep::GitPR(path));
     }
 
-    CommandPlan { steps }
+    CommandPlan {
+        intent: None,
+        steps,
+    }
 }
 
 fn estimate_before(goal: GoalType, iteration: usize) -> f32 {
@@ -870,14 +909,25 @@ fn telemetry_line(goal: GoalType, metrics: ConvergenceMetrics) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ir::IRPersistenceStore;
     use crate::nl::goal::GoalType;
     use crate::nl::r#loop::{PatchStrategy, RepairTrajectory, ReplLoopState, RetryPolicy};
     use crate::refactor::ValidationResult;
+    use crate::test_support::ir_assert::{assert_plan_accepted, assert_plan_proposed};
     use tempfile::tempdir;
 
     #[test]
     fn max_iteration_stop_is_reported() {
-        let mut session = AgentSession::new();
+        let temp = tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("src")).expect("src");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"autonomous_ir\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("cargo");
+        std::fs::write(temp.path().join("src/lib.rs"), "pub fn noop() {}\n").expect("lib");
+
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
         let mut conversation = ConversationState::default();
         let result = run_goal_loop(
             GoalType::ReduceUnsafe,
@@ -895,6 +945,14 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("max iterations exceeded"))
         );
+
+        let store = IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().expect("recover");
+        let events = store
+            .list_plan_events(&recovered.state.session_id)
+            .expect("events");
+        let plan_id = assert_plan_proposed(&events);
+        assert_plan_accepted(&events, plan_id);
     }
 
     #[test]

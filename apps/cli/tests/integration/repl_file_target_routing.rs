@@ -133,6 +133,7 @@ fn coding_step_with_rs_path_remaps_to_target_flag() {
 
     // Build a plan with a .rs file path directly
     let plan = CommandPlan {
+        intent: None,
         steps: vec![PlannedStep::Coding(
             PathBuf::from("apps/cli/src/coding.rs"),
             CodingOptions::default(),

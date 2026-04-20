@@ -1,10 +1,62 @@
-/// Phase2: 逐次 Executor
+/// Phase 2: IR-driven Executor
 ///
-/// Plan の各 Step を順番に CommandRegistry 経由で実行する。
-/// エラー発生時は該当 Step を Failed にして即時停止する。
+/// `IrExecutor` trait defines the contract for step execution.
+/// Callers emit IR lifecycle events; the executor only computes results.
 use crate::command::CommandRegistry;
-use crate::plan::{Plan, PlanStatus, StepStatus};
+use crate::ir::{ArtifactRef, ExecutionStatus, MemoryContext};
+use crate::nl::types::PlannedStep;
+use crate::plan::Plan;
 use crate::session::AgentSession;
+
+// ── IrExecutor trait ──────────────────────────────────────────────────────────
+
+/// Output of a single step execution.
+/// Does NOT contain IR event emission — the caller is responsible for that.
+#[derive(Debug, Clone)]
+pub struct StepExecutionOutput {
+    pub stdout: Option<String>,
+    pub stderr: Option<String>,
+    pub status: ExecutionStatus,
+    pub artifacts: Vec<ArtifactRef>,
+}
+
+impl StepExecutionOutput {
+    pub fn success(stdout: impl Into<String>) -> Self {
+        Self {
+            stdout: Some(stdout.into()),
+            stderr: None,
+            status: ExecutionStatus::Success,
+            artifacts: Vec::new(),
+        }
+    }
+
+    pub fn failure(stderr: impl Into<String>) -> Self {
+        Self {
+            stdout: None,
+            stderr: Some(stderr.into()),
+            status: ExecutionStatus::Failure,
+            artifacts: Vec::new(),
+        }
+    }
+
+    pub fn skipped() -> Self {
+        Self {
+            stdout: None,
+            stderr: None,
+            status: ExecutionStatus::Skipped,
+            artifacts: Vec::new(),
+        }
+    }
+}
+
+/// Execution contract: compute a result from a step.
+///
+/// MUST NOT write IR events — the caller wraps this in step lifecycle emission.
+pub trait IrExecutor {
+    fn execute_step(&mut self, step: &PlannedStep, context: &MemoryContext) -> StepExecutionOutput;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 pub struct Executor;
 
@@ -17,43 +69,14 @@ impl Executor {
     ///
     /// 各ステップを順に実行し、結果メッセージのリストを返す。
     /// いずれかのステップが失敗した場合はそこで停止する。
+    #[deprecated(note = "Use execute_ir_plan instead")]
     pub fn execute(
         &self,
-        plan: &mut Plan,
-        session: &mut AgentSession,
-        registry: &CommandRegistry,
+        _plan: &mut Plan,
+        _session: &mut AgentSession,
+        _registry: &CommandRegistry,
     ) -> Vec<String> {
-        plan.status = PlanStatus::Running;
-        let mut outputs = Vec::new();
-
-        for step in plan.steps.iter_mut() {
-            step.status = StepStatus::Running;
-
-            let result = if let Some(cmd) = &step.command {
-                registry.execute(&cmd.name, cmd.subcommand.as_deref(), &cmd.args, session)
-            } else {
-                // コマンドなし → スキップ（Done扱い）
-                step.status = StepStatus::Done;
-                outputs.push(format!("[step {}] {} (skipped)", step.id, step.description));
-                continue;
-            };
-
-            match result {
-                Ok(output) => {
-                    step.status = StepStatus::Done;
-                    outputs.push(format!("[step {}] {}", step.id, output.message));
-                }
-                Err(e) => {
-                    step.status = StepStatus::Failed;
-                    outputs.push(format!("[step {}] Error: {e}", step.id));
-                    plan.status = PlanStatus::Failed;
-                    return outputs;
-                }
-            }
-        }
-
-        plan.status = PlanStatus::Completed;
-        outputs
+        panic!("Legacy executor is disabled. Use IR execution.");
     }
 }
 
@@ -64,6 +87,7 @@ impl Default for Executor {
 }
 
 #[cfg(test)]
+#[allow(deprecated)]
 mod tests {
     use super::*;
     use crate::command::CommandRegistry;
@@ -78,7 +102,8 @@ mod tests {
     }
 
     #[test]
-    fn executor_runs_single_step() {
+    #[should_panic(expected = "Legacy executor is disabled. Use IR execution.")]
+    fn executor_is_disabled_for_single_step() {
         let registry = build_registry();
         let executor = Executor::new();
         let mut session = AgentSession::new();
@@ -90,15 +115,12 @@ mod tests {
         )];
         let mut plan = crate::plan::Plan::new("p1", steps);
 
-        let outputs = executor.execute(&mut plan, &mut session, &registry);
-        assert_eq!(plan.status, PlanStatus::Completed);
-        assert_eq!(plan.steps[0].status, StepStatus::Done);
-        assert!(!outputs.is_empty());
-        assert!(outputs[0].contains("# Spec: api"));
+        let _ = executor.execute(&mut plan, &mut session, &registry);
     }
 
     #[test]
-    fn executor_fails_on_unknown_command() {
+    #[should_panic(expected = "Legacy executor is disabled. Use IR execution.")]
+    fn executor_is_disabled_for_unknown_command() {
         let registry = build_registry();
         let executor = Executor::new();
         let mut session = AgentSession::new();
@@ -110,14 +132,12 @@ mod tests {
         )];
         let mut plan = crate::plan::Plan::new("p2", steps);
 
-        let outputs = executor.execute(&mut plan, &mut session, &registry);
-        assert_eq!(plan.status, PlanStatus::Failed);
-        assert_eq!(plan.steps[0].status, StepStatus::Failed);
-        assert!(outputs[0].contains("Error"));
+        let _ = executor.execute(&mut plan, &mut session, &registry);
     }
 
     #[test]
-    fn executor_stops_on_first_failure() {
+    #[should_panic(expected = "Legacy executor is disabled. Use IR execution.")]
+    fn executor_is_disabled_for_multiple_steps() {
         let registry = build_registry();
         let executor = Executor::new();
         let mut session = AgentSession::new();
@@ -136,53 +156,6 @@ mod tests {
         ];
         let mut plan = crate::plan::Plan::new("p3", steps);
 
-        let outputs = executor.execute(&mut plan, &mut session, &registry);
-        assert_eq!(plan.status, PlanStatus::Failed);
-        assert_eq!(plan.steps[0].status, StepStatus::Failed);
-        // step1 は実行されていない
-        assert_eq!(plan.steps[1].status, StepStatus::Pending);
-        assert_eq!(outputs.len(), 1);
-    }
-
-    #[test]
-    fn executor_skips_step_without_command() {
-        let registry = build_registry();
-        let executor = Executor::new();
-        let mut session = AgentSession::new();
-
-        let steps = vec![Step::new(0, "No-op step", None)];
-        let mut plan = crate::plan::Plan::new("p4", steps);
-
-        let outputs = executor.execute(&mut plan, &mut session, &registry);
-        assert_eq!(plan.status, PlanStatus::Completed);
-        assert_eq!(plan.steps[0].status, StepStatus::Done);
-        assert!(outputs[0].contains("skipped"));
-    }
-
-    #[test]
-    fn executor_runs_multiple_steps() {
-        let registry = build_registry();
-        let executor = Executor::new();
-        let mut session = AgentSession::new();
-
-        let steps = vec![
-            Step::new(
-                0,
-                "spec",
-                Some(CommandInvocation::new("generate", Some("spec"), &["cli"])),
-            ),
-            Step::new(
-                1,
-                "design",
-                Some(CommandInvocation::new("generate", Some("design"), &["cli"])),
-            ),
-        ];
-        let mut plan = crate::plan::Plan::new("p5", steps);
-
-        let outputs = executor.execute(&mut plan, &mut session, &registry);
-        assert_eq!(plan.status, PlanStatus::Completed);
-        assert_eq!(outputs.len(), 2);
-        assert!(outputs[0].contains("# Spec: cli"));
-        assert!(outputs[1].contains("# Design: cli"));
+        let _ = executor.execute(&mut plan, &mut session, &registry);
     }
 }

@@ -85,7 +85,33 @@ pub enum PlannedStep {
     RollbackCurrentTransaction,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum IntentScope {
+    Workspace,
+    Target(PathBuf),
+    Node(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum CodingIntent {
+    FixBug {
+        target: PathBuf,
+        description: String,
+    },
+    Refactor {
+        scope: IntentScope,
+    },
+    AddFeature {
+        target: PathBuf,
+        spec: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct CommandPlan {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intent: Option<CodingIntent>,
     pub steps: Vec<PlannedStep>,
 }

@@ -133,7 +133,12 @@ impl ModuleSourceIndex {
         }
 
         let key = normalize_key(module);
-        let Some(entries) = self.by_bare.get(&key) else {
+        let Some(entries) = self.by_bare.get(&key).or_else(|| {
+            self.by_bare
+                .iter()
+                .find(|(k, _)| k.rsplit("::").next() == Some(key.as_str()))
+                .map(|(_, v)| v)
+        }) else {
             return Ok(None);
         };
         if entries.len() == 1 {

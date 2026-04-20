@@ -105,6 +105,10 @@ pub fn sanitize_debug_leakage(input: &str) -> String {
         .to_string()
 }
 
+pub fn ui_safe(input: &str) -> String {
+    sanitize_debug_leakage(input)
+}
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ChatSession {
     pub history: Vec<String>,
@@ -199,5 +203,11 @@ mod tests {
         session.record_output("TRACE:R2:LAST=.");
         session.record_output("visible");
         assert_eq!(session.transcript, vec!["visible".to_string()]);
+    }
+
+    #[test]
+    fn ui_safe_filters_mixed_debug_lines() {
+        let sanitized = ui_safe("hello\nTRACE:R1\nworld");
+        assert_eq!(sanitized, "hello\nworld");
     }
 }

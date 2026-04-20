@@ -34,7 +34,10 @@ impl CompatibilityBridge {
         } else {
             result.planned_steps
         };
-        Ok(CommandPlan { steps })
+        Ok(CommandPlan {
+            intent: None,
+            steps,
+        })
     }
 }
 

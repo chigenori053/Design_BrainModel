@@ -39,7 +39,10 @@ pub fn to_command_plan(plan: &MutationPlan, request: &str) -> CommandPlan {
     }
     steps.push(PlannedStep::GitCommit(plan.delta.workspace_root.clone()));
     steps.push(PlannedStep::GitPR(plan.delta.workspace_root.clone()));
-    CommandPlan { steps }
+    CommandPlan {
+        intent: None,
+        steps,
+    }
 }
 
 #[cfg(test)]

@@ -5,6 +5,7 @@ use crate::design_delta::{
     RationalityScore, TradeoffExplanation,
 };
 use crate::service::dto::{ActionKind, IRActiveTransaction, IRState, SessionAppliedDiff};
+use uuid::Uuid;
 
 use super::types::CommandPlan;
 
@@ -14,6 +15,7 @@ pub struct ConversationState {
     pub last_target: Option<PathBuf>,
     pub last_node: Option<String>,
     pub last_plan: Option<CommandPlan>,
+    pub last_accepted_plan_id: Option<Uuid>,
     pub last_viewer_session: Option<String>,
     pub last_analysis_summary: Option<String>,
     pub ir_state: IRState,

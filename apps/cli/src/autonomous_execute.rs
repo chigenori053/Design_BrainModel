@@ -762,7 +762,6 @@ mod tests {
     use super::*;
     use crate::renderer::render_autonomous_execute_report;
     use crate::runner::{OutputMeta, SandboxMode};
-    use std::sync::{Mutex, OnceLock};
 
     #[derive(Debug, Clone)]
     struct MockAdapter {
@@ -830,9 +829,8 @@ mod tests {
         root
     }
 
-    fn gh_env_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
+    fn gh_env_lock() -> std::sync::MutexGuard<'static, ()> {
+        crate::test_support::gh_bin_env_lock()
     }
 
     struct EnvVarGuard {
@@ -1611,7 +1609,7 @@ mod tests {
 
     #[test]
     fn auth_validator_detects_gh_auth_failure() {
-        let _guard = gh_env_lock().lock().expect("gh env lock");
+        let _guard = gh_env_lock();
         let repo = temp_git_repo("auth_failure");
         let _remote = attach_origin_remote(&repo, "auth_failure");
         let fake_gh = write_fake_gh(false);
@@ -1623,7 +1621,7 @@ mod tests {
 
     #[test]
     fn remote_integration_pushes_and_creates_pr_phase2() {
-        let _guard = gh_env_lock().lock().expect("gh env lock");
+        let _guard = gh_env_lock();
         let repo = temp_git_repo("remote_success");
         let bare = attach_origin_remote(&repo, "remote_success");
         let fake_gh = write_fake_gh(true);
@@ -1720,7 +1718,7 @@ mod tests {
 
     #[test]
     fn remote_integration_skips_duplicate_pr_creation() {
-        let _guard = gh_env_lock().lock().expect("gh env lock");
+        let _guard = gh_env_lock();
         let repo = temp_git_repo("remote_duplicate");
         let _bare = attach_origin_remote(&repo, "remote_duplicate");
         let fake_gh = write_fake_gh(true);

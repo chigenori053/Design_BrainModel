@@ -18,7 +18,7 @@ fn reset_and_dispatch(next_input: &str) -> (ComposerViewState, AgentSession, Str
     reset_review_session(&mut view, &mut session);
 
     let submit = {
-        view.buffer.insert_str(next_input);
+        view.insert_intent_text(next_input);
         view.handle_key_event(crossterm::event::KeyEvent::new(
             crossterm::event::KeyCode::Enter,
             crossterm::event::KeyModifiers::NONE,

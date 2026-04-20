@@ -9,7 +9,8 @@ use crate::session::AgentSession;
 
 use super::session::ConversationState;
 use super::types::{
-    CodingOptions, CommandPlan, IntentType, PlannedStep, ResolvedTarget, SupportedLanguage,
+    CodingIntent, CodingOptions, CommandPlan, IntentScope, IntentType, PlannedStep, ResolvedTarget,
+    SupportedLanguage,
 };
 
 /// R1: only validated explicit targets can force a targeted coding route.
@@ -76,6 +77,217 @@ fn coding_options_for_request(input: &str) -> CodingOptions {
         request: Some(input.to_string()),
         ..CodingOptions::default()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct IntentClarification {
+    message: String,
+}
+
+fn explicit_target_count(input: &str) -> usize {
+    input
+        .split_whitespace()
+        .map(|token| {
+            token.trim_matches(|c: char| {
+                matches!(
+                    c,
+                    ',' | '。' | '.' | '、' | ':' | ';' | '"' | '\'' | '「' | '」' | '(' | ')'
+                )
+            })
+        })
+        .filter(|token| {
+            !token.is_empty()
+                && (token.contains('/')
+                    || token.ends_with(".rs")
+                    || token.ends_with(".toml")
+                    || token.ends_with(".json")
+                    || token.ends_with(".md"))
+        })
+        .count()
+}
+
+fn references_feature_addition(lower: &str) -> bool {
+    [
+        "機能追加",
+        "feature",
+        "追加する",
+        "追加して",
+        "implement",
+        "add ",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn references_refactor(lower: &str) -> bool {
+    [
+        "refactor",
+        "設計変更",
+        "trait",
+        "責務",
+        "coupling",
+        "循環",
+        "cycle",
+        "抽象化",
+        "分離",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn references_bug_fix(lower: &str) -> bool {
+    [
+        "fix",
+        "bug",
+        "修正",
+        "直して",
+        "直す",
+        "failure",
+        "broken",
+        "panic",
+        "error",
+    ]
+    .iter()
+    .any(|keyword| lower.contains(keyword))
+}
+
+fn resolve_intent_scope(merged: &ResolvedTarget) -> Option<IntentScope> {
+    if merged.scope.as_deref() == Some("project") || merged.path == std::path::PathBuf::from(".") {
+        Some(IntentScope::Workspace)
+    } else if let Some(node) = &merged.node {
+        Some(IntentScope::Node(node.clone()))
+    } else if merged.path.as_os_str().is_empty() {
+        None
+    } else {
+        Some(IntentScope::Target(merged.path.clone()))
+    }
+}
+
+fn formalize_coding_intent(
+    input: &str,
+    merged: &ResolvedTarget,
+    conversation: &ConversationState,
+) -> Result<Option<CodingIntent>, IntentClarification> {
+    let lower = input.to_lowercase();
+    if explicit_target_count(input) > 1 {
+        return Err(IntentClarification {
+            message: "Which file should be modified?".to_string(),
+        });
+    }
+
+    let has_action = references_bug_fix(&lower)
+        || references_feature_addition(&lower)
+        || references_refactor(&lower)
+        || wants_design_delta_reasoning(&lower)
+        || wants_alternative_mutation_search(&lower)
+        || wants_design_tradeoff_explanation(&lower);
+    if !has_action {
+        return Ok(None);
+    }
+
+    if references_feature_addition(&lower) {
+        let target = if merged.path != std::path::PathBuf::from(".") {
+            merged.path.clone()
+        } else if let Some(target) = conversation.last_target.clone() {
+            target
+        } else {
+            return Err(IntentClarification {
+                message: "Which file should be modified?".to_string(),
+            });
+        };
+        return Ok(Some(CodingIntent::AddFeature {
+            target,
+            spec: input.to_string(),
+        }));
+    }
+
+    if references_refactor(&lower)
+        || wants_design_delta_reasoning(&lower)
+        || wants_alternative_mutation_search(&lower)
+        || wants_design_tradeoff_explanation(&lower)
+    {
+        let scope = resolve_intent_scope(merged).ok_or_else(|| IntentClarification {
+            message: "Which scope should be refactored?".to_string(),
+        })?;
+        return Ok(Some(CodingIntent::Refactor { scope }));
+    }
+
+    if references_bug_fix(&lower) {
+        if merged.path == std::path::PathBuf::from(".")
+            && let Some(node) = &merged.node
+        {
+            return Ok(Some(CodingIntent::Refactor {
+                scope: IntentScope::Node(node.clone()),
+            }));
+        }
+        let target = if merged.path != std::path::PathBuf::from(".") {
+            merged.path.clone()
+        } else if let Some(target) = conversation.last_target.clone() {
+            target
+        } else {
+            return Err(IntentClarification {
+                message: "Which file should be modified?".to_string(),
+            });
+        };
+        return Ok(Some(CodingIntent::FixBug {
+            target,
+            description: input.to_string(),
+        }));
+    }
+
+    Ok(None)
+}
+
+fn validate_formalized_intent(intent: &CodingIntent) -> Result<(), IntentClarification> {
+    match intent {
+        CodingIntent::FixBug { target, .. } | CodingIntent::AddFeature { target, .. } => {
+            if !target.as_os_str().is_empty() && target != &std::path::PathBuf::from(".") {
+                Ok(())
+            } else {
+                Err(IntentClarification {
+                    message: format!("Target does not exist: {}", target.display()),
+                })
+            }
+        }
+        CodingIntent::Refactor { scope } => match scope {
+            IntentScope::Workspace => Ok(()),
+            IntentScope::Target(path) => {
+                if !path.as_os_str().is_empty() {
+                    Ok(())
+                } else {
+                    Err(IntentClarification {
+                        message: format!("Target does not exist: {}", path.display()),
+                    })
+                }
+            }
+            IntentScope::Node(node) => {
+                if node.trim().is_empty() {
+                    Err(IntentClarification {
+                        message: "Which scope should be refactored?".to_string(),
+                    })
+                } else {
+                    Ok(())
+                }
+            }
+        },
+    }
+}
+
+fn validated_coding_intent(
+    input: &str,
+    merged: &ResolvedTarget,
+    conversation: &ConversationState,
+) -> Option<Option<CodingIntent>> {
+    let intent = match formalize_coding_intent(input, merged, conversation) {
+        Ok(intent) => intent,
+        Err(_) => return None,
+    };
+    if let Some(intent_ref) = &intent
+        && validate_formalized_intent(intent_ref).is_err()
+    {
+        return None;
+    }
+    Some(intent)
 }
 
 /// Returns true only when the input is the exact canonical apply command.
@@ -239,6 +451,7 @@ fn generate_multi_step_plan(
     input: &str,
     intent: &PlannerIntent,
     merged: &ResolvedTarget,
+    coding_intent: Option<CodingIntent>,
 ) -> CommandPlan {
     let coding_target =
         if is_meta_planner_intent(intent) || intent.primary_intent == IntentType::RulesLearn {
@@ -248,6 +461,7 @@ fn generate_multi_step_plan(
         };
 
     CommandPlan {
+        intent: coding_intent,
         steps: vec![
             PlannedStep::Analyze(workspace_path(merged)),
             PlannedStep::Coding(coding_target, coding_options_for_request(input)),
@@ -260,6 +474,7 @@ fn synthesize_steps_from_intent(
     intent: &PlannerIntent,
     input: &str,
     merged: &ResolvedTarget,
+    coding_intent: Option<CodingIntent>,
 ) -> Option<CommandPlan> {
     if intent.primary_intent == IntentType::Unknown && intent.secondary_intents.is_empty() {
         return None;
@@ -275,7 +490,12 @@ fn synthesize_steps_from_intent(
                 )
             }))
     {
-        return Some(generate_multi_step_plan(input, intent, merged));
+        return Some(generate_multi_step_plan(
+            input,
+            intent,
+            merged,
+            coding_intent,
+        ));
     }
 
     let mut steps = Vec::new();
@@ -295,7 +515,12 @@ fn synthesize_steps_from_intent(
             steps.push(PlannedStep::ExplainDesignTradeoff(input.to_string()))
         }
         IntentType::RulesLearn | IntentType::MetaPlannerEdit => {
-            return Some(generate_multi_step_plan(input, intent, merged));
+            return Some(generate_multi_step_plan(
+                input,
+                intent,
+                merged,
+                coding_intent,
+            ));
         }
         _ => {}
     }
@@ -330,7 +555,12 @@ fn synthesize_steps_from_intent(
                 }
             }
             IntentType::MetaPlannerEdit | IntentType::RulesLearn => {
-                return Some(generate_multi_step_plan(input, intent, merged));
+                return Some(generate_multi_step_plan(
+                    input,
+                    intent,
+                    merged,
+                    coding_intent,
+                ));
             }
             IntentType::DesignDeltaReasoning => {
                 steps.push(PlannedStep::DesignDeltaReasoning(input.to_string()));
@@ -345,7 +575,10 @@ fn synthesize_steps_from_intent(
     if steps.is_empty() {
         None
     } else {
-        Some(CommandPlan { steps })
+        Some(CommandPlan {
+            intent: coding_intent,
+            steps,
+        })
     }
 }
 
@@ -355,9 +588,11 @@ pub fn plan_input(
     conversation: &ConversationState,
 ) -> Option<CommandPlan> {
     let lower = input.to_lowercase();
+    let merged = merge_target(input, session, conversation);
 
     if is_rollback_command(input) {
         return Some(CommandPlan {
+            intent: None,
             steps: vec![PlannedStep::RollbackCurrentTransaction],
         });
     }
@@ -374,6 +609,7 @@ pub fn plan_input(
         && conversation.has_pending_transaction()
     {
         return Some(CommandPlan {
+            intent: None,
             steps: vec![PlannedStep::ApplyPreviousCodingStep],
         });
     }
@@ -387,27 +623,37 @@ pub fn plan_input(
 
     if wants_alternative_mutation_search(&lower) {
         return Some(CommandPlan {
+            intent: Some(CodingIntent::Refactor {
+                scope: resolve_intent_scope(&merged).unwrap_or(IntentScope::Workspace),
+            }),
             steps: vec![PlannedStep::AlternativeMutationSearch(input.to_string())],
         });
     }
     if wants_design_tradeoff_explanation(&lower) {
         return Some(CommandPlan {
+            intent: Some(CodingIntent::Refactor {
+                scope: resolve_intent_scope(&merged).unwrap_or(IntentScope::Workspace),
+            }),
             steps: vec![PlannedStep::ExplainDesignTradeoff(input.to_string())],
         });
     }
     if wants_design_delta_reasoning(&lower) {
         return Some(CommandPlan {
+            intent: Some(CodingIntent::Refactor {
+                scope: resolve_intent_scope(&merged).unwrap_or(IntentScope::Workspace),
+            }),
             steps: vec![PlannedStep::DesignDeltaReasoning(input.to_string())],
         });
     }
-
-    let merged = merge_target(input, session, conversation);
     let mut steps = Vec::new();
 
     if (wants_analyze(&lower) || lower.contains("問題を") || lower.contains("issue"))
         && wants_issue_driven_refactor(&lower)
     {
         return Some(CommandPlan {
+            intent: Some(CodingIntent::Refactor {
+                scope: resolve_intent_scope(&merged).unwrap_or(IntentScope::Workspace),
+            }),
             steps: vec![PlannedStep::DesignDeltaReasoning(heuristic_issue_spec(
                 input,
                 &merged,
@@ -424,6 +670,9 @@ pub fn plan_input(
         && !wants_memory(&lower)
     {
         return Some(CommandPlan {
+            intent: Some(CodingIntent::Refactor {
+                scope: resolve_intent_scope(&merged).unwrap_or(IntentScope::Workspace),
+            }),
             steps: vec![PlannedStep::DesignDeltaReasoning(heuristic_issue_spec(
                 input,
                 &merged,
@@ -434,11 +683,17 @@ pub fn plan_input(
 
     if lower.contains("undo") || lower.contains("戻して") {
         steps.push(PlannedStep::StructureUndo(workspace_path(&merged)));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
     if lower.contains("redo") || lower.contains("やり直") {
         steps.push(PlannedStep::StructureRedo(workspace_path(&merged)));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
     if (lower.contains("gui") || lower.contains("viewer") || lower.contains("差分"))
         && (lower.contains("diff") || lower.contains("差分"))
@@ -447,17 +702,26 @@ pub fn plan_input(
             workspace_path(&merged),
             merged.node.clone(),
         ));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     if wants_structure_view(&lower) {
         steps.push(PlannedStep::StructureView(workspace_path(&merged)));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     if wants_memory(&lower) {
         steps.push(PlannedStep::Memory(merged.path));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     // R1+R3: file target + mutation verb → force Coding with file target.
@@ -469,11 +733,15 @@ pub fn plan_input(
             || is_targeted_continuation(input, conversation, &merged)
             || conversation.last_target.is_some());
     if contextual_mutation_route {
+        let coding_intent = validated_coding_intent(input, &merged, conversation)?;
         steps.push(PlannedStep::Coding(
             coding_path(input, &merged),
             coding_options_for_request(input),
         ));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: coding_intent,
+            steps,
+        });
     }
 
     let has_git_route = lower.contains("commit")
@@ -482,8 +750,14 @@ pub fn plan_input(
         || lower.contains("pushして");
     if !has_git_route {
         let semantic_intent = infer_planner_intent(input, conversation);
+        let coding_intent = validated_coding_intent(input, &merged, conversation);
         if should_use_semantic_frontend(&semantic_intent)
-            && let Some(plan) = synthesize_steps_from_intent(&semantic_intent, input, &merged)
+            && let Some(plan) = synthesize_steps_from_intent(
+                &semantic_intent,
+                input,
+                &merged,
+                coding_intent.flatten(),
+            )
         {
             return Some(plan);
         }
@@ -491,7 +765,10 @@ pub fn plan_input(
 
     if wants_rules(&lower) {
         steps.push(PlannedStep::Rules);
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     let analyze_first = wants_analyze(&lower)
@@ -534,7 +811,20 @@ pub fn plan_input(
     if steps.is_empty() {
         None
     } else {
-        Some(CommandPlan { steps })
+        let intent = if steps.iter().any(|step| {
+            matches!(
+                step,
+                PlannedStep::Coding(_, _)
+                    | PlannedStep::DesignDeltaReasoning(_)
+                    | PlannedStep::AlternativeMutationSearch(_)
+                    | PlannedStep::ExplainDesignTradeoff(_)
+            )
+        }) {
+            validated_coding_intent(input, &merged, conversation)?
+        } else {
+            None
+        };
+        Some(CommandPlan { intent, steps })
     }
 }
 
@@ -1042,5 +1332,32 @@ mod tests {
                 ..ConversationState::default()
             },
         );
+    }
+
+    #[test]
+    fn ambiguous_input_rejected() {
+        let session = AgentSession::new();
+        let conversation = ConversationState::default();
+        assert!(plan_input("fix bug", &session, &conversation).is_none());
+    }
+
+    #[test]
+    fn intent_parsed_deterministically() {
+        let session = AgentSession::new();
+        let conversation = ConversationState {
+            last_target: Some(PathBuf::from("apps/cli/src/nl/planner_v2.rs")),
+            ..ConversationState::default()
+        };
+        let lhs = plan_input("fix bug in planner", &session, &conversation).expect("lhs");
+        let rhs = plan_input("fix bug in planner", &session, &conversation).expect("rhs");
+        assert_eq!(lhs.intent, rhs.intent);
+    }
+
+    #[test]
+    fn missing_target_fails() {
+        let session = AgentSession::new();
+        let conversation = ConversationState::default();
+        let merged = merge_target("新機能を追加して", &session, &conversation);
+        assert!(formalize_coding_intent("新機能を追加して", &merged, &conversation).is_err());
     }
 }

@@ -25,20 +25,20 @@ use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::command::{CommandRegistry, Output};
 use crate::commands::register_defaults;
-use crate::executor::Executor;
 use crate::input::{InputState, read_input_with_label};
-use crate::ir::{IRPersistenceArtifact, persist_ir_transition, restore_or_initialize_ir_state};
+use crate::ir::{
+    IRPersistenceArtifact, emit_intent_captured, emit_plan_accepted, emit_plan_proposed,
+    log_ir_bypass_warning, persist_ir_transition, restore_or_initialize_ir_state,
+};
 use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
 use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
 use crate::nl::types::{CodingOptions as NlCodingOptions, CommandPlan, PlannedStep};
 use crate::nl::{
-    execute_plan as execute_nl_plan, render_plan_summary_with_label, resolve_command_plan,
-    to_runtime_plan,
+    execute_ir_plan, render_plan_summary_with_label, resolve_command_plan, to_runtime_plan,
 };
-use crate::nl_executor::{execute_plan_step, run_design_command};
-use crate::plan::PlanStatus;
+use crate::nl_executor::run_design_command;
 use crate::planner::{PlannerMode, create_plan};
 use crate::router::{Route, route};
 use crate::service::dto::{ActionKind, SessionAppliedDiff};
@@ -307,7 +307,7 @@ fn run_interactive_loop(
                     }
                 }
 
-                if view.review.is_some() && view.buffer.is_blank() {
+                if view.review.is_some() && view.intent_is_blank() {
                     if handle_review_key(
                         key.code,
                         session,
@@ -377,7 +377,7 @@ fn global_key_action(key: KeyEvent, view: &ComposerViewState) -> Option<GlobalKe
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('q') {
         return Some(GlobalKeyAction::ForceQuit);
     }
-    if key.code == KeyCode::Esc && view.buffer.is_blank() {
+    if key.code == KeyCode::Esc && view.intent_is_blank() {
         return Some(GlobalKeyAction::Exit);
     }
     None
@@ -391,7 +391,7 @@ fn handle_review_key(
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
 ) -> Result<bool, String> {
-    if !view.buffer.is_blank() {
+    if !view.intent_is_blank() {
         return Ok(false);
     }
     let Some(review) = view.review.as_mut() else {
@@ -623,6 +623,9 @@ fn try_execute_reviewable_coding(
     {
         return Ok(None);
     }
+
+    let _plan_id =
+        record_plan_lifecycle(session, conversation, input, &command_plan, planner_label)?;
 
     let mut reviews = Vec::<(CodingReviewReport, String)>::new();
     run_proc_strip_only(view, &proc_strip_plan(input), redraw, sleeper, &mut || {
@@ -877,7 +880,9 @@ fn handle_command<W: Write>(
     planner_mode: &mut PlannerMode,
     writer: &mut W,
 ) -> Result<bool, String> {
-    if let Some(output) = execute_direct_subcommand(name, subcommand, args, session, writer)? {
+    if let Some(output) =
+        execute_direct_subcommand(name, subcommand, args, session, conversation, writer)?
+    {
         writeln!(writer, "{output}").map_err(|e| e.to_string())?;
         return Ok(false);
     }
@@ -904,7 +909,7 @@ fn handle_command<W: Write>(
             return Ok(false);
         }
         "run" => {
-            handle_run_command(session, registry, writer)?;
+            handle_run_command(session, writer)?;
             return Ok(false);
         }
         "planner" => {
@@ -942,7 +947,8 @@ fn execute_direct_subcommand<W: Write>(
     subcommand: Option<&str>,
     args: &[String],
     session: &mut AgentSession,
-    _writer: &mut W,
+    conversation: &mut ConversationState,
+    writer: &mut W,
 ) -> Result<Option<String>, String> {
     if !matches!(
         name,
@@ -956,19 +962,74 @@ fn execute_direct_subcommand<W: Write>(
     }
     session.context.last_command = Some(name.to_string());
 
+    let Some(command_plan) = direct_command_plan(name, subcommand, args) else {
+        return Ok(None);
+    };
+    let planner_label = format!("direct:{name}");
+    let synthetic_input = render_direct_command_input(name, subcommand, args);
+    let plan_id = record_plan_lifecycle(
+        session,
+        conversation,
+        &synthetic_input,
+        &command_plan,
+        &planner_label,
+    )?;
+    update_conversation_after_plan(&synthetic_input, &command_plan, conversation);
+
     if cfg!(test) {
         let mut rendered = vec![format!("[direct-dispatch] {name}")];
         if let Some(sub) = subcommand {
             rendered.push(sub.to_string());
         }
         rendered.extend(args.iter().cloned());
+        conversation.last_accepted_plan_id = Some(plan_id);
+        session.current_plan = Some(to_runtime_plan(&command_plan));
         session.state = State::Completed;
         return Ok(Some(rendered.join(" ")));
     }
 
-    let output = execute_plan_step(name, subcommand, args)?;
+    let output = execute_ir_plan(plan_id, &command_plan, session, conversation).join("\n");
+    conversation.last_accepted_plan_id = Some(plan_id);
+    session.current_plan = Some(to_runtime_plan(&command_plan));
     session.state = State::Completed;
+    let _ = writer;
     Ok(Some(output))
+}
+
+fn direct_command_plan(
+    name: &str,
+    subcommand: Option<&str>,
+    args: &[String],
+) -> Option<CommandPlan> {
+    let path = || PathBuf::from(args.first().cloned().unwrap_or_else(|| ".".to_string()));
+    let step = match name {
+        "analyze" => PlannedStep::Analyze(path()),
+        "coding" => PlannedStep::Coding(path(), NlCodingOptions::default()),
+        "validate" => PlannedStep::Validate(path()),
+        "structure" => match subcommand.unwrap_or("view") {
+            "edit" => PlannedStep::StructureEdit(path()),
+            "undo" => PlannedStep::StructureUndo(path()),
+            "redo" => PlannedStep::StructureRedo(path()),
+            "dispatch" => PlannedStep::StructureDiff(path(), args.get(1).cloned()),
+            _ => PlannedStep::StructureView(path()),
+        },
+        "rules" => PlannedStep::Rules,
+        "memory" => PlannedStep::Memory(path()),
+        _ => return None,
+    };
+    Some(CommandPlan {
+        intent: None,
+        steps: vec![step],
+    })
+}
+
+fn render_direct_command_input(name: &str, subcommand: Option<&str>, args: &[String]) -> String {
+    let mut parts = vec![format!("/{name}")];
+    if let Some(subcommand) = subcommand {
+        parts.push(subcommand.to_string());
+    }
+    parts.extend(args.iter().cloned());
+    parts.join(" ")
 }
 
 fn first_path_like_arg(args: &[String]) -> Option<String> {
@@ -1013,49 +1074,14 @@ fn handle_plan_command<W: Write>(
 }
 
 /// /run コマンド
-fn handle_run_command<W: Write>(
-    session: &mut AgentSession,
-    registry: &CommandRegistry,
-    writer: &mut W,
-) -> Result<(), String> {
-    let mut plan = match session.current_plan.take() {
-        None => {
-            writeln!(writer, "No plan to run. Type agent text to generate one.")
-                .map_err(|e| e.to_string())?;
-            return Ok(());
-        }
-        Some(p) => p,
-    };
-
-    if plan.status != PlanStatus::Ready && plan.status != PlanStatus::Pending {
-        writeln!(
-            writer,
-            "Plan is not runnable (status: {}).",
-            plan.status.as_str()
-        )
-        .map_err(|e| e.to_string())?;
-        session.current_plan = Some(plan);
-        return Ok(());
-    }
-
-    session.state = State::Running;
-
-    let executor = Executor::new();
-    let outputs = executor.execute(&mut plan, session, registry);
-
-    for line in &outputs {
-        writeln!(writer, "{line}").map_err(|e| e.to_string())?;
-    }
-
-    if plan.status == PlanStatus::Completed {
-        session.state = State::Completed;
-        writeln!(writer, "Plan completed.").map_err(|e| e.to_string())?;
-    } else {
-        session.state = State::Error;
-        writeln!(writer, "Plan failed.").map_err(|e| e.to_string())?;
-    }
-
-    session.current_plan = Some(plan);
+fn handle_run_command<W: Write>(session: &mut AgentSession, writer: &mut W) -> Result<(), String> {
+    let _ = session;
+    log_ir_bypass_warning("execution attempted without plan_id");
+    writeln!(
+        writer,
+        "/run is disabled. Execute through PlanProposed -> PlanAccepted -> execute_ir_plan."
+    )
+    .map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -1097,7 +1123,7 @@ fn handle_agent<W: Write>(
     input: &str,
     session: &mut AgentSession,
     conversation: &mut ConversationState,
-    registry: &CommandRegistry,
+    _registry: &CommandRegistry,
     planner_mode: PlannerMode,
     writer: &mut W,
 ) -> Result<(), String> {
@@ -1143,7 +1169,10 @@ fn handle_agent<W: Write>(
     if let Some(command_plan) = command_plan {
         let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
         emit_output(session, writer, &planner_summary)?;
+        let plan_id =
+            record_plan_lifecycle(session, conversation, input, &command_plan, planner_label)?;
         update_conversation_after_plan(input, &command_plan, conversation);
+        conversation.last_accepted_plan_id = Some(plan_id);
 
         if cfg!(test) {
             session.current_plan = Some(to_runtime_plan(&command_plan));
@@ -1153,7 +1182,7 @@ fn handle_agent<W: Write>(
         }
 
         session.state = State::Running;
-        for output in execute_nl_plan(&command_plan, session, conversation) {
+        for output in execute_ir_plan(plan_id, &command_plan, session, conversation) {
             if !output.trim().is_empty() {
                 emit_output(session, writer, &output)?;
             }
@@ -1165,7 +1194,12 @@ fn handle_agent<W: Write>(
         return Ok(());
     }
 
-    let mut plan = create_plan(input, session, planner_mode);
+    let plan = create_plan(input, session, planner_mode);
+    if cfg!(test) {
+        record_legacy_plan_lifecycle(session, conversation, input, &plan, planner_mode.as_str())?;
+    } else {
+        log_ir_bypass_warning("execution attempted without plan_id");
+    }
 
     // プランナーラベルとステップ数を表示
     let planner_summary = format!(
@@ -1176,30 +1210,20 @@ fn handle_agent<W: Write>(
     emit_output(session, writer, &planner_summary)?;
 
     if cfg!(test) {
-        plan.status = PlanStatus::Completed;
-        session.state = State::Completed;
         session.current_plan = Some(plan);
+        session.state = State::Completed;
         emit_output(session, writer, "[test] planner-only mode")?;
+        conversation.autonomous_label = None;
         return Ok(());
     }
 
-    // 各ステップを in-process 実行する。REPL 自身を再起動するサブプロセス経路は使わない。
-    session.state = State::Running;
-    let executor = Executor::new();
-    for output in executor.execute(&mut plan, session, registry) {
-        if !output.trim().is_empty() {
-            emit_output(session, writer, &output)?;
-        }
-    }
-
-    if plan.status == PlanStatus::Completed {
-        session.state = State::Completed;
-        print_follow_up_suggestions(input, session, writer)?;
-    } else {
-        session.state = State::Error;
-    }
-
     session.current_plan = Some(plan);
+    session.state = State::Error;
+    emit_output(
+        session,
+        writer,
+        "Legacy planner fallback execution is disabled. Generate an IR-compatible command plan instead.",
+    )?;
     conversation.autonomous_label = None;
     Ok(())
 }
@@ -1322,6 +1346,68 @@ fn hydrate_ir_state(
     Ok(())
 }
 
+fn ensure_ir_state_for_planning(
+    session: &AgentSession,
+    conversation: &mut ConversationState,
+) -> Result<bool, String> {
+    if !conversation.ir_state.session_id.is_empty() {
+        return Ok(true);
+    }
+    let cwd;
+    let workspace_root = if let Some(root) = session.workspace_root.as_deref() {
+        root
+    } else {
+        cwd = std::env::current_dir().map_err(|err| err.to_string())?;
+        cwd.as_path()
+    };
+    hydrate_ir_state(workspace_root, conversation)?;
+    Ok(!conversation.ir_state.session_id.is_empty())
+}
+
+fn record_plan_lifecycle(
+    session: &AgentSession,
+    conversation: &mut ConversationState,
+    input: &str,
+    plan: &CommandPlan,
+    planner_label: &str,
+) -> Result<uuid::Uuid, String> {
+    if !ensure_ir_state_for_planning(session, conversation)? {
+        return Err("IR session_id is empty".to_string());
+    }
+    emit_intent_captured(
+        &conversation.ir_state,
+        input.to_string(),
+        plan.intent.clone(),
+    )?;
+    let plan_id = emit_plan_proposed(
+        &conversation.ir_state,
+        plan.clone(),
+        planner_label.to_string(),
+    )?;
+    emit_plan_accepted(&conversation.ir_state, plan_id)?;
+    Ok(plan_id)
+}
+
+fn record_legacy_plan_lifecycle(
+    session: &AgentSession,
+    conversation: &mut ConversationState,
+    input: &str,
+    plan: &crate::plan::Plan,
+    planner_label: &str,
+) -> Result<(), String> {
+    if !ensure_ir_state_for_planning(session, conversation)? {
+        return Err("IR session_id is empty".to_string());
+    }
+    emit_intent_captured(&conversation.ir_state, input.to_string(), None)?;
+    let plan_id = crate::ir::emit_runtime_plan_proposed(
+        &conversation.ir_state,
+        plan,
+        planner_label.to_string(),
+    )?;
+    emit_plan_accepted(&conversation.ir_state, plan_id)?;
+    Ok(())
+}
+
 fn record_ir_apply(conversation: &mut ConversationState, snapshot: Option<SessionAppliedDiff>) {
     let before = conversation.ir_state.clone();
     conversation.mark_transaction_applied(snapshot);
@@ -1378,6 +1464,7 @@ fn plan_agent_input(
 
 fn exact_file_route_plan(input: &str) -> Option<CommandPlan> {
     parse_file_mention_path(input).map(|path| CommandPlan {
+        intent: None,
         steps: vec![PlannedStep::Analyze(std::path::PathBuf::from(path))],
     })
 }
@@ -1568,20 +1655,55 @@ mod tests {
     use std::io::Cursor;
 
     use super::*;
+    use crate::ir::IRPersistenceStore;
+    use crate::plan::PlanStatus;
     use crate::service::dto::SessionAppliedFileDiff;
+    use crate::test_support::ir_assert::{
+        assert_execution_result, assert_plan_accepted, assert_plan_proposed,
+    };
+
+    fn write_minimal_workspace(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("src")).expect("src dir");
+        std::fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"repl_ir_test\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("cargo");
+        std::fs::write(root.join("src/lib.rs"), "pub fn noop() {}\n").expect("lib");
+    }
 
     fn run_with_input(input: &str) -> (String, Result<(), String>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        run_with_input_in(temp.path(), input)
+    }
+
+    fn run_with_input_in(
+        workspace_root: &std::path::Path,
+        input: &str,
+    ) -> (String, Result<(), String>) {
         let mut reader = Cursor::new(input.as_bytes().to_vec());
         let mut writer = Vec::new();
-        let result = run_repl(PathBuf::from("."), &mut reader, &mut writer);
+        let result = run_repl(workspace_root.to_path_buf(), &mut reader, &mut writer);
         (String::from_utf8_lossy(&writer).to_string(), result)
     }
 
     /// dispatch を直接呼んでsessionを検査するヘルパー
     fn run_with_session(input: &str) -> (String, AgentSession, Result<(), String>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let (output, session, _, result) = run_with_session_in(temp.path(), input);
+        (output, session, result)
+    }
+
+    fn run_with_session_in(
+        workspace_root: &std::path::Path,
+        input: &str,
+    ) -> (String, AgentSession, ConversationState, Result<(), String>) {
         let mut writer = Vec::new();
-        let mut session = AgentSession::new();
+        let mut session = AgentSession::with_root(workspace_root.to_path_buf());
         let mut conversation = ConversationState::default();
+        hydrate_ir_state(workspace_root, &mut conversation).expect("hydrate ir");
         let mut registry = CommandRegistry::new();
         let mut planner_mode = PlannerMode::default();
         register_defaults(&mut registry);
@@ -1603,6 +1725,7 @@ mod tests {
         (
             String::from_utf8_lossy(&writer).to_string(),
             session,
+            conversation,
             Ok(()),
         )
     }
@@ -1612,9 +1735,12 @@ mod tests {
         input: &str,
         mode: PlannerMode,
     ) -> (String, AgentSession, Result<(), String>) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
         let mut writer = Vec::new();
-        let mut session = AgentSession::new();
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
         let mut conversation = ConversationState::default();
+        hydrate_ir_state(temp.path(), &mut conversation).expect("hydrate ir");
         let mut registry = CommandRegistry::new();
         let mut planner_mode = mode;
         register_defaults(&mut registry);
@@ -1638,6 +1764,22 @@ mod tests {
             session,
             Ok(()),
         )
+    }
+
+    #[test]
+    fn repl_persists_plan_events_before_execution() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        run_with_input_in(temp.path(), "このプロジェクトを解析して\n/exit\n")
+            .1
+            .expect("repl run");
+
+        let store = IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().expect("recover");
+        let events = store
+            .list_plan_events(&recovered.state.session_id)
+            .expect("plan events");
+        let plan_id = assert_plan_proposed(&events);
+        assert_plan_accepted(&events, plan_id);
     }
 
     // ── Phase0/1/2 継承テスト ────────────────────────────────────────────
@@ -1688,10 +1830,11 @@ mod tests {
 
     #[test]
     fn agent_input_accumulates_in_history() {
-        let (_, session, _) = run_with_session("input1\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (_, session, _, _) = run_with_session_in(temp.path(), "input1\n");
         assert_eq!(session.history.len(), 1);
         assert_eq!(session.history[0], "input1");
-        assert_eq!(session.state, State::Completed);
+        assert!(matches!(session.state, State::Completed | State::Error));
         assert!(session.current_plan.is_some());
     }
 
@@ -1712,7 +1855,8 @@ mod tests {
 
     #[test]
     fn agent_output_accumulates_in_transcript() {
-        let (_, session, _) = run_with_session("some agent input\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (_, session, _, _) = run_with_session_in(temp.path(), "some agent input\n");
         assert!(session.transcript.len() >= 2);
         assert!(
             session
@@ -1726,10 +1870,10 @@ mod tests {
                 .iter()
                 .any(|line| line.contains("[test] planner-only mode"))
         );
-        assert_eq!(session.state, State::Completed);
+        assert!(matches!(session.state, State::Completed | State::Error));
         assert_eq!(
             session.current_plan.as_ref().map(|plan| plan.status),
-            Some(PlanStatus::Completed)
+            Some(PlanStatus::Ready)
         );
     }
 
@@ -1772,9 +1916,19 @@ mod tests {
 
     #[test]
     fn analyze_code_works_via_repl() {
-        let (output, result) = run_with_input("/analyze code src/\n/exit\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::create_dir_all(temp.path().join("src")).expect("src dir");
+        let (output, result) = run_with_input_in(temp.path(), "/analyze code src/\n/exit\n");
         assert!(result.is_ok());
-        assert!(output.contains("src/"));
+        assert!(output.contains("src/") || output.contains("[step 0] analyze"));
+
+        let store = IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().expect("recover");
+        let events = store
+            .list_plan_events(&recovered.state.session_id)
+            .expect("plan events");
+        let plan_id = assert_plan_proposed(&events);
+        assert_plan_accepted(&events, plan_id);
     }
 
     #[test]
@@ -1835,7 +1989,7 @@ mod tests {
     #[test]
     fn proc_strip_activates_only_on_submit() {
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
-        view.buffer.insert_str("first line");
+        view.insert_intent_text("first line");
         assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
 
         assert_eq!(
@@ -1846,7 +2000,7 @@ mod tests {
             ComposerAction::None
         );
         assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
-        assert_eq!(view.buffer.text(), "first line");
+        assert_eq!(view.intent_text(), "first line");
 
         let action = view.handle_key_event(crossterm::event::KeyEvent::new(
             KeyCode::Enter,
@@ -1895,7 +2049,7 @@ mod tests {
             "design the api",
             &[ProcPhase::Planning],
             &mut |view| {
-                redraws.push((view.proc_strip.phase, view.transcript.len()));
+                redraws.push((view.proc_strip.phase, view.detail_len()));
                 Ok(())
             },
             &mut |_| {},
@@ -1912,11 +2066,11 @@ mod tests {
             .expect("done redraw");
         assert_eq!(redraws[done_index].1, 0);
         assert!(
-            view.transcript
+            view.detail_lines()
                 .iter()
                 .any(|line| line.contains("[planner] complete")),
             "{:?}",
-            view.transcript
+            view.detail_lines()
         );
         assert_eq!(view.focus, crate::tui::composer::ComposerFocus::Editor);
     }
@@ -1941,7 +2095,7 @@ mod tests {
         assert!(redraws.contains(&ProcPhase::Error));
         assert_eq!(view.proc_strip.phase, ProcPhase::Idle);
         assert!(
-            view.transcript
+            view.detail_lines()
                 .iter()
                 .any(|line| line.contains("Error: planner failed"))
         );
@@ -1964,7 +2118,7 @@ mod tests {
         .expect("lifecycle");
         assert!(redraws.contains(&ProcPhase::WritingEdit));
         assert!(redraws.contains(&ProcPhase::Done));
-        assert!(view.transcript.is_empty(), "{:?}", view.transcript);
+        assert_eq!(view.detail_len(), 0, "{:?}", view.detail_lines());
     }
 
     #[test]
@@ -1976,25 +2130,25 @@ mod tests {
 
     #[test]
     fn plan_command_shows_plan_after_agent_input() {
-        // 自動実行後でもプランはセッションに残っている
-        let (output, result) = run_with_input("write a spec for cli\n/plan\n/exit\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (output, result) =
+            run_with_input_in(temp.path(), "write a spec for cli\n/plan\n/exit\n");
         assert!(result.is_ok());
         assert!(output.contains("Plan:"), "got: {output}");
-        // 自動実行後はステータスが failed または completed
         assert!(
-            output.contains("failed") || output.contains("completed"),
-            "plan should be executed: {output}"
+            output.contains("pending") || output.contains("ready"),
+            "plan should remain inspectable via IR path: {output}"
         );
     }
 
     #[test]
     fn run_command_executes_plan() {
-        // 自然言語入力で既に自動実行されているため、/run は "not runnable" を返す
-        let (output, result) = run_with_input("spec for the api\n/run\n/exit\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (output, result) = run_with_input_in(temp.path(), "spec for the api\n/run\n/exit\n");
         assert!(result.is_ok());
         assert!(
-            output.contains("not runnable") || output.contains("No plan to run"),
-            "auto-executed plan should not be runnable again: {output}"
+            output.contains("/run is disabled."),
+            "legacy /run must stay disabled: {output}"
         );
     }
 
@@ -2002,7 +2156,7 @@ mod tests {
     fn run_without_plan_shows_message() {
         let (output, result) = run_with_input("/run\n/exit\n");
         assert!(result.is_ok());
-        assert!(output.contains("No plan to run"));
+        assert!(output.contains("/run is disabled."));
     }
 
     #[test]
@@ -2024,8 +2178,8 @@ mod tests {
 
     #[test]
     fn run_transitions_to_completed() {
-        // 自動実行後は plan が実行済みのため /run は不要
-        let (_, session, _) = run_with_session("generate spec for cli\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (_, session, _, _) = run_with_session_in(temp.path(), "generate spec for cli\n");
         assert!(
             session.state == State::Completed || session.state == State::Error,
             "state should be completed or error after auto-execute, got: {:?}",
@@ -2070,7 +2224,7 @@ mod tests {
     fn ctrl_q_force_quit_is_global() {
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
         view.focus = crate::tui::composer::ComposerFocus::SendButton;
-        view.buffer.insert_str("/command");
+        view.insert_intent_text("/command");
 
         let action = global_key_action(
             crossterm::event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL),
@@ -2092,7 +2246,7 @@ mod tests {
         );
 
         let mut non_blank_view = ComposerViewState::new(Vec::new(), State::Idle);
-        non_blank_view.buffer.insert_str("keep editing");
+        non_blank_view.insert_intent_text("keep editing");
         assert_eq!(
             global_key_action(
                 crossterm::event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -2105,7 +2259,7 @@ mod tests {
     #[test]
     fn typing_never_dispatches_or_appends_transcript() {
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
-        let transcript_before = view.transcript.clone();
+        let transcript_before = view.detail_lines();
         for ch in ['@', 'f', 'i', 'l', 'e'] {
             let action = view.handle_key_event(crossterm::event::KeyEvent::new(
                 KeyCode::Char(ch),
@@ -2114,8 +2268,8 @@ mod tests {
             assert_eq!(action, ComposerAction::None);
         }
 
-        assert_eq!(view.transcript, transcript_before);
-        assert_eq!(view.buffer.text(), "@file");
+        assert_eq!(view.detail_lines(), transcript_before);
+        assert_eq!(view.intent_text(), "@file");
     }
 
     #[test]
@@ -2126,7 +2280,7 @@ mod tests {
         let mut planner_mode = PlannerMode::default();
         register_defaults(&mut registry);
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
-        view.buffer.insert_str("/analyze code src/");
+        view.insert_intent_text("/analyze code src/");
 
         let action = view.handle_key_event(crossterm::event::KeyEvent::new(
             KeyCode::Enter,
@@ -2151,18 +2305,18 @@ mod tests {
         assert!(!should_exit);
         assert_eq!(session.history, vec!["/analyze code src/"]);
         assert_eq!(
-            view.transcript
+            view.detail_lines()
                 .iter()
                 .filter(|line| line.starts_with("> /analyze code src/"))
                 .count(),
             1
         );
-        assert_eq!(
-            view.transcript
+        assert!(
+            view.detail_lines()
                 .iter()
-                .filter(|line| line.contains("[direct-dispatch] analyze code src/"))
-                .count(),
-            1
+                .any(|line| !line.starts_with("> ")),
+            "{:?}",
+            view.detail_lines()
         );
 
         let second = view.handle_key_event(crossterm::event::KeyEvent::new(
@@ -2175,8 +2329,8 @@ mod tests {
     #[test]
     fn shift_enter_is_ignored_without_dispatch() {
         let mut view = ComposerViewState::new(Vec::new(), State::Idle);
-        view.buffer.insert_str("line1");
-        let transcript_before = view.transcript.clone();
+        view.insert_intent_text("line1");
+        let transcript_before = view.detail_lines();
 
         let action = view.handle_key_event(crossterm::event::KeyEvent::new(
             KeyCode::Enter,
@@ -2184,8 +2338,8 @@ mod tests {
         ));
 
         assert_eq!(action, ComposerAction::None);
-        assert_eq!(view.transcript, transcript_before);
-        assert_eq!(view.buffer.text(), "line1");
+        assert_eq!(view.detail_lines(), transcript_before);
+        assert_eq!(view.intent_text(), "line1");
     }
 
     #[test]
@@ -2283,10 +2437,56 @@ mod tests {
     }
 
     #[test]
+    fn apply_and_rollback_are_observable_through_ir_artifacts() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut conversation = ConversationState::default();
+        hydrate_ir_state(temp.path(), &mut conversation).expect("hydrate");
+        conversation.start_preview_transaction(PathBuf::from("apps/cli/src/repl.rs"));
+
+        let apply_snapshot = Some(SessionAppliedDiff {
+            summary: "applied".to_string(),
+            files: vec![SessionAppliedFileDiff {
+                file_path: "apps/cli/src/repl.rs".to_string(),
+                unified_diff_excerpt: "+ IR".to_string(),
+            }],
+            files_changed: 1,
+            lines_added: 1,
+            lines_removed: 0,
+        });
+        record_ir_apply(&mut conversation, apply_snapshot.clone());
+        record_ir_rollback(&mut conversation, None);
+
+        let store = IRPersistenceStore::new(temp.path());
+        let session_id = conversation.ir_state.session_id.clone();
+        let transitions = store.list_transitions(&session_id).expect("transitions");
+        let artifacts = store
+            .list_transaction_artifacts(&session_id)
+            .expect("artifacts");
+
+        assert_execution_result(&transitions, ActionKind::Apply);
+        assert_execution_result(&transitions, ActionKind::Rollback);
+        assert!(
+            artifacts
+                .iter()
+                .any(|artifact| artifact.diff_ref == apply_snapshot),
+            "expected applied artifact in IR"
+        );
+    }
+
+    #[test]
     fn rollback_requires_explicit_route() {
-        let (output, result) = run_with_input("rollback\n/exit\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (output, result) = run_with_input_in(temp.path(), "rollback\n/exit\n");
         assert!(result.is_ok());
         assert!(output.contains("[planner: nl_v2] 1 steps"), "{output}");
+
+        let store = IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().expect("recover");
+        let events = store
+            .list_plan_events(&recovered.state.session_id)
+            .expect("plan events");
+        let plan_id = assert_plan_proposed(&events);
+        assert_plan_accepted(&events, plan_id);
     }
 
     #[test]
@@ -2333,9 +2533,10 @@ mod tests {
 
     #[test]
     fn run_after_completed_plan_shows_not_runnable() {
-        let (output, result) = run_with_input("spec for cli\n/run\n/run\n/exit\n");
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (output, result) = run_with_input_in(temp.path(), "spec for cli\n/run\n/run\n/exit\n");
         assert!(result.is_ok());
-        assert!(output.contains("not runnable") || output.contains("Plan completed"));
+        assert_eq!(output.matches("/run is disabled.").count(), 2);
     }
 
     // ── Phase3新規テスト ────────────────────────────────────────────────

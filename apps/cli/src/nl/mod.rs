@@ -21,7 +21,10 @@ use crate::session::AgentSession;
 use self::session::ConversationState;
 use self::types::CommandPlan;
 
-pub use executor::{execute_plan, render_plan_summary, render_plan_summary_with_label};
+#[allow(deprecated)]
+pub use executor::{
+    execute_ir_plan, execute_plan, render_plan_summary, render_plan_summary_with_label,
+};
 pub use planner::{plan_input, to_runtime_plan};
 pub use planner_v2::update_conversation_after_plan;
 

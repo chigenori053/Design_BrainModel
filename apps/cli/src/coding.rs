@@ -5767,7 +5767,7 @@ fn rewrite_rust_use_statement(
     if parts.is_empty() {
         return Ok(line.to_string());
     }
-    if parts.len() == 1 && is_rust_symbol(parts[0]) {
+    if parts.len() == 1 && is_rust_identifier(parts[0]) {
         if let Some(use_path) =
             generated_symbol_use_targets_path(root, current_id, generated_symbol_targets, parts[0])?
                 .or(resolve_symbol_use_path_with_reexports(
@@ -5783,7 +5783,7 @@ fn rewrite_rust_use_statement(
     }
 
     let last = *parts.last().unwrap_or(&"");
-    if is_rust_symbol(last) {
+    if is_rust_identifier(last) {
         let module_prefix = parts[..parts.len() - 1].join("::");
         if let Some(rebound) =
             rebind_module_prefix(&current_id.crate_name, &module_prefix, generated_by_leaf)
@@ -6070,6 +6070,15 @@ fn is_rust_symbol(value: &str) -> bool {
         .unwrap_or(false)
 }
 
+fn is_rust_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_alphabetic() || c == '_' => (),
+        _ => return false,
+    }
+    chars.all(|c| c.is_alphanumeric() || c == '_')
+}
+
 fn create_sandbox_workspace(root: &Path) -> Result<PathBuf, String> {
     let unique = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -6078,6 +6087,10 @@ fn create_sandbox_workspace(root: &Path) -> Result<PathBuf, String> {
     let sandbox_root = std::env::temp_dir().join(format!("dbm_sandbox_{unique}"));
     copy_workspace_with_ignore_guard(root, &sandbox_root)?;
     Ok(sandbox_root)
+}
+
+pub fn create_validation_sandbox(root: &Path) -> Result<PathBuf, String> {
+    create_sandbox_workspace(root)
 }
 
 fn transactional_sandbox_root(
@@ -7897,17 +7910,34 @@ mod tests {
         script
     }
 
+    struct GhEnvGuard {
+        prev: Option<std::ffi::OsString>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl GhEnvGuard {
+        fn new(path: &Path) -> Self {
+            let _lock = crate::test_support::gh_bin_env_lock();
+            let prev = std::env::var_os("DBM_GH_BIN");
+            unsafe {
+                std::env::set_var("DBM_GH_BIN", path);
+            }
+            Self { prev, _lock }
+        }
+    }
+
+    impl Drop for GhEnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => unsafe { std::env::set_var("DBM_GH_BIN", v) },
+                None => unsafe { std::env::remove_var("DBM_GH_BIN") },
+            }
+        }
+    }
+
     fn with_fake_gh<T>(path: &Path, f: impl FnOnce() -> T) -> T {
-        let previous = std::env::var_os("DBM_GH_BIN");
-        unsafe {
-            std::env::set_var("DBM_GH_BIN", path);
-        }
-        let result = f();
-        match previous {
-            Some(value) => unsafe { std::env::set_var("DBM_GH_BIN", value) },
-            None => unsafe { std::env::remove_var("DBM_GH_BIN") },
-        }
-        result
+        let _guard = GhEnvGuard::new(path);
+        f()
     }
 
     #[test]

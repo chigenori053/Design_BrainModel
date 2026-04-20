@@ -26,22 +26,34 @@ pub fn plan_input(input: &str, session: &AgentSession) -> Option<CommandPlan> {
 
     if wants_structure_view(&lower) {
         steps.push(PlannedStep::StructureView(target.path));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     if wants_structure_edit(&lower) {
         steps.push(PlannedStep::StructureEdit(target.path));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     if wants_rules(&lower) {
         steps.push(PlannedStep::Rules);
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     if wants_memory(&lower) {
         steps.push(PlannedStep::Memory(target.path));
-        return Some(CommandPlan { steps });
+        return Some(CommandPlan {
+            intent: None,
+            steps,
+        });
     }
 
     let analyze_first = wants_analyze(&lower)
@@ -76,7 +88,10 @@ pub fn plan_input(input: &str, session: &AgentSession) -> Option<CommandPlan> {
     if steps.is_empty() {
         None
     } else {
-        Some(CommandPlan { steps })
+        Some(CommandPlan {
+            intent: None,
+            steps,
+        })
     }
 }
 

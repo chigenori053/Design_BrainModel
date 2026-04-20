@@ -11,7 +11,7 @@ use ratatui::{
 };
 
 use crate::nl::session::ConversationState;
-use crate::service::dto::{IRState, SessionAppliedDiff};
+use crate::service::dto::{ActionKind, IRState, SessionAppliedDiff};
 use crate::session::sanitize_debug_leakage;
 use crate::state::State;
 use crate::tui::edit_block::render_edit_blocks;
@@ -37,76 +37,155 @@ pub struct SubmitEvent {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct ComposerBuffer {
-    content: String,
-    cursor: usize,
+pub struct UiIntent {
+    pub raw_input: String,
+    pub system_hint: Option<String>,
 }
 
-impl ComposerBuffer {
-    pub fn new() -> Self {
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DetailLine {
+    pub raw_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiDiffFile {
+    pub file_path: String,
+    pub unified_diff_excerpt: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DiffView {
+    pub title: String,
+    pub summary: String,
+    pub files: Vec<UiDiffFile>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct PlanView {
+    pub target: Option<String>,
+    pub focus: Option<String>,
+    pub next_actions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResultView {
+    pub result: ExecutionResult,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiPanels {
+    pub plan: Option<PlanView>,
+    pub diff: Option<DiffView>,
+    pub result: Option<ResultView>,
+    pub detail: Vec<DetailLine>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Status {
+    #[default]
+    Idle,
+    Editing,
+    Submitted,
+    Synced,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UiMeta {
+    pub last_action: ActionKind,
+    pub status: Status,
+}
+
+impl Default for UiMeta {
+    fn default() -> Self {
         Self {
-            content: String::new(),
-            cursor: 0,
+            last_action: ActionKind::Analyze,
+            status: Status::Idle,
         }
     }
+}
 
-    pub fn text(&self) -> String {
-        self.content.clone()
-    }
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiState {
+    pub intent: UiIntent,
+    pub panels: UiPanels,
+    pub meta: UiMeta,
+}
 
-    pub fn is_blank(&self) -> bool {
-        self.content.trim().is_empty()
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionSnapshot {
+    pub intent_raw: String,
+    pub panels: UiPanels,
+}
 
-    pub fn cursor(&self) -> (usize, usize) {
-        (0, self.cursor)
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEvent {
+    UserTyped(String),
+    UserSubmit,
+    PlannerUpdated(PlanView),
+    DiffUpdated(DiffView),
+    ResultUpdated(ResultView),
+    DetailAppended(DetailLine),
+    SessionRestored(SessionSnapshot),
+}
 
-    pub fn move_cursor_to_end(&mut self) {
-        self.cursor = self.content.chars().count();
-        self.assert_invariant();
-    }
-
-    pub fn insert_char(&mut self, ch: char) {
-        self.content.push(ch);
-        self.cursor = self.content.chars().count();
-        self.assert_invariant();
-    }
-
-    pub fn insert_str(&mut self, value: &str) {
-        for ch in value.chars() {
-            self.insert_char(ch);
+impl UiState {
+    pub fn reduce(&mut self, ev: UiEvent) {
+        match ev {
+            UiEvent::UserTyped(s) => {
+                self.intent.raw_input.push_str(&s);
+                self.meta.status = Status::Editing;
+            }
+            UiEvent::UserSubmit => {
+                self.intent.raw_input.clear();
+                self.meta.status = Status::Submitted;
+            }
+            UiEvent::PlannerUpdated(p) => {
+                self.panels.plan = Some(p);
+                self.meta.last_action = ActionKind::Analyze;
+                self.meta.status = Status::Synced;
+            }
+            UiEvent::DiffUpdated(d) => {
+                self.panels.diff = Some(d);
+                self.meta.last_action = ActionKind::Apply;
+                self.meta.status = Status::Synced;
+            }
+            UiEvent::ResultUpdated(r) => {
+                self.panels.result = Some(r);
+                self.meta.status = Status::Synced;
+            }
+            UiEvent::DetailAppended(d) => {
+                self.panels.detail.push(d);
+            }
+            UiEvent::SessionRestored(snap) => {
+                self.intent.raw_input = snap.intent_raw;
+                self.panels = snap.panels;
+                self.meta.status = Status::Synced;
+            }
         }
     }
+}
 
-    pub fn backspace(&mut self) {
-        if !self.content.is_empty() {
-            self.content.pop();
-        }
-        self.cursor = self.content.chars().count();
-        self.assert_invariant();
-    }
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct UiPolicy {
+    pub hide_debug: bool,
+}
 
-    pub fn submit_document(&mut self, eof_submit: bool) -> Option<SubmitEvent> {
-        let input = self.text();
-        if input.trim().is_empty() {
-            return None;
-        }
-        *self = Self::new();
-        Some(SubmitEvent { input, eof_submit })
+pub fn render_text(text: &str, policy: &UiPolicy) -> String {
+    if policy.hide_debug {
+        sanitize_debug_leakage(text)
+    } else {
+        text.to_string()
     }
+}
 
-    fn assert_invariant(&self) {
-        debug_assert_eq!(self.cursor, self.content.chars().count());
-    }
+pub fn render_intent(state: &UiState, policy: &UiPolicy) -> String {
+    render_text(&state.intent.raw_input, policy)
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct ComposerViewState {
-    pub transcript: Vec<String>,
     pub review: Option<ReviewBatchState>,
     pub ir_state: IRState,
-    pub execution_result: Option<ExecutionResult>,
     pub detail_expanded: bool,
     pub proc_strip: ProcStripState,
     pub state: State,
@@ -114,23 +193,24 @@ pub struct ComposerViewState {
     pub focus: ComposerFocus,
     pub send_hovered: bool,
     pub branch: Option<String>,
-    pub current_target: Option<String>,
     pub selected_snapshot: Option<String>,
     pub command_mode: bool,
     pub file_chips: Vec<String>,
     pub command_chips: Vec<String>,
-    pub buffer: ComposerBuffer,
-    pub prompt_header: Option<String>,
+    pub ui: UiState,
+    intent_cursor: usize,
     send_button_rect: Option<Rect>,
 }
 
 impl ComposerViewState {
     pub fn new(transcript: Vec<String>, state: State) -> Self {
+        let mut ui = UiState::default();
+        for line in transcript {
+            ui.reduce(UiEvent::DetailAppended(DetailLine { raw_text: line }));
+        }
         Self {
-            transcript,
             review: None,
             ir_state: IRState::default(),
-            execution_result: None,
             detail_expanded: false,
             proc_strip: ProcStripState::idle(),
             state,
@@ -138,13 +218,12 @@ impl ComposerViewState {
             focus: ComposerFocus::Editor,
             send_hovered: false,
             branch: None,
-            current_target: None,
             selected_snapshot: None,
             command_mode: false,
             file_chips: Vec::new(),
             command_chips: Vec::new(),
-            buffer: ComposerBuffer::new(),
-            prompt_header: None,
+            ui,
+            intent_cursor: 0,
             send_button_rect: None,
         }
     }
@@ -156,22 +235,40 @@ impl ComposerViewState {
         selected_snapshot: Option<String>,
     ) {
         self.branch = branch;
-        self.current_target = conversation
-            .last_target
-            .as_ref()
-            .map(|path| path.display().to_string());
         self.selected_snapshot = selected_snapshot;
-        self.prompt_header = conversation.prompt_label().map(ToString::to_string);
         self.ir_state = conversation.ir_state.clone();
+        self.ui.intent.system_hint = conversation.prompt_label().map(ToString::to_string);
+        self.ui.reduce(UiEvent::PlannerUpdated(build_plan_view(
+            conversation
+                .last_target
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            conversation.prompt_label().map(ToString::to_string),
+            conversation
+                .ir_state
+                .next_allowed_actions
+                .iter()
+                .map(|action| action.as_label().to_string())
+                .collect(),
+        )));
+        if let Some(diff) = active_diff_ref(self).cloned() {
+            self.ui.reduce(UiEvent::DiffUpdated(diff_view_from_session(
+                "[DIFF] Latest Applied",
+                &diff,
+            )));
+        } else {
+            self.ui.panels.diff = None;
+        }
         self.sync_buffer_metadata();
     }
 
     pub fn push_transcript_line(&mut self, line: impl Into<String>) {
-        let sanitized = sanitize_intent_document(&line.into());
-        if sanitized.is_empty() {
+        let raw_text = line.into();
+        if raw_text.is_empty() {
             return;
         }
-        self.transcript.push(sanitized);
+        self.ui
+            .reduce(UiEvent::DetailAppended(DetailLine { raw_text }));
         self.restore_intent_document_focus();
     }
 
@@ -182,7 +279,8 @@ impl ComposerViewState {
     }
 
     pub fn set_execution_result(&mut self, result: ExecutionResult) {
-        self.execution_result = Some(result);
+        self.ui
+            .reduce(UiEvent::ResultUpdated(ResultView { result }));
     }
 
     pub fn reset_review_session(&mut self) {
@@ -193,7 +291,7 @@ impl ComposerViewState {
     }
 
     pub fn sync_buffer_metadata(&mut self) {
-        let text = self.buffer.text();
+        let text = self.ui.intent.raw_input.clone();
         let trimmed = text.trim_start();
         self.command_mode = trimmed.starts_with('/');
         self.command_chips = if self.command_mode {
@@ -211,11 +309,64 @@ impl ComposerViewState {
     pub fn restore_intent_document_focus(&mut self) {
         self.focus = ComposerFocus::Editor;
         self.send_hovered = false;
-        self.buffer.move_cursor_to_end();
+        self.intent_cursor = self.ui.intent.raw_input.chars().count();
         self.ensure_cursor_visible();
     }
 
     pub fn ensure_cursor_visible(&mut self) {}
+
+    pub fn intent_text(&self) -> String {
+        self.ui.intent.raw_input.clone()
+    }
+
+    pub fn intent_is_blank(&self) -> bool {
+        self.ui.intent.raw_input.trim().is_empty()
+    }
+
+    pub fn intent_cursor(&self) -> (usize, usize) {
+        (0, self.intent_cursor)
+    }
+
+    pub fn insert_intent_text(&mut self, value: &str) {
+        self.ui.reduce(UiEvent::UserTyped(value.to_string()));
+        self.intent_cursor = self.ui.intent.raw_input.chars().count();
+        self.sync_buffer_metadata();
+    }
+
+    pub fn backspace_intent(&mut self) {
+        self.ui.intent.raw_input.pop();
+        self.intent_cursor = self.ui.intent.raw_input.chars().count();
+        self.sync_buffer_metadata();
+    }
+
+    pub fn restore_session_snapshot(&mut self, snapshot: SessionSnapshot) {
+        self.ui.reduce(UiEvent::SessionRestored(snapshot));
+        self.intent_cursor = self.ui.intent.raw_input.chars().count();
+        self.sync_buffer_metadata();
+    }
+
+    pub fn detail_lines(&self) -> Vec<String> {
+        self.ui
+            .panels
+            .detail
+            .iter()
+            .map(|line| line.raw_text.clone())
+            .collect()
+    }
+
+    pub fn detail_len(&self) -> usize {
+        self.ui.panels.detail.len()
+    }
+
+    fn take_submit_event(&mut self, eof_submit: bool) -> Option<SubmitEvent> {
+        let input = self.intent_text();
+        if input.trim().is_empty() {
+            return None;
+        }
+        self.ui.reduce(UiEvent::UserSubmit);
+        self.intent_cursor = 0;
+        Some(SubmitEvent { input, eof_submit })
+    }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> ComposerAction {
         match self.focus {
@@ -234,8 +385,7 @@ impl ComposerViewState {
             MouseEventKind::Down(_) if hovered => {
                 self.focus = ComposerFocus::SendButton;
                 let action = self
-                    .buffer
-                    .submit_document(false)
+                    .take_submit_event(false)
                     .map(ComposerAction::Submit)
                     .unwrap_or(ComposerAction::None);
                 self.restore_intent_document_focus();
@@ -254,13 +404,11 @@ impl ComposerViewState {
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => ComposerAction::None,
             KeyCode::Enter => self
-                .buffer
-                .submit_document(false)
+                .take_submit_event(false)
                 .map(ComposerAction::Submit)
                 .unwrap_or(ComposerAction::None),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self
-                .buffer
-                .submit_document(true)
+                .take_submit_event(true)
                 .map(ComposerAction::Submit)
                 .unwrap_or(ComposerAction::Exit),
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => {
@@ -268,12 +416,13 @@ impl ComposerViewState {
                 ComposerAction::None
             }
             KeyCode::Backspace => {
-                self.buffer.backspace();
+                self.backspace_intent();
                 self.sync_buffer_metadata();
                 ComposerAction::None
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                self.buffer.insert_char(ch);
+                self.ui.reduce(UiEvent::UserTyped(ch.to_string()));
+                self.intent_cursor = self.ui.intent.raw_input.chars().count();
                 self.sync_buffer_metadata();
                 ComposerAction::None
             }
@@ -292,22 +441,16 @@ impl ComposerViewState {
                 ComposerAction::None
             }
             KeyCode::Enter => self
-                .buffer
-                .submit_document(false)
+                .take_submit_event(false)
                 .map(ComposerAction::Submit)
                 .unwrap_or(ComposerAction::None),
             KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => self
-                .buffer
-                .submit_document(true)
+                .take_submit_event(true)
                 .map(ComposerAction::Submit)
                 .unwrap_or(ComposerAction::Exit),
             _ => ComposerAction::None,
         }
     }
-}
-
-fn sanitize_intent_document(input: &str) -> String {
-    sanitize_debug_leakage(input)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -350,6 +493,37 @@ pub fn render_composer(frame: &mut Frame, state: &mut ComposerViewState) {
     render_footer_hints(frame, state, vertical[8]);
 }
 
+fn ui_policy() -> UiPolicy {
+    UiPolicy { hide_debug: true }
+}
+
+fn build_plan_view(
+    target: Option<String>,
+    focus: Option<String>,
+    next_actions: Vec<String>,
+) -> PlanView {
+    PlanView {
+        target,
+        focus,
+        next_actions,
+    }
+}
+
+fn diff_view_from_session(title: &str, diff: &SessionAppliedDiff) -> DiffView {
+    DiffView {
+        title: title.to_string(),
+        summary: diff.summary.clone(),
+        files: diff
+            .files
+            .iter()
+            .map(|file| UiDiffFile {
+                file_path: file.file_path.clone(),
+                unified_diff_excerpt: file.unified_diff_excerpt.clone(),
+            })
+            .collect(),
+    }
+}
+
 fn review_height(state: &ComposerViewState) -> u16 {
     state
         .review
@@ -384,15 +558,18 @@ fn detail_height(state: &ComposerViewState) -> u16 {
 }
 
 fn render_context_bar(frame: &mut Frame, state: &ComposerViewState, area: Rect) {
+    let target = state
+        .ui
+        .panels
+        .plan
+        .as_ref()
+        .and_then(|plan| plan.target.clone());
     let chips = [
         state
             .branch
             .as_ref()
             .map(|branch| format!("branch: {branch}")),
-        state
-            .current_target
-            .as_ref()
-            .map(|target| format!("target: {target}")),
+        target.as_ref().map(|target| format!("target: {target}")),
         state
             .selected_snapshot
             .as_ref()
@@ -458,24 +635,31 @@ fn render_detail_panel(frame: &mut Frame, state: &ComposerViewState, area: Rect)
 }
 
 fn diff_panel_lines(state: &ComposerViewState) -> Vec<String> {
+    let policy = ui_policy();
     let mut content = Vec::new();
-    content.push("================================".to_string());
-    if let Some((title, diff)) = active_diff_panel(state) {
-        content.push(title);
-        content.push(diff.summary.clone());
-        content.push("================================".to_string());
+    content.push(render_text("================================", &policy));
+    if let Some(diff) = state.ui.panels.diff.as_ref() {
+        content.push(render_text(&diff.title, &policy));
+        content.push(render_text(&diff.summary, &policy));
+        content.push(render_text("================================", &policy));
         for file in &diff.files {
-            content.push(format!("File: {}", file.file_path));
-            content.push("--------------------------------".to_string());
+            content.push(render_text(&format!("File: {}", file.file_path), &policy));
+            content.push(render_text("--------------------------------", &policy));
             for line in file.unified_diff_excerpt.lines() {
-                content.push(line.to_string());
+                let sanitized = render_text(line, &policy);
+                if !sanitized.is_empty() {
+                    content.push(sanitized);
+                }
             }
             content.push(String::new());
         }
     } else {
-        content.push("No changes detected.".to_string());
-        content.push("Run `apply` or `refactor` to generate changes.".to_string());
-        content.push("================================".to_string());
+        content.push(render_text("No changes detected.", &policy));
+        content.push(render_text(
+            "Run `apply` or `refactor` to generate changes.",
+            &policy,
+        ));
+        content.push(render_text("================================", &policy));
     }
     content
 }
@@ -501,28 +685,26 @@ fn render_section_panel(
 }
 
 fn plan_lines(state: &ComposerViewState) -> Vec<String> {
+    let policy = ui_policy();
     let mut lines = Vec::new();
-    if let Some(target) = &state.current_target {
-        lines.push(format!("Target: {target}"));
+    let Some(plan) = state.ui.panels.plan.as_ref() else {
+        return vec![render_text("No active plan.", &policy)];
+    };
+    if let Some(target) = &plan.target {
+        lines.push(render_text(&format!("Target: {target}"), &policy));
     }
-    if let Some(header) = &state.prompt_header {
-        lines.push(format!("Focus: {header}"));
+    if let Some(header) = &plan.focus {
+        lines.push(render_text(&format!("Focus: {header}"), &policy));
     }
-    if state.ir_state.next_allowed_actions.is_empty() {
+    if plan.next_actions.is_empty() {
         if lines.is_empty() {
-            lines.push("No active plan.".to_string());
+            lines.push(render_text("No active plan.", &policy));
         }
         return lines;
     }
-    lines.push(format!(
-        "Next: {}",
-        state
-            .ir_state
-            .next_allowed_actions
-            .iter()
-            .map(|action| action.as_label())
-            .collect::<Vec<_>>()
-            .join(" / ")
+    lines.push(render_text(
+        &format!("Next: {}", plan.next_actions.join(" / ")),
+        &policy,
     ));
     lines
 }
@@ -533,17 +715,6 @@ fn active_diff_ref(state: &ComposerViewState) -> Option<&SessionAppliedDiff> {
         .active_transaction
         .as_ref()
         .and_then(|tx| tx.latest_diff_ref.as_ref())
-}
-
-fn active_diff_panel(state: &ComposerViewState) -> Option<(String, SessionAppliedDiff)> {
-    if let Some(review) = &state.review
-        && let Some(diff) = review.preview_diff_snapshot()
-    {
-        return Some(("[DIFF] Preview".to_string(), diff));
-    }
-    active_diff_ref(state)
-        .cloned()
-        .map(|diff| ("[DIFF] Latest Applied".to_string(), diff))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -593,8 +764,11 @@ pub fn format_execution_result(result: ExecutionResult) -> String {
 
 fn execution_result_for_view(state: &ComposerViewState) -> ExecutionResult {
     state
-        .execution_result
-        .clone()
+        .ui
+        .panels
+        .result
+        .as_ref()
+        .map(|result| result.result.clone())
         .or_else(|| active_diff_ref(state).map(success_result_from_diff))
         .or_else(|| {
             state
@@ -615,41 +789,55 @@ fn success_result_from_diff(diff: &SessionAppliedDiff) -> ExecutionResult {
 }
 
 fn detail_lines_collapsed(state: &ComposerViewState) -> Vec<String> {
-    let count = state.transcript.len();
-    let latest = state.transcript.last().cloned().unwrap_or_default();
+    let policy = ui_policy();
+    let count = state.ui.panels.detail.len();
+    let latest = state
+        .ui
+        .panels
+        .detail
+        .last()
+        .map(|line| render_text(&line.raw_text, &policy))
+        .unwrap_or_default();
     let summary = if count == 0 {
-        "No detail logs.".to_string()
+        render_text("No detail logs.", &policy)
     } else {
-        format!("{count} detail line(s) available.")
+        render_text(&format!("{count} detail line(s) available."), &policy)
     };
     let preview = if latest.is_empty() {
-        "Press Ctrl+L to expand detail.".to_string()
+        render_text("Press Ctrl+L to expand detail.", &policy)
     } else {
-        format!("Latest: {}", latest.lines().next().unwrap_or_default())
+        render_text(
+            &format!("Latest: {}", latest.lines().next().unwrap_or_default()),
+            &policy,
+        )
     };
     vec![
         summary,
         preview,
-        "Press Ctrl+L to expand detail.".to_string(),
+        render_text("Press Ctrl+L to expand detail.", &policy),
     ]
 }
 
 fn detail_lines_expanded(state: &ComposerViewState) -> Vec<String> {
-    if state.transcript.is_empty() {
+    let policy = ui_policy();
+    if state.ui.panels.detail.is_empty() {
         return vec![
-            "No detail logs.".to_string(),
-            "Press Ctrl+L to collapse detail.".to_string(),
+            render_text("No detail logs.", &policy),
+            render_text("Press Ctrl+L to collapse detail.", &policy),
         ];
     }
     let mut lines = state
-        .transcript
+        .ui
+        .panels
+        .detail
         .iter()
         .rev()
         .take(6)
         .rev()
-        .cloned()
+        .map(|line| render_text(&line.raw_text, &policy))
+        .filter(|line| !line.is_empty())
         .collect::<Vec<_>>();
-    lines.push("Press Ctrl+L to collapse detail.".to_string());
+    lines.push(render_text("Press Ctrl+L to collapse detail.", &policy));
     lines
 }
 
@@ -705,12 +893,15 @@ fn render_composer_panel(frame: &mut Frame, state: &mut ComposerViewState, area:
         .border_style(focus_style);
     let editor_inner = editor_block.inner(body[0]);
     frame.render_widget(
-        Paragraph::new(if state.buffer.is_blank() {
-            "> Type a command (analyze / refactor / apply)".to_string()
+        Paragraph::new(if state.intent_is_blank() {
+            render_text(
+                "> Type a command (analyze / refactor / apply)",
+                &ui_policy(),
+            )
         } else {
-            state.buffer.text()
+            render_intent(&state.ui, &ui_policy())
         })
-        .style(if state.buffer.is_blank() {
+        .style(if state.intent_is_blank() {
             Style::default().fg(Color::DarkGray)
         } else {
             Style::default().fg(Color::White)
@@ -754,7 +945,7 @@ fn render_composer_panel(frame: &mut Frame, state: &mut ComposerViewState, area:
     );
 
     if state.focus == ComposerFocus::Editor {
-        let (row, col) = state.buffer.cursor();
+        let (row, col) = state.intent_cursor();
         frame.set_cursor_position((editor_inner.x + col as u16, editor_inner.y + row as u16));
     }
 }
@@ -839,16 +1030,16 @@ mod tests {
     use std::path::PathBuf;
 
     use crate::nl::session::ConversationState;
-    use crate::service::dto::{ActionKind, IRActiveTransaction, SessionAppliedFileDiff};
+    use crate::service::dto::{IRActiveTransaction, SessionAppliedFileDiff};
 
     use super::*;
 
     #[test]
     fn composer_buffer_appends_at_tail_and_keeps_cursor_in_sync() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        state.buffer.insert_str("abc");
-        assert_eq!(state.buffer.text(), "abc");
-        assert_eq!(state.buffer.cursor(), (0, 3));
+        state.insert_intent_text("abc");
+        assert_eq!(state.intent_text(), "abc");
+        assert_eq!(state.intent_cursor(), (0, 3));
     }
 
     #[test]
@@ -859,21 +1050,39 @@ mod tests {
         };
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
         state.sync_context(&conversation, Some("main".to_string()), None);
-        let header_before = state.prompt_header.clone();
-        let target_before = state.current_target.clone();
+        let hint_before = state.ui.intent.system_hint.clone();
+        let target_before = state
+            .ui
+            .panels
+            .plan
+            .as_ref()
+            .and_then(|plan| plan.target.clone());
 
-        state
-            .buffer
-            .insert_str("ImportRebinding-only の diff では *_interface.rs を生成しない。");
-        state.sync_buffer_metadata();
+        state.insert_intent_text("ImportRebinding-only の diff では *_interface.rs を生成しない。");
 
-        assert_eq!(state.prompt_header, header_before);
-        assert_eq!(state.current_target, target_before);
+        assert_eq!(state.ui.intent.system_hint, hint_before);
+        assert_eq!(
+            state
+                .ui
+                .panels
+                .plan
+                .as_ref()
+                .and_then(|plan| plan.target.clone()),
+            target_before
+        );
         assert!(state.file_chips.is_empty(), "{:?}", state.file_chips);
 
         conversation.last_target = Some(PathBuf::from("apps/cli/src/coding.rs"));
         state.sync_context(&conversation, Some("main".to_string()), None);
-        assert_eq!(state.current_target, target_before);
+        assert_eq!(
+            state
+                .ui
+                .panels
+                .plan
+                .as_ref()
+                .and_then(|plan| plan.target.clone()),
+            target_before
+        );
     }
 
     #[test]
@@ -881,7 +1090,7 @@ mod tests {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
         let mut executions = Vec::new();
 
-        state.buffer.insert_str(
+        state.insert_intent_text(
             "Semantic Interface Extraction Guard を追加する。 対象は apps/cli/src/coding.rs。",
         );
         assert!(executions.is_empty());
@@ -899,14 +1108,14 @@ mod tests {
             executions[0],
             "Semantic Interface Extraction Guard を追加する。 対象は apps/cli/src/coding.rs。"
         );
-        assert!(state.buffer.is_blank());
+        assert!(state.intent_is_blank());
     }
 
     #[test]
     fn typing_updates_mode_metadata_without_dispatch() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
         state.focus = ComposerFocus::SendButton;
-        let transcript_before = state.transcript.clone();
+        let transcript_before = state.detail_lines();
 
         for ch in ['@', 'f', 'i', 'l', 'e'] {
             assert_eq!(
@@ -915,9 +1124,9 @@ mod tests {
             );
         }
 
-        assert_eq!(state.transcript, transcript_before);
+        assert_eq!(state.detail_lines(), transcript_before);
         assert_eq!(state.focus, ComposerFocus::SendButton);
-        assert!(state.buffer.is_blank());
+        assert!(state.intent_is_blank());
         assert!(
             !state.command_mode,
             "typing file mention text must not trigger command dispatch state"
@@ -942,20 +1151,89 @@ mod tests {
         state.push_transcript_line("long transcript dump");
 
         assert_eq!(state.focus, ComposerFocus::Editor);
-        assert_eq!(state.buffer.cursor(), (0, 0));
+        assert_eq!(state.intent_cursor(), (0, 0));
     }
 
     #[test]
-    fn transcript_append_filters_debug_leak_prefixes() {
+    fn transcript_append_preserves_raw_detail_state() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
         state.push_transcript_line("visible\nTRACE:R1:ENTER\nDEBUG:hook\nstill visible");
-        assert_eq!(state.transcript, vec!["visible\nstill visible".to_string()]);
+        assert_eq!(
+            state.detail_lines(),
+            vec!["visible\nTRACE:R1:ENTER\nDEBUG:hook\nstill visible".to_string()]
+        );
+    }
+
+    #[test]
+    fn submit_document_preserves_raw_intent_state() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.insert_intent_text("hello\nTRACE:R1\nworld");
+        let submitted = state.take_submit_event(false).expect("submit");
+        assert_eq!(submitted.input, "hello\nTRACE:R1\nworld");
+    }
+
+    #[test]
+    fn detail_lines_hide_debug_leakage() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.ui.panels.detail = vec![DetailLine {
+            raw_text: "hello\nTRACE:R1\nworld".to_string(),
+        }];
+        let lines = detail_lines_expanded(&state);
+        assert!(lines.iter().any(|line| line == "hello\nworld"));
+        assert!(!lines.iter().any(|line| line.contains("TRACE:")));
+    }
+
+    #[test]
+    fn render_intent_hides_debug_leakage() {
+        let mut state = UiState::default();
+        state.reduce(UiEvent::UserTyped(
+            "visible\nTRACE:R2\nDEBUG:x\nstill visible".to_string(),
+        ));
+        assert_eq!(
+            render_intent(&state, &UiPolicy { hide_debug: true }),
+            "visible\nstill visible"
+        );
+    }
+
+    #[test]
+    fn buffer_never_contains_trace() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.insert_intent_text("TRACE:R1");
+        assert!(state.intent_text().contains("TRACE:"));
+        assert!(!render_intent(&state.ui, &UiPolicy { hide_debug: true }).contains("TRACE:"));
+    }
+
+    #[test]
+    fn session_restore_preserves_raw_system_reinjection_until_render() {
+        let mut state = ComposerViewState::new(Vec::new(), State::Idle);
+        state.restore_session_snapshot(SessionSnapshot {
+            intent_raw: "TRACE:R1 something".to_string(),
+            panels: UiPanels::default(),
+        });
+        assert_eq!(state.intent_text(), "TRACE:R1 something");
+        assert_eq!(render_intent(&state.ui, &UiPolicy { hide_debug: true }), "");
+    }
+
+    #[test]
+    fn render_text_removes_embedded_trace_tokens() {
+        assert_eq!(
+            render_text("hello TRACE:R1 world", &UiPolicy { hide_debug: true }),
+            "hello TRACE:R1 world"
+        );
+    }
+
+    #[test]
+    fn render_text_normalizes_newlines_and_drops_empty_debug_lines() {
+        assert_eq!(
+            render_text("TRACE:R1\r\nTRACE:R2", &UiPolicy { hide_debug: true }),
+            ""
+        );
     }
 
     #[test]
     fn tab_shift_tab_and_esc_never_leave_editor_deadlocked() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        state.buffer.insert_str("/command");
+        state.insert_intent_text("/command");
 
         assert_eq!(
             state.handle_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)),
@@ -981,7 +1259,7 @@ mod tests {
     #[test]
     fn enter_dispatches_exactly_once_after_typing() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        let transcript_before = state.transcript.clone();
+        let transcript_before = state.detail_lines();
         for ch in "analyze src/".chars() {
             assert_eq!(
                 state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
@@ -989,14 +1267,14 @@ mod tests {
             );
         }
 
-        assert_eq!(state.transcript, transcript_before);
+        assert_eq!(state.detail_lines(), transcript_before);
 
         let first = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         let ComposerAction::Submit(event) = first else {
             panic!("expected submit on enter");
         };
         assert_eq!(event.input, "analyze src/");
-        assert!(state.buffer.is_blank());
+        assert!(state.intent_is_blank());
 
         let second = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert_eq!(second, ComposerAction::None);
@@ -1009,20 +1287,20 @@ mod tests {
             state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)),
             ComposerAction::None
         );
-        assert!(state.buffer.is_blank());
+        assert!(state.intent_is_blank());
     }
 
     #[test]
     fn backspace_removes_from_tail_only() {
         let mut state = ComposerViewState::new(Vec::new(), State::Idle);
-        state.buffer.insert_str("abc");
+        state.insert_intent_text("abc");
 
         assert_eq!(
             state.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
             ComposerAction::None
         );
-        assert_eq!(state.buffer.text(), "ab");
-        assert_eq!(state.buffer.cursor(), (0, 2));
+        assert_eq!(state.intent_text(), "ab");
+        assert_eq!(state.intent_cursor(), (0, 2));
     }
 
     #[test]
@@ -1033,24 +1311,28 @@ mod tests {
                 state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)),
                 ComposerAction::None
             );
-            assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+            assert_eq!(state.intent_cursor().1, state.intent_text().chars().count());
         }
 
         assert_eq!(
             state.handle_key_event(KeyEvent::new(KeyCode::Backspace, KeyModifiers::NONE)),
             ComposerAction::None
         );
-        assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+        assert_eq!(state.intent_cursor().1, state.intent_text().chars().count());
 
         let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
         assert!(matches!(action, ComposerAction::Submit(_)));
-        assert_eq!(state.buffer.cursor().1, state.buffer.text().chars().count());
+        assert_eq!(state.intent_cursor().1, state.intent_text().chars().count());
     }
 
     #[test]
     fn plan_uses_ir_next_actions_only() {
         let mut state = ComposerViewState::new(vec!["existing".to_string()], State::Idle);
-        state.ir_state.next_allowed_actions = vec![ActionKind::Apply, ActionKind::Validate];
+        state.ui.panels.plan = Some(build_plan_view(
+            None,
+            None,
+            vec!["apply".to_string(), "validate".to_string()],
+        ));
 
         let lines = plan_lines(&state);
 
@@ -1079,6 +1361,16 @@ mod tests {
             }),
             latest_build_ok: None,
         });
+
+        state.ui.panels.diff = Some(diff_view_from_session(
+            "[DIFF] Latest Applied",
+            state
+                .ir_state
+                .active_transaction
+                .as_ref()
+                .and_then(|tx| tx.latest_diff_ref.as_ref())
+                .expect("diff"),
+        ));
 
         assert_eq!(diff_height(&state), 10);
         assert_eq!(
