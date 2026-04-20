@@ -39,6 +39,7 @@ pub mod state;
 pub mod test_support;
 pub mod tui;
 pub mod ui;
+pub mod verify_cli;
 pub mod viewer;
 pub mod world_renderer_interface;
 
