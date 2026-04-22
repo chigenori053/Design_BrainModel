@@ -31,7 +31,7 @@ fn help_lists_replay_command() {
 #[test]
 fn help_lists_all_expected_commands() {
     let help = help_text();
-    for cmd in &["analyze", "explain", "simulate", "replay", "export", "phase9"] {
+    for cmd in &["analyze", "explain", "simulate", "replay", "export", "phase9", "apply", "validate", "rollback"] {
         assert!(
             help.contains(cmd),
             "help output must include '{cmd}', got:\n{help}"
