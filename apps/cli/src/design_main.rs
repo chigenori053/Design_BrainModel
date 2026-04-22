@@ -90,6 +90,10 @@ enum Commands {
         #[arg(long, default_value = "Phase9 architecture check")]
         input: String,
     },
+    Replay {
+        #[arg(long)]
+        file: Option<String>,
+    },
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +319,15 @@ fn run() -> Result<(), String> {
             },
         ),
         Commands::Phase9 { input } => run_phase9(input),
+        Commands::Replay { file } => render_success(
+            "replay",
+            json!({ "replayed": file.is_some(), "file": file }),
+            JsonMeta {
+                command: "replay",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
     }
 }
 
