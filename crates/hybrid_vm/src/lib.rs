@@ -1701,7 +1701,11 @@ mod tests {
 
     #[test]
     fn supports_two_execution_modes() {
-        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_exec_modes_{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
         let s = state_with_graph(4, &[(1, 2), (2, 3)]);
 
         vm.set_mode(ExecutionMode::RecallFirst);
@@ -1739,7 +1743,11 @@ mod tests {
 
     #[test]
     fn analyze_text_creates_l1_and_l2_link() {
-        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_l1_l2_link_{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
         let concept = vm
             .analyze_text("高速化したい。クラウド依存は避ける")
             .expect("analyze");
@@ -1849,7 +1857,11 @@ mod tests {
 
     #[test]
     fn l1_and_l2_v2_api_available() {
-        let mut vm = HybridVM::with_default_memory(StructuralEvaluator::default()).expect("vm");
+        let store_dir = std::env::temp_dir().join(format!(
+            "hybrid_vm_l1_l2_v2_{}",
+            SystemTime::now().duration_since(UNIX_EPOCH).expect("clock").as_nanos()
+        ));
+        let mut vm = HybridVM::for_cli_storage(&store_dir).expect("vm");
         let concept = vm
             .analyze_text("高性能かつクラウド依存禁止")
             .expect("analyze");

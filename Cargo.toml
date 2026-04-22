@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/code_ir",
+    "crates/execution/execution_core",
     "crates/architecture_reasoner",
     "crates/geometry_engine",
     "crates/architecture_state",
@@ -78,6 +79,7 @@ resolver = "2"
 
 [workspace.dependencies]
 code_ir = { path = "crates/code_ir" }
+execution_core = { path = "crates/execution/execution_core" }
 architecture_reasoner = { path = "crates/architecture_reasoner" }
 geometry_engine = { path = "crates/geometry_engine" }
 architecture_state_v2 = { path = "crates/architecture_state", package = "architecture_state" }
