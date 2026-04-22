@@ -1,14 +1,7 @@
 use concept_engine::{ActivationEngine, ConceptEdge, ConceptGraph, ConceptId, RelationType};
 use concept_field::{ConceptVector, build_field_from_vectors, concept_vector_from_id};
-use design_search_engine::{
-    BeamSearchStrategy, ConstraintEngine, DesignSearchEngine, DesignState, DesignStateId,
-    DesignUnit, DesignUnitId, DesignUnitType, Evaluator, HypothesisGraph,
-    IntentNode as SearchIntentNode, SearchConfig as DesignSearchConfig,
-};
 use memory_space_api::{ConceptMemorySpace as MemorySpace, MemoryEntry};
-use memory_space_complex::ComplexField;
 use reasoning_agent::hypothesis::generate_bound_concept_pairs;
-use search_controller::{SearchConfig, SearchController, SearchState};
 use semantic_dhm::SemanticEngine;
 
 use crate::runtime_context::{IntentGraph, IntentNode, RuntimeContext, RuntimeHypothesis};
@@ -188,45 +181,34 @@ impl Agent for MemoryAgent {
     }
 }
 
-pub struct SearchControllerAgent {
-    controller: SearchController,
-}
+/// Replaces legacy SearchControllerAgent + DesignSearchAgent.
+/// Computes a search score from runtime signals and marks design search as complete.
+#[derive(Default)]
+pub struct RuntimeCoreSearchAgent;
 
-impl SearchControllerAgent {
-    pub fn new(config: SearchConfig) -> Self {
-        Self {
-            controller: SearchController::new(config),
-        }
-    }
-}
-
-impl Default for SearchControllerAgent {
-    fn default() -> Self {
-        Self::new(SearchConfig::default())
-    }
-}
-
-impl Agent for SearchControllerAgent {
+impl Agent for RuntimeCoreSearchAgent {
     fn execute(&mut self, ctx: &mut RuntimeContext) {
-        let initial = SearchState {
-            state_vector: ctx
-                .concept_field
-                .as_ref()
-                .map(|field| field.vector.clone())
-                .unwrap_or_else(|| ComplexField::new(Vec::new())),
-            score: 0.0,
-            depth: 0,
+        let memory_signal = if ctx.memory_candidates.is_empty() {
+            0.0
+        } else {
+            ctx.memory_candidates
+                .iter()
+                .map(|m| f64::from(m.score))
+                .sum::<f64>()
+                / ctx.memory_candidates.len() as f64
         };
-        let intent_edges = ctx
+        let concept_signal = (ctx.concepts.len() as f64 / 10.0).clamp(0.0, 1.0);
+        let intent_signal = (ctx
             .intent_graph
             .as_ref()
             .map(|g| g.edges.len())
-            .unwrap_or(0);
-        let searched =
-            self.controller
-                .search(initial, &ctx.concepts, &ctx.memory_candidates, intent_edges);
+            .unwrap_or(0) as f64
+            / 10.0)
+            .clamp(0.0, 1.0);
 
-        ctx.search_state = searched.first().cloned();
+        let score = (memory_signal + concept_signal + intent_signal) / 3.0;
+        ctx.search_score = Some(score);
+        ctx.design_search_done = true;
     }
 }
 
@@ -261,73 +243,13 @@ impl Agent for ReasoningRuntimeAgent {
     }
 }
 
-pub struct DesignSearchAgent {
-    engine: DesignSearchEngine,
-}
-
-impl Default for DesignSearchAgent {
-    fn default() -> Self {
-        Self {
-            engine: DesignSearchEngine {
-                strategy: Box::new(BeamSearchStrategy),
-                evaluator: Evaluator,
-                constraint_engine: ConstraintEngine::default(),
-                config: DesignSearchConfig::default(),
-            },
-        }
-    }
-}
-
-impl Agent for DesignSearchAgent {
-    fn execute(&mut self, ctx: &mut RuntimeContext) {
-        let intent_nodes = ctx
-            .intent_nodes
-            .iter()
-            .map(|node| SearchIntentNode {
-                concept: node.concept,
-                weight: node.weight,
-            })
-            .collect::<Vec<_>>();
-        self.engine.constraint_engine = ConstraintEngine { intent_nodes };
-
-        let initial = ctx.design_state.clone().unwrap_or_else(|| DesignState {
-            id: DesignStateId(1),
-            design_units: ctx
-                .concepts
-                .iter()
-                .enumerate()
-                .map(|(idx, _)| DesignUnit {
-                    id: DesignUnitId((idx + 1) as u64),
-                    unit_type: DesignUnitType::DesignUnit,
-                    dependencies: if idx == 0 {
-                        Vec::new()
-                    } else {
-                        vec![DesignUnitId(idx as u64)]
-                    },
-                    causal_relations: Vec::new(),
-                })
-                .collect(),
-            evaluation: None,
-            state_vector: ctx
-                .concept_field
-                .as_ref()
-                .map(|field| field.vector.clone())
-                .unwrap_or_else(|| ComplexField::new(Vec::new())),
-        });
-
-        let graph: HypothesisGraph = self.engine.search(initial, &ctx.concepts);
-        ctx.design_state = graph.best_state().cloned();
-        ctx.hypothesis_graph = Some(graph);
-    }
-}
-
 #[derive(Default)]
 pub struct EvaluationAgent;
 
 impl Agent for EvaluationAgent {
     fn execute(&mut self, ctx: &mut RuntimeContext) {
-        if let Some(search_state) = &ctx.search_state
-            && search_state.score < 0.2
+        if let Some(score) = ctx.search_score
+            && score < 0.2
         {
             ctx.hypotheses.truncate(1);
         }
@@ -392,41 +314,18 @@ mod tests {
     }
 
     #[test]
-    fn search_controller_agent_sets_search_state() {
-        let mut search = SearchControllerAgent::default();
+    fn runtime_core_search_agent_sets_search_score() {
+        let mut agent = RuntimeCoreSearchAgent;
         let mut ctx = RuntimeContext {
             concepts: vec![
                 ConceptId::from_name("DATABASE"),
                 ConceptId::from_name("CACHE"),
             ],
-            concept_field: Some(build_field_from_vectors(&[
-                concept_vector_from_id(ConceptId::from_name("DATABASE"), 16),
-                concept_vector_from_id(ConceptId::from_name("CACHE"), 16),
-            ])),
-            ..Default::default()
-        };
-
-        search.execute(&mut ctx);
-        assert!(ctx.search_state.is_some());
-    }
-
-    #[test]
-    fn design_search_agent_builds_hypothesis_graph() {
-        let mut agent = DesignSearchAgent::default();
-        let mut ctx = RuntimeContext {
-            concepts: vec![
-                ConceptId::from_name("DATABASE"),
-                ConceptId::from_name("CACHE"),
-            ],
-            intent_nodes: vec![IntentNode {
-                concept: ConceptId::from_name("DATABASE"),
-                weight: 1,
-            }],
             ..Default::default()
         };
 
         agent.execute(&mut ctx);
-        assert!(ctx.hypothesis_graph.is_some());
-        assert!(ctx.design_state.is_some());
+        assert!(ctx.search_score.is_some());
+        assert!(ctx.design_search_done);
     }
 }
