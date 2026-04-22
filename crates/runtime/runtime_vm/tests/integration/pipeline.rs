@@ -1,4 +1,4 @@
-use runtime_core::RuntimeEvent;
+use runtime_core::{RuntimeEvent, search_core::SearchStatus};
 use runtime_vm::{ExecutionMode, HybridVm, Phase9RuntimeAdapter};
 
 #[test]
@@ -11,8 +11,7 @@ fn pipeline_execution_and_context_propagation() {
     assert!(!ctx.semantic_units.is_empty());
     assert!(!ctx.concepts.is_empty());
     assert!(!ctx.intent_nodes.is_empty());
-    assert!(ctx.search_score.is_some());
-    assert!(ctx.design_search_done);
+    assert!(matches!(ctx.search_status, SearchStatus::Completed(_)));
 }
 
 #[test]

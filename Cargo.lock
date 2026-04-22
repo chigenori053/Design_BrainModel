@@ -1487,6 +1487,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "execution_core"
+version = "0.1.0"
+
+[[package]]
 name = "execution_graph"
 version = "0.1.0"
 dependencies = [
@@ -3316,6 +3320,7 @@ name = "runtime_core"
 version = "0.1.0"
 dependencies = [
  "ai_context",
+ "execution_core",
  "memory_space_core",
  "num-complex",
  "serde_json",

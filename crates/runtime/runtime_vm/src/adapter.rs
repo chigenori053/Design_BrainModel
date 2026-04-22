@@ -265,7 +265,7 @@ impl Phase9RuntimeAdapter {
 }
 
 fn map_stage(ctx: &RuntimeContext) -> RuntimeStage {
-    if ctx.design_search_done {
+    if ctx.search_status.is_complete() {
         RuntimeStage::Output
     } else if !ctx.hypotheses.is_empty() {
         RuntimeStage::HypothesisGeneration

@@ -1,6 +1,7 @@
 use concept_engine::ConceptId;
 use concept_field::ConceptField;
 use memory_space_api::ConceptRecallHit;
+use runtime_core::search_core::SearchStatus;
 use semantic_dhm::SemanticUnit;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -30,8 +31,7 @@ pub struct RuntimeContext {
     pub concept_field: Option<ConceptField>,
     pub intent_graph: Option<IntentGraph>,
     pub memory_candidates: Vec<ConceptRecallHit>,
-    pub search_score: Option<f64>,
-    pub design_search_done: bool,
+    pub search_status: SearchStatus,
     pub hypotheses: Vec<RuntimeHypothesis>,
     pub tick: u64,
 }

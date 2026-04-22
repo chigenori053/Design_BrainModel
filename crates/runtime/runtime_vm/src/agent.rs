@@ -2,6 +2,9 @@ use concept_engine::{ActivationEngine, ConceptEdge, ConceptGraph, ConceptId, Rel
 use concept_field::{ConceptVector, build_field_from_vectors, concept_vector_from_id};
 use memory_space_api::{ConceptMemorySpace as MemorySpace, MemoryEntry};
 use reasoning_agent::hypothesis::generate_bound_concept_pairs;
+use runtime_core::search_api::search;
+use runtime_core::search_core::SearchStatus;
+use runtime_core::SearchInput;
 use semantic_dhm::SemanticEngine;
 
 use crate::runtime_context::{IntentGraph, IntentNode, RuntimeContext, RuntimeHypothesis};
@@ -181,8 +184,7 @@ impl Agent for MemoryAgent {
     }
 }
 
-/// Replaces legacy SearchControllerAgent + DesignSearchAgent.
-/// Computes a search score from runtime signals and marks design search as complete.
+/// Drives the search stage via `runtime_core::search()`.
 #[derive(Default)]
 pub struct RuntimeCoreSearchAgent;
 
@@ -197,18 +199,19 @@ impl Agent for RuntimeCoreSearchAgent {
                 .sum::<f64>()
                 / ctx.memory_candidates.len() as f64
         };
-        let concept_signal = (ctx.concepts.len() as f64 / 10.0).clamp(0.0, 1.0);
-        let intent_signal = (ctx
-            .intent_graph
-            .as_ref()
-            .map(|g| g.edges.len())
-            .unwrap_or(0) as f64
-            / 10.0)
-            .clamp(0.0, 1.0);
 
-        let score = (memory_signal + concept_signal + intent_signal) / 3.0;
-        ctx.search_score = Some(score);
-        ctx.design_search_done = true;
+        let input = SearchInput {
+            concept_count: ctx.concepts.len(),
+            memory_signal,
+            intent_edges: ctx
+                .intent_graph
+                .as_ref()
+                .map(|g| g.edges.len())
+                .unwrap_or(0),
+        };
+
+        let result = search(input);
+        ctx.search_status = result.status;
     }
 }
 
@@ -248,8 +251,8 @@ pub struct EvaluationAgent;
 
 impl Agent for EvaluationAgent {
     fn execute(&mut self, ctx: &mut RuntimeContext) {
-        if let Some(score) = ctx.search_score
-            && score < 0.2
+        if let SearchStatus::Completed(ref summary) = ctx.search_status
+            && summary.score < 0.2
         {
             ctx.hypotheses.truncate(1);
         }
@@ -314,7 +317,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_core_search_agent_sets_search_score() {
+    fn runtime_core_search_agent_sets_search_status() {
         let mut agent = RuntimeCoreSearchAgent;
         let mut ctx = RuntimeContext {
             concepts: vec![
@@ -325,7 +328,6 @@ mod tests {
         };
 
         agent.execute(&mut ctx);
-        assert!(ctx.search_score.is_some());
-        assert!(ctx.design_search_done);
+        assert!(matches!(ctx.search_status, SearchStatus::Completed(_)));
     }
 }
