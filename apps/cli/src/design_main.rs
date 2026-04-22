@@ -763,6 +763,7 @@ fn run_phase9(input: String) -> Result<(), String> {
             RuntimeStage::TransitionEvaluation => "transition_evaluation",
             RuntimeStage::ConsistencyEvaluation => "consistency_evaluation",
             RuntimeStage::Output => "output",
+            RuntimeStage::Simulation => "simulation",
         },
         event_count: phase9_ctx.event_bus.len(),
         recalled_memories: Phase9RuntimeAdapter::snapshot(vm.context()).recalled_memories,
