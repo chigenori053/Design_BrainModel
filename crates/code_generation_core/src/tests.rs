@@ -1,7 +1,8 @@
-use code_ir::{IrStep, IrFunction, IrParam, IrType, CodeIr};
+use code_ir::{IrStep, IrFunction, IrParam, IrType, IrModule, IrImport, CodeIr};
 use crate::{
     error::CodegenError,
     generator::{generate_function, generate_program, StructuredCodeGenerator},
+    project::generate_project,
     scope::{ScopeStack, validate_steps},
     spec::LanguageSpec,
     type_render::render_type,
@@ -497,4 +498,270 @@ fn python_type_rendering() {
     assert_eq!(render_type(&IrType::Bool, &spec).unwrap(), "bool");
     assert_eq!(render_type(&IrType::Str, &spec).unwrap(), "str");
     assert_eq!(render_type(&IrType::Void, &spec).unwrap(), "None");
+}
+
+// ════════════════════════════════════════════════════════════════════════════
+// Step5 tests: Module / Import / File Layout
+// ════════════════════════════════════════════════════════════════════════════
+
+fn make_ir(modules: Vec<IrModule>) -> CodeIr {
+    let mut ir = CodeIr::default();
+    ir.ir_modules = modules;
+    ir
+}
+
+// ── 12.1 Multi-file ──────────────────────────────────────────────────────────
+
+#[test]
+fn generates_multiple_files() {
+    let ir = make_ir(vec![
+        IrModule::new("math_utils").with_functions(vec![
+            IrFunction::new("add").with_body(vec![IrStep::return_val("0")]),
+        ]),
+        IrModule::new("main_mod").with_functions(vec![
+            IrFunction::new("run").with_body(vec![IrStep::return_val("0")]),
+        ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    assert_eq!(out.files.len(), 2);
+    let paths: Vec<&str> = out.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"src/main_mod.rs"), "paths: {paths:?}");
+    assert!(paths.contains(&"src/math_utils.rs"), "paths: {paths:?}");
+}
+
+#[test]
+fn python_generates_multiple_files() {
+    let ir = make_ir(vec![
+        IrModule::new("utils").with_functions(vec![
+            IrFunction::new("helper").with_body(vec![IrStep::return_val("0")]),
+        ]),
+        IrModule::new("app").with_functions(vec![
+            IrFunction::new("main").with_body(vec![IrStep::return_val("0")]),
+        ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::python()).unwrap();
+    let paths: Vec<&str> = out.files.iter().map(|f| f.path.as_str()).collect();
+    assert!(paths.contains(&"app.py"), "paths: {paths:?}");
+    assert!(paths.contains(&"utils.py"), "paths: {paths:?}");
+}
+
+// ── 12.2 Import ──────────────────────────────────────────────────────────────
+
+#[test]
+fn rust_import_syntax() {
+    let ir = make_ir(vec![
+        IrModule::new("math"),
+        IrModule::new("app").with_imports(vec![
+            IrImport::new("math", vec!["add"]),
+        ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    let app_file = out.files.iter().find(|f| f.path == "src/app.rs").unwrap();
+    assert!(app_file.content.contains("use math::add;"), "content:\n{}", app_file.content);
+}
+
+#[test]
+fn python_import_syntax() {
+    let ir = make_ir(vec![
+        IrModule::new("math"),
+        IrModule::new("app").with_imports(vec![
+            IrImport::new("math", vec!["add"]),
+        ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::python()).unwrap();
+    let app_file = out.files.iter().find(|f| f.path == "app.py").unwrap();
+    assert!(app_file.content.contains("from math import add"), "content:\n{}", app_file.content);
+}
+
+#[test]
+fn import_sorted_alphabetically() {
+    let ir = make_ir(vec![
+        IrModule::new("z_mod"),
+        IrModule::new("a_mod"),
+        IrModule::new("consumer").with_imports(vec![
+            IrImport::new("z_mod", vec!["z_fn"]),
+            IrImport::new("a_mod", vec!["a_fn"]),
+        ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    let f = out.files.iter().find(|f| f.path == "src/consumer.rs").unwrap();
+    let a_pos = f.content.find("use a_mod").unwrap();
+    let z_pos = f.content.find("use z_mod").unwrap();
+    assert!(a_pos < z_pos, "imports not sorted: {}", f.content);
+}
+
+// ── 12.3 Dependency order ────────────────────────────────────────────────────
+
+#[test]
+fn output_files_sorted_by_module_name() {
+    let ir = make_ir(vec![
+        IrModule::new("zebra"),
+        IrModule::new("alpha"),
+        IrModule::new("middle"),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    let names: Vec<&str> = out.files.iter().map(|f| f.path.as_str()).collect();
+    assert_eq!(names, vec!["src/alpha.rs", "src/middle.rs", "src/zebra.rs"]);
+}
+
+// ── 12.4 Cycle detection ─────────────────────────────────────────────────────
+
+#[test]
+fn detects_direct_cycle() {
+    let ir = make_ir(vec![
+        IrModule::new("a").with_imports(vec![IrImport::new("b", vec!["x"])]),
+        IrModule::new("b").with_imports(vec![IrImport::new("a", vec!["y"])]),
+    ]);
+    let err = generate_project(&ir, &LanguageSpec::rust()).unwrap_err();
+    assert!(matches!(err, CodegenError::CyclicDependency { .. }), "got: {err}");
+}
+
+#[test]
+fn detects_indirect_cycle() {
+    let ir = make_ir(vec![
+        IrModule::new("a").with_imports(vec![IrImport::new("b", vec!["x"])]),
+        IrModule::new("b").with_imports(vec![IrImport::new("c", vec!["y"])]),
+        IrModule::new("c").with_imports(vec![IrImport::new("a", vec!["z"])]),
+    ]);
+    let err = generate_project(&ir, &LanguageSpec::rust()).unwrap_err();
+    assert!(matches!(err, CodegenError::CyclicDependency { .. }), "got: {err}");
+}
+
+#[test]
+fn no_false_positive_cycle_on_dag() {
+    // a → b, a → c, b → c  (diamond DAG — no cycle)
+    let ir = make_ir(vec![
+        IrModule::new("a").with_imports(vec![
+            IrImport::new("b", vec!["fb"]),
+            IrImport::new("c", vec!["fc"]),
+        ]),
+        IrModule::new("b").with_imports(vec![IrImport::new("c", vec!["fc"])]),
+        IrModule::new("c"),
+    ]);
+    let result = generate_project(&ir, &LanguageSpec::rust());
+    assert!(result.is_ok(), "{result:?}");
+}
+
+// ── Error cases ───────────────────────────────────────────────────────────────
+
+#[test]
+fn error_module_not_found() {
+    let ir = make_ir(vec![
+        IrModule::new("app").with_imports(vec![IrImport::new("nonexistent", vec!["f"])]),
+    ]);
+    let err = generate_project(&ir, &LanguageSpec::rust()).unwrap_err();
+    assert_eq!(err, CodegenError::ModuleNotFound { name: "nonexistent".to_string() });
+}
+
+#[test]
+fn error_duplicate_module() {
+    let ir = make_ir(vec![
+        IrModule::new("dup"),
+        IrModule::new("dup"),
+    ]);
+    let err = generate_project(&ir, &LanguageSpec::rust()).unwrap_err();
+    assert_eq!(err, CodegenError::DuplicateModule { name: "dup".to_string() });
+}
+
+#[test]
+fn error_duplicate_symbol_in_module() {
+    let ir = make_ir(vec![
+        IrModule::new("mod1").with_functions(vec![
+            IrFunction::new("foo").with_body(vec![IrStep::return_val("1")]),
+            IrFunction::new("foo").with_body(vec![IrStep::return_val("2")]),
+        ]),
+    ]);
+    let err = generate_project(&ir, &LanguageSpec::rust()).unwrap_err();
+    assert_eq!(err, CodegenError::DuplicateSymbol {
+        module: "mod1".to_string(),
+        name: "foo".to_string(),
+    });
+}
+
+// ── 12.5 Snapshot ────────────────────────────────────────────────────────────
+
+#[test]
+fn snapshot_rust_project_with_import() {
+    let ir = make_ir(vec![
+        IrModule::new("math").with_functions(vec![
+            IrFunction::new("add")
+                .with_params(vec![
+                    IrParam::typed("a", IrType::Int),
+                    IrParam::typed("b", IrType::Int),
+                ])
+                .with_return_type(IrType::Int)
+                .with_body(vec![IrStep::return_val("a")]),
+        ]),
+        IrModule::new("main_mod")
+            .with_imports(vec![IrImport::new("math", vec!["add"])])
+            .with_functions(vec![
+                IrFunction::new("run").with_body(vec![IrStep::return_val("0")]),
+            ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+
+    let math_file = out.files.iter().find(|f| f.path == "src/math.rs").unwrap();
+    let want_math = concat!(
+        "fn add(a: i64, b: i64) -> i64 {\n",
+        "    return a;\n",
+        "}\n",
+    );
+    assert_eq!(math_file.content, want_math);
+
+    let main_file = out.files.iter().find(|f| f.path == "src/main_mod.rs").unwrap();
+    let want_main = concat!(
+        "use math::add;\n",
+        "\n",
+        "fn run() {\n",
+        "    return 0;\n",
+        "}\n",
+    );
+    assert_eq!(main_file.content, want_main);
+}
+
+#[test]
+fn snapshot_python_project_with_import() {
+    let ir = make_ir(vec![
+        IrModule::new("utils").with_functions(vec![
+            IrFunction::new("helper")
+                .with_params(vec![IrParam::new("x")])
+                .with_body(vec![IrStep::return_val("x")]),
+        ]),
+        IrModule::new("app")
+            .with_imports(vec![IrImport::new("utils", vec!["helper"])])
+            .with_functions(vec![
+                IrFunction::new("run").with_body(vec![IrStep::return_val("0")]),
+            ]),
+    ]);
+    let out = generate_project(&ir, &LanguageSpec::python()).unwrap();
+
+    let utils_file = out.files.iter().find(|f| f.path == "utils.py").unwrap();
+    let want_utils = concat!(
+        "def helper(x):\n",
+        "    return x;\n",
+    );
+    assert_eq!(utils_file.content, want_utils);
+
+    let app_file = out.files.iter().find(|f| f.path == "app.py").unwrap();
+    let want_app = concat!(
+        "from utils import helper\n",
+        "\n",
+        "def run():\n",
+        "    return 0;\n",
+    );
+    assert_eq!(app_file.content, want_app);
+}
+
+#[test]
+fn snake_case_module_name_in_path() {
+    let ir = make_ir(vec![IrModule::new("MathUtils")]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    assert_eq!(out.files[0].path, "src/math_utils.rs");
+}
+
+#[test]
+fn empty_module_generates_empty_file() {
+    let ir = make_ir(vec![IrModule::new("empty")]);
+    let out = generate_project(&ir, &LanguageSpec::rust()).unwrap();
+    assert_eq!(out.files[0].content, "");
 }
