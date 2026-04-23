@@ -67,6 +67,7 @@ members = [
     "crates/code_generation_core",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
+    "crates/learning_core",
     "apps/cli",
     "apps/gui",
     "apps/desktop",
@@ -126,6 +127,7 @@ recomposer = { path = "crates/recomposer" }
 design_reasoning = { path = "crates/design_reasoning" }
 reasoning_agent = { path = "crates/reasoning_agent" }
 runtime_core = { path = "crates/runtime/runtime_core" }
+learning_core = { path = "crates/learning_core" }
 world_model_core = { path = "crates/core/world_model_core" }
 design_domain = { path = "crates/domain/design_domain" }
 design_grammar = { path = "crates/domain/design_grammar" }

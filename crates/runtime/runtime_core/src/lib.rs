@@ -3,6 +3,8 @@ pub mod context;
 pub mod event;
 pub mod modality;
 pub mod ports;
+pub mod search_domain;
+pub mod search_runtime;
 
 pub use agent::{AgentInput, AgentOutput, RuntimeAgent};
 pub use ai_context::AIContext;
@@ -13,3 +15,5 @@ pub use ports::{
     DecisionPolicy, GeometryEvaluator, LanguageRenderer, MemoryRecallEngine, MultimodalEncoder,
     ReasoningEngine, RuntimeError, RuntimeResult,
 };
+pub use search_domain::{FeatureVector, ScoringWeights, compute_score};
+pub use search_runtime::{SearchRuntimeParams, MAX_BEAM, MAX_EXPLORATION, MIN_BEAM, MIN_EXPLORATION};
