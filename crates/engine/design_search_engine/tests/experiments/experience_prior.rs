@@ -31,8 +31,6 @@ fn experience_prior_biases_search_toward_matching_patterns() {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
-        experience_bias: 0.4,
-        policy_bias: 0.15,
     };
     let initial = WorldState::new(1, vec![1.0, 0.0]);
 

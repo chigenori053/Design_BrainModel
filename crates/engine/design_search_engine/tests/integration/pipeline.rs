@@ -9,8 +9,6 @@ fn search_pipeline_populates_simulation_before_scoring() {
         max_depth: 1,
         max_candidates: 8,
         beam_width: 4,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let initial = WorldState::new(1, vec![2.0, 1.0]);
     let recall = RecallResult {
@@ -43,8 +41,6 @@ fn search_only_returns_grammar_valid_candidates() {
         max_depth: 2,
         max_candidates: 8,
         beam_width: 4,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
 
     let states = controller.search(WorldState::new(1, vec![1.0, 0.0]), None, &config);

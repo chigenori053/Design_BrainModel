@@ -12,7 +12,7 @@ fn experience_feedback_loop_improves_score_trend() {
     }
     update_policy_from_memory(&controller);
 
-    let trajectory = best_scores_over_iterations(&controller, 100, &verification_config(0.2));
+    let trajectory = best_scores_over_iterations(&controller, 100, &verification_config());
     let first_avg = trajectory.iter().take(10).sum::<f64>() / 10.0;
     let last_avg = trajectory.iter().rev().take(10).sum::<f64>() / 10.0;
 

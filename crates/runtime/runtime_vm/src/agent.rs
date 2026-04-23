@@ -1,15 +1,12 @@
 use concept_engine::{ActivationEngine, ConceptEdge, ConceptGraph, ConceptId, RelationType};
 use concept_field::{ConceptVector, build_field_from_vectors, concept_vector_from_id};
-use design_search_engine::{
-    BeamSearchStrategy, ConstraintEngine, DesignSearchEngine, DesignState, DesignStateId,
-    DesignUnit, DesignUnitId, DesignUnitType, Evaluator, HypothesisGraph,
-    IntentNode as SearchIntentNode, SearchConfig as DesignSearchConfig,
-};
 use memory_space_api::{ConceptMemorySpace as MemorySpace, MemoryEntry};
 use memory_space_complex::ComplexField;
 use reasoning_agent::hypothesis::generate_bound_concept_pairs;
+use runtime_core::{SearchInput, SearchPolicy, search};
 use search_controller::{SearchConfig, SearchController, SearchState};
 use semantic_dhm::SemanticEngine;
+use world_model_core::WorldState;
 
 use crate::runtime_context::{IntentGraph, IntentNode, RuntimeContext, RuntimeHypothesis};
 
@@ -261,63 +258,29 @@ impl Agent for ReasoningRuntimeAgent {
     }
 }
 
-pub struct DesignSearchAgent {
-    engine: DesignSearchEngine,
-}
+/// Phase-9D search agent: delegates to runtime_core::search with an explicit
+/// policy.  Policy application (beam width, exploration, scoring) is handled
+/// entirely inside runtime_core — no search logic lives here.
+#[derive(Default)]
+pub struct PolicySearchAgent;
 
-impl Default for DesignSearchAgent {
-    fn default() -> Self {
-        Self {
-            engine: DesignSearchEngine {
-                strategy: Box::new(BeamSearchStrategy),
-                evaluator: Evaluator,
-                constraint_engine: ConstraintEngine::default(),
-                config: DesignSearchConfig::default(),
-            },
-        }
-    }
-}
-
-impl Agent for DesignSearchAgent {
+impl Agent for PolicySearchAgent {
     fn execute(&mut self, ctx: &mut RuntimeContext) {
-        let intent_nodes = ctx
-            .intent_nodes
-            .iter()
-            .map(|node| SearchIntentNode {
-                concept: node.concept,
-                weight: node.weight,
-            })
-            .collect::<Vec<_>>();
-        self.engine.constraint_engine = ConstraintEngine { intent_nodes };
-
-        let initial = ctx.design_state.clone().unwrap_or_else(|| DesignState {
-            id: DesignStateId(1),
-            design_units: ctx
-                .concepts
-                .iter()
-                .enumerate()
-                .map(|(idx, _)| DesignUnit {
-                    id: DesignUnitId((idx + 1) as u64),
-                    unit_type: DesignUnitType::DesignUnit,
-                    dependencies: if idx == 0 {
-                        Vec::new()
-                    } else {
-                        vec![DesignUnitId(idx as u64)]
-                    },
-                    causal_relations: Vec::new(),
-                })
-                .collect(),
-            evaluation: None,
-            state_vector: ctx
-                .concept_field
-                .as_ref()
-                .map(|field| field.vector.clone())
-                .unwrap_or_else(|| ComplexField::new(Vec::new())),
-        });
-
-        let graph: HypothesisGraph = self.engine.search(initial, &ctx.concepts);
-        ctx.design_state = graph.best_state().cloned();
-        ctx.hypothesis_graph = Some(graph);
+        let context_vector = vec![
+            ctx.semantic_units.len() as f64,
+            ctx.concepts.len() as f64,
+            ctx.memory_candidates.len() as f64,
+        ];
+        let world_state = WorldState::new(ctx.tick, context_vector);
+        let input = SearchInput {
+            world_state,
+            recall: None,
+            max_depth: 4,
+            max_candidates: 64,
+        };
+        let policy = SearchPolicy::load();
+        let result = search(input, &policy);
+        ctx.policy_search_result = Some(result);
     }
 }
 
@@ -411,22 +374,18 @@ mod tests {
     }
 
     #[test]
-    fn design_search_agent_builds_hypothesis_graph() {
-        let mut agent = DesignSearchAgent::default();
+    fn policy_search_agent_produces_result() {
+        let mut agent = PolicySearchAgent::default();
         let mut ctx = RuntimeContext {
             concepts: vec![
                 ConceptId::from_name("DATABASE"),
                 ConceptId::from_name("CACHE"),
             ],
-            intent_nodes: vec![IntentNode {
-                concept: ConceptId::from_name("DATABASE"),
-                weight: 1,
-            }],
+            tick: 1,
             ..Default::default()
         };
 
         agent.execute(&mut ctx);
-        assert!(ctx.hypothesis_graph.is_some());
-        assert!(ctx.design_state.is_some());
+        assert!(ctx.policy_search_result.is_some());
     }
 }

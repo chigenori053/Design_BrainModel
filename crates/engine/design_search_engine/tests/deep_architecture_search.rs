@@ -8,8 +8,6 @@ fn test12_deep_architecture_search() {
         max_depth: 20,
         max_candidates: 16,
         beam_width: 10,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let trace = controller.search_trace(WorldState::new(1, vec![2.0, 1.0]), None, &config);
     let converged = trace

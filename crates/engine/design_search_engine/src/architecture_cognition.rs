@@ -91,8 +91,6 @@ impl ArchitectureCognitionSearchIntegration {
                 max_candidates: ((base.max_candidates as f64 * candidate_scale).round() as usize)
                     .max(1),
                 beam_width: ((base.beam_width as f64 * beam_scale).round() as usize).max(1),
-                experience_bias: (base.experience_bias + confidence * 0.2).clamp(0.0, 1.0),
-                policy_bias: (base.policy_bias + confidence * 0.2).clamp(0.0, 1.0),
             },
             constraint_count: constraints.len(),
             confidence,

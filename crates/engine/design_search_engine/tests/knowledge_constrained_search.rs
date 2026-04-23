@@ -10,8 +10,6 @@ fn test8_knowledge_constrained_search() {
         max_depth: 6,
         max_candidates: 16,
         beam_width: 8,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let planner = ArchitectureCognitionSearchIntegration::default();
     let constrained = planner.knowledge_constrained_plan("scalable rest api cache", base);

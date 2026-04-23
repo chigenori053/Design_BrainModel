@@ -27,6 +27,8 @@ pub struct SearchTrace {
 
 /// Beam search implementation of `SearchController`.
 /// Deterministic: same input → same search tree → same ranking.
+/// Policy application is intentionally absent here — it is the
+/// responsibility of runtime_core::search.
 #[derive(Clone, Debug)]
 pub struct BeamSearchController {
     pub memory: Arc<Mutex<InMemoryMemorySpace>>,
@@ -109,8 +111,6 @@ impl BeamSearchController {
             &evaluation_engine,
             &simulator,
             &grammar,
-            config.experience_bias,
-            config.policy_bias,
         ) {
             return SearchTrace::default();
         }
@@ -147,8 +147,6 @@ impl BeamSearchController {
                         &evaluation_engine,
                         &simulator,
                         &grammar,
-                        config.experience_bias,
-                        config.policy_bias,
                     ) {
                         child.score = (child.score + ctx.score_bias(&child)).clamp(0.0, 1.0);
                         child.world_state.score =
@@ -286,8 +284,6 @@ fn assess_state(
     evaluation_engine: &EvaluationEngine,
     simulator: &impl SimulationEngine,
     grammar: &GrammarEngine,
-    experience_bias: f64,
-    policy_bias: f64,
 ) -> bool {
     let validation = grammar.validate_world_state(&state.world_state);
     state.grammar_validation = Some(validation.clone());
@@ -311,19 +307,15 @@ fn assess_state(
     let evaluation_result = evaluation_engine.evaluate(&state.architecture_state);
     state.evaluation_result = Some(evaluation_result);
     state.world_state.evaluation = evaluator.evaluate_vector(state);
-    state.world_state.score = (evaluation_result.total_score * 0.6
-        + state.world_state.evaluation.total() * 0.3
-        + causal_score * 0.1
-        + (state.prior_score - 1.0).max(0.0) * experience_bias)
-        .clamp(0.0, 1.0);
-    state.score = (evaluation_result.total_score * 0.6
+
+    // Base score — no policy bias applied here.
+    // Policy application is handled exclusively by runtime_core::search.
+    let base_score = (evaluation_result.total_score * 0.6
         + evaluator.evaluate(state) * 0.3
-        + causal_score * 0.1
-        + (state.prior_score - 1.0).max(0.0) * experience_bias)
+        + causal_score * 0.1)
         .clamp(0.0, 1.0);
-    state.world_state.score =
-        (state.world_state.score + state.policy_score * policy_bias).clamp(0.0, 1.0);
-    state.score = (state.score + state.policy_score * policy_bias).clamp(0.0, 1.0);
+    state.world_state.score = base_score;
+    state.score = base_score;
     true
 }
 

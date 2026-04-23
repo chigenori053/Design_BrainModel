@@ -8,8 +8,6 @@ fn test7_search_explosion_stability() {
         max_depth: 10,
         max_candidates: 16,
         beam_width: 8,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let trace = controller.search_trace(WorldState::new(1, vec![2.0, 1.0]), None, &config);
     let converged = trace

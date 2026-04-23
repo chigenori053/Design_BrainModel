@@ -31,7 +31,7 @@ fn experience_poisoning_is_rejected_or_negligible() {
     }
     update_policy_from_memory(&controller);
 
-    let states = run_all_scenarios(&controller, &verification_config(0.2));
+    let states = run_all_scenarios(&controller, &verification_config());
 
     assert!(bad_pattern_frequency(&states, &[Layer::Database]) <= 0.1);
 }

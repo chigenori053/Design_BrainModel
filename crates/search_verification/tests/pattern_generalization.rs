@@ -15,7 +15,7 @@ fn pattern_generalization_reuses_abstract_patterns() {
     let mut states = Vec::new();
     for _ in 0..10 {
         for state in scenario_states() {
-            states.extend(controller.search(state, None, &verification_config(0.2)));
+            states.extend(controller.search(state, None, &verification_config()));
         }
     }
 
@@ -33,7 +33,7 @@ fn pattern_frequency_does_not_overfit_single_pattern() {
     let mut states = Vec::new();
     for index in 0..50 {
         let scenario = scenario_states()[index % 3].clone();
-        states.extend(controller.search(scenario, None, &verification_config(0.3)));
+        states.extend(controller.search(scenario, None, &verification_config()));
     }
 
     assert!(max_pattern_ratio(&states) <= 0.6);

@@ -8,15 +8,11 @@ use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_ph
 use analysis_tools::{CaseData, compute_correlation};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
-use design_search_engine::{
-    BeamSearchController, SearchConfig as DesignSearchConfig, SearchController as _,
-    rank_candidates,
-};
 use hybrid_vm::{
     ConceptId, ConceptUnitV2, DerivedRequirement, L1Id, RequirementKind, SemanticObjectiveCase,
     rank_frontier_by_human_coherence,
 };
-use runtime_core::{ModalityInput, RuntimeStage};
+use runtime_core::{ModalityInput, RuntimeStage, SearchInput, SearchPolicy, search as run_policy_search};
 use runtime_vm::{
     ExecutionMode as RuntimeExecutionMode, HybridVm as RuntimeHybridVm, Phase9RuntimeAdapter,
 };
@@ -729,16 +725,20 @@ fn run_phase9(input: String) -> Result<(), String> {
         .evaluate(&current_state, &prediction)
         .map_err(|e| format!("failed to evaluate consistency: {e}"))?;
 
-    // Phase9-D: DesignSearch
-    let search_controller = BeamSearchController::default();
-    let search_config = DesignSearchConfig::default();
-    let search_states = search_controller.search(
-        current_state.clone(),
-        phase9_ctx.recall_result.as_ref(),
-        &search_config,
-    );
-    let ranked = rank_candidates(search_states.clone());
-    let best_score = ranked.first().map(|c| c.score).unwrap_or(0.0);
+    // Phase9-D: DesignSearch via runtime_core (policy is a required argument).
+    let policy = SearchPolicy::load();
+    let search_input = SearchInput {
+        world_state: current_state.clone(),
+        recall: phase9_ctx.recall_result.clone(),
+        max_depth: 4,
+        max_candidates: 64,
+    };
+    let search_result = run_policy_search(search_input, &policy);
+    let search_states = search_result.states.clone();
+    let best_score = search_states
+        .iter()
+        .map(|s| s.score)
+        .fold(0.0_f64, f64::max);
 
     let report = Phase9ArchitectureReport {
         phase: "Phase9-D",
@@ -758,6 +758,7 @@ fn run_phase9(input: String) -> Result<(), String> {
             RuntimeStage::Recall => "recall",
             RuntimeStage::HypothesisGeneration => "hypothesis_generation",
             RuntimeStage::Search => "search",
+            RuntimeStage::Simulation => "simulation",
             RuntimeStage::Evaluation => "evaluation",
             RuntimeStage::Ranking => "ranking",
             RuntimeStage::TransitionEvaluation => "transition_evaluation",

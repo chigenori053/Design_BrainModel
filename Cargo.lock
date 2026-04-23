@@ -1082,7 +1082,6 @@ dependencies = [
  "analysis_tools",
  "clap",
  "design_reasoning",
- "design_search_engine",
  "hybrid_vm",
  "runtime_core",
  "runtime_vm",
@@ -3317,9 +3316,17 @@ name = "runtime_core"
 version = "0.1.0"
 dependencies = [
  "ai_context",
+ "architecture_domain",
+ "design_domain",
+ "design_grammar",
+ "evaluation_engine",
+ "memory_graph",
  "memory_space_core",
+ "memory_space_phase14",
  "num-complex",
+ "policy_engine",
  "serde_json",
+ "world_model",
  "world_model_core",
 ]
 
@@ -3332,7 +3339,6 @@ dependencies = [
  "brain_core",
  "concept_engine",
  "concept_field",
- "design_search_engine",
  "evaluation_engine",
  "knowledge_engine",
  "knowledge_lifecycle",

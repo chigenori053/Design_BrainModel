@@ -8,13 +8,11 @@ use memory_space_phase14::{DesignExperience, MemorySpace, PatternId, architectur
 use policy_engine::{SearchPolicy, generalize_architecture};
 use world_model_core::WorldState;
 
-pub fn verification_config(policy_bias: f64) -> SearchConfig {
+pub fn verification_config() -> SearchConfig {
     SearchConfig {
         max_depth: 10,
         max_candidates: 64,
         beam_width: 32,
-        experience_bias: 0.2,
-        policy_bias,
     }
 }
 

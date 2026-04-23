@@ -12,8 +12,7 @@ fn pipeline_execution_and_context_propagation() {
     assert!(!ctx.concepts.is_empty());
     assert!(!ctx.intent_nodes.is_empty());
     assert!(ctx.search_state.is_some());
-    assert!(ctx.hypothesis_graph.is_some());
-    assert!(ctx.design_state.is_some());
+    assert!(ctx.policy_search_result.is_some());
 }
 
 #[test]

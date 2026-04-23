@@ -10,8 +10,6 @@ fn test16_memory_guided_search() {
         max_depth: 8,
         max_candidates: 16,
         beam_width: 8,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let baseline = controller.search_trace(WorldState::new(1, vec![2.0, 1.0]), None, &config);
     let context = SearchContext {

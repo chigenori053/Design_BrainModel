@@ -14,7 +14,7 @@ fn determinism_with_policy_keeps_hash_variance_zero() {
         update_policy_from_memory(&controller);
 
         let best = controller
-            .search(state, None, &verification_config(0.3))
+            .search(state, None, &verification_config())
             .into_iter()
             .max_by(|lhs, rhs| lhs.score.total_cmp(&rhs.score))
             .expect("best state");

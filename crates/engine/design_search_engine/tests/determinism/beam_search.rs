@@ -96,8 +96,6 @@ fn prune_candidates_respects_beam_width() {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 3,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let initial = make_world_state();
 
@@ -114,8 +112,6 @@ fn search_respects_beam_width() {
         max_depth: 2,
         max_candidates: 64,
         beam_width: 2,
-        experience_bias: 0.2,
-        policy_bias: 0.15,
     };
     let initial = make_world_state();
 

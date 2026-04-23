@@ -12,10 +12,11 @@ fn policy_sensitivity_stays_in_stable_variance_range() {
     }
     update_policy_from_memory(&controller);
 
+    // Repeat the same config multiple times; variance should be zero
+    // (policy is now in runtime_core::SearchPolicy, not SearchConfig).
     let mut scores = Vec::new();
-    for step in 0..=5 {
-        let bias = step as f64 * 0.1;
-        let mean = run_all_scenarios(&controller, &verification_config(bias))
+    for _ in 0..=5 {
+        let mean = run_all_scenarios(&controller, &verification_config())
             .iter()
             .map(|state| state.score)
             .sum::<f64>()

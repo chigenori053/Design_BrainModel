@@ -1,7 +1,6 @@
 use crate::agent::{
-    Agent, ConceptActivationAgent, ConceptAgent, ConceptFieldAgent, DesignSearchAgent,
-    EvaluationAgent, IntentAgent, MemoryAgent, ReasoningRuntimeAgent, SearchControllerAgent,
-    SemanticAgent,
+    Agent, ConceptActivationAgent, ConceptAgent, ConceptFieldAgent, EvaluationAgent, IntentAgent,
+    MemoryAgent, PolicySearchAgent, ReasoningRuntimeAgent, SearchControllerAgent, SemanticAgent,
 };
 use crate::execution_mode::ExecutionMode;
 use crate::runtime_context::RuntimeContext;
@@ -72,7 +71,7 @@ pub fn reasoning_pipeline() -> PipelineRuntime {
     scheduler.register(Box::new(ConceptFieldAgent));
     scheduler.register(Box::new(MemoryAgent::default()));
     scheduler.register(Box::new(SearchControllerAgent::default()));
-    scheduler.register(Box::new(DesignSearchAgent::default()));
+    scheduler.register(Box::new(PolicySearchAgent::default()));
     scheduler.register(Box::new(EvaluationAgent));
     PipelineRuntime::new(scheduler)
 }

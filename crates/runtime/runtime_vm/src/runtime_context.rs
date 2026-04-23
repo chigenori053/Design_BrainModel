@@ -1,7 +1,7 @@
 use concept_engine::ConceptId;
 use concept_field::ConceptField;
-use design_search_engine::{DesignState, HypothesisGraph};
 use memory_space_api::ConceptRecallHit;
+use runtime_core::SearchResult;
 use search_controller::SearchState;
 use semantic_dhm::SemanticUnit;
 
@@ -33,8 +33,7 @@ pub struct RuntimeContext {
     pub intent_graph: Option<IntentGraph>,
     pub memory_candidates: Vec<ConceptRecallHit>,
     pub search_state: Option<SearchState>,
-    pub design_state: Option<DesignState>,
-    pub hypothesis_graph: Option<HypothesisGraph>,
+    pub policy_search_result: Option<SearchResult>,
     pub hypotheses: Vec<RuntimeHypothesis>,
     pub tick: u64,
 }
