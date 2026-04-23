@@ -1,0 +1,100 @@
+{
+  "language": "rust",
+  "version": "1.0",
+  "formatting": {
+    "indent": "    ",
+    "newline": "\n",
+    "semicolon": true
+  },
+  "features": {
+    "requires_semicolon": true,
+    "has_type_annotations": true,
+    "supports_block_scope": true
+  },
+  "patterns": {
+    "Assign": {
+      "kind": "Statement",
+      "emit": [
+        { "Text": "let " },
+        { "Placeholder": "VarName" },
+        { "Text": " = " },
+        { "Placeholder": "ValueExpr" },
+        { "Text": ";" },
+        "NewLine"
+      ]
+    },
+    "Call": {
+      "kind": "Statement",
+      "emit": [
+        { "Placeholder": "FuncName" },
+        { "Text": "(" },
+        { "Join": { "items": "Args", "separator": ", " } },
+        { "Text": ")" },
+        {
+          "Optional": {
+            "condition": { "FeatureEnabled": "requires_semicolon" },
+            "node": { "Text": ";" }
+          }
+        },
+        "NewLine"
+      ]
+    },
+    "Return": {
+      "kind": "Statement",
+      "emit": [
+        { "Text": "return " },
+        { "Placeholder": "ValueExpr" },
+        { "Text": ";" },
+        "NewLine"
+      ]
+    },
+    "IfElse": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "if " },
+        { "Placeholder": "ConditionExpr" },
+        { "Text": " {" },
+        "NewLine",
+        { "Indent": "NewLine" },
+        { "Text": "}" },
+        "NewLine"
+      ]
+    },
+    "Loop": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "loop {" },
+        "NewLine",
+        { "Indent": "NewLine" },
+        { "Text": "}" },
+        "NewLine"
+      ]
+    },
+    "FuncDef": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "fn " },
+        { "Placeholder": "FuncName" },
+        { "Text": "(" },
+        { "Join": { "items": "Args", "separator": ", " } },
+        { "Text": ") {" },
+        "NewLine",
+        { "Indent": "NewLine" },
+        { "Text": "}" },
+        "NewLine"
+      ]
+    },
+    "StructDef": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "struct " },
+        { "Placeholder": "Type" },
+        { "Text": " {" },
+        "NewLine",
+        { "Indent": "NewLine" },
+        { "Text": "}" },
+        "NewLine"
+      ]
+    }
+  }
+}

@@ -1,0 +1,86 @@
+{
+  "language": "python",
+  "version": "1.0",
+  "formatting": {
+    "indent": "    ",
+    "newline": "\n",
+    "semicolon": false
+  },
+  "features": {
+    "requires_semicolon": false,
+    "has_type_annotations": false,
+    "supports_block_scope": false
+  },
+  "patterns": {
+    "Assign": {
+      "kind": "Statement",
+      "emit": [
+        { "Placeholder": "VarName" },
+        { "Text": " = " },
+        { "Placeholder": "ValueExpr" },
+        "NewLine"
+      ]
+    },
+    "Call": {
+      "kind": "Statement",
+      "emit": [
+        { "Placeholder": "FuncName" },
+        { "Text": "(" },
+        { "Join": { "items": "Args", "separator": ", " } },
+        { "Text": ")" },
+        "NewLine"
+      ]
+    },
+    "Return": {
+      "kind": "Statement",
+      "emit": [
+        { "Text": "return " },
+        { "Placeholder": "ValueExpr" },
+        "NewLine"
+      ]
+    },
+    "IfElse": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "if " },
+        { "Placeholder": "ConditionExpr" },
+        { "Text": ":" },
+        "NewLine",
+        { "Indent": "NewLine" },
+        { "Text": "else:" },
+        "NewLine",
+        { "Indent": "NewLine" }
+      ]
+    },
+    "Loop": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "while True:" },
+        "NewLine",
+        { "Indent": "NewLine" }
+      ]
+    },
+    "FuncDef": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "def " },
+        { "Placeholder": "FuncName" },
+        { "Text": "(" },
+        { "Join": { "items": "Args", "separator": ", " } },
+        { "Text": "):" },
+        "NewLine",
+        { "Indent": "NewLine" }
+      ]
+    },
+    "StructDef": {
+      "kind": "Block",
+      "emit": [
+        { "Text": "class " },
+        { "Placeholder": "Type" },
+        { "Text": ":" },
+        "NewLine",
+        { "Indent": "NewLine" }
+      ]
+    }
+  }
+}
