@@ -1,5 +1,47 @@
 use design_domain::{Architecture, DependencyKind, DesignUnit, Layer};
 
+// ── Module-level IR (Step5) ──────────────────────────────────────────────────
+
+/// A single import declaration: `use module::{items}` / `from module import items`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrImport {
+    pub module: String,
+    pub items: Vec<String>,
+}
+
+impl IrImport {
+    pub fn new(module: impl Into<String>, items: Vec<impl Into<String>>) -> Self {
+        Self {
+            module: module.into(),
+            items: items.into_iter().map(|i| i.into()).collect(),
+        }
+    }
+}
+
+/// A named collection of functions with explicit imports — maps to one file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrModule {
+    pub name: String,
+    pub functions: Vec<IrFunction>,
+    pub imports: Vec<IrImport>,
+}
+
+impl IrModule {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), functions: vec![], imports: vec![] }
+    }
+
+    pub fn with_functions(mut self, functions: Vec<IrFunction>) -> Self {
+        self.functions = functions;
+        self
+    }
+
+    pub fn with_imports(mut self, imports: Vec<IrImport>) -> Self {
+        self.imports = imports;
+        self
+    }
+}
+
 // ── Function-level IR (Step4) ────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -228,6 +270,8 @@ pub struct CodeIr {
     pub control_flow: Vec<ControlFlowEdge>,
     pub data_flow: Vec<DataFlowEdge>,
     pub functions: Vec<IrFunction>,
+    /// Step5: project-level module layout (each IrModule → one file).
+    pub ir_modules: Vec<IrModule>,
 }
 
 impl CodeIr {
@@ -297,6 +341,7 @@ impl CodeIr {
             control_flow,
             data_flow,
             functions: vec![],
+            ir_modules: vec![],
         }
     }
 
