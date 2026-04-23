@@ -11,6 +11,7 @@ members = [
     "crates/architecture_memory",
     "crates/code_language_core",
     "crates/legacy/codegen_core_old",
+    "crates/replay_engine",
     "crates/execution_graph",
     "crates/execution_simulator",
     "crates/system_model",
@@ -73,6 +74,7 @@ members = [
     "apps/desktop",
     "apps/server",
     "apps/lsp",
+    "apps/verification_cli",
     "crates/core/world_model_core"
 ]
 resolver = "2"
@@ -89,6 +91,7 @@ architecture_knowledge = { path = "crates/architecture_knowledge" }
 architecture_memory = { path = "crates/architecture_memory" }
 code_language_core = { path = "crates/code_language_core" }
 codegen_core_old = { path = "crates/legacy/codegen_core_old" }
+replay_engine = { path = "crates/replay_engine" }
 execution_graph = { path = "crates/execution_graph" }
 execution_simulator = { path = "crates/execution_simulator" }
 system_model = { path = "crates/system_model" }

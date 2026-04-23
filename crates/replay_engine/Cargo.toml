@@ -1,0 +1,19 @@
+[package]
+name = "replay_engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+code_ir = { workspace = true }
+code_language_core = { workspace = true }
+design_domain = { workspace = true }
+design_search_engine = { workspace = true }
+knowledge_engine = { workspace = true }
+memory_space_phase14 = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+world_model_core = { workspace = true }
+
+[dev-dependencies]
+search_verification = { workspace = true }
+serde_json = { workspace = true }

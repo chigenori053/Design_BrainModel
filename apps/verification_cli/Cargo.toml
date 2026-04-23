@@ -1,0 +1,17 @@
+[package]
+name = "verification_cli"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "verification_cli"
+path = "src/main.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+design_search_engine = { workspace = true }
+replay_engine = { workspace = true }
+search_verification = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+world_model_core = { workspace = true }
