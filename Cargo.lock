@@ -880,6 +880,7 @@ name = "code_generation_core"
 version = "0.1.0"
 dependencies = [
  "architecture_domain",
+ "code_ir",
 ]
 
 [[package]]
