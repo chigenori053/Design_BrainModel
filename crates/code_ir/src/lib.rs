@@ -1,5 +1,183 @@
 use design_domain::{Architecture, DependencyKind, DesignUnit, Layer};
 
+// ── Function-level IR (Step4) ────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IrType {
+    Int,
+    Float,
+    Bool,
+    Str,
+    Void,
+    Custom(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrParam {
+    pub name: String,
+    pub ty: Option<IrType>,
+}
+
+impl IrParam {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into(), ty: None }
+    }
+
+    pub fn typed(name: impl Into<String>, ty: IrType) -> Self {
+        Self { name: name.into(), ty: Some(ty) }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrFunction {
+    pub name: String,
+    pub params: Vec<IrParam>,
+    pub return_type: Option<IrType>,
+    pub body: Vec<IrStep>,
+}
+
+impl IrFunction {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            params: vec![],
+            return_type: None,
+            body: vec![],
+        }
+    }
+
+    pub fn with_params(mut self, params: Vec<IrParam>) -> Self {
+        self.params = params;
+        self
+    }
+
+    pub fn with_return_type(mut self, ty: IrType) -> Self {
+        self.return_type = Some(ty);
+        self
+    }
+
+    pub fn with_body(mut self, body: Vec<IrStep>) -> Self {
+        self.body = body;
+        self
+    }
+}
+
+// ── Step-level IR ────────────────────────────────────────────────────────────
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IrOp {
+    Assign,
+    Call,
+    Return,
+    Branch,
+    Block,
+    Loop,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Value {
+    pub name: String,
+}
+
+impl Value {
+    pub fn new(name: impl Into<String>) -> Self {
+        Self { name: name.into() }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Expr {
+    pub text: String,
+}
+
+impl Expr {
+    pub fn new(text: impl Into<String>) -> Self {
+        Self { text: text.into() }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrStep {
+    pub op: IrOp,
+    pub inputs: Vec<Value>,
+    pub outputs: Vec<Value>,
+    pub condition: Option<Expr>,
+    pub body: Option<Vec<IrStep>>,
+    pub else_body: Option<Vec<IrStep>>,
+}
+
+impl IrStep {
+    pub fn assign(output: impl Into<String>, input: impl Into<String>) -> Self {
+        Self {
+            op: IrOp::Assign,
+            inputs: vec![Value::new(input)],
+            outputs: vec![Value::new(output)],
+            condition: None,
+            body: None,
+            else_body: None,
+        }
+    }
+
+    pub fn call(func: impl Into<String>, args: Vec<impl Into<String>>) -> Self {
+        Self {
+            op: IrOp::Call,
+            inputs: args.into_iter().map(Value::new).collect(),
+            outputs: vec![Value::new(func)],
+            condition: None,
+            body: None,
+            else_body: None,
+        }
+    }
+
+    pub fn return_val(val: impl Into<String>) -> Self {
+        Self {
+            op: IrOp::Return,
+            inputs: vec![Value::new(val)],
+            outputs: vec![],
+            condition: None,
+            body: None,
+            else_body: None,
+        }
+    }
+
+    pub fn branch(
+        condition: impl Into<String>,
+        then_body: Vec<IrStep>,
+        else_body: Option<Vec<IrStep>>,
+    ) -> Self {
+        Self {
+            op: IrOp::Branch,
+            inputs: vec![],
+            outputs: vec![],
+            condition: Some(Expr::new(condition)),
+            body: Some(then_body),
+            else_body,
+        }
+    }
+
+    pub fn block(body: Vec<IrStep>) -> Self {
+        Self {
+            op: IrOp::Block,
+            inputs: vec![],
+            outputs: vec![],
+            condition: None,
+            body: Some(body),
+            else_body: None,
+        }
+    }
+
+    pub fn loop_step(iter_expr: impl Into<String>, body: Vec<IrStep>) -> Self {
+        Self {
+            op: IrOp::Loop,
+            inputs: vec![Value::new(iter_expr)],
+            outputs: vec![],
+            condition: None,
+            body: Some(body),
+            else_body: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModuleIr {
     pub id: u64,
@@ -49,6 +227,7 @@ pub struct CodeIr {
     pub dependencies: Vec<DependencyIr>,
     pub control_flow: Vec<ControlFlowEdge>,
     pub data_flow: Vec<DataFlowEdge>,
+    pub functions: Vec<IrFunction>,
 }
 
 impl CodeIr {
@@ -117,6 +296,7 @@ impl CodeIr {
             dependencies,
             control_flow,
             data_flow,
+            functions: vec![],
         }
     }
 
