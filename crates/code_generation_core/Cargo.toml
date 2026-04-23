@@ -5,3 +5,4 @@ edition = "2024"
 
 [dependencies]
 architecture_domain = { workspace = true }
+code_ir = { workspace = true }
