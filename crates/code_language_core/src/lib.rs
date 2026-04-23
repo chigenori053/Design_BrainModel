@@ -1,3 +1,15 @@
+#![deny(unused_imports)]
+#![deny(dead_code)]
+
+// Legacy facade: only active when the `legacy_codegen` feature is enabled.
+// Without this feature, `generate_legacy` is not compiled into the crate.
+// Any call to `generate_legacy` without the feature produces a compile error
+// ("cannot find function `generate_legacy` in this scope"), ensuring no
+// accidental runtime path exists. This is the compile-time block mandated by
+// the hardening spec (§4.1).
+#[cfg(feature = "legacy_codegen")]
+pub(crate) mod legacy;
+
 use architecture_reasoner::{ArchitectureGraph, ReverseArchitectureReasoner};
 use code_ir::CodeIr;
 use design_domain::{
@@ -217,6 +229,19 @@ impl CodeLanguageCore {
             consistency_rate: ((node_recall + dependency_recall) / 2.0).clamp(0.0, 1.0),
         }
     }
+}
+
+/// Generates code through the legacy pipeline.
+///
+/// **Requires the `legacy_codegen` feature.** Without it this function does not
+/// exist; any call site produces a compile error, blocking the legacy path at
+/// build time (hardening spec §4.1).
+///
+/// Enable only from root/application crates (CLI, CI validation). Sub-crates
+/// must never propagate this feature.
+#[cfg(feature = "legacy_codegen")]
+pub fn generate_legacy(ir: &CodeIr) -> Vec<(String, String)> {
+    legacy::generate(ir)
 }
 
 pub fn architecture_from_code_ir(ir: &CodeIr) -> Architecture {
@@ -493,5 +518,19 @@ mod tests {
 
         assert_eq!(graph.nodes.len(), 2);
         assert_eq!(generated.len(), 2);
+    }
+
+    #[cfg(feature = "legacy_codegen")]
+    #[test]
+    fn legacy_codegen_produces_files() {
+        let core = CodeLanguageCore::default();
+        let files = vec![ParsedSourceFile {
+            path: "src/foo.rs".into(),
+            source: "pub struct Foo;\n".into(),
+        }];
+        let ir = core.parse_sources(&files);
+        let generated = super::generate_legacy(&ir);
+        assert!(!generated.is_empty());
+        assert!(generated.iter().all(|(_, src)| src.contains("pub struct")));
     }
 }

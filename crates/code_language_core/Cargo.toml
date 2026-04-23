@@ -3,7 +3,14 @@ name = "code_language_core"
 version = "0.1.0"
 edition = "2024"
 
+# legacy_codegen activates the isolated legacy generation path.
+# Only enable this from root/application crates (apps/cli, CI validation).
+# Child crates must NOT propagate this feature.
+[features]
+legacy_codegen = ["dep:codegen_core_old"]
+
 [dependencies]
 architecture_reasoner = { workspace = true }
 code_ir = { workspace = true }
 design_domain = { workspace = true }
+codegen_core_old = { workspace = true, optional = true }

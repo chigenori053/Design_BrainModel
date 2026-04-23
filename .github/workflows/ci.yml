@@ -39,6 +39,57 @@ jobs:
       - name: python lint
         run: ruff check .
 
+  legacy_isolation:
+    name: Legacy Codegen Isolation
+    needs: [build]
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@master
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: dependency isolation — codegen_core_old must not appear in default build
+        run: |
+          # codegen_core_old is optional; cargo tree must NOT show it as active
+          # without the legacy_codegen feature.
+          if cargo tree -p code_language_core --locked 2>/dev/null | grep -q "codegen_core_old"; then
+            echo "FAIL: codegen_core_old is active in the default build of code_language_core"
+            echo "It must only appear when --features legacy_codegen is passed."
+            exit 1
+          fi
+          echo "OK: codegen_core_old is not active in the default build."
+
+      - name: source isolation — no direct codegen_core_old references outside authorized paths
+        run: |
+          # Only crates/legacy/codegen_core_old and crates/code_language_core are
+          # authorized to reference codegen_core_old. All other crates must not.
+          if grep -r "codegen_core_old" crates/ \
+               --include="*.rs" \
+               --exclude-dir="codegen_core_old" \
+               --exclude-dir="code_language_core"; then
+            echo "FAIL: Direct reference to codegen_core_old found outside authorized paths."
+            exit 1
+          fi
+          echo "OK: No unauthorized codegen_core_old references in source."
+
+      - name: workspace tree check — full dependency scan
+        run: |
+          cargo tree --workspace --locked > /tmp/workspace_tree.txt
+          # Verify codegen_core_old only appears as an optional dep of code_language_core
+          if grep "codegen_core_old" /tmp/workspace_tree.txt | grep -v "(optional)"; then
+            echo "FAIL: codegen_core_old appears as an active (non-optional) dependency."
+            exit 1
+          fi
+          echo "OK: codegen_core_old is strictly optional."
+
+      - name: legacy verification — feature path compiles and tests pass
+        run: |
+          cargo test -p code_language_core --features legacy_codegen --locked
+          echo "OK: legacy_codegen feature path is valid."
+
   tier1_unit:
     name: Tier1 Invariants And Engines
     needs: [build]
@@ -81,6 +132,10 @@ jobs:
           fi
           if rg -n "use (semantic_dhm|recomposer|language_dhm)::" apps/cli/src apps/cli/tests; then
             echo "Boundary violation: CLI must depend only on hybrid_vm"
+            exit 1
+          fi
+          if rg -rn "codegen_core_old" crates/runtime crates/code_ir crates/architecture_reasoner 2>/dev/null; then
+            echo "Boundary violation: codegen_core_old must not be referenced from runtime or core IR crates"
             exit 1
           fi
 

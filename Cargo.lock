@@ -895,7 +895,15 @@ version = "0.1.0"
 dependencies = [
  "architecture_reasoner",
  "code_ir",
+ "codegen_core_old",
  "design_domain",
+]
+
+[[package]]
+name = "codegen_core_old"
+version = "0.1.0"
+dependencies = [
+ "code_ir",
 ]
 
 [[package]]
