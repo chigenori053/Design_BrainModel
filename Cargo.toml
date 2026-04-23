@@ -65,6 +65,7 @@ members = [
     "crates/recomposer",
     "crates/design_reasoning",
     "crates/code_generation_core",
+    "crates/codegen_core",
     "crates/reasoning_agent",
     "crates/runtime/runtime_core",
     "apps/cli",
@@ -144,6 +145,7 @@ evaluation_engine = { path = "crates/evaluation_engine" }
 memory_graph = { path = "crates/memory_graph" }
 ai_context = { path = "crates/ai_context" }
 code_generation_core = { path = "crates/code_generation_core" }
+codegen_core = { path = "crates/codegen_core" }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 proptest = "1"
