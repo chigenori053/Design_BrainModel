@@ -1,8 +1,10 @@
 use architecture_domain::ArchitectureState;
 
+pub mod dep_graph;
 pub mod emit;
 pub mod error;
 pub mod generator;
+pub mod project;
 pub mod scope;
 pub mod spec;
 pub mod type_render;

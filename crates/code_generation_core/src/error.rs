@@ -10,6 +10,11 @@ pub enum CodegenError {
     UnsupportedTypeRendering { ty: String, language: String },
     MissingFunctionPattern { language: String },
     InvalidReturnType,
+    // Step5: module / project errors
+    DuplicateModule { name: String },
+    ModuleNotFound { name: String },
+    DuplicateSymbol { module: String, name: String },
+    CyclicDependency { cycle: Vec<String> },
 }
 
 impl fmt::Display for CodegenError {
@@ -31,6 +36,14 @@ impl fmt::Display for CodegenError {
                 write!(f, "no function pattern defined for language '{language}'"),
             Self::InvalidReturnType =>
                 write!(f, "invalid return type"),
+            Self::DuplicateModule { name } =>
+                write!(f, "duplicate module '{name}'"),
+            Self::ModuleNotFound { name } =>
+                write!(f, "module '{name}' not found"),
+            Self::DuplicateSymbol { module, name } =>
+                write!(f, "duplicate symbol '{name}' in module '{module}'"),
+            Self::CyclicDependency { cycle } =>
+                write!(f, "cyclic dependency detected: {}", cycle.join(" → ")),
         }
     }
 }
