@@ -78,6 +78,7 @@ members = [
     "crates/code_generation_core",
     "crates/execution_core",
     "crates/execution_stability_core",
+    "crates/replay_engine",
     "crates/test_generation_core",
     "crates/tensor_ir",
     "crates/reasoning_agent",
@@ -89,6 +90,7 @@ members = [
     "apps/desktop",
     "apps/server",
     "apps/lsp",
+    "apps/verification_cli",
     "crates/core/world_model_core",
     "tests/contract",
     "tests/pipeline",
@@ -182,6 +184,7 @@ ai_context = { path = "crates/ai_context" }
 code_generation_core = { path = "crates/code_generation_core" }
 execution_core = { path = "crates/execution_core" }
 execution_stability_core = { path = "crates/execution_stability_core" }
+replay_engine = { path = "crates/replay_engine" }
 test_generation_core = { path = "crates/test_generation_core" }
 tensor_ir = { path = "crates/tensor_ir" }
 serde = { version = "1.0", features = ["derive"] }

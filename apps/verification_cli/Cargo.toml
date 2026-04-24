@@ -1,0 +1,11 @@
+[package]
+name = "verification_cli"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+replay_engine = { path = "../../crates/replay_engine" }
+serde = { workspace = true }
+serde_json = { workspace = true }
