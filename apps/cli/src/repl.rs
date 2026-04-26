@@ -202,6 +202,10 @@ fn dispatch<W: Write>(
     planner_mode: &mut PlannerMode,
     writer: &mut W,
 ) -> Result<bool, String> {
+    let input = input.trim().to_string();
+    println!("[DEBUG INPUT] {:?}", input);
+    let input = &input;
+
     match route(input) {
         Route::Command {
             name,
@@ -488,9 +492,13 @@ fn dispatch_submission(
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
 ) -> Result<bool, String> {
-    if input.trim().is_empty() {
+    let input = input.trim().to_string();
+    println!("[DEBUG INPUT] {:?}", input);
+
+    if input.is_empty() {
         return Ok(false);
     }
+    let input = &input;
     session.record(input);
     view.reset_review_session();
     let result = execute_submission_with_proc_strip(
@@ -779,6 +787,15 @@ fn handle_command<W: Write>(
             writeln!(writer, "コンテキストをクリアしました。").map_err(|e| e.to_string())?;
             return Ok(false);
         }
+        // § 10 REPL統合: /consistency [check|analyze]
+        "consistency" => {
+            handle_consistency_command(subcommand, conversation, writer)?;
+            return Ok(false);
+        }
+        "repair" => {
+            handle_repair_command(subcommand, conversation, writer)?;
+            return Ok(false);
+        }
         _ => {}
     }
 
@@ -807,6 +824,12 @@ fn execute_direct_subcommand<W: Write>(
     }
     if name == "refactor" {
         return Ok(Some("ERROR: ambiguous refactor request".to_string()));
+    }
+    // § 10 REPL統合: `/analyze consistency` → consistency check に転送
+    if name == "analyze" && subcommand == Some("consistency") {
+        let project_ir = conversation.ir_state_manager.project_ir();
+        let report = crate::consistency_engine::ConsistencyEngine::check(&project_ir);
+        return Ok(Some(report.render()));
     }
     if !matches!(
         name,
@@ -972,6 +995,85 @@ fn handle_planner_command<W: Write>(
                     .map_err(|e| e.to_string())?;
             }
         },
+    }
+    Ok(())
+}
+
+/// § 10 REPL統合: `/consistency [check|analyze]` コマンドハンドラ
+///
+/// `check` / `analyze` のどちらのサブコマンドも同じ Consistency Check を実行する。
+fn handle_consistency_command<W: Write>(
+    subcommand: Option<&str>,
+    conversation: &ConversationState,
+    writer: &mut W,
+) -> Result<(), String> {
+    match subcommand.unwrap_or("check") {
+        "check" | "analyze" | "status" => {
+            let project_ir = conversation.ir_state_manager.project_ir();
+            let report = crate::consistency_engine::ConsistencyEngine::check(&project_ir);
+            writeln!(writer, "{}", report.render()).map_err(|e| e.to_string())?;
+            if !report.is_consistent {
+                writeln!(writer).map_err(|e| e.to_string())?;
+                writeln!(writer, "Suggested fix:\n/repair").map_err(|e| e.to_string())?;
+            }
+        }
+        _ => {
+            writeln!(writer, "Usage: /consistency [check|analyze]").map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+fn build_current_repair_plan(conversation: &ConversationState) -> crate::repair_engine::RepairPlan {
+    let project = conversation.ir_state_manager.project_ir();
+    let report = crate::consistency_engine::ConsistencyEngine::check(&project);
+    crate::repair_engine::RepairEngine::build_plan(crate::repair_engine::RepairInput {
+        project,
+        report,
+    })
+}
+
+/// Phase C REPL統合: `/repair [plan|preview|apply]`.
+fn handle_repair_command<W: Write>(
+    subcommand: Option<&str>,
+    conversation: &mut ConversationState,
+    writer: &mut W,
+) -> Result<(), String> {
+    let plan = build_current_repair_plan(conversation);
+    match subcommand.unwrap_or("plan") {
+        "plan" => {
+            writeln!(writer, "{}", plan.render_plan()).map_err(|e| e.to_string())?;
+        }
+        "preview" => {
+            writeln!(writer, "{}", plan.render_plan()).map_err(|e| e.to_string())?;
+            writeln!(writer).map_err(|e| e.to_string())?;
+            writeln!(
+                writer,
+                "{}",
+                crate::repair_engine::RepairEngine::preview(&plan)
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        "apply" => match crate::repair_engine::RepairEngine::apply(
+            &plan,
+            &mut conversation.ir_state_manager,
+        ) {
+            Ok(result) => {
+                writeln!(writer, "[REPAIR RESULT]").map_err(|e| e.to_string())?;
+                for fix in result.applied {
+                    writeln!(writer, "- applied {}", fix.describe()).map_err(|e| e.to_string())?;
+                }
+                if plan.fixes.is_empty() {
+                    writeln!(writer, "- no fixes").map_err(|e| e.to_string())?;
+                }
+            }
+            Err(err) => {
+                writeln!(writer, "{err}").map_err(|e| e.to_string())?;
+            }
+        },
+        _ => {
+            writeln!(writer, "Usage: /repair [plan|preview|apply]").map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }
@@ -1397,6 +1499,13 @@ fn print_help<W: Write>(
     .map_err(|e| e.to_string())?;
     writeln!(writer, "  /apply <path>                   - 変更を適用")
         .map_err(|e| e.to_string())?;
+    writeln!(writer, "  /consistency [check|analyze]    - IR一貫性を検査")
+        .map_err(|e| e.to_string())?;
+    writeln!(
+        writer,
+        "  /repair [plan|preview|apply]    - 不整合の修復計画/差分/適用"
+    )
+    .map_err(|e| e.to_string())?;
     writeln!(
         writer,
         "  /exec [detect|install|build|test|run] <path> - 実行基盤"
@@ -2210,6 +2319,7 @@ mod tests {
                 lines_removed: 0,
             }),
             latest_build_ok: None,
+            file_hash: None,
         });
 
         record_ir_rollback(&mut conversation, None);

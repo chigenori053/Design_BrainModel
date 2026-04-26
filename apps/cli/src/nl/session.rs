@@ -19,6 +19,11 @@ pub struct ConversationState {
     pub last_viewer_session: Option<String>,
     pub last_analysis_summary: Option<String>,
     pub ir_state: IRState,
+    /// Phase B-2 (DBM-IR-STATE-SPEC v1.0): per-file IR snapshot manager.
+    ///
+    /// Tracks `IrState` (snapshot + dirty flag) for each file the session has
+    /// analysed or refactored.  Single source of truth for IR state.
+    pub ir_state_manager: crate::ir_state::IrStateManager,
     pub hook_promotion_count: u64,
     pub hook_false_promotion_count: u64,
     pub last_design_delta: Option<DesignDelta>,
@@ -84,6 +89,7 @@ impl ConversationState {
             rollback_available: false,
             latest_diff_ref: None,
             latest_build_ok: None,
+            file_hash: None,
         });
         self.ir_state.next_allowed_actions =
             vec![ActionKind::Apply, ActionKind::Refactor, ActionKind::Analyze];
@@ -176,6 +182,7 @@ impl IRStateStore {
                         rollback_available: false,
                         latest_diff_ref: None,
                         latest_build_ok: None,
+                        file_hash: None,
                     });
                     store.state.next_allowed_actions =
                         vec![ActionKind::Apply, ActionKind::Refactor, ActionKind::Analyze];

@@ -70,6 +70,14 @@ pub struct TransactionIR {
     pub rollback_available: bool,
     pub latest_diff_ref: Option<SessionAppliedDiff>,
     pub latest_build_ok: Option<bool>,
+    /// FNV-1a hash of the file content at the moment this transaction's diff
+    /// was generated (Phase 1, DBM-IR-SYNC-SPEC v1.0).
+    ///
+    /// Used by drift detection (Phase 2) and the apply guard (Phase 6) to
+    /// reject a diff when the target file has changed since the snapshot was
+    /// taken.  `None` for transactions created before sync-layer support.
+    #[serde(default)]
+    pub file_hash: Option<u64>,
 }
 
 pub type IRActiveTransaction = TransactionIR;

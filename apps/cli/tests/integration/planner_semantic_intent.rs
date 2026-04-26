@@ -42,7 +42,7 @@ fn meta_planner_edit_synthesizes_coding_step() {
 #[test]
 fn deterministic_replay_matches_exactly() {
     let conversation = ConversationState {
-        last_target: Some(PathBuf::from(".")),
+        last_target: Some(PathBuf::from("apps/cli/src/nl/planner_v2.rs")),
         ..ConversationState::default()
     };
     assert_deterministic_plan(

@@ -1777,10 +1777,15 @@ pub fn apply_refactor_rule(
                 .map(|(_, line)| line)
                 .collect::<Vec<_>>()
                 .join("\n");
+            // Strip string literal contents before checking symbol usage so that
+            // identifiers appearing only inside string literals (e.g. in test
+            // helpers like `let code = "use std::collections::HashMap;\n..."`)
+            // are not mistaken for real usages (spec §5.3: false negative 禁止).
+            let source_for_usage_check = strip_string_literal_contents(&source_without_imports);
             let unused_import_lines = ir
                 .imports
                 .iter()
-                .filter(|import| import_is_unused(import, &source_without_imports))
+                .filter(|import| import_is_unused(import, &source_for_usage_check))
                 .map(|import| import.line_index)
                 .collect::<BTreeSet<_>>();
             code_to_ir_program(&remove_lines(&ir.source, &unused_import_lines))
@@ -1898,6 +1903,128 @@ fn is_rust_identifier_char(ch: char) -> bool {
     ch == '_' || ch.is_ascii_alphanumeric()
 }
 
+/// Prepares `source` for symbol-usage search by replacing content that should
+/// not count as "real" usage: string literal interiors, raw string interiors,
+/// and `//` line-comment text.  Identifiers that appear only in such positions
+/// (e.g. in test-helper strings or doc-comment examples) are invisible to the
+/// caller and will not block removal.
+///
+/// Rules (Phase A scope):
+/// - `'"'` char-literal: copied verbatim; the embedded `"` must not toggle
+///   string-tracking state.
+/// - `"..."` regular string: interior bytes replaced with spaces; `\"` escape
+///   pair both replaced with spaces.
+/// - `r#"..."#` / `r"..."` raw strings: interior bytes replaced with spaces;
+///   the correct closing delimiter (`"` + matching `#` count) is detected.
+/// - `//` line comments (outside strings): rest of line replaced with spaces.
+/// - Block comments and byte-strings are handled as regular strings (Phase A).
+fn strip_string_literal_contents(source: &str) -> String {
+    let src = source.as_bytes();
+    let len = src.len();
+    let mut out: Vec<u8> = Vec::with_capacity(len);
+    let mut i = 0;
+    let mut in_string = false;
+    let mut raw_close_hashes: Option<usize> = None; // set when inside a raw string
+
+    while i < len {
+        // ── Inside a raw string ─────────────────────────────────────────────
+        if let Some(hashes) = raw_close_hashes {
+            if src[i] == b'"'
+                && i + hashes < len
+                && src[i + 1..i + 1 + hashes].iter().all(|&b| b == b'#')
+            {
+                // Closing delimiter: keep it, exit raw string.
+                out.push(b'"');
+                for _ in 0..hashes {
+                    out.push(b'#');
+                }
+                i += 1 + hashes;
+                raw_close_hashes = None;
+            } else {
+                out.push(b' ');
+                i += 1;
+            }
+            continue;
+        }
+
+        // ── Outside any string ───────────────────────────────────────────────
+        if !in_string {
+            // Line comment `//`: blank out through end-of-line.
+            if src[i] == b'/' && i + 1 < len && src[i + 1] == b'/' {
+                while i < len && src[i] != b'\n' {
+                    out.push(b' ');
+                    i += 1;
+                }
+                continue;
+            }
+            // Char literal `'"'`: copy verbatim so `"` does not toggle state.
+            if src[i] == b'\'' && i + 2 < len && src[i + 1] == b'"' && src[i + 2] == b'\'' {
+                out.push(b'\'');
+                out.push(b'"');
+                out.push(b'\'');
+                i += 3;
+                continue;
+            }
+            // Raw string: optional `b` prefix, then `r`, then 0-N `#`, then `"`.
+            // We match `r` here (the `b` before it is already pushed as a normal byte).
+            if src[i] == b'r' {
+                let mut j = i + 1;
+                let mut hashes = 0usize;
+                while j < len && src[j] == b'#' {
+                    hashes += 1;
+                    j += 1;
+                }
+                if j < len && src[j] == b'"' {
+                    // Confirmed raw string: push prefix verbatim, enter raw mode.
+                    out.push(b'r');
+                    for _ in 0..hashes {
+                        out.push(b'#');
+                    }
+                    out.push(b'"');
+                    i = j + 1;
+                    raw_close_hashes = Some(hashes);
+                    continue;
+                }
+            }
+        }
+
+        // ── Regular string handling ───────────────────────────────────────────
+        match (in_string, src[i]) {
+            (true, b'\\') => {
+                // Escape: blank out `\` and next byte together.
+                out.push(b' ');
+                i += 1;
+                if i < len {
+                    out.push(b' ');
+                    i += 1;
+                }
+            }
+            (true, b'"') => {
+                in_string = false;
+                out.push(b'"');
+                i += 1;
+            }
+            (true, _) => {
+                out.push(b' ');
+                i += 1;
+            }
+            (false, b'"') => {
+                in_string = true;
+                out.push(b'"');
+                i += 1;
+            }
+            (false, _) => {
+                out.push(src[i]);
+                i += 1;
+            }
+        }
+    }
+    // Bytes inside strings/comments are replaced with 0x20 (ASCII space).
+    // Multi-byte UTF-8 sequences in those regions have all their bytes replaced,
+    // so the output is valid UTF-8.
+    String::from_utf8(out).unwrap_or_else(|_| source.to_string())
+}
+
 fn remove_lines(source: &str, line_indexes: &BTreeSet<usize>) -> String {
     let mut rendered = source
         .lines()
@@ -1949,6 +2076,83 @@ mod refactor_diff_tests {
             .collect::<Vec<_>>();
         assert_eq!(diffs[0], diffs[1]);
         assert_eq!(diffs[1], diffs[2]);
+    }
+
+    // §5.3: symbol inside a string literal must not block removal
+    #[test]
+    fn remove_unused_imports_ignores_symbol_in_string_literal() {
+        // HashMap appears only inside a string literal – must still be detected as unused.
+        let code = concat!(
+            "use std::collections::HashMap;\n",
+            "\n",
+            "fn helper() -> &'static str {\n",
+            "    \"use std::collections::HashMap;\"\n",
+            "}\n",
+        );
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(
+            result.diff.as_deref(),
+            Some("- use std::collections::HashMap;"),
+            "import referenced only in a string literal must be removed"
+        );
+    }
+
+    /// Step B/C/D: run refactor on the actual coding.rs file (which has the
+    /// `use std::collections::HashMap;` inserted in Step A).
+    /// Verifies diff is produced (Step C) and that re-running produces no diff (Step D).
+    #[test]
+    fn remove_unused_imports_on_real_coding_rs() {
+        let code = std::fs::read_to_string("src/coding.rs").expect("coding.rs must be readable");
+        // Step B – first run: diff must be produced
+        let result = remove_unused_imports_refactor(&code).expect("refactor run 1");
+        let diff = result
+            .diff
+            .as_deref()
+            .expect("Step B/C FAIL: No changes detected – unused HashMap import was not removed");
+        assert!(
+            diff.contains("- use std::collections::HashMap;"),
+            "diff must contain the removed HashMap import, got: {diff}"
+        );
+        assert!(
+            !diff.contains("+ "),
+            "diff must not add any lines, got: {diff}"
+        );
+        // Step D – idempotency: re-run on the after-code must produce no diff
+        let result2 = remove_unused_imports_refactor(&result.after_code).expect("refactor run 2");
+        assert_eq!(
+            result2.diff, None,
+            "Step D FAIL: second run must produce No changes detected, got: {:?}",
+            result2.diff
+        );
+    }
+
+    #[test]
+    fn strip_string_literal_contents_replaces_interior() {
+        let src = r#"let x = "HashMap BTreeMap";"#;
+        let stripped = super::strip_string_literal_contents(src);
+        assert!(
+            !stripped.contains("HashMap"),
+            "string interior must be stripped"
+        );
+        assert!(stripped.contains('"'), "quotes must be kept as delimiters");
+        assert!(
+            stripped.contains("let x ="),
+            "non-string code must be intact"
+        );
+    }
+
+    #[test]
+    fn strip_string_literal_contents_handles_escape() {
+        let src = "let s = \"foo\\\"bar\";";
+        let stripped = super::strip_string_literal_contents(src);
+        assert!(
+            !stripped.contains("foo"),
+            "escaped content must be stripped"
+        );
+        assert!(
+            !stripped.contains("bar"),
+            "post-escape content must be stripped"
+        );
     }
 }
 

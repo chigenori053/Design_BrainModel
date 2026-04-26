@@ -126,6 +126,9 @@ fn step_pattern(step: &PlannedStep) -> String {
         PlannedStep::AlternativeMutationSearch(_) => "alt_search".to_string(),
         PlannedStep::DesignDeltaReasoning(_) => "design_delta".to_string(),
         PlannedStep::ExplainDesignTradeoff(_) => "tradeoff".to_string(),
+        PlannedStep::IrReload(_) => "ir_reload".to_string(),
+        PlannedStep::IrReloadAll(_) => "ir_reload_all".to_string(),
+        PlannedStep::ShowDeps(_) => "show_deps".to_string(),
     }
 }
 

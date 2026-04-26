@@ -251,6 +251,30 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
                     args: Vec::new(),
                 }),
             ),
+            PlannedStep::IrReload(path) => (
+                format!("IR reload: {}", path.display()),
+                Some(CommandInvocation {
+                    name: "ir_reload".to_string(),
+                    subcommand: None,
+                    args: vec![path.display().to_string()],
+                }),
+            ),
+            PlannedStep::IrReloadAll(path) => (
+                format!("IR reload all: {}", path.display()),
+                Some(CommandInvocation {
+                    name: "ir_reload_all".to_string(),
+                    subcommand: None,
+                    args: vec![path.display().to_string()],
+                }),
+            ),
+            PlannedStep::ShowDeps(path) => (
+                format!("Show deps: {}", path.display()),
+                Some(CommandInvocation {
+                    name: "show_deps".to_string(),
+                    subcommand: None,
+                    args: vec![path.display().to_string()],
+                }),
+            ),
         };
         steps.push(Step::new(index, description, command));
     }

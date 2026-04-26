@@ -64,6 +64,10 @@ mod nl_repl_flow;
 mod onboarding_aliases;
 #[path = "integration/phase_analyze_cli.rs"]
 mod phase_analyze_cli;
+#[path = "integration/planner_multilingual_semantic.rs"]
+mod planner_multilingual_semantic;
+#[path = "integration/planner_semantic_intent.rs"]
+mod planner_semantic_intent;
 #[path = "integration/preview_diff_bridge.rs"]
 mod preview_diff_bridge;
 #[path = "integration/promote_workspace_patch.rs"]
@@ -86,6 +90,8 @@ mod repl_followup_apply_promotion;
 mod repl_semantic_cluster_narrowing;
 #[path = "integration/repl_session_continuity.rs"]
 mod repl_session_continuity;
+#[path = "integration/repl_stability_verification.rs"]
+mod repl_stability_verification;
 #[path = "integration/repl_subcommand_dispatch.rs"]
 mod repl_subcommand_dispatch;
 #[path = "integration/structure_session.rs"]

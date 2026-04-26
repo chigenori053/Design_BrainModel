@@ -6,6 +6,7 @@ use crate::nl::intent::{
 use crate::nl::language_intent_bridge::{PlannerIntent, infer_planner_intent};
 use crate::nl::target::{extract_explicit_path, has_explicit_target_reference};
 use crate::session::AgentSession;
+use std::path::PathBuf;
 
 use super::session::ConversationState;
 use super::types::{
@@ -293,7 +294,8 @@ fn validated_coding_intent(
 /// Returns true only when the input is the exact canonical apply command.
 /// Nothing else qualifies as "apply intent" — even partial matches must not fire.
 fn is_explicit_apply_intent(input: &str) -> bool {
-    input.trim() == "coding --apply"
+    let trimmed = input.trim();
+    trimmed == "coding --apply" || trimmed == "apply"
 }
 
 fn is_rollback_command(input: &str) -> bool {
@@ -587,6 +589,8 @@ pub fn plan_input(
     session: &AgentSession,
     conversation: &ConversationState,
 ) -> Option<CommandPlan> {
+    let input = input.trim().replace('\u{00A0}', " ");
+    let input = input.as_str();
     let lower = input.to_lowercase();
     let merged = merge_target(input, session, conversation);
 
@@ -604,10 +608,7 @@ pub fn plan_input(
     // coding/refactor input (e.g. "refactor ...", "coding check ...") is NEVER
     // preempted by apply_previous, even when a pending transaction exists.
     // Priority: explicit coding/refactor > apply_previous route.
-    if is_explicit_apply_intent(input)
-        && !is_new_coding_or_refactor_request(&lower)
-        && conversation.has_pending_transaction()
-    {
+    if is_explicit_apply_intent(input) && !is_new_coding_or_refactor_request(&lower) {
         return Some(CommandPlan {
             intent: None,
             steps: vec![PlannedStep::ApplyPreviousCodingStep],
@@ -618,7 +619,35 @@ pub fn plan_input(
         || lower.contains("analyze project")
         || lower.contains("project .")
     {
-        return None;
+        return Some(CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::Analyze(workspace_path(&merged))],
+        });
+    }
+
+    if lower.trim() == "reload all" || lower.contains("ir reload all") {
+        return Some(CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::IrReloadAll(workspace_path(&merged))],
+        });
+    }
+
+    if lower.starts_with("show deps") || lower.starts_with("deps ") {
+        let path = input
+            .split_whitespace()
+            .last()
+            .map(PathBuf::from)
+            .filter(|p| *p != PathBuf::from("deps"))
+            .unwrap_or_else(|| {
+                conversation
+                    .last_target
+                    .clone()
+                    .unwrap_or_else(|| workspace_path(&merged))
+            });
+        return Some(CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::ShowDeps(path)],
+        });
     }
 
     if wants_alternative_mutation_search(&lower) {
@@ -678,6 +707,25 @@ pub fn plan_input(
                 &merged,
                 conversation,
             ))],
+        });
+    }
+
+    // Phase 4 (DBM-IR-SYNC-SPEC): `reload` re-syncs the IR with the on-disk
+    // file, clearing any stale pending diff (Phase 5).
+    if lower.trim() == "reload"
+        || lower.starts_with("reload ")
+        || lower.contains("ir reload")
+        || lower.contains("ir sync")
+        || lower == "再同期"
+    {
+        let path = if let Some(target) = &conversation.last_target {
+            target.clone()
+        } else {
+            workspace_path(&merged)
+        };
+        return Some(CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::IrReload(path)],
         });
     }
 
@@ -864,6 +912,15 @@ pub fn update_conversation_after_plan(
             // R2: ApplyPreviousCodingStep は last_target を更新しない。
             // 前回 Coding step が設定した last_target を continuity のためそのまま保持する (R3)。
             PlannedStep::ApplyPreviousCodingStep | PlannedStep::RollbackCurrentTransaction => {}
+            PlannedStep::IrReload(path) => {
+                conversation.note_target(path.clone());
+            }
+            PlannedStep::IrReloadAll(path) => {
+                conversation.note_target(path.clone());
+            }
+            PlannedStep::ShowDeps(path) => {
+                conversation.note_target(path.clone());
+            }
         }
     }
 
@@ -1220,6 +1277,7 @@ mod tests {
                     rollback_available: false,
                     latest_diff_ref: None,
                     latest_build_ok: None,
+                    file_hash: None,
                 }),
                 next_allowed_actions: Vec::new(),
                 ..IRState::default()

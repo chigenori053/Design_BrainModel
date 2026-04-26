@@ -1360,6 +1360,7 @@ mod tests {
                 lines_removed: 0,
             }),
             latest_build_ok: None,
+            file_hash: None,
         });
 
         state.ui.panels.diff = Some(diff_view_from_session(
@@ -1416,6 +1417,7 @@ mod tests {
             applied: true,
             validated: false,
             rollback_available: true,
+            file_hash: None,
             latest_diff_ref: Some(SessionAppliedDiff {
                 summary: "1 files changed, +12 -5 lines".to_string(),
                 files: vec![SessionAppliedFileDiff {

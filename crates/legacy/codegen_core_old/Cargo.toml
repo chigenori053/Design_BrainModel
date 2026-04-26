@@ -1,0 +1,18 @@
+[package]
+name = "codegen_core_old"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = []
+enabled = []
+
+[dependencies]
+architecture_reasoner = { path = "../../architecture_reasoner" }
+code_ir = { path = "../../code_ir" }
+design_domain = { path = "../../domain/design_domain" }
+memory_space_phase14 = { path = "../../memory_space" }
+unified_design_ir = { path = "../../unified_design_ir" }
+
+[dev-dependencies]
+architecture_ir = { path = "../../architecture_ir" }

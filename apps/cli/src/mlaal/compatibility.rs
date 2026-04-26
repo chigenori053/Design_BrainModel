@@ -3,7 +3,6 @@ use std::process::Command;
 use std::sync::Arc;
 
 use crate::ir::IRPersistenceStore;
-use crate::nl::planner;
 use crate::nl::session::ConversationState;
 use crate::nl::types::CommandPlan;
 use crate::session::AgentSession;
@@ -57,9 +56,10 @@ pub fn resolve_command_plan_with_compatibility(
 
     match command_plan {
         Ok(plan) => (Some(plan), "nl_v2"),
-        Err(err) if err.to_string().contains("legacy planner produced no plan") => {
-            (planner::plan_input(input, session), "nl_rule_based")
-        }
+        Err(err) if err.to_string().contains("legacy planner produced no plan") => (
+            crate::nl::planner_v2::plan_input(input, session, conversation),
+            "nl_rule_based",
+        ),
         Err(_) => (None, "nl_v2"),
     }
 }

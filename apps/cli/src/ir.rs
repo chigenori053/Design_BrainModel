@@ -1852,6 +1852,15 @@ fn plan_step_from_planned_step(step: &PlannedStep) -> PlanStepRecord {
         PlannedStep::RollbackCurrentTransaction => {
             simple_plan_step("rollback_current_transaction", None, Vec::new())
         }
+        PlannedStep::IrReload(path) => {
+            simple_plan_step("ir_reload", Some(path.clone()), Vec::new())
+        }
+        PlannedStep::IrReloadAll(path) => {
+            simple_plan_step("ir_reload_all", Some(path.clone()), Vec::new())
+        }
+        PlannedStep::ShowDeps(path) => {
+            simple_plan_step("show_deps", Some(path.clone()), Vec::new())
+        }
     }
 }
 
@@ -1928,6 +1937,9 @@ fn memory_step_kind(step: &PlannedStep) -> &'static str {
         PlannedStep::ExplainDesignTradeoff(_) => "explain_design_tradeoff",
         PlannedStep::ApplyPreviousCodingStep => "apply_previous_coding",
         PlannedStep::RollbackCurrentTransaction => "rollback_current_transaction",
+        PlannedStep::IrReload(_) => "ir_reload",
+        PlannedStep::IrReloadAll(_) => "ir_reload_all",
+        PlannedStep::ShowDeps(_) => "show_deps",
     }
 }
 
@@ -1943,7 +1955,10 @@ fn memory_tags_for_step(step: &PlannedStep) -> Vec<String> {
         | PlannedStep::Run(path)
         | PlannedStep::Memory(path)
         | PlannedStep::GitCommit(path)
-        | PlannedStep::GitPR(path) => {
+        | PlannedStep::GitPR(path)
+        | PlannedStep::IrReload(path)
+        | PlannedStep::IrReloadAll(path)
+        | PlannedStep::ShowDeps(path) => {
             tags.push(path.display().to_string());
         }
         PlannedStep::Coding(path, options) => {
@@ -2073,7 +2088,10 @@ fn memory_query_key(step: &PlannedStep) -> String {
         | PlannedStep::Run(path)
         | PlannedStep::Memory(path)
         | PlannedStep::GitCommit(path)
-        | PlannedStep::GitPR(path) => format!("{}:{}", memory_step_kind(step), path.display()),
+        | PlannedStep::GitPR(path)
+        | PlannedStep::IrReload(path)
+        | PlannedStep::IrReloadAll(path)
+        | PlannedStep::ShowDeps(path) => format!("{}:{}", memory_step_kind(step), path.display()),
         PlannedStep::Coding(path, options) => format!(
             "{}:{}:{}",
             memory_step_kind(step),

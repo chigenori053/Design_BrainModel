@@ -726,7 +726,9 @@ fn resolve_calls(
             .filter(|c| c.module == cs.caller.module)
             .min()
             .copied();
-        let Some(callee) = callee else { continue; };
+        let Some(callee) = callee else {
+            continue;
+        };
 
         // Rule 4: keep self-loops (genuine recursion)
         edges.insert((cs.caller.clone(), callee.clone()));
@@ -1075,10 +1077,7 @@ fn compute_scc_metrics_from_sizes(scc_sizes: &[usize]) -> (usize, f64) {
 // Baseline Strategies
 // ---------------------------------------------------------------------------
 
-fn baseline_cut(
-    ir: &IR,
-    sccs: &[Vec<FunctionId>],
-) -> Vec<(FunctionId, FunctionId)> {
+fn baseline_cut(ir: &IR, sccs: &[Vec<FunctionId>]) -> Vec<(FunctionId, FunctionId)> {
     let mut cuts = Vec::new();
     let mut ordered_sccs = sccs.to_vec();
     ordered_sccs.sort_by(|lhs, rhs| lhs.len().cmp(&rhs.len()).then(lhs.cmp(rhs)));
@@ -1112,9 +1111,7 @@ fn select_max_degree_node(degrees: &BTreeMap<FunctionId, usize>) -> FunctionId {
     degrees
         .iter()
         .max_by(|(lhs_fn, lhs_deg), (rhs_fn, rhs_deg)| {
-            lhs_deg
-                .cmp(rhs_deg)
-                .then_with(|| rhs_fn.cmp(lhs_fn))
+            lhs_deg.cmp(rhs_deg).then_with(|| rhs_fn.cmp(lhs_fn))
         })
         .map(|(func, _)| func.clone())
         .unwrap_or_else(|| FunctionId {
@@ -1136,10 +1133,7 @@ fn select_edge(
     candidates.into_iter().next()
 }
 
-fn baseline_v2_cut(
-    ir: &IR,
-    sccs: &[Vec<FunctionId>],
-) -> Vec<(FunctionId, FunctionId)> {
+fn baseline_v2_cut(ir: &IR, sccs: &[Vec<FunctionId>]) -> Vec<(FunctionId, FunctionId)> {
     let mut cuts = Vec::new();
     let mut ordered_sccs = sccs.to_vec();
     ordered_sccs.sort_by(|lhs, rhs| lhs.len().cmp(&rhs.len()).then(lhs.cmp(rhs)));
@@ -1732,8 +1726,15 @@ mod tests {
         let analysis = analyze_ir(&ir).expect("analyze");
 
         // Self-loop edge a→a is now preserved → detected as 1 cycle
-        assert_eq!(analysis.cycle_count, 1, "self-recursion must be detected as a cycle");
-        assert_eq!(ir.edges, vec![(fid("m", "a"), fid("m", "a"))], "self-loop edge must appear in IR");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "self-recursion must be detected as a cycle"
+        );
+        assert_eq!(
+            ir.edges,
+            vec![(fid("m", "a"), fid("m", "a"))],
+            "self-loop edge must appear in IR"
+        );
     }
 
     /// The underlying analysis engine still detects self-loops when explicitly
@@ -1745,7 +1746,10 @@ mod tests {
             edges: vec![(fid("m", "a"), fid("m", "a"))],
         };
         let analysis = analyze_ir(&ir).expect("analyze");
-        assert_eq!(analysis.cycle_count, 1, "IR-level self-loop must still be detected");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "IR-level self-loop must still be detected"
+        );
     }
 
     // -----------------------------------------------------------------------
@@ -1772,7 +1776,10 @@ mod tests {
         let ir = build_ir(&extracted);
         let analysis = analyze_ir(&ir).expect("analyze");
 
-        assert_eq!(analysis.cycle_count, 1, "expected 1 cycle (mutual recursion)");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "expected 1 cycle (mutual recursion)"
+        );
         assert_eq!(
             analysis.scc_sizes.iter().max().copied().unwrap_or(0),
             2,
@@ -2274,16 +2281,27 @@ mod tests {
     fn check1_cycles_imply_nonzero_max_scc_size() {
         let dir = tempfile::tempdir().expect("tempdir");
         fs::create_dir_all(dir.path().join("src")).expect("src");
-        fs::write(dir.path().join("Cargo.toml"), "[package]\nname=\"c1\"\nversion=\"0.1.0\"\nedition=\"2024\"\n").expect("cargo");
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[package]\nname=\"c1\"\nversion=\"0.1.0\"\nedition=\"2024\"\n",
+        )
+        .expect("cargo");
         fs::write(dir.path().join("src/lib.rs"), "pub mod m;\n").expect("lib");
-        fs::write(dir.path().join("src/m.rs"), "pub fn a() { b(); }\npub fn b() { a(); }\n").expect("m");
+        fs::write(
+            dir.path().join("src/m.rs"),
+            "pub fn a() { b(); }\npub fn b() { a(); }\n",
+        )
+        .expect("m");
 
         let ir = build_ir(&extract_graph(dir.path()).expect("extract"));
         let analysis = analyze_ir(&ir).expect("analyze");
 
         assert!(analysis.cycle_count > 0, "precondition: must have cycles");
         let (max_scc, _) = compute_scc_metrics_from_sizes(&analysis.scc_sizes);
-        assert!(max_scc >= 1, "max_scc_size must be ≥ 1 when cycles exist (got {max_scc})");
+        assert!(
+            max_scc >= 1,
+            "max_scc_size must be ≥ 1 when cycles exist (got {max_scc})"
+        );
     }
 
     /// Check 2: single-node without self-loop MUST NOT be a cycle
@@ -2305,7 +2323,10 @@ mod tests {
         write_fixture(dir.path());
         let ir = build_ir(&extract_graph(dir.path()).expect("extract"));
         let analysis = analyze_ir(&ir).expect("analyze");
-        assert!(!analysis.scc_sizes.is_empty(), "scc_sizes must not be empty");
+        assert!(
+            !analysis.scc_sizes.is_empty(),
+            "scc_sizes must not be empty"
+        );
         assert_eq!(
             analysis.scc_sizes.iter().sum::<usize>(),
             ir.functions.len(),
@@ -2319,7 +2340,10 @@ mod tests {
         let sccs = vec![vec![fid("m", "a")], vec![fid("m", "b")]];
         let edges: Vec<(FunctionId, FunctionId)> = vec![];
         let cycles = extract_cycles(&sccs, &edges);
-        assert!(cycles.is_empty(), "isolated nodes must not appear as cycles");
+        assert!(
+            cycles.is_empty(),
+            "isolated nodes must not appear as cycles"
+        );
     }
 
     #[test]
@@ -2366,7 +2390,10 @@ mod tests {
         let ir = build_ir(&extract_graph(dir.path()).expect("extract"));
         let analysis = analyze_ir(&ir).expect("analyze");
 
-        assert_eq!(analysis.cycle_count, 1, "mutual recursion must yield 1 cycle");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "mutual recursion must yield 1 cycle"
+        );
         let (max_scc, _) = compute_scc_metrics_from_sizes(&analysis.scc_sizes);
         assert_eq!(max_scc, 2, "max_scc_size must be 2 for a 2-function cycle");
     }
@@ -2397,7 +2424,10 @@ mod tests {
             );
         }
         let analysis = analyze_ir(&ir).expect("analyze");
-        assert_eq!(analysis.cycle_count, 0, "same-name different-module must produce no cycle");
+        assert_eq!(
+            analysis.cycle_count, 0,
+            "same-name different-module must produce no cycle"
+        );
     }
 
     /// Phase 1.1 Test 4: Determinism — hash is identical across repeated runs.
@@ -2405,9 +2435,8 @@ mod tests {
     fn phase11_deterministic_hash() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fixture(dir.path());
-        let hash = |path: &Path| -> u64 {
-            ir_hash(&build_ir(&extract_graph(path).expect("extract")))
-        };
+        let hash =
+            |path: &Path| -> u64 { ir_hash(&build_ir(&extract_graph(path).expect("extract"))) };
         let h1 = hash(dir.path());
         let h2 = hash(dir.path());
         let h3 = hash(dir.path());
@@ -2430,11 +2459,18 @@ mod tests {
         )
         .expect("cargo");
         fs::write(dir.path().join("src/lib.rs"), "pub mod m;\n").expect("lib");
-        fs::write(dir.path().join("src/m.rs"), "pub fn recurse() { recurse(); }\n").expect("m");
+        fs::write(
+            dir.path().join("src/m.rs"),
+            "pub fn recurse() { recurse(); }\n",
+        )
+        .expect("m");
 
         let ir = build_ir(&extract_graph(dir.path()).expect("extract"));
         let analysis = analyze_ir(&ir).expect("analyze");
-        assert_eq!(analysis.cycle_count, 1, "self-recursion must yield exactly 1 cycle");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "self-recursion must yield exactly 1 cycle"
+        );
     }
 
     /// Phase 1.2 Test 2: Mutual recursion detected without any blocklist.
@@ -2456,7 +2492,10 @@ mod tests {
 
         let ir = build_ir(&extract_graph(dir.path()).expect("extract"));
         let analysis = analyze_ir(&ir).expect("analyze");
-        assert_eq!(analysis.cycle_count, 1, "mutual recursion must yield exactly 1 cycle");
+        assert_eq!(
+            analysis.cycle_count, 1,
+            "mutual recursion must yield exactly 1 cycle"
+        );
     }
 
     /// Phase 1.2 Test 3: Pure DAG produces zero cycles.
@@ -2491,21 +2530,32 @@ mod tests {
             callee_path: Some(vec!["run".to_string()]),
         }];
         let edges = resolve_calls(&functions, &callsites);
-        assert_eq!(edges, vec![(fid("m", "run"), fid("m", "run"))], "self-loop must be preserved");
+        assert_eq!(
+            edges,
+            vec![(fid("m", "run"), fid("m", "run"))],
+            "self-loop must be preserved"
+        );
     }
 
     /// Phase 1.2 Test 5: resolve_calls restricts to same module only.
     #[test]
     fn phase12_resolve_calls_same_module_only() {
         // mod_a::caller calls "helper" — only mod_a::helper should be resolved, not mod_b::helper.
-        let functions = vec![fid("mod_a", "caller"), fid("mod_a", "helper"), fid("mod_b", "helper")];
+        let functions = vec![
+            fid("mod_a", "caller"),
+            fid("mod_a", "helper"),
+            fid("mod_b", "helper"),
+        ];
         let callsites = vec![CallSite {
             caller: fid("mod_a", "caller"),
             callee_name: "helper".to_string(),
             callee_path: Some(vec!["helper".to_string()]),
         }];
         let edges = resolve_calls(&functions, &callsites);
-        assert_eq!(edges, vec![(fid("mod_a", "caller"), fid("mod_a", "helper"))]);
+        assert_eq!(
+            edges,
+            vec![(fid("mod_a", "caller"), fid("mod_a", "helper"))]
+        );
     }
 
     /// Phase 1.2 Test 6: Determinism — IR hash is identical across repeated runs.
@@ -2513,9 +2563,8 @@ mod tests {
     fn phase12_deterministic_hash() {
         let dir = tempfile::tempdir().expect("tempdir");
         write_fixture(dir.path());
-        let hash = |path: &Path| -> u64 {
-            ir_hash(&build_ir(&extract_graph(path).expect("extract")))
-        };
+        let hash =
+            |path: &Path| -> u64 { ir_hash(&build_ir(&extract_graph(path).expect("extract"))) };
         let h1 = hash(dir.path());
         let h2 = hash(dir.path());
         let h3 = hash(dir.path());

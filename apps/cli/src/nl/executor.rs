@@ -262,6 +262,31 @@ pub fn execute_ir_plan(
 
         // R2: ApplyPreviousCodingStep は generic executor を bypass して直接処理する。
         if matches!(step, PlannedStep::ApplyPreviousCodingStep) {
+            // § 8.1 (DBM-CONSISTENCY-ENGINE-SPEC): apply前に ConsistencyEngine で検証する。
+            // is_consistent == false の場合は apply を拒否して理由を返す。
+            let project_ir = conversation.ir_state_manager.project_ir();
+            let report = crate::consistency_engine::ConsistencyEngine::check(&project_ir);
+            if !report.is_consistent {
+                let output = format!(
+                    "Applied: false\nReason: consistency check failed\n{}",
+                    report.render()
+                );
+                let _ =
+                    emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Failure);
+                let _ = emit_execution_result(
+                    &conversation.ir_state,
+                    StepExecutionResultPayload {
+                        step_id,
+                        stdout: Some(output.clone()),
+                        stderr: None,
+                        structured_output: None,
+                        artifacts: Vec::new(),
+                    },
+                );
+                outputs.push(format!("[step {index}] apply_previous_coding\n{output}"));
+                continue;
+            }
+
             let output = execute_apply_previous_coding_step(conversation);
             let success = output.starts_with("Applied: true");
             let _ = emit_step_completed(
@@ -296,6 +321,66 @@ pub fn execute_ir_plan(
                 },
             );
             outputs.push(format!("[step {index}] apply_previous_coding\n{output}"));
+            continue;
+        }
+        if let PlannedStep::IrReload(path) = step {
+            let output = execute_ir_reload(path, conversation);
+            let _ = emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Success);
+            let _ = emit_execution_result(
+                &conversation.ir_state,
+                StepExecutionResultPayload {
+                    step_id,
+                    stdout: Some(output.clone()),
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            );
+            record_execution_memory(
+                &conversation.ir_state,
+                step,
+                index,
+                StepExecutionResultPayload {
+                    step_id,
+                    stdout: Some(output.clone()),
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            );
+            outputs.push(format!("[step {index}] ir_reload\n{output}"));
+            continue;
+        }
+        if let PlannedStep::IrReloadAll(path) = step {
+            let output = execute_ir_reload_all(path, conversation);
+            let _ = emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Success);
+            let _ = emit_execution_result(
+                &conversation.ir_state,
+                StepExecutionResultPayload {
+                    step_id,
+                    stdout: Some(output.clone()),
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            );
+            outputs.push(format!("[step {index}] ir_reload_all\n{output}"));
+            continue;
+        }
+        if let PlannedStep::ShowDeps(path) = step {
+            let output = conversation.ir_state_manager.render_dependencies(path);
+            let _ = emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Success);
+            let _ = emit_execution_result(
+                &conversation.ir_state,
+                StepExecutionResultPayload {
+                    step_id,
+                    stdout: Some(output.clone()),
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            );
+            outputs.push(format!("[step {index}] show_deps\n{output}"));
             continue;
         }
         if matches!(step, PlannedStep::RollbackCurrentTransaction) {
@@ -644,6 +729,9 @@ fn step_kind_label(step: &PlannedStep) -> &'static str {
         PlannedStep::ExplainDesignTradeoff(_) => "explain_design_tradeoff",
         PlannedStep::ApplyPreviousCodingStep => "apply_previous_coding",
         PlannedStep::RollbackCurrentTransaction => "rollback_current_transaction",
+        PlannedStep::IrReload(_) => "ir_reload",
+        PlannedStep::IrReloadAll(_) => "ir_reload_all",
+        PlannedStep::ShowDeps(_) => "show_deps",
     }
 }
 
@@ -659,7 +747,10 @@ pub fn executor_received_path_snapshot(step: &PlannedStep) -> Option<String> {
         | PlannedStep::Run(path)
         | PlannedStep::Memory(path)
         | PlannedStep::GitCommit(path)
-        | PlannedStep::GitPR(path) => Some(format!(
+        | PlannedStep::GitPR(path)
+        | PlannedStep::IrReload(path)
+        | PlannedStep::IrReloadAll(path)
+        | PlannedStep::ShowDeps(path) => Some(format!(
             "snapshot executor received path: {}",
             path.display()
         )),
@@ -693,12 +784,57 @@ fn execute_apply_previous_coding_step(conversation: &mut ConversationState) -> S
     let Some(diff) = tx.latest_diff_ref.clone() else {
         return "Applied: false\nReason: no diff available".to_string();
     };
+
+    if diff.files.is_empty() {
+        return "Applied: false\nReason: no changes to apply".to_string();
+    }
+
+    // Phase B-2 (DBM-IR-STATE-SPEC § 6.2): update IrState dirty flag and
+    // reject the apply when the managed state is Drifted.
+    conversation
+        .ir_state_manager
+        .check_and_update_drift_closure(&tx.canonical_target);
+    if conversation
+        .ir_state_manager
+        .is_drifted_with_dependencies(&tx.canonical_target)
+    {
+        return format!(
+            "Applied: false\nReason: {}\nACTION: run 'reload' to re-sync",
+            crate::ir_state::DEPENDENCY_DRIFT_ERROR
+        );
+    }
+
+    // Phase 2+3+6 (DBM-IR-SYNC-SPEC): Strict-mode drift check.
+    // If the file has changed since the diff was generated, reject the apply
+    // so we never write a diff computed from stale content.
+    // Phase 5: a failed drift check effectively invalidates the diff by
+    // refusing to proceed; the caller can run 'reload' to clear the transaction.
+    if let Some(recorded_hash) = tx.file_hash {
+        match crate::ir_sync::is_drift(&tx.canonical_target, recorded_hash) {
+            Ok(true) => {
+                return format!(
+                    "Applied: false\nReason: {}\nACTION: run 'reload' or 'analyze' to re-sync",
+                    crate::ir_sync::DRIFT_ERROR
+                );
+            }
+            Ok(false) => {}
+            Err(err) => {
+                return format!("Applied: false\nReason: drift check failed: {err}");
+            }
+        }
+    }
+
     if let Err(err) = guard_session_diff_import_only(&diff) {
         panic!("Violation: deterministic refactor breach: {err}");
     }
     if let Err(err) = apply_diff_only(&diff) {
         return format!("Applied: false\nReason: {err}");
     }
+    // Phase B-2 (§ 6.2): file written to disk – IrState is now stale.
+    // mark_dirty ensures the next refactor reloads a fresh snapshot.
+    conversation
+        .ir_state_manager
+        .mark_dirty(&tx.canonical_target);
     let before = conversation.ir_state.clone();
     conversation.mark_transaction_applied(Some(diff.clone()));
     conversation.note_target(tx.canonical_target.clone());
@@ -793,12 +929,17 @@ fn execute_refactor(
     path: &PathBuf,
     conversation: &mut ConversationState,
 ) -> String {
-    let before_code = match fs::read_to_string(path) {
-        Ok(code) => code,
-        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
-            return "ERROR: target not found".to_string();
-        }
-        Err(err) => return format!("ERROR: IR generation failed: {err}"),
+    // Phase B-2 (DBM-IR-STATE-SPEC § 6.1 + § 11): refactor consumes managed IR
+    // only.  IR rebuilds happen through explicit Analyze/Reload, never here.
+    if !conversation.ir_state_manager.is_tracked(path) {
+        return "ERROR: IR not initialized\nACTION: run 'analyze <file>' or 'reload'".to_string();
+    }
+    conversation
+        .ir_state_manager
+        .check_and_update_drift_closure(path);
+    let before_code = match crate::ir_state::get_ir(path, &conversation.ir_state_manager) {
+        Ok(ir) => ir.source.clone(),
+        Err(e) => return format!("{e}\nACTION: run 'reload'"),
     };
     let result = match rule {
         RefactorRule::RemoveUnusedImports => match remove_unused_imports_refactor(&before_code) {
@@ -813,6 +954,13 @@ fn execute_refactor(
         panic!("Violation: deterministic refactor breach: {err}");
     }
 
+    // Phase B-2 (§ 6.1): record file_hash from IrStateManager snapshot.
+    // Falls back to direct hash only if the path is somehow not yet tracked.
+    let file_hash = conversation
+        .ir_state_manager
+        .snapshot_hash(path)
+        .unwrap_or_else(|| crate::ir_sync::hash_content(&before_code));
+
     let before = conversation.ir_state.clone();
     conversation.start_preview_transaction(path.clone());
     let snapshot = SessionAppliedDiff {
@@ -826,6 +974,7 @@ fn execute_refactor(
         lines_removed: result.removed_lines,
     };
     if let Some(tx) = conversation.active_transaction_mut() {
+        tx.file_hash = Some(file_hash);
         tx.latest_diff_ref = Some(snapshot.clone());
     }
     let _ = persist_ir_transition(
@@ -841,6 +990,66 @@ fn execute_refactor(
         },
     );
     format!("[DIFF]\n{diff}\nRESULT\nGenerated")
+}
+
+/// Phase 4 (DBM-IR-SYNC-SPEC) + Phase B-2 (DBM-IR-STATE-SPEC § 6.3):
+/// re-sync the IR with the on-disk file.
+///
+/// - § 5.5: invalidates the diff on the active transaction when it targets `path`.
+/// - Phase 5: clears the pending transaction so a stale diff cannot be applied.
+/// - § 5.3: rebuilds `IrState` in the manager (Invalid/Drifted → Synced).
+/// - § 9: emits telemetry from `IrStateManager`.
+///
+/// After `reload` the next `refactor` will read a fresh snapshot, so the
+/// sequence `reload → refactor → apply` always operates on current content.
+fn execute_ir_reload(path: &Path, conversation: &mut ConversationState) -> String {
+    // Phase B-2 § 5.5: invalidate the diff on the active transaction when its
+    // canonical target matches the file being reloaded.
+    if let Some(tx) = conversation.active_transaction_mut() {
+        if tx.canonical_target == path {
+            crate::ir_state::invalidate_diff(tx);
+        }
+    }
+
+    // Phase 5: Diff Invalidation – discard the pending transaction so the
+    // stale diff cannot be applied after the file has changed.
+    let had_pending = conversation.has_pending_transaction();
+    conversation.clear_active_transaction();
+
+    // Phase B-3 § 8: rebuild the file and known dependents.
+    match conversation.ir_state_manager.reload_recursive(path) {
+        Ok(()) => {
+            let tele_json = conversation
+                .ir_state_manager
+                .telemetry(path)
+                .and_then(|t| serde_json::to_string(&t).ok())
+                .unwrap_or_default();
+            format!(
+                "[IR_SYNC] reloaded\nfile: {}\ndiff_invalidated: {had_pending}\n{tele_json}",
+                path.display()
+            )
+        }
+        Err(err) => format!(
+            "[IR_SYNC] reload failed\nfile: {}\nreason: {err}",
+            path.display()
+        ),
+    }
+}
+
+fn execute_ir_reload_all(root: &Path, conversation: &mut ConversationState) -> String {
+    let had_pending = conversation.has_pending_transaction();
+    conversation.clear_active_transaction();
+    match conversation.ir_state_manager.reload_all(root) {
+        Ok(()) => format!(
+            "[IR_SYNC] reload all\nroot: {}\ndiff_invalidated: {had_pending}\ntracked: {}",
+            root.display(),
+            conversation.ir_state_manager.tracked_count()
+        ),
+        Err(err) => format!(
+            "[IR_SYNC] reload all failed\nroot: {}\nreason: {err}",
+            root.display()
+        ),
+    }
 }
 
 fn execute_ir_rollback(conversation: &mut ConversationState) -> String {
@@ -1053,6 +1262,24 @@ fn to_canonical_command(step: &PlannedStep) -> (&'static str, Vec<String>, Strin
             "design_cli rollback [ir transaction]".to_string(),
             true,
         ),
+        PlannedStep::IrReload(path) => (
+            "ir_reload",
+            vec![path.display().to_string()],
+            format!("design_cli ir reload {}", path.display()),
+            true,
+        ),
+        PlannedStep::IrReloadAll(path) => (
+            "ir_reload_all",
+            vec![path.display().to_string()],
+            format!("design_cli ir reload all {}", path.display()),
+            true,
+        ),
+        PlannedStep::ShowDeps(path) => (
+            "show_deps",
+            vec![path.display().to_string()],
+            format!("design_cli show deps {}", path.display()),
+            true,
+        ),
     }
 }
 
@@ -1094,7 +1321,10 @@ fn update_state_after_step(step: &PlannedStep, conversation: &mut ConversationSt
         | PlannedStep::Run(path)
         | PlannedStep::Memory(path)
         | PlannedStep::GitCommit(path)
-        | PlannedStep::GitPR(path) => conversation.last_target = Some(path.clone()),
+        | PlannedStep::GitPR(path)
+        | PlannedStep::IrReload(path)
+        | PlannedStep::IrReloadAll(path)
+        | PlannedStep::ShowDeps(path) => conversation.last_target = Some(path.clone()),
         PlannedStep::DesignDeltaReasoning(_)
         | PlannedStep::AlternativeMutationSearch(_)
         | PlannedStep::ExplainDesignTradeoff(_)
@@ -1109,6 +1339,19 @@ fn update_state_after_step(step: &PlannedStep, conversation: &mut ConversationSt
         // ApplyPreviousCodingStep は execute_plan 内で直接処理されるため、
         // update_state_after_step には到達しない。last_target は apply 実行時に更新済み。
         PlannedStep::ApplyPreviousCodingStep => {}
+    }
+
+    // Phase B-2 (DBM-IR-STATE-SPEC § 8 REPL統合):
+    // `analyze <file>` → build_ir.  After a successful Analyze step, eagerly
+    // build the IR snapshot so subsequent `refactor` calls start in Synced
+    // state without an extra round-trip to disk.  Errors are ignored; the
+    // file may not be a source file (e.g. a directory path).
+    if let PlannedStep::Analyze(path) = step {
+        if path.is_dir() {
+            let _ = conversation.ir_state_manager.build_project(path);
+        } else {
+            let _ = crate::ir_state::reload(path, &mut conversation.ir_state_manager);
+        }
     }
 
     if matches!(
@@ -3427,6 +3670,7 @@ mod tests {
             rollback_available: true,
             latest_diff_ref: None,
             latest_build_ok: None,
+            file_hash: None,
         });
 
         let output = execute_ir_rollback(&mut conversation);
@@ -3594,6 +3838,7 @@ mod tests {
             rollback_available: true,
             latest_diff_ref: Some(diff),
             latest_build_ok: None,
+            file_hash: None,
         });
 
         let output = execute_apply_previous_coding_step(&mut conversation);
@@ -3602,6 +3847,96 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(path).expect("read source"),
             "\nfn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn apply_rejects_empty_diff() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write source");
+
+        // Diff with NO files
+        let diff = SessionAppliedDiff {
+            summary: "0 files changed".to_string(),
+            files: vec![],
+            files_changed: 0,
+            lines_added: 0,
+            lines_removed: 0,
+        };
+
+        let mut conversation = ConversationState::default();
+        conversation.set_active_transaction(crate::service::dto::IRActiveTransaction {
+            transaction_id: "tx:empty".to_string(),
+            canonical_target: path.clone(),
+            pending: true,
+            applied: false,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(diff),
+            latest_build_ok: None,
+            file_hash: None,
+        });
+
+        let output = execute_apply_previous_coding_step(&mut conversation);
+
+        assert!(output.contains("no changes to apply"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read source"),
+            "fn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn apply_rejects_dirty_dependency() {
+        let temp = tempdir().expect("tempdir");
+        let src = temp.path().join("src");
+        std::fs::create_dir_all(&src).expect("src dir");
+        let target = src.join("coding.rs");
+        let dep = src.join("util.rs");
+        std::fs::write(
+            &target,
+            "use std::collections::HashMap;\nuse util::Thing;\n\nfn main() {}\n",
+        )
+        .expect("write target");
+        std::fs::write(&dep, "pub struct Thing;\n").expect("write dep");
+
+        let mut conversation = ConversationState::default();
+        conversation
+            .ir_state_manager
+            .build_project(temp.path())
+            .expect("build project ir");
+        std::fs::write(&dep, "pub struct Thing;\npub struct Other;\n").expect("change dep");
+        let diff = SessionAppliedDiff {
+            summary: "1 files changed, +0 -1 lines".to_string(),
+            files: vec![SessionAppliedFileDiff {
+                file_path: target.display().to_string(),
+                unified_diff_excerpt: "- use std::collections::HashMap;".to_string(),
+            }],
+            files_changed: 1,
+            lines_added: 0,
+            lines_removed: 1,
+        };
+        let file_hash = conversation.ir_state_manager.snapshot_hash(&target);
+        conversation.set_active_transaction(crate::service::dto::IRActiveTransaction {
+            transaction_id: "tx:coding.rs".to_string(),
+            canonical_target: target.clone(),
+            pending: true,
+            applied: false,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(diff),
+            latest_build_ok: None,
+            file_hash,
+        });
+
+        let output = execute_apply_previous_coding_step(&mut conversation);
+
+        assert!(output.contains("dependency drift detected"), "{output}");
+        assert!(
+            std::fs::read_to_string(target)
+                .expect("read target")
+                .contains("HashMap")
         );
     }
 
@@ -3631,6 +3966,7 @@ mod tests {
             rollback_available: true,
             latest_diff_ref: Some(diff),
             latest_build_ok: None,
+            file_hash: None,
         });
 
         let _ = execute_apply_previous_coding_step(&mut conversation);

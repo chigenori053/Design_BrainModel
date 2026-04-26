@@ -25,8 +25,8 @@ use self::types::CommandPlan;
 pub use executor::{
     execute_ir_plan, execute_plan, render_plan_summary, render_plan_summary_with_label,
 };
-pub use planner::{plan_input, to_runtime_plan};
-pub use planner_v2::update_conversation_after_plan;
+pub use planner::to_runtime_plan;
+pub use planner_v2::{plan_input, update_conversation_after_plan};
 
 pub fn resolve_command_plan(
     input: &str,

@@ -83,6 +83,16 @@ pub enum PlannedStep {
     ApplyPreviousCodingStep,
     /// Explicit IR rollback transition for the active REPL transaction lifecycle.
     RollbackCurrentTransaction,
+    /// Phase 4 (DBM-IR-SYNC-SPEC v1.0): re-sync the IR with the on-disk file.
+    ///
+    /// Clears any pending (unapplied) transaction / diff so that the next
+    /// `refactor` command reads a fresh snapshot.  Emits telemetry that
+    /// includes the current file hash and drift status.
+    IrReload(PathBuf),
+    /// Phase B-3: reload the whole Project IR graph.
+    IrReloadAll(PathBuf),
+    /// Phase B-3: render dependency edges for a tracked file.
+    ShowDeps(PathBuf),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

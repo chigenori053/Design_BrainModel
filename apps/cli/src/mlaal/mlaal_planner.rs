@@ -92,7 +92,7 @@ impl MLAALPlanner {
             ..CodingOptions::default()
         };
 
-        if input == "coding --apply" {
+        if input == "coding --apply" || input == "apply" {
             return Ok(vec![PlannedPatchCandidate::single(
                 PlannedStep::ApplyPreviousCodingStep,
                 DiffPreview {
@@ -235,6 +235,24 @@ impl ReasoningPlanner for MLAALPlanner {
         let workspace_root = self.bridge.workspace_root(ctx);
         let policy = AdaptivePolicy::load(&workspace_root).unwrap_or_default();
         let candidates = self.generate_candidates(ctx)?;
+
+        // R3: "apply" / "rollback" shortcuts bypass cognitive rollout (DBM-REPL-EXEC-STABILITY-SPEC)
+        if candidates.len() == 1 {
+            let first = &candidates[0];
+            if matches!(
+                first.planned_steps[0],
+                PlannedStep::ApplyPreviousCodingStep | PlannedStep::RollbackCurrentTransaction
+            ) {
+                return Ok(PlanResult {
+                    selected_action: first.planned_steps[0].clone(),
+                    confidence: 1.0,
+                    risk_score: 0.0,
+                    compatibility_mode: true,
+                    planned_steps: first.planned_steps.clone(),
+                });
+            }
+        }
+
         let patch_candidates = candidates
             .iter()
             .map(|candidate| candidate.patch.clone())
