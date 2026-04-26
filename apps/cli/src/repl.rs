@@ -34,21 +34,20 @@ use crate::nl::autonomous::{AutonomousLoop, run_goal_loop};
 use crate::nl::goal::{detect_goal, goal_label};
 use crate::nl::planner_v2::update_conversation_after_plan;
 use crate::nl::session::ConversationState;
-use crate::nl::types::{CodingOptions as NlCodingOptions, CommandPlan, PlannedStep};
+use crate::nl::types::{CommandPlan, PlannedStep};
 use crate::nl::{
     execute_ir_plan, render_plan_summary_with_label, resolve_command_plan, to_runtime_plan,
 };
-use crate::nl_executor::run_design_command;
-use crate::planner::{PlannerMode, create_plan};
+use crate::planner::PlannerMode;
 use crate::router::{Route, route};
-use crate::service::dto::{ActionKind, SessionAppliedDiff};
+use crate::service::dto::ActionKind;
+#[cfg(test)]
+use crate::service::dto::SessionAppliedDiff;
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ExecutionResult;
 use crate::tui::composer::{ComposerAction, ComposerViewState, render_composer};
-use crate::tui::edit_block::CodingReviewReport;
 use crate::tui::proc_strip::{DONE_MIN_VISIBLE, ProcPhase, RUNNING_MIN_VISIBLE};
-use crate::tui::review_batch::ReviewBatchState;
 
 struct TerminalGuard;
 
@@ -386,7 +385,7 @@ fn global_key_action(key: KeyEvent, view: &ComposerViewState) -> Option<GlobalKe
 fn handle_review_key(
     code: KeyCode,
     session: &mut AgentSession,
-    conversation: &mut ConversationState,
+    _conversation: &mut ConversationState,
     view: &mut ComposerViewState,
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
@@ -444,22 +443,11 @@ fn handle_review_key(
             let phases = vec![ProcPhase::WritingEdit];
             run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
             if let Some(review) = view.review.as_mut() {
-                let snapshot = build_session_diff_snapshot(review);
-                let summary = if review.selected_pending_count() > 0 {
-                    review.apply_selected_batch()?
-                } else {
-                    review.apply_focused_block()?
-                };
-                if let Some(applied) = summary {
-                    view.push_transcript_line(applied);
-                    view.set_execution_result(execution_result_from_snapshot(
-                        snapshot.clone(),
-                        ExecutionResult::NoOp,
-                    ));
-                    record_ir_apply(conversation, snapshot);
-                    view.ir_state = conversation.ir_state.clone();
-                    reset_review_session(view, session);
-                }
+                let _ = review;
+                view.push_transcript_line("ERROR: Legacy path disabled".to_string());
+                view.set_execution_result(ExecutionResult::Failure {
+                    reason: "Legacy path disabled".to_string(),
+                });
             }
             Ok(true)
         }
@@ -467,21 +455,11 @@ fn handle_review_key(
             let phases = vec![ProcPhase::WritingEdit];
             run_proc_strip_only(view, &phases, redraw, sleeper, &mut || Ok(()))?;
             if let Some(review) = view.review.as_mut() {
-                let snapshot = build_session_diff_snapshot(review);
-                if let Some(summary) = review.rollback_last_batch()? {
-                    view.push_transcript_line(summary);
-                    let reason = if snapshot.is_some() {
-                        "manual_rollback"
-                    } else {
-                        "validation_failed"
-                    };
-                    view.set_execution_result(ExecutionResult::RolledBack {
-                        reason: reason.to_string(),
-                    });
-                    record_ir_rollback(conversation, snapshot);
-                    view.ir_state = conversation.ir_state.clone();
-                    reset_review_session(view, session);
-                }
+                let _ = review;
+                view.push_transcript_line("ERROR: Legacy path disabled".to_string());
+                view.set_execution_result(ExecutionResult::Failure {
+                    reason: "Legacy path disabled".to_string(),
+                });
             }
             Ok(true)
         }
@@ -603,134 +581,8 @@ fn try_execute_reviewable_coding(
     redraw: &mut dyn FnMut(&mut ComposerViewState) -> Result<(), String>,
     sleeper: &mut dyn FnMut(Duration),
 ) -> Result<Option<bool>, String> {
-    if exact_file_route_plan(input).is_some() {
-        return Ok(None);
-    }
-
-    if detect_goal(input).is_some() || !matches!(route(input), Route::Agent(_)) {
-        return Ok(None);
-    }
-
-    session.context.push(input);
-    let (command_plan, planner_label) = plan_agent_input(input, session, conversation);
-    let Some(command_plan) = command_plan else {
-        return Ok(None);
-    };
-    if !command_plan
-        .steps
-        .iter()
-        .all(|step| matches!(step, PlannedStep::Coding(_, _)))
-    {
-        return Ok(None);
-    }
-
-    let _plan_id =
-        record_plan_lifecycle(session, conversation, input, &command_plan, planner_label)?;
-
-    let mut reviews = Vec::<(CodingReviewReport, String)>::new();
-    run_proc_strip_only(view, &proc_strip_plan(input), redraw, sleeper, &mut || {
-        for step in &command_plan.steps {
-            let PlannedStep::Coding(path, options) = step else {
-                continue;
-            };
-            reviews.push((
-                run_coding_review_command(path, options)?,
-                sanitize_patch_family(input),
-            ));
-        }
-        Ok(())
-    })?;
-
-    let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
-    update_conversation_after_plan(input, &command_plan, conversation);
-    session.current_plan = Some(to_runtime_plan(&command_plan));
-    session.state = State::Completed;
-    conversation.autonomous_label = None;
-
-    let mut review_blocks = 0usize;
-    if let Some(review) = ReviewBatchState::from_coding_reports(&reviews)? {
-        review_blocks = review.blocks.len();
-        view.activate_review(review);
-    }
-    if let Some(PlannedStep::Coding(path, options)) = command_plan.steps.first() {
-        let _ = (review_blocks, options);
-        let before = conversation.ir_state.clone();
-        conversation.start_preview_transaction(path.clone());
-        let _ = persist_ir_transition(
-            &before,
-            &conversation.ir_state,
-            ActionKind::CodingPreview,
-            format!("preview {}", path.display()),
-            IRPersistenceArtifact::default(),
-        );
-    }
-    view.sync_context(
-        conversation,
-        current_branch_name(
-            session
-                .workspace_root
-                .as_deref()
-                .unwrap_or(std::path::Path::new(".")),
-        ),
-        None,
-    );
-    view.push_transcript_line(planner_summary);
-    if review_blocks > 0 {
-        if let Some(diff) = view
-            .review
-            .as_ref()
-            .and_then(|review| review.preview_diff_snapshot())
-        {
-            view.set_execution_result(execution_result_from_snapshot(
-                Some(diff),
-                ExecutionResult::NoOp,
-            ));
-        }
-        view.push_transcript_line(format!("Review ready: {review_blocks} file patch group(s)"));
-    } else {
-        view.set_execution_result(ExecutionResult::NoOp);
-    }
-    Ok(Some(false))
-}
-
-fn run_coding_review_command(
-    path: &std::path::Path,
-    options: &NlCodingOptions,
-) -> Result<CodingReviewReport, String> {
-    let path_str = path.display().to_string();
-    let is_file_target =
-        path_str.ends_with(".rs") || path_str.ends_with(".toml") || path_str.ends_with(".md");
-    let mut args = if is_file_target {
-        vec![".".to_string(), "--target".to_string(), path_str]
-    } else {
-        vec![path_str]
-    };
-    if let Some(request) = &options.request {
-        args.push("--request".to_string());
-        args.push(request.clone());
-    }
-    if options.safe {
-        args.push("--safe".to_string());
-    }
-    if options.check {
-        args.push("--check".to_string());
-    }
-    args.push("--json".to_string());
-    let output = run_design_command("coding", &args)?;
-    let json = output
-        .find('{')
-        .map(|index| &output[index..])
-        .unwrap_or(output.as_str());
-    serde_json::from_str::<CodingReviewReport>(json).map_err(|err| err.to_string())
-}
-
-fn sanitize_patch_family(input: &str) -> String {
-    let first_line = input.lines().next().unwrap_or("coding request").trim();
-    if first_line.is_empty() {
-        "coding request".to_string()
-    } else {
-        first_line.chars().take(48).collect()
-    }
+    let _ = (input, session, conversation, view, redraw, sleeper);
+    Ok(None)
 }
 
 fn append_submission_transcript(view: &mut ComposerViewState, input: &str, output: &[u8]) {
@@ -950,9 +802,15 @@ fn execute_direct_subcommand<W: Write>(
     conversation: &mut ConversationState,
     writer: &mut W,
 ) -> Result<Option<String>, String> {
+    if matches!(name, "coding" | "diff" | "check") {
+        return Ok(Some("ERROR: Unsupported operation".to_string()));
+    }
+    if name == "refactor" {
+        return Ok(Some("ERROR: ambiguous refactor request".to_string()));
+    }
     if !matches!(
         name,
-        "analyze" | "coding" | "validate" | "structure" | "rules" | "memory" | "simulate"
+        "analyze" | "apply" | "validate" | "structure" | "rules" | "memory" | "simulate"
     ) {
         return Ok(None);
     }
@@ -1004,7 +862,7 @@ fn direct_command_plan(
     let path = || PathBuf::from(args.first().cloned().unwrap_or_else(|| ".".to_string()));
     let step = match name {
         "analyze" => PlannedStep::Analyze(path()),
-        "coding" => PlannedStep::Coding(path(), NlCodingOptions::default()),
+        "apply" => PlannedStep::ApplyPreviousCodingStep,
         "validate" => PlannedStep::Validate(path()),
         "structure" => match subcommand.unwrap_or("view") {
             "edit" => PlannedStep::StructureEdit(path()),
@@ -1194,37 +1052,10 @@ fn handle_agent<W: Write>(
         return Ok(());
     }
 
-    let plan = create_plan(input, session, planner_mode);
-    if cfg!(test) {
-        record_legacy_plan_lifecycle(session, conversation, input, &plan, planner_mode.as_str())?;
-    } else {
-        log_ir_bypass_warning("execution attempted without plan_id");
-    }
-
-    // プランナーラベルとステップ数を表示
-    let planner_summary = format!(
-        "[planner: {}] {} ステップ",
-        planner_mode.as_str(),
-        plan.steps.len(),
-    );
-    emit_output(session, writer, &planner_summary)?;
-
-    if cfg!(test) {
-        session.current_plan = Some(plan);
-        session.state = State::Completed;
-        emit_output(session, writer, "[test] planner-only mode")?;
-        conversation.autonomous_label = None;
-        return Ok(());
-    }
-
-    session.current_plan = Some(plan);
     session.state = State::Error;
-    emit_output(
-        session,
-        writer,
-        "Legacy planner fallback execution is disabled. Generate an IR-compatible command plan instead.",
-    )?;
+    emit_output(session, writer, "ERROR: Unsupported operation")?;
     conversation.autonomous_label = None;
+    let _ = planner_mode;
     Ok(())
 }
 
@@ -1311,27 +1142,6 @@ fn completed_step_name(input: &str) -> Option<&'static str> {
     }
 }
 
-fn build_session_diff_snapshot(
-    review: &crate::tui::review_batch::ReviewBatchState,
-) -> Option<SessionAppliedDiff> {
-    review
-        .preview_diff_snapshot()
-        .or_else(|| review.last_batch_diff_snapshot())
-}
-
-fn execution_result_from_snapshot(
-    snapshot: Option<SessionAppliedDiff>,
-    fallback: ExecutionResult,
-) -> ExecutionResult {
-    snapshot
-        .map(|diff| ExecutionResult::Success {
-            files_changed: diff.files_changed,
-            lines_added: diff.lines_added,
-            lines_removed: diff.lines_removed,
-        })
-        .unwrap_or(fallback)
-}
-
 fn is_validate_request(input: &str) -> bool {
     input.to_lowercase().contains("validate") || input.contains("検証")
 }
@@ -1388,26 +1198,7 @@ fn record_plan_lifecycle(
     Ok(plan_id)
 }
 
-fn record_legacy_plan_lifecycle(
-    session: &AgentSession,
-    conversation: &mut ConversationState,
-    input: &str,
-    plan: &crate::plan::Plan,
-    planner_label: &str,
-) -> Result<(), String> {
-    if !ensure_ir_state_for_planning(session, conversation)? {
-        return Err("IR session_id is empty".to_string());
-    }
-    emit_intent_captured(&conversation.ir_state, input.to_string(), None)?;
-    let plan_id = crate::ir::emit_runtime_plan_proposed(
-        &conversation.ir_state,
-        plan,
-        planner_label.to_string(),
-    )?;
-    emit_plan_accepted(&conversation.ir_state, plan_id)?;
-    Ok(())
-}
-
+#[cfg(test)]
 fn record_ir_apply(conversation: &mut ConversationState, snapshot: Option<SessionAppliedDiff>) {
     let before = conversation.ir_state.clone();
     conversation.mark_transaction_applied(snapshot);
@@ -1434,6 +1225,7 @@ fn record_ir_apply(conversation: &mut ConversationState, snapshot: Option<Sessio
     );
 }
 
+#[cfg(test)]
 fn record_ir_rollback(conversation: &mut ConversationState, _snapshot: Option<SessionAppliedDiff>) {
     let before = conversation.ir_state.clone();
     conversation.rollback_current_transaction();
