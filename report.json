@@ -1,0 +1,245 @@
+{
+  "scenario": "microservice",
+  "trace": {
+    "input": {
+      "architecture": "microservice",
+      "components": [
+        "edge_api",
+        "account_service",
+        "billing_service",
+        "event_bus",
+        "ledger_store"
+      ],
+      "description": "Microservice topology with API, event, and storage boundaries",
+      "endpoints": [
+        "POST /accounts",
+        "POST /billing/charge",
+        "event:AccountCreated"
+      ],
+      "name": "microservice"
+    },
+    "knowledge": {
+      "architecture": "microservice",
+      "component_count": 5,
+      "endpoint_count": 3
+    },
+    "ir": {
+      "edges": [
+        {
+          "from": "edge_api",
+          "kind": "depends_on",
+          "to": "account_service"
+        },
+        {
+          "from": "account_service",
+          "kind": "depends_on",
+          "to": "billing_service"
+        },
+        {
+          "from": "billing_service",
+          "kind": "depends_on",
+          "to": "event_bus"
+        },
+        {
+          "from": "event_bus",
+          "kind": "depends_on",
+          "to": "ledger_store"
+        }
+      ],
+      "nodes": [
+        {
+          "id": "microservice:0",
+          "name": "edge_api",
+          "order": 0
+        },
+        {
+          "id": "microservice:1",
+          "name": "account_service",
+          "order": 1
+        },
+        {
+          "id": "microservice:2",
+          "name": "billing_service",
+          "order": 2
+        },
+        {
+          "id": "microservice:3",
+          "name": "event_bus",
+          "order": 3
+        },
+        {
+          "id": "microservice:4",
+          "name": "ledger_store",
+          "order": 4
+        }
+      ]
+    },
+    "memory": [
+      {
+        "key": "edge_api",
+        "source": "microservice"
+      },
+      {
+        "key": "account_service",
+        "source": "microservice"
+      },
+      {
+        "key": "billing_service",
+        "source": "microservice"
+      },
+      {
+        "key": "event_bus",
+        "source": "microservice"
+      },
+      {
+        "key": "ledger_store",
+        "source": "microservice"
+      }
+    ],
+    "search": [
+      {
+        "candidate": "POST /accounts",
+        "rank": 0
+      },
+      {
+        "candidate": "POST /billing/charge",
+        "rank": 1
+      },
+      {
+        "candidate": "event:AccountCreated",
+        "rank": 2
+      }
+    ],
+    "code": "// generated architecture skeleton: microservice",
+    "patch": [
+      {
+        "op": "verify",
+        "scenario": "microservice",
+        "status": "captured"
+      }
+    ]
+  },
+  "replay": {
+    "input": {
+      "architecture": "microservice",
+      "components": [
+        "edge_api",
+        "account_service",
+        "billing_service",
+        "event_bus",
+        "ledger_store"
+      ],
+      "description": "Microservice topology with API, event, and storage boundaries",
+      "endpoints": [
+        "POST /accounts",
+        "POST /billing/charge",
+        "event:AccountCreated"
+      ],
+      "name": "microservice"
+    },
+    "knowledge": {
+      "architecture": "microservice",
+      "component_count": 5,
+      "endpoint_count": 3
+    },
+    "ir": {
+      "edges": [
+        {
+          "from": "edge_api",
+          "kind": "depends_on",
+          "to": "account_service"
+        },
+        {
+          "from": "account_service",
+          "kind": "depends_on",
+          "to": "billing_service"
+        },
+        {
+          "from": "billing_service",
+          "kind": "depends_on",
+          "to": "event_bus"
+        },
+        {
+          "from": "event_bus",
+          "kind": "depends_on",
+          "to": "ledger_store"
+        }
+      ],
+      "nodes": [
+        {
+          "id": "microservice:0",
+          "name": "edge_api",
+          "order": 0
+        },
+        {
+          "id": "microservice:1",
+          "name": "account_service",
+          "order": 1
+        },
+        {
+          "id": "microservice:2",
+          "name": "billing_service",
+          "order": 2
+        },
+        {
+          "id": "microservice:3",
+          "name": "event_bus",
+          "order": 3
+        },
+        {
+          "id": "microservice:4",
+          "name": "ledger_store",
+          "order": 4
+        }
+      ]
+    },
+    "memory": [
+      {
+        "key": "edge_api",
+        "source": "microservice"
+      },
+      {
+        "key": "account_service",
+        "source": "microservice"
+      },
+      {
+        "key": "billing_service",
+        "source": "microservice"
+      },
+      {
+        "key": "event_bus",
+        "source": "microservice"
+      },
+      {
+        "key": "ledger_store",
+        "source": "microservice"
+      }
+    ],
+    "search": [
+      {
+        "candidate": "POST /accounts",
+        "rank": 0
+      },
+      {
+        "candidate": "POST /billing/charge",
+        "rank": 1
+      },
+      {
+        "candidate": "event:AccountCreated",
+        "rank": 2
+      }
+    ],
+    "code": "// generated architecture skeleton: microservice",
+    "patch": [
+      {
+        "op": "verify",
+        "scenario": "microservice",
+        "status": "captured"
+      }
+    ]
+  },
+  "report": {
+    "result": "deterministic",
+    "diff": null
+  }
+}

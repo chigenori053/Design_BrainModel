@@ -69,9 +69,14 @@ impl RepairEngine {
 
         for violation in input.report.violations {
             let fix = match violation {
-                Violation::UnresolvedImport(file) => FixAction::RemoveUnresolvedImport {
-                    line: import_line_for(&input.project, &file).unwrap_or(1),
-                    file,
+                Violation::UnresolvedImport(file) => match import_line_for(&input.project, &file) {
+                    Some(line) => FixAction::RemoveUnresolvedImport { file, line },
+                    None => FixAction::NoOp {
+                        reason: format!(
+                            "UnresolvedImport in {} has no deterministic import line",
+                            file.display()
+                        ),
+                    },
                 },
                 Violation::MissingDependency(path) => FixAction::AddMissingModule {
                     file: path.clone(),
@@ -93,6 +98,10 @@ impl RepairEngine {
         fixes.dedup();
         let is_safe = is_safe_fixes(&fixes);
         RepairPlan { fixes, is_safe }
+    }
+
+    pub fn is_safe(plan: &RepairPlan) -> bool {
+        is_safe_fixes(&plan.fixes)
     }
 
     pub fn preview(plan: &RepairPlan) -> String {
@@ -159,7 +168,7 @@ impl RepairEngine {
             match fix {
                 FixAction::RemoveUnusedImport { file, line }
                 | FixAction::RemoveUnresolvedImport { file, line } => {
-                    remove_line(file, *line)?;
+                    remove_import_line(file, *line)?;
                     manager.reload_recursive(file)?;
                     applied.push(fix.clone());
                 }
@@ -272,7 +281,7 @@ fn read_line(path: &Path, line: usize) -> Option<String> {
         .map(|line| line.to_string())
 }
 
-fn remove_line(path: &Path, line: usize) -> Result<(), String> {
+fn remove_import_line(path: &Path, line: usize) -> Result<(), String> {
     if line == 0 {
         return Err(format!("repair: invalid line 0 for {}", path.display()));
     }
@@ -282,6 +291,16 @@ fn remove_line(path: &Path, line: usize) -> Result<(), String> {
     if line > lines.len() {
         return Err(format!(
             "repair: line {line} out of range for {}",
+            path.display()
+        ));
+    }
+    let candidate = lines[line - 1].trim_start();
+    if !(candidate.starts_with("use ")
+        || candidate.starts_with("mod ")
+        || candidate.starts_with("pub mod "))
+    {
+        return Err(format!(
+            "repair: refusing to remove non-import line {}:{line}",
             path.display()
         ));
     }
@@ -416,6 +435,28 @@ mod tests {
     }
 
     #[test]
+    fn unresolved_import_without_import_line_is_noop() {
+        let file = tmp("repair_no_import_line.rs", "fn main() {}\n");
+        let mut nodes = HashMap::new();
+        nodes.insert(file.clone(), state(&file, "fn main() {}\n", false));
+        let project = ProjectIr {
+            nodes,
+            edges: Vec::new(),
+        };
+        let report = ConsistencyReport {
+            is_consistent: false,
+            violations: vec![Violation::UnresolvedImport(file.clone())],
+        };
+
+        let plan = RepairEngine::build_plan(RepairInput { project, report });
+
+        assert!(matches!(plan.fixes.as_slice(), [FixAction::NoOp { .. }]));
+        assert!(!plan.is_safe);
+        assert!(!RepairEngine::is_safe(&plan));
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
     fn safe_plan_applies_remove_import() {
         let file = tmp("repair_apply.rs", "use missing::Thing;\nfn main() {}\n");
         let mut manager = IrStateManager::new();
@@ -433,6 +474,26 @@ mod tests {
         let source = fs::read_to_string(&file).unwrap();
         assert_eq!(source, "fn main() {}\n");
         assert!(manager.is_synced(&file));
+        let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn safe_plan_refuses_to_remove_non_import_line() {
+        let file = tmp("repair_refuse_non_import.rs", "fn main() {}\n");
+        let mut manager = IrStateManager::new();
+        crate::ir_state::reload(&file, &mut manager).unwrap();
+        let plan = RepairPlan {
+            fixes: vec![FixAction::RemoveUnresolvedImport {
+                file: file.clone(),
+                line: 1,
+            }],
+            is_safe: true,
+        };
+
+        let err = RepairEngine::apply(&plan, &mut manager).unwrap_err();
+
+        assert!(err.contains("refusing to remove non-import line"));
+        assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() {}\n");
         let _ = fs::remove_file(file);
     }
 }
