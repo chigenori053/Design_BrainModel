@@ -115,6 +115,33 @@ pub struct UnifiedDiffSummary {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeIrProgram {
+    source: String,
+    imports: Vec<RustImport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RustImport {
+    line_index: usize,
+    imported_symbols: Vec<String>,
+    wildcard: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefactorRule {
+    RemoveUnusedImports,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RefactorDiffResult {
+    pub before_ir: CodeIrProgram,
+    pub after_ir: CodeIrProgram,
+    pub after_code: String,
+    pub diff: Option<String>,
+    pub removed_lines: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Edit {
     CreateInterface {
         name: String,
@@ -1727,6 +1754,202 @@ pub fn render_code_diff_lines(diff: &CodeDiff) -> Vec<String> {
         rendered.extend(hunk.lines.iter().map(render_diff_line));
     }
     rendered
+}
+
+pub fn code_to_ir_program(code: &str) -> Result<CodeIrProgram, String> {
+    Ok(CodeIrProgram {
+        source: code.to_string(),
+        imports: parse_rust_imports(code),
+    })
+}
+
+pub fn apply_refactor_rule(
+    ir: &CodeIrProgram,
+    rule: RefactorRule,
+) -> Result<CodeIrProgram, String> {
+    match rule {
+        RefactorRule::RemoveUnusedImports => {
+            let source_without_imports = ir
+                .source
+                .lines()
+                .enumerate()
+                .filter(|(index, _)| !ir.imports.iter().any(|import| import.line_index == *index))
+                .map(|(_, line)| line)
+                .collect::<Vec<_>>()
+                .join("\n");
+            let unused_import_lines = ir
+                .imports
+                .iter()
+                .filter(|import| import_is_unused(import, &source_without_imports))
+                .map(|import| import.line_index)
+                .collect::<BTreeSet<_>>();
+            code_to_ir_program(&remove_lines(&ir.source, &unused_import_lines))
+        }
+    }
+}
+
+pub fn remove_unused_imports_refactor(code: &str) -> Result<RefactorDiffResult, String> {
+    let before_ir = code_to_ir_program(code)?;
+    let after_ir = apply_refactor_rule(&before_ir, RefactorRule::RemoveUnusedImports)?;
+    let after_code = after_ir.source.clone();
+    let diff = if before_ir == after_ir || code.trim() == after_code.trim() {
+        None
+    } else {
+        let diff = generate_minimal_unified_diff(code, &after_code);
+        (!diff.trim().is_empty()).then_some(diff)
+    };
+    let removed_lines = diff
+        .as_ref()
+        .map(|diff| diff.lines().filter(|line| line.starts_with("- ")).count())
+        .unwrap_or(0);
+
+    Ok(RefactorDiffResult {
+        before_ir,
+        after_ir,
+        after_code,
+        diff,
+        removed_lines,
+    })
+}
+
+pub fn generate_minimal_unified_diff(before: &str, after: &str) -> String {
+    let before_lines = before.lines().map(ToString::to_string).collect::<Vec<_>>();
+    let after_lines = after.lines().map(ToString::to_string).collect::<Vec<_>>();
+    diff_ops(&before_lines, &after_lines)
+        .into_iter()
+        .filter_map(|op| match op {
+            UnifiedDiffOp::Remove(line) => Some(format!("- {line}")),
+            UnifiedDiffOp::Add(line) => Some(format!("+ {line}")),
+            UnifiedDiffOp::Equal(_) => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn parse_rust_imports(code: &str) -> Vec<RustImport> {
+    code.lines()
+        .enumerate()
+        .filter_map(|(line_index, line)| parse_rust_import(line_index, line))
+        .collect()
+}
+
+fn parse_rust_import(line_index: usize, line: &str) -> Option<RustImport> {
+    let trimmed = line.trim();
+    let path = trimmed
+        .strip_prefix("use ")
+        .or_else(|| trimmed.strip_prefix("pub use "))?
+        .trim_end_matches(';')
+        .trim();
+    Some(RustImport {
+        line_index,
+        imported_symbols: imported_symbols_from_use_path(path),
+        wildcard: path.ends_with("::*"),
+    })
+}
+
+fn imported_symbols_from_use_path(path: &str) -> Vec<String> {
+    if path.ends_with("::*") {
+        return Vec::new();
+    }
+    if let Some(group_start) = path.rfind('{') {
+        let group_end = path.rfind('}').unwrap_or(path.len());
+        return path[group_start + 1..group_end]
+            .split(',')
+            .filter_map(imported_symbol_from_segment)
+            .collect();
+    }
+    imported_symbol_from_segment(path).into_iter().collect()
+}
+
+fn imported_symbol_from_segment(segment: &str) -> Option<String> {
+    let trimmed = segment.trim();
+    if trimmed.is_empty() || trimmed == "self" {
+        return None;
+    }
+    let symbol = trimmed
+        .split(" as ")
+        .nth(1)
+        .or_else(|| trimmed.rsplit("::").next())
+        .unwrap_or(trimmed)
+        .trim();
+    (!symbol.is_empty() && symbol != "*").then(|| symbol.to_string())
+}
+
+fn import_is_unused(import: &RustImport, source_without_imports: &str) -> bool {
+    if import.wildcard {
+        return true;
+    }
+    !import.imported_symbols.is_empty()
+        && import
+            .imported_symbols
+            .iter()
+            .all(|symbol| !contains_rust_identifier(source_without_imports, symbol))
+}
+
+fn contains_rust_identifier(source: &str, symbol: &str) -> bool {
+    source.match_indices(symbol).any(|(index, _)| {
+        let before = source[..index].chars().next_back();
+        let after = source[index + symbol.len()..].chars().next();
+        !before.is_some_and(is_rust_identifier_char) && !after.is_some_and(is_rust_identifier_char)
+    })
+}
+
+fn is_rust_identifier_char(ch: char) -> bool {
+    ch == '_' || ch.is_ascii_alphanumeric()
+}
+
+fn remove_lines(source: &str, line_indexes: &BTreeSet<usize>) -> String {
+    let mut rendered = source
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| !line_indexes.contains(index))
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if source.ends_with('\n') {
+        rendered.push('\n');
+    }
+    rendered
+}
+
+#[cfg(test)]
+mod refactor_diff_tests {
+    use super::*;
+
+    #[test]
+    fn remove_unused_imports_deletes_unreferenced_import() {
+        let code = "use std::collections::HashMap;\n\nfn main() {}\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_ne!(result.before_ir, result.after_ir);
+        assert_eq!(
+            result.diff.as_deref(),
+            Some("- use std::collections::HashMap;")
+        );
+    }
+
+    #[test]
+    fn remove_unused_imports_keeps_referenced_import() {
+        let code =
+            "use std::collections::HashMap;\n\nfn main() {\n    let m = HashMap::new();\n}\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(result.before_ir, result.after_ir);
+        assert_eq!(result.diff, None);
+    }
+
+    #[test]
+    fn remove_unused_imports_diff_is_deterministic() {
+        let code = "use std::collections::HashMap;\n\nfn main() {}\n";
+        let diffs = (0..3)
+            .map(|_| {
+                remove_unused_imports_refactor(code)
+                    .expect("refactor")
+                    .diff
+                    .expect("diff")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(diffs[0], diffs[1]);
+        assert_eq!(diffs[1], diffs[2]);
+    }
 }
 
 pub fn render_unified_diff_excerpt(

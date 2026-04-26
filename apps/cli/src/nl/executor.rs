@@ -1,11 +1,12 @@
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use crate::coding::{
     CodeChangeSet, CodingExecutionResult, CodingOptions as ExecutionCodingOptions, DiffLine,
-    build_unified_diff_preview, create_validation_sandbox, execute_code_change_set,
-    generate_code_change_set, render_code_diff_lines,
+    RefactorRule, build_unified_diff_preview, create_validation_sandbox, execute_code_change_set,
+    generate_code_change_set, remove_unused_imports_refactor, render_code_diff_lines,
 };
 use crate::design_delta::{self, explain};
 use crate::ir::{
@@ -461,6 +462,81 @@ pub fn execute_ir_plan(
             outputs.push(format!("[step {index}] Error: {err}"));
             break;
         }
+        if let PlannedStep::Coding(path, opts) = step {
+            let rule = match resolve_refactor_rule(opts) {
+                Ok(Some(rule)) => rule,
+                Ok(None) => {
+                    let err = "ERROR: Unsupported operation".to_string();
+                    let _ = emit_step_completed(
+                        &conversation.ir_state,
+                        step_id,
+                        ExecutionStatus::Failure,
+                    );
+                    let payload = StepExecutionResultPayload {
+                        step_id,
+                        stdout: None,
+                        stderr: Some(err.clone()),
+                        structured_output: None,
+                        artifacts: Vec::new(),
+                    };
+                    let _ = emit_execution_result(&conversation.ir_state, payload.clone());
+                    record_execution_memory(&conversation.ir_state, step, index, payload);
+                    outputs.push(format!("[step {index}] {err}"));
+                    continue;
+                }
+                Err(err) => {
+                    let _ = emit_step_completed(
+                        &conversation.ir_state,
+                        step_id,
+                        ExecutionStatus::Failure,
+                    );
+                    let payload = StepExecutionResultPayload {
+                        step_id,
+                        stdout: None,
+                        stderr: Some(err.clone()),
+                        structured_output: None,
+                        artifacts: Vec::new(),
+                    };
+                    let _ = emit_execution_result(&conversation.ir_state, payload.clone());
+                    record_execution_memory(&conversation.ir_state, step, index, payload);
+                    outputs.push(format!("[step {index}] {err}"));
+                    continue;
+                }
+            };
+            let output = execute_refactor(rule, path, conversation);
+            let success = !output.starts_with("ERROR:");
+            let _ = emit_step_completed(
+                &conversation.ir_state,
+                step_id,
+                if success {
+                    ExecutionStatus::Success
+                } else {
+                    ExecutionStatus::Failure
+                },
+            );
+            let artifact = ArtifactRef {
+                artifact_kind: "code_diff".to_string(),
+                artifact_id: format!("diff:{step_id}"),
+                description: Some(format!("deterministic refactor: {}", path.display())),
+            };
+            let artifacts = if output.contains("[DIFF]") {
+                let _ = emit_artifact_produced(&conversation.ir_state, artifact.clone());
+                vec![artifact]
+            } else {
+                Vec::new()
+            };
+            let payload = StepExecutionResultPayload {
+                step_id,
+                stdout: Some(output.clone()),
+                stderr: None,
+                structured_output: None,
+                artifacts,
+            };
+            let _ = emit_execution_result(&conversation.ir_state, payload.clone());
+            record_execution_memory(&conversation.ir_state, step, index, payload);
+            outputs.push(format!("[step {index}] refactor\n{output}"));
+            continue;
+        }
         let (command, args, label, skip_exec) = to_canonical_command(step);
         let result = if skip_exec {
             Ok(String::new())
@@ -614,63 +690,157 @@ fn execute_apply_previous_coding_step(conversation: &mut ConversationState) -> S
         return "Applied: false\nReason: already applied".to_string();
     }
 
-    let Some((path, request, safe)) = last_preview_coding_context(conversation) else {
-        return "Applied: false\nReason: missing preview context".to_string();
+    let Some(diff) = tx.latest_diff_ref.clone() else {
+        return "Applied: false\nReason: no diff available".to_string();
     };
-
-    // R4: --check → --apply の deterministic 変換。canonical path / request は last_plan から再構築する。
-    let path_str = path.display().to_string();
-    let is_file_target =
-        path_str.ends_with(".rs") || path_str.ends_with(".toml") || path_str.ends_with(".md");
-    let mut args = if is_file_target {
-        vec![".".to_string(), "--target".to_string(), path_str]
-    } else {
-        vec![path_str]
-    };
-    if let Some(request) = request {
-        args.push("--request".to_string());
-        args.push(request);
+    if let Err(err) = guard_session_diff_import_only(&diff) {
+        panic!("Violation: deterministic refactor breach: {err}");
     }
-    if safe {
-        args.push("--safe".to_string());
+    if let Err(err) = apply_diff_only(&diff) {
+        return format!("Applied: false\nReason: {err}");
     }
-    args.push("--apply".to_string());
-
-    match run_design_command("coding", &args) {
-        Ok(output) => {
-            let before = conversation.ir_state.clone();
-            conversation.mark_transaction_applied(None);
-            conversation.note_target(tx.canonical_target.clone());
-            let _ = persist_ir_transition(
-                &before,
-                &conversation.ir_state,
-                crate::service::dto::ActionKind::Apply,
-                "apply_previous_coding",
-                IRPersistenceArtifact::default(),
-            );
-            format!("Applied: true\n{output}")
-        }
-        Err(err) => format!("Applied: false\nReason: {err}"),
-    }
+    let before = conversation.ir_state.clone();
+    conversation.mark_transaction_applied(Some(diff.clone()));
+    conversation.note_target(tx.canonical_target.clone());
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        crate::service::dto::ActionKind::Apply,
+        "apply_diff_only",
+        IRPersistenceArtifact {
+            diff_ref: Some(diff),
+            build_ok: None,
+            validation_ok: None,
+            rollback_checkpoint: None,
+        },
+    );
+    "Applied: true\n[STATE] diff_applied = true\n[STATE] generation_used = false".to_string()
 }
 
-fn last_preview_coding_context(
-    conversation: &ConversationState,
-) -> Option<(PathBuf, Option<String>, bool)> {
-    let step = conversation
-        .last_plan
-        .as_ref()?
-        .steps
-        .iter()
-        .rev()
-        .find_map(|step| {
-            if let PlannedStep::Coding(path, opts) = step {
-                Some((path.clone(), opts.clone()))
+fn apply_diff_only(diff: &SessionAppliedDiff) -> Result<(), String> {
+    guard_session_diff_import_only(diff)?;
+    for file in &diff.files {
+        let removals = removed_import_lines(&file.unified_diff_excerpt)?;
+        if removals.is_empty() {
+            continue;
+        }
+        let path = PathBuf::from(&file.file_path);
+        let source = fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
+        let mut remaining = removals;
+        let mut output = Vec::new();
+        for line in source.lines() {
+            if let Some(index) = remaining.iter().position(|candidate| candidate == line) {
+                remaining.remove(index);
             } else {
-                None
+                output.push(line.to_string());
             }
-        })?;
-    Some((step.0, step.1.request, step.1.safe))
+        }
+        if !remaining.is_empty() {
+            return Err(format!("diff removal line not found in {}", path.display()));
+        }
+        let mut rendered = output.join("\n");
+        if source.ends_with('\n') {
+            rendered.push('\n');
+        }
+        fs::write(&path, rendered)
+            .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    }
+    Ok(())
+}
+
+fn guard_session_diff_import_only(diff: &SessionAppliedDiff) -> Result<(), String> {
+    for file in &diff.files {
+        guard_refactor_diff_import_only(&file.unified_diff_excerpt)?;
+    }
+    Ok(())
+}
+
+fn guard_refactor_diff_import_only(diff: &str) -> Result<(), String> {
+    for line in diff.lines() {
+        let Some(body) = line.strip_prefix("- ").or_else(|| line.strip_prefix("+ ")) else {
+            continue;
+        };
+        let trimmed = body.trim();
+        if !(trimmed.starts_with("use ") || trimmed.starts_with("pub use ")) {
+            return Err(format!("non-import diff line: {body}"));
+        }
+    }
+    Ok(())
+}
+
+fn removed_import_lines(diff: &str) -> Result<Vec<String>, String> {
+    guard_refactor_diff_import_only(diff)?;
+    Ok(diff
+        .lines()
+        .filter_map(|line| line.strip_prefix("- ").map(ToString::to_string))
+        .collect())
+}
+
+fn resolve_refactor_rule(opts: &CodingOptions) -> Result<Option<RefactorRule>, String> {
+    let request = opts.request.as_deref().unwrap_or_default().to_lowercase();
+    if !request.contains("refactor") {
+        return Ok(None);
+    }
+    if request.contains("remove unused imports") || request.contains("remove unused import") {
+        return Ok(Some(RefactorRule::RemoveUnusedImports));
+    }
+    Err("ERROR: ambiguous refactor request".to_string())
+}
+
+fn execute_refactor(
+    rule: RefactorRule,
+    path: &PathBuf,
+    conversation: &mut ConversationState,
+) -> String {
+    let before_code = match fs::read_to_string(path) {
+        Ok(code) => code,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return "ERROR: target not found".to_string();
+        }
+        Err(err) => return format!("ERROR: IR generation failed: {err}"),
+    };
+    let result = match rule {
+        RefactorRule::RemoveUnusedImports => match remove_unused_imports_refactor(&before_code) {
+            Ok(result) => result,
+            Err(_) => return "ERROR: IR generation failed".to_string(),
+        },
+    };
+    let Some(diff) = result.diff else {
+        return "No changes detected.".to_string();
+    };
+    if let Err(err) = guard_refactor_diff_import_only(&diff) {
+        panic!("Violation: deterministic refactor breach: {err}");
+    }
+
+    let before = conversation.ir_state.clone();
+    conversation.start_preview_transaction(path.clone());
+    let snapshot = SessionAppliedDiff {
+        summary: format!("1 files changed, +0 -{} lines", result.removed_lines),
+        files: vec![SessionAppliedFileDiff {
+            file_path: path.display().to_string(),
+            unified_diff_excerpt: diff.clone(),
+        }],
+        files_changed: 1,
+        lines_added: 0,
+        lines_removed: result.removed_lines,
+    };
+    if let Some(tx) = conversation.active_transaction_mut() {
+        tx.latest_diff_ref = Some(snapshot.clone());
+    }
+    let _ = persist_ir_transition(
+        &before,
+        &conversation.ir_state,
+        crate::service::dto::ActionKind::Refactor,
+        format!("remove_unused_imports {}", path.display()),
+        IRPersistenceArtifact {
+            diff_ref: Some(snapshot),
+            build_ok: None,
+            validation_ok: None,
+            rollback_checkpoint: None,
+        },
+    );
+    format!("[DIFF]\n{diff}\nRESULT\nGenerated")
 }
 
 fn execute_ir_rollback(conversation: &mut ConversationState) -> String {
@@ -3329,6 +3499,141 @@ mod tests {
         emit_plan_accepted(&conversation.ir_state, plan_id).expect("accepted");
 
         let _ = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
+    }
+
+    #[test]
+    fn non_refactor_coding_step_is_unsupported() {
+        let temp = tempdir().expect("tempdir");
+        let recovered = restore_or_initialize_ir_state(temp.path()).expect("recover");
+        let path = temp.path().join("coding.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write source");
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState::default();
+        conversation.ir_state = recovered.state;
+        let plan = CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::Coding(
+                path,
+                CodingOptions {
+                    safe: true,
+                    check: true,
+                    request: Some("Add a function".to_string()),
+                },
+            )],
+        };
+        let plan_id = emit_plan_proposed(&conversation.ir_state, plan.clone(), "nl_executor_test")
+            .expect("proposed");
+        emit_plan_accepted(&conversation.ir_state, plan_id).expect("accepted");
+
+        let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation).join("\n");
+
+        assert!(output.contains("ERROR: Unsupported operation"), "{output}");
+        assert!(conversation.active_transaction().is_none());
+    }
+
+    #[test]
+    fn ambiguous_refactor_request_is_rejected_before_coding_fallback() {
+        let temp = tempdir().expect("tempdir");
+        let recovered = restore_or_initialize_ir_state(temp.path()).expect("recover");
+        let path = temp.path().join("coding.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write source");
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState::default();
+        conversation.ir_state = recovered.state;
+        let plan = CommandPlan {
+            intent: None,
+            steps: vec![PlannedStep::Coding(
+                path.clone(),
+                CodingOptions {
+                    safe: true,
+                    check: true,
+                    request: Some("Refactor coding.rs to improve logic".to_string()),
+                },
+            )],
+        };
+        let plan_id = emit_plan_proposed(&conversation.ir_state, plan.clone(), "nl_executor_test")
+            .expect("proposed");
+        emit_plan_accepted(&conversation.ir_state, plan_id).expect("accepted");
+
+        let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation).join("\n");
+
+        assert!(
+            output.contains("ERROR: ambiguous refactor request"),
+            "{output}"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read source"),
+            "fn main() {}\n"
+        );
+        assert!(conversation.active_transaction().is_none());
+    }
+
+    #[test]
+    fn apply_uses_saved_diff_only() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "use std::collections::HashMap;\n\nfn main() {}\n")
+            .expect("write source");
+        let diff = SessionAppliedDiff {
+            summary: "1 files changed, +0 -1 lines".to_string(),
+            files: vec![SessionAppliedFileDiff {
+                file_path: path.display().to_string(),
+                unified_diff_excerpt: "- use std::collections::HashMap;".to_string(),
+            }],
+            files_changed: 1,
+            lines_added: 0,
+            lines_removed: 1,
+        };
+        let mut conversation = ConversationState::default();
+        conversation.set_active_transaction(crate::service::dto::IRActiveTransaction {
+            transaction_id: "tx:main.rs".to_string(),
+            canonical_target: path.clone(),
+            pending: true,
+            applied: false,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(diff),
+            latest_build_ok: None,
+        });
+
+        let output = execute_apply_previous_coding_step(&mut conversation);
+
+        assert!(output.contains("generation_used = false"), "{output}");
+        assert_eq!(
+            std::fs::read_to_string(path).expect("read source"),
+            "\nfn main() {}\n"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "Violation: deterministic refactor breach")]
+    fn apply_panics_on_non_import_diff() {
+        let temp = tempdir().expect("tempdir");
+        let path = temp.path().join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write source");
+        let diff = SessionAppliedDiff {
+            summary: "1 files changed, +1 -0 lines".to_string(),
+            files: vec![SessionAppliedFileDiff {
+                file_path: path.display().to_string(),
+                unified_diff_excerpt: "+ fn generated() {}".to_string(),
+            }],
+            files_changed: 1,
+            lines_added: 1,
+            lines_removed: 0,
+        };
+        let mut conversation = ConversationState::default();
+        conversation.set_active_transaction(crate::service::dto::IRActiveTransaction {
+            transaction_id: "tx:main.rs".to_string(),
+            canonical_target: path,
+            pending: true,
+            applied: false,
+            validated: false,
+            rollback_available: true,
+            latest_diff_ref: Some(diff),
+            latest_build_ok: None,
+        });
+
+        let _ = execute_apply_previous_coding_step(&mut conversation);
     }
 
     #[test]
