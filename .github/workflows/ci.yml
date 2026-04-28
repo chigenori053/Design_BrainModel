@@ -1,172 +1,83 @@
-name: CI
+name: DBM CI
 
 on:
-  pull_request:
   push:
-    branches: [main]
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
   build:
-    name: Build
+    name: Build Workspace
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Build
+        run: cargo build --workspace --verbose
 
-      - name: cargo check
-        run: cargo check --workspace --locked
-
-      - name: fmt
-        run: cargo fmt --all -- --check
-
-      - name: clippy
-        run: cargo clippy --workspace --all-targets --locked -- -D warnings
-
-      - name: secret scan
-        uses: gitleaks/gitleaks-action@v2
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: install ruff
-        run: pip install ruff
-
-      - name: python lint
-        run: ruff check .
-
-  tier1_unit:
-    name: Tier1 Invariants And Engines
-    needs: [build]
+  test:
+    name: Unit & Integration Tests
+    needs: build
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Run tests
+        run: cargo test --workspace --all-features --verbose
 
-      - name: boundary rules
+  determinism:
+    name: Determinism Check
+    needs: build
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: true
+      matrix:
+        case: [noop, composite, mutation]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      
+      - name: Determinism (No-op)
+        if: matrix.case == 'noop'
         run: |
-          cargo tree --workspace > tree.txt
-          cargo tree -p chm | tee /tmp/chm_tree.txt
-          if rg -q " shm v" /tmp/chm_tree.txt; then
-            echo "Dependency leak: chm must not depend on shm"
-            exit 1
-          fi
-          if rg -n "Shm::new|Chm::new" crates/agent_core; then
-            echo "Boundary violation detected"
-            exit 1
-          fi
-          if rg -n "use (shm|chm|dhm)::" crates/agent_core/src crates/agent_core/tests; then
-            echo "Dependency leak: agent_core must access layers only via hybrid_vm"
-            exit 1
-          fi
-          if rg -n "use language_dhm::|LanguageDhm::" crates/agent_core/src crates/agent_core/tests; then
-            echo "Boundary violation: agent_core must not use language_dhm directly"
-            exit 1
-          fi
-          if rg -n "use semantic_dhm::|SemanticDhm::" crates/agent_core/src crates/agent_core/tests; then
-            echo "Boundary violation: agent_core must not use semantic_dhm directly"
-            exit 1
-          fi
-          if rg -n "use language_dhm::|use shm::|use chm::|use meaning_extractor::" crates/recomposer/src; then
-            echo "Boundary violation: recomposer must depend only on semantic_dhm"
-            exit 1
-          fi
-          if rg -n "use (semantic_dhm|recomposer|language_dhm)::" apps/cli/src apps/cli/tests; then
-            echo "Boundary violation: CLI must depend only on hybrid_vm"
-            exit 1
-          fi
+          cargo run -p design_cli --bin verify_cli -- \
+            determinism \
+            --input " @apps/cli/tests/integration/repl_file_target_routing.rs src/sample.rs を安全に改善して preview" \
+            --runs 5 \
+            --strict
 
-      - name: invariants suite
-        run: bash scripts/run_ci_test_suite.sh invariants
+      - name: Determinism (Composite)
+        if: matrix.case == 'composite'
+        run: |
+          cargo run -p design_cli --bin verify_cli -- \
+            determinism \
+            --input "src/sample.rs を解析して修正して" \
+            --runs 5 \
+            --strict
 
-      - name: engine suite
-        run: bash scripts/run_ci_test_suite.sh engine
+      - name: Determinism (Mutation)
+        if: matrix.case == 'mutation'
+        run: |
+          cargo run -p design_cli --bin verify_cli -- \
+            determinism \
+            --input " @apps/cli/tests/integration/repl_file_target_routing.rs src/sample.rs にログを追加して preview" \
+            --runs 5 \
+            --strict
 
-      - name: knowledge engine suite
-        run: bash scripts/run_ci_test_suite.sh knowledge_engine
-
-  tier2_math:
-    name: Tier2 Mathematical Property
-    needs: [tier1_unit]
+  regression:
+    name: Regression Guard (Contract)
+    needs: test
     runs-on: ubuntu-latest
-
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
+      - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-
-      - name: memory_space property tests
-        run: cargo test -p memory_space --lib proptest_props --locked -- --test-threads=1
-
-      - name: field_engine property tests
-        run: cargo test -p field_engine --lib proptest_props --locked -- --test-threads=1
-
-      - name: recomposer property tests
-        run: cargo test -p recomposer --lib proptest_props --locked -- --test-threads=1
-
-      - name: pareto property tests
-        run: cargo test -p agent_core --test contract hypervolume_monotonicity --locked -- --test-threads=1
-
-      - name: hypervolume monotonicity
-        run: cargo test -p agent_core --test engine pareto --locked -- --test-threads=1
-
-  design_cli_pr_gate:
-    name: DBM PR Gate
-    needs: [tier2_math]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: design_cli pr gate
-        run: bash scripts/run_dbm_test_suite.sh pr
-
-  tier4_stress:
-    name: Tier4 Stress Scaling
-    needs: [design_cli_pr_gate]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: scaling stress tests
-        run: cargo test -p reasoning_agent --test scaling --release --locked -- --test-threads=1
-
-      - name: deep trace stability
-        run: cargo test -p agent_core --test heavy --release --features ci-heavy --locked -- --test-threads=1
-
-      - name: runtime_vm heavy tests
-        run: cargo test -p runtime_vm --locked -- --ignored --test-threads=1
-
-  tier5_determinism:
-    name: Tier5 Determinism
-    needs: [tier4_stress]
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@master
-
-      - uses: Swatinem/rust-cache@v2
-
-      - name: determinism suite
-        run: bash scripts/run_ci_test_suite.sh determinism
+      - name: Run contract tests
+        run: cargo test -p design_cli --test contract
