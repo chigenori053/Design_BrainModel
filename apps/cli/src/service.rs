@@ -383,7 +383,7 @@ fn build_analysis_report(
             .map(|module| AnalysisModule {
                 name: module.name.clone(),
                 file_count: module.files.len(),
-                source_path: module.files.iter().min().cloned().unwrap_or_default(),
+                source_path: select_primary_source(&module.name, &module.files).unwrap_or_default(),
             })
             .collect(),
         graph_nodes: build_graph_nodes(root, project),
@@ -429,6 +429,23 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
     let mut logical_names = BTreeSet::new();
     for module in &project.modules {
         logical_names.insert(module.name.clone());
+        if let Some(source) = select_primary_source(&module.name, &module.files)
+            && let Some(stem) = Path::new(&source)
+                .file_stem()
+                .and_then(|stem| stem.to_str())
+            && !matches!(stem, "lib" | "main" | "mod")
+        {
+            logical_names.insert(stem.to_string());
+        }
+    }
+    for file in &project.files {
+        if let Some(stem) = Path::new(&file.path)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            && !matches!(stem, "lib" | "main" | "mod")
+        {
+            logical_names.insert(stem.to_string());
+        }
     }
     for dependency in &project.dependencies {
         logical_names.insert(dependency.from.clone());
@@ -464,6 +481,22 @@ fn build_graph_nodes(root: &Path, project: &ProjectAnalysisResult) -> Vec<Module
         }
     });
     graph_nodes.into_values().collect()
+}
+
+fn select_primary_source(logical_name: &str, files: &[String]) -> Option<String> {
+    let mut sorted = files.to_vec();
+    sorted.sort();
+    sorted.dedup();
+    sorted
+        .iter()
+        .find(|path| {
+            Path::new(path)
+                .file_stem()
+                .map(|stem| stem.to_string_lossy() == logical_name)
+                .unwrap_or(false)
+        })
+        .cloned()
+        .or_else(|| sorted.into_iter().next())
 }
 
 fn analyze_code_issues(root: &Path, project: &ProjectAnalysisResult) -> Vec<CodeIssue> {
@@ -612,7 +645,9 @@ fn snippet_for_line(lines: &[&str], line_index: usize) -> String {
 fn collect_manifests(root: &Path) -> Result<Vec<String>, String> {
     let mut files = Vec::new();
     collect_paths(root, &mut files)?;
-    Ok(files
+    files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    files.dedup();
+    let mut manifests = files
         .iter()
         .filter(|path| {
             path.file_name()
@@ -621,7 +656,10 @@ fn collect_manifests(root: &Path) -> Result<Vec<String>, String> {
                 .unwrap_or(false)
         })
         .map(|path| relativize(root, path))
-        .collect())
+        .collect::<Vec<_>>();
+    manifests.sort();
+    manifests.dedup();
+    Ok(manifests)
 }
 
 fn collect_top_level_entries(root: &Path) -> Result<Vec<String>, String> {
@@ -687,6 +725,8 @@ fn collect_paths(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
             files.push(path);
         }
     }
+    files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    files.dedup();
     Ok(())
 }
 

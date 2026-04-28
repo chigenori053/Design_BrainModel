@@ -277,8 +277,9 @@ pub(super) struct GitExecutor;
 impl GitExecutor {
     pub(super) fn classify(args: &[&str]) -> CommandType {
         match args {
-            ["status"] | ["diff"] | ["branch"] => CommandType::SafeRead,
-            ["log", "--oneline"] => CommandType::SafeRead,
+            ["status"] | ["status", "--porcelain"] | ["diff"] | ["branch"] => CommandType::SafeRead,
+            ["diff", "--", path] if is_explicit_single_file(path) => CommandType::SafeRead,
+            ["log"] | ["log", "--oneline"] => CommandType::SafeRead,
             ["checkout", "-b", branch] if is_auto_fix_branch(branch) => CommandType::SafeWrite,
             ["add", path] if is_explicit_single_file(path) => CommandType::SafeWrite,
             ["commit", "-m", message] if is_valid_commit_message(message) => CommandType::SafeWrite,
@@ -410,10 +411,10 @@ impl GitExecutor {
         {
             return Ok(Some("git_conflict_detected".to_string()));
         }
-        if let Some(branch) = Self::current_branch(root)? {
-            if is_protected_branch(&branch) {
-                return Ok(Some("protected_branch_checked_out".to_string()));
-            }
+        if let Some(branch) = Self::current_branch(root)?
+            && is_protected_branch(&branch)
+        {
+            return Ok(Some("protected_branch_checked_out".to_string()));
         }
         Ok(None)
     }
@@ -736,4 +737,37 @@ pub(super) fn is_auto_fix_branch(branch: &str) -> bool {
         && branch
             .strip_prefix("dbm/auto-fix/")
             .is_some_and(|suffix| !suffix.trim().is_empty())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn git_command_classification_matches_local_phase_policy() {
+        assert_eq!(GitExecutor::classify(&["status"]), CommandType::SafeRead);
+        assert_eq!(GitExecutor::classify(&["diff"]), CommandType::SafeRead);
+        assert_eq!(
+            GitExecutor::classify(&["diff", "--", "apps/cli/src/lib.rs"]),
+            CommandType::SafeRead
+        );
+        assert_eq!(GitExecutor::classify(&["log"]), CommandType::SafeRead);
+        assert_eq!(
+            GitExecutor::classify(&["log", "--oneline"]),
+            CommandType::SafeRead
+        );
+        assert_eq!(
+            GitExecutor::classify(&["add", "apps/cli/src/lib.rs"]),
+            CommandType::SafeWrite
+        );
+        assert_eq!(
+            GitExecutor::classify(&["commit", "-m", "auto fix"]),
+            CommandType::SafeWrite
+        );
+        assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Dangerous);
+        assert_eq!(
+            GitExecutor::classify(&["commit", "-m", "custom"]),
+            CommandType::Dangerous
+        );
+    }
 }

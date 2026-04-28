@@ -14,16 +14,13 @@ use crate::nl::r#loop::{
     RetryEvaluator,
 };
 use crate::session::AgentSession;
-use crate::viewer::{
-    Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3, ViewerSelection,
-};
 
 use super::convergence::{ConvergenceMetrics, goal_reached};
-use super::executor::{describe_plan_labels, execute_ir_plan};
+use super::executor::execute_ir_plan;
 use super::goal::{GoalType, goal_label};
 use super::planner_v2::update_conversation_after_plan;
 use super::session::ConversationState;
-use super::types::{CodingOptions, CommandPlan, PlannedStep};
+use super::types::{CodingOptions, CommandPlan, ExecutionPlan, PlannedStep};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AutonomousLoop {
@@ -248,17 +245,22 @@ pub fn run_goal_loop(
 
     for iteration in 1..=config.max_iterations {
         let before = estimate_before(goal, iteration);
-        let plan = build_goal_plan(goal, &last_target, iteration);
+        let goal_steps = build_goal_steps(goal, &last_target, iteration);
+        let primary_exec_plan = goal_steps
+            .first()
+            .cloned()
+            .map(ExecutionPlan::from)
+            .unwrap_or_else(ExecutionPlan::noop);
         let mut accepted_plan_id = None;
         if !conversation.ir_state.session_id.is_empty() {
             let _ = emit_intent_captured(
                 &conversation.ir_state,
                 format!("autonomous:{}:iteration:{iteration}", goal_label(goal)),
-                plan.intent.clone(),
+                None,
             );
             if let Ok(plan_id) = emit_plan_proposed(
                 &conversation.ir_state,
-                plan.clone(),
+                CommandPlan::from(&primary_exec_plan),
                 format!("autonomous:{}", goal_label(goal)),
             ) {
                 let _ = emit_plan_accepted(&conversation.ir_state, plan_id);
@@ -266,22 +268,14 @@ pub fn run_goal_loop(
             }
         }
         conversation.last_accepted_plan_id = accepted_plan_id;
-        conversation.last_plan = Some(plan.clone());
-        update_conversation_after_plan(goal_label(goal), &plan, conversation);
+        conversation.last_plan = Some(primary_exec_plan.clone());
+        update_conversation_after_plan(goal_label(goal), &primary_exec_plan, conversation);
         outputs.push(format!("iteration {iteration}/{}", config.max_iterations));
-        outputs.extend(describe_plan_labels(&plan));
-        for step in &plan.steps {
+        for step in &goal_steps {
+            let exec_plan = ExecutionPlan::from(step.clone());
             let plan_id = accepted_plan_id
                 .expect("Forbidden: direct execution path. Use IR-based execution.");
-            outputs.extend(execute_ir_plan(
-                plan_id,
-                &CommandPlan {
-                    intent: None,
-                    steps: vec![step.clone()],
-                },
-                session,
-                conversation,
-            ));
+            outputs.extend(execute_ir_plan(plan_id, &exec_plan, session, conversation));
 
             match maybe_promote_step(step, conversation) {
                 Ok(Some(outcome)) => {
@@ -370,7 +364,7 @@ fn maybe_promote_step(
                 &mut controller,
             )
         }
-        PlannedStep::Coding(_, _) => {
+        PlannedStep::Refactor(_) => {
             let Some(tx) = conversation.active_transaction().cloned() else {
                 return Ok(None);
             };
@@ -397,48 +391,6 @@ fn maybe_promote_step(
                     rollback_count: 0,
                 },
                 Some(LoopOrigin::Coding),
-                &mut controller,
-            )
-        }
-        PlannedStep::Validate(_) => Ok(None),
-        PlannedStep::StructureDiff(path, node) => {
-            let Some(node_id) = node.clone() else {
-                return Ok(None);
-            };
-            let mut controller = RepairLoopController::new(
-                RetryEvaluator::retry_policy_for_origin(LoopOrigin::Structure),
-            );
-            maybe_promote_with_origin(
-                StructureViewIR {
-                    selection: ViewerSelection {
-                        selected_nodes: vec![node_id.clone()],
-                        selected_edges: Vec::new(),
-                        selection_mode: "node".to_string(),
-                    },
-                    scene_3d: Some(Structure3DIr {
-                        graph: SemanticGraph3D {
-                            nodes: vec![Node3D {
-                                id: node_id.clone(),
-                                label: node_id,
-                                kind: "module".to_string(),
-                                position: Vec3::default(),
-                                size: 1.0,
-                                importance: 1.0,
-                                heat: 0.0,
-                                source_binding: Some(SourceBinding {
-                                    file: path.clone(),
-                                    line_start: 1,
-                                    line_end: 1,
-                                    symbol: None,
-                                }),
-                            }],
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    }),
-                    ..Default::default()
-                },
-                Some(LoopOrigin::Structure),
                 &mut controller,
             )
         }
@@ -795,7 +747,11 @@ pub fn write_nightly_optimization_report(
     Ok(path)
 }
 
-fn build_goal_plan(goal: GoalType, target: &std::path::Path, iteration: usize) -> CommandPlan {
+fn build_goal_steps(
+    goal: GoalType,
+    target: &std::path::Path,
+    iteration: usize,
+) -> Vec<PlannedStep> {
     let path = target.to_path_buf();
     let mut steps = match goal {
         GoalType::EliminateCycles => vec![
@@ -830,10 +786,7 @@ fn build_goal_plan(goal: GoalType, target: &std::path::Path, iteration: usize) -
         steps.push(PlannedStep::GitPR(path));
     }
 
-    CommandPlan {
-        intent: None,
-        steps,
-    }
+    steps
 }
 
 fn estimate_before(goal: GoalType, iteration: usize) -> f32 {
@@ -914,6 +867,10 @@ mod tests {
     use crate::nl::r#loop::{PatchStrategy, RepairTrajectory, ReplLoopState, RetryPolicy};
     use crate::refactor::ValidationResult;
     use crate::test_support::ir_assert::{assert_plan_accepted, assert_plan_proposed};
+    use crate::viewer::{
+        Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3,
+        ViewerSelection,
+    };
     use tempfile::tempdir;
 
     #[test]

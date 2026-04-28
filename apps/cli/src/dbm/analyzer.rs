@@ -12,6 +12,8 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::Path;
 
+type ProjectFileRecord = (FileAnalysis, Vec<(String, bool)>, bool);
+
 // ─── 言語 ────────────────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
@@ -226,7 +228,7 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
     let paths = scan_directory(root)?;
 
     // 2. 各ファイル解析（相対パス + 依存抽出）
-    let mut records: Vec<(FileAnalysis, Vec<(String, bool)>, bool)> = vec![];
+    let mut records: Vec<ProjectFileRecord> = vec![];
     for path in &paths {
         if let Some(record) = analyze_file_project(path, root) {
             records.push(record);
@@ -264,6 +266,8 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
 pub fn scan_directory(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {
     let mut files = Vec::new();
     collect_supported_files(root, &mut files)?;
+    files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
+    files.dedup();
     files.truncate(MAX_FILES);
     Ok(files)
 }
@@ -310,10 +314,7 @@ fn is_supported_extension(path: &Path) -> bool {
 }
 
 /// 1ファイルを解析して (FileAnalysis, raw_deps_with_interface_flag) を返す
-fn analyze_file_project(
-    path: &Path,
-    root: &Path,
-) -> Option<(FileAnalysis, Vec<(String, bool)>, bool)> {
+fn analyze_file_project(path: &Path, root: &Path) -> Option<ProjectFileRecord> {
     let ext = path.extension()?.to_str()?;
     let language = Language::from_extension(ext)?;
 
@@ -395,20 +396,21 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<(String, 
                 }
             }
             Language::TypeScript => {
-                if trimmed.starts_with("import ") && trimmed.contains(" from ") {
-                    if let Some(from_part) = trimmed.split(" from ").nth(1) {
-                        let module_path = from_part
-                            .trim()
-                            .trim_end_matches(';')
-                            .trim_matches('"')
-                            .trim_matches('\'');
-                        if module_path.starts_with("./") || module_path.starts_with("../") {
-                            let is_interface = path_declares_mediation(module_path);
-                            if let Some(last) = module_path.split('/').last() {
-                                let name = last.trim_end_matches(".ts").trim_end_matches(".tsx");
-                                if !name.is_empty() && name != "index" {
-                                    deps.push((name.to_string(), is_interface));
-                                }
+                if trimmed.starts_with("import ")
+                    && trimmed.contains(" from ")
+                    && let Some(from_part) = trimmed.split(" from ").nth(1)
+                {
+                    let module_path = from_part
+                        .trim()
+                        .trim_end_matches(';')
+                        .trim_matches('"')
+                        .trim_matches('\'');
+                    if module_path.starts_with("./") || module_path.starts_with("../") {
+                        let is_interface = path_declares_mediation(module_path);
+                        if let Some(last) = module_path.split('/').next_back() {
+                            let name = last.trim_end_matches(".ts").trim_end_matches(".tsx");
+                            if !name.is_empty() && name != "index" {
+                                deps.push((name.to_string(), is_interface));
                             }
                         }
                     }
@@ -418,10 +420,10 @@ pub fn extract_dependencies(content: &str, language: &Language) -> Vec<(String, 
                 let path = trimmed.trim_matches('"');
                 if !path.contains(' ') && path.contains('/') {
                     let is_interface = path_declares_mediation(path);
-                    if let Some(last) = path.split('/').last() {
-                        if !last.is_empty() {
-                            deps.push((last.to_string(), is_interface));
-                        }
+                    if let Some(last) = path.split('/').next_back()
+                        && !last.is_empty()
+                    {
+                        deps.push((last.to_string(), is_interface));
                     }
                 }
             }
@@ -472,13 +474,17 @@ fn group_modules(files: &[FileAnalysis]) -> Vec<Module> {
 
     groups
         .into_iter()
-        .map(|(name, files)| Module { name, files })
+        .map(|(name, mut files)| {
+            files.sort();
+            files.dedup();
+            Module { name, files }
+        })
         .collect()
 }
 
 /// ファイルごとの依存情報からモジュール間エッジを構築する
 fn build_dependency_edges(
-    records: &[(FileAnalysis, Vec<(String, bool)>, bool)],
+    records: &[ProjectFileRecord],
     known_modules: &BTreeSet<String>,
     mediated_modules: &BTreeSet<String>,
     dual_boundary_pairs: &BTreeSet<(String, String)>,
@@ -536,16 +542,16 @@ fn build_dependency_edges(
 }
 
 fn collect_mediated_modules(
-    records: &[(FileAnalysis, Vec<(String, bool)>, bool)],
+    records: &[ProjectFileRecord],
     known_modules: &BTreeSet<String>,
 ) -> BTreeSet<String> {
     let mut mediated = BTreeSet::new();
     for (file, _, is_mediated_source) in records {
         let module_name = module_name_from_relative_path(&file.path);
-        if *is_mediated_source || is_mediated_module_name(&module_name) {
-            if known_modules.contains(&module_name) {
-                mediated.insert(module_name);
-            }
+        if (*is_mediated_source || is_mediated_module_name(&module_name))
+            && known_modules.contains(&module_name)
+        {
+            mediated.insert(module_name);
         }
     }
     mediated

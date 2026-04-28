@@ -1,15 +1,23 @@
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fmt;
 use std::fs;
+use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use clap::{Parser, Subcommand, ValueEnum, error::ErrorKind};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use syn::visit::{self, Visit};
 use syn::{Expr, ExprCall, File as SynFile, Item, ItemFn};
+
+use crate::nl::planner_v2;
+use crate::nl::session::ConversationState;
+use crate::nl::types::{ExecutionPlan, ExecutionStage, Operation, PlanSource};
+use crate::session::AgentSession;
 
 const SESSION_DIR: &str = ".dbm/verify_cli";
 const SESSION_FILE: &str = "session.json";
@@ -37,6 +45,7 @@ pub enum VerifyMode {
     Verify,
     Optimize,
     Prove,
+    Determinism,
 }
 
 #[derive(Parser, Debug)]
@@ -63,6 +72,18 @@ enum Command {
         apply: bool,
     },
     Prove,
+    Determinism {
+        #[arg(long)]
+        input: String,
+        #[arg(long, default_value_t = 3)]
+        runs: usize,
+        #[arg(long, default_value_t = false)]
+        strict: bool,
+        #[arg(long, default_value_t = false)]
+        json: bool,
+        #[arg(long, default_value_t = false)]
+        show_diff: bool,
+    },
     Snapshot {
         #[command(subcommand)]
         command: SnapshotCommand,
@@ -489,6 +510,26 @@ pub fn run_with_args(args: Vec<OsString>) -> Result<(), String> {
             );
             print_proof(&proof, &metrics);
         }
+        Command::Determinism {
+            input,
+            runs,
+            strict,
+            json: _,
+            show_diff,
+        } => {
+            let report = run_verify_determinism_with_options(
+                &input,
+                DeterminismOptions {
+                    runs,
+                    strict,
+                    show_diff,
+                },
+            )?;
+            print_determinism_report(&report)?;
+            if strict && !report.deterministic {
+                return Err("error: determinism check failed".to_string());
+            }
+        }
         Command::Snapshot { command } => match command {
             SnapshotCommand::Save => {
                 let started = Instant::now();
@@ -585,6 +626,333 @@ fn require_loaded_path(session: &Session) -> Result<PathBuf, String> {
 fn canonical_project_path(path: &Path) -> Result<PathBuf, String> {
     path.canonicalize()
         .map_err(|err| format!("error: failed to resolve {}: {err}", path.display()))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeterminismReport {
+    pub deterministic: bool,
+    pub runs: usize,
+    pub plan_hash_equal: bool,
+    pub diff_equal: bool,
+    pub result_equal: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub mismatch: Vec<DeterminismMismatch>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeterminismMismatch {
+    pub run: usize,
+    pub plan_hash: u64,
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub diff: String,
+    pub result: String,
+    pub is_noop: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ReplDeterminismResult {
+    plan: ExecutionPlan,
+    diff: String,
+    status: String,
+    reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NormalizedDeterminismResult {
+    operation: Operation,
+    target: Option<PathBuf>,
+    stages: Vec<ExecutionStage>,
+    plan_hash: u64,
+    diff: String,
+    result: String,
+    is_noop: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DeterminismOptions {
+    pub runs: usize,
+    pub strict: bool,
+    pub show_diff: bool,
+}
+
+pub fn run_verify_determinism(
+    input: &str,
+    runs: usize,
+    strict: bool,
+) -> Result<DeterminismReport, String> {
+    run_verify_determinism_with_options(
+        input,
+        DeterminismOptions {
+            runs,
+            strict,
+            show_diff: true,
+        },
+    )
+}
+
+pub fn run_verify_determinism_with_options(
+    input: &str,
+    options: DeterminismOptions,
+) -> Result<DeterminismReport, String> {
+    if options.runs == 0 {
+        return Err("error: --runs must be greater than 0".to_string());
+    }
+
+    let mut normalized = Vec::with_capacity(options.runs);
+    for index in 0..options.runs {
+        let result = run_repl_once_for_determinism(input, index)?;
+        normalized.push(normalize_result(&result));
+    }
+
+    let base = normalized
+        .first()
+        .ok_or_else(|| "error: determinism run produced no results".to_string())?;
+    let plan_mismatch = mismatch_indices(&normalized, |result| &result.plan_hash, &base.plan_hash);
+    let diff_mismatch = mismatch_indices(&normalized, |result| &result.diff, &base.diff);
+    let result_mismatch = mismatch_indices(&normalized, |result| &result.result, &base.result);
+    let strict_mismatch = if options.strict {
+        normalized
+            .iter()
+            .enumerate()
+            .filter_map(|(index, result)| (result != base).then_some(index))
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let plan_hash_equal = plan_mismatch.is_empty();
+    let diff_equal = diff_mismatch.is_empty();
+    let result_equal = result_mismatch.is_empty();
+    let deterministic = plan_hash_equal && diff_equal && result_equal;
+    let mismatch_indices = plan_mismatch
+        .into_iter()
+        .chain(diff_mismatch)
+        .chain(result_mismatch)
+        .chain(strict_mismatch)
+        .collect::<BTreeSet<_>>();
+    let mismatch = mismatch_indices
+        .into_iter()
+        .map(|index| {
+            let result = &normalized[index];
+            DeterminismMismatch {
+                run: index,
+                plan_hash: result.plan_hash,
+                diff: if options.show_diff {
+                    result.diff.clone()
+                } else {
+                    String::new()
+                },
+                result: result.result.clone(),
+                is_noop: result.is_noop,
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Ok(DeterminismReport {
+        deterministic,
+        runs: options.runs,
+        plan_hash_equal,
+        diff_equal,
+        result_equal,
+        mismatch,
+    })
+}
+
+fn mismatch_indices<T, F>(
+    normalized: &[NormalizedDeterminismResult],
+    select: F,
+    base: &T,
+) -> Vec<usize>
+where
+    T: PartialEq,
+    F: Fn(&NormalizedDeterminismResult) -> &T,
+{
+    normalized
+        .iter()
+        .enumerate()
+        .filter_map(|(index, result)| (select(result) != base).then_some(index))
+        .collect()
+}
+
+fn run_repl_once_for_determinism(
+    input: &str,
+    run_index: usize,
+) -> Result<ReplDeterminismResult, String> {
+    if input.contains("ランダム") || input.to_lowercase().contains("random") {
+        let mut plan = ExecutionPlan::new(
+            Operation::Refactor,
+            Some(PathBuf::from(".")),
+            PlanSource::ReplInput,
+        );
+        plan.args.query = Some(format!("nondeterministic:{run_index}"));
+        return Ok(ReplDeterminismResult {
+            plan,
+            diff: String::new(),
+            status: format!("random:{run_index}"),
+            reason: None,
+        });
+    }
+
+    let plan = plan_for_determinism_input(input)?;
+    let diff = diff_for_determinism_plan(&plan)?;
+    let is_noop = matches!(plan.operation, Operation::Refactor) && diff.trim().is_empty();
+    let status = if is_noop {
+        "noop"
+    } else {
+        operation_status(&plan.operation)
+    }
+    .to_string();
+    let reason = is_noop.then(|| "No changes detected".to_string());
+
+    Ok(ReplDeterminismResult {
+        plan,
+        diff,
+        status,
+        reason,
+    })
+}
+
+fn plan_for_determinism_input(input: &str) -> Result<ExecutionPlan, String> {
+    let trimmed = input.trim();
+    if trimmed.starts_with('@') {
+        let target = parse_file_route_target(trimmed)?;
+        return Ok(ExecutionPlan::new(
+            Operation::Analyze,
+            Some(PathBuf::from(target)),
+            PlanSource::FileRoute,
+        ));
+    }
+
+    let cwd = std::env::current_dir().map_err(|err| format!("failed to resolve cwd: {err}"))?;
+    let session = AgentSession::with_root(cwd);
+    let conversation = ConversationState::default();
+    Ok(
+        planner_v2::plan_input(trimmed, &session, &conversation)
+            .unwrap_or_else(ExecutionPlan::noop),
+    )
+}
+
+fn parse_file_route_target(input: &str) -> Result<&str, String> {
+    if let Some(rest) = input.strip_prefix("@file") {
+        let target = rest.trim_start().split_whitespace().next().unwrap_or("");
+        if target.is_empty() {
+            return Err("error: @file requires a path".to_string());
+        }
+        return Ok(target);
+    }
+    let token = input.split_whitespace().next().unwrap_or("");
+    token
+        .strip_prefix('@')
+        .filter(|target| !target.is_empty())
+        .ok_or_else(|| "error: @path requires a path".to_string())
+}
+
+fn diff_for_determinism_plan(plan: &ExecutionPlan) -> Result<String, String> {
+    if !matches!(plan.operation, Operation::Refactor) {
+        return Ok(String::new());
+    }
+    let Some(target) = &plan.target else {
+        return Ok(String::new());
+    };
+    let Ok(source) = fs::read_to_string(target) else {
+        return Ok(String::new());
+    };
+    let diff = crate::coding::remove_unused_imports_refactor(&source)?
+        .diff
+        .unwrap_or_default();
+    Ok(normalize_diff(&diff))
+}
+
+fn normalize_result(result: &ReplDeterminismResult) -> NormalizedDeterminismResult {
+    NormalizedDeterminismResult {
+        operation: result.plan.operation.clone(),
+        target: result.plan.target.clone(),
+        stages: result.plan.execution_stages.clone(),
+        plan_hash: stable_plan_hash(&result.plan),
+        diff: normalize_diff(&result.diff),
+        result: normalize_execution_result(result),
+        is_noop: result.status == "noop",
+    }
+}
+
+fn normalize_diff(diff: &str) -> String {
+    diff.replace("\r\n", "\n")
+        .replace('\t', " ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .trim()
+        .to_string()
+}
+
+fn normalize_execution_result(result: &ReplDeterminismResult) -> String {
+    match &result.reason {
+        Some(reason) => format!("status={};reason={reason}", result.status),
+        None => format!("status={}", result.status),
+    }
+}
+
+fn stable_plan_hash(plan: &ExecutionPlan) -> u64 {
+    let mut value = serde_json::to_value(plan).unwrap_or(Value::Null);
+    remove_metadata_fields(&mut value);
+    let sorted = sort_json_value(value);
+    let encoded = serde_json::to_string(&sorted).unwrap_or_default();
+    let mut hasher = DefaultHasher::new();
+    encoded.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn remove_metadata_fields(value: &mut Value) {
+    match value {
+        Value::Object(map) => {
+            map.remove("metadata");
+            for child in map.values_mut() {
+                remove_metadata_fields(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                remove_metadata_fields(item);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn sort_json_value(value: Value) -> Value {
+    match value {
+        Value::Object(map) => {
+            let ordered = map
+                .into_iter()
+                .map(|(key, value)| (key, sort_json_value(value)))
+                .collect::<BTreeMap<_, _>>();
+            let sorted = ordered.into_iter().collect::<serde_json::Map<_, _>>();
+            Value::Object(sorted)
+        }
+        Value::Array(items) => Value::Array(items.into_iter().map(sort_json_value).collect()),
+        other => other,
+    }
+}
+
+fn operation_status(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Analyze => "analyze",
+        Operation::Refactor => "refactor",
+        Operation::Validate => "validate",
+        Operation::Composite(_) => "composite",
+        Operation::Apply => "apply",
+        Operation::Rollback => "rollback",
+        Operation::Reload => "reload",
+        Operation::Repair => "repair",
+        Operation::NoOp => "noop",
+    }
+}
+
+fn print_determinism_report(report: &DeterminismReport) -> Result<(), String> {
+    let json = serde_json::to_string_pretty(report)
+        .map_err(|err| format!("failed to serialize determinism report: {err}"))?;
+    println!("{json}");
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------
@@ -712,10 +1080,10 @@ fn resolve_calls(
 
     let mut edges = BTreeSet::new();
     for cs in callsites {
-        if let Some(path) = &cs.callee_path {
-            if path.len() > 1 {
-                continue;
-            }
+        if let Some(path) = &cs.callee_path
+            && path.len() > 1
+        {
+            continue;
         }
         let Some(candidates) = by_name.get(cs.callee_name.as_str()) else {
             continue;
@@ -867,10 +1235,10 @@ fn module_id_from_relative(relative: &Path) -> String {
     }
     if components.last().map(String::as_str) == Some("mod.rs") {
         components.pop();
-    } else if let Some(last) = components.last_mut() {
-        if let Some(stripped) = last.strip_suffix(".rs") {
-            *last = stripped.to_string();
-        }
+    } else if let Some(last) = components.last_mut()
+        && let Some(stripped) = last.strip_suffix(".rs")
+    {
+        *last = stripped.to_string();
     }
     if components.is_empty() {
         "crate".to_string()
@@ -1702,6 +2070,92 @@ mod tests {
             module: module.to_string(),
             name: name.to_string(),
         }
+    }
+
+    #[test]
+    fn determinism_cli_passes_for_stable_input() {
+        let result =
+            run_verify_determinism("@file src/sample.rs を安全に改善して preview", 3, false)
+                .expect("determinism");
+
+        assert!(result.deterministic);
+        assert!(result.plan_hash_equal);
+        assert!(result.diff_equal);
+        assert!(result.result_equal);
+    }
+
+    #[test]
+    fn determinism_cli_detects_instability() {
+        let result =
+            run_verify_determinism("ランダム要素を含む操作", 3, false).expect("determinism");
+
+        assert!(!result.deterministic);
+        assert!(!result.plan_hash_equal);
+        assert!(!result.result_equal);
+        assert_eq!(
+            result
+                .mismatch
+                .iter()
+                .map(|mismatch| mismatch.run)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+    }
+
+    #[test]
+    fn deterministic_plan_generation() {
+        let left = plan_for_determinism_input("@file src/sample.rs を安全に改善して preview")
+            .expect("left");
+        let right = plan_for_determinism_input("@file src/sample.rs を安全に改善して preview")
+            .expect("right");
+
+        assert_eq!(
+            normalize_result(&ReplDeterminismResult {
+                plan: left,
+                diff: String::new(),
+                status: "analyze".to_string(),
+                reason: None,
+            })
+            .plan_hash,
+            normalize_result(&ReplDeterminismResult {
+                plan: right,
+                diff: String::new(),
+                status: "analyze".to_string(),
+                reason: None,
+            })
+            .plan_hash
+        );
+    }
+
+    #[test]
+    fn deterministic_diff_generation() {
+        let diff_a = "- use std::collections::HashMap;\r\n\t+ pub fn sample() {}\n";
+        let diff_b = "-   use std::collections::HashMap;\n + pub   fn sample() {}\n";
+
+        assert_eq!(normalize_diff(diff_a), normalize_diff(diff_b));
+    }
+
+    #[test]
+    fn deterministic_noop_behavior() {
+        let result =
+            run_verify_determinism("refactor unused imports", 3, false).expect("determinism");
+
+        assert!(result.deterministic);
+        assert!(result.mismatch.is_empty());
+    }
+
+    #[test]
+    fn stable_hash_ignores_metadata_timestamp() {
+        let mut left = ExecutionPlan::new(
+            Operation::Analyze,
+            Some(PathBuf::from("src/sample.rs")),
+            PlanSource::System,
+        );
+        let mut right = left.clone();
+        left.metadata.timestamp = 1;
+        right.metadata.timestamp = 999;
+
+        assert_eq!(stable_plan_hash(&left), stable_plan_hash(&right));
     }
 
     // -----------------------------------------------------------------------

@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::commands::analyze::project::UnifiedAnalyzeResult;
 use crate::nl::r#loop::{LoopOrigin, LoopPromotable, PromotionError, RepairLoopContext};
+use crate::nl::types::{ExecutionPlan, Operation};
 use crate::refactor::{
     ApplyPreviewPlan, GitCommitPreview, PreviewDiff, PromoteResult, RefactorActionKind,
     RefactorCandidate, RefactorOperation, RefactorTarget, StructureEdge,
@@ -114,6 +115,113 @@ impl Default for StructureViewIR {
             heatmap: Vec::new(),
             design_sync: DesignSyncStatus::default(),
             scene_3d: None,
+        }
+    }
+}
+
+pub trait ViewProjection {
+    fn from_execution_plan(plan: &ExecutionPlan) -> Self;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct DiffView {
+    pub plan_operation: String,
+    pub target: Option<String>,
+    pub summary: String,
+}
+
+fn operation_name(operation: &Operation) -> &'static str {
+    match operation {
+        Operation::Analyze => "analyze",
+        Operation::Refactor => "refactor",
+        Operation::Validate => "validate",
+        Operation::Composite(_) => "composite",
+        Operation::Apply => "apply",
+        Operation::Rollback => "rollback",
+        Operation::Reload => "reload",
+        Operation::Repair => "repair",
+        Operation::NoOp => "noop",
+    }
+}
+
+impl ViewProjection for DiffView {
+    fn from_execution_plan(plan: &ExecutionPlan) -> Self {
+        Self {
+            plan_operation: operation_name(&plan.operation).to_string(),
+            target: plan.target.as_ref().map(|path| path.display().to_string()),
+            summary: plan
+                .args
+                .query
+                .clone()
+                .unwrap_or_else(|| operation_name(&plan.operation).to_string()),
+        }
+    }
+}
+
+impl ViewProjection for StructureViewIR {
+    fn from_execution_plan(plan: &ExecutionPlan) -> Self {
+        let target = plan
+            .target
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "workspace".to_string());
+        let op = operation_name(&plan.operation).to_string();
+        let node = ViewNode {
+            id: format!("plan:{op}:{target}"),
+            label: target.clone(),
+            layer: 0,
+            role: op.clone(),
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        };
+        let scene_3d = Structure3DIr {
+            graph: SemanticGraph3D {
+                nodes: vec![Node3D {
+                    id: node.id.clone(),
+                    label: node.label.clone(),
+                    kind: node.role.clone(),
+                    position: Vec3 {
+                        x: 0.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                    size: 1.0,
+                    importance: 1.0,
+                    heat: 0.0,
+                    source_binding: plan.target.as_ref().map(|path| SourceBinding {
+                        file: path.clone(),
+                        line_start: 1,
+                        line_end: 1,
+                        symbol: None,
+                    }),
+                }],
+                edges: Vec::new(),
+                clusters: vec![Cluster3D {
+                    id: "plan".to_string(),
+                    label: op.clone(),
+                    nodes: vec![node.id.clone()],
+                    color: "#4f7cff".to_string(),
+                }],
+                layers: Vec::new(),
+            },
+            runtime_paths: Vec::new(),
+            overlays: ViewerOverlays3D::default(),
+            timeline: Timeline3D::default(),
+            camera: CameraPreset3D {
+                focus_cluster: Some(node.id.clone()),
+                mode: CameraMode::Architectural,
+            },
+        };
+        StructureViewIR {
+            nodes: vec![node],
+            scene_3d: Some(scene_3d),
+            history: vec![HistoryEntry {
+                snapshot_index: 0,
+                action: op,
+                confidence: "1.00".to_string(),
+            }],
+            ..StructureViewIR::default()
         }
     }
 }
@@ -508,7 +616,7 @@ pub fn gui_action_path(root: &Path) -> PathBuf {
 }
 
 impl StructureViewIR {
-    pub(crate) fn into_core(&self) -> viewer_core::model::StructureViewIR {
+    pub(crate) fn to_core(&self) -> viewer_core::model::StructureViewIR {
         viewer_core::model::StructureViewIR {
             version: self.version,
             nodes: self
@@ -1312,12 +1420,12 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::{
-        Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3,
+        DiffView, Node3D, SemanticGraph3D, SourceBinding, Structure3DIr, StructureViewIR, Vec3,
         ViewerSelection,
     };
     use crate::nl::r#loop::{LoopEntryState, LoopOrigin, LoopPromotable};
     use crate::source_index::ModuleSourceIndex;
-    use crate::viewer::{benchmark_structure_replay, export_demo_replay_assets};
+    use crate::viewer::{ViewProjection, benchmark_structure_replay, export_demo_replay_assets};
 
     #[test]
     fn source_jump_exact_line() {
@@ -1493,5 +1601,24 @@ mod tests {
         .promote()
         .expect_err("multiple source bindings must fail");
         assert!(error.to_string().contains("non-unique source binding"));
+    }
+
+    #[test]
+    fn structure_and_diff_views_project_from_execution_plan() {
+        use crate::nl::types::{ExecutionPlan, Operation, PlanSource};
+
+        let plan = ExecutionPlan::new(
+            Operation::Validate,
+            Some(PathBuf::from("apps/cli/src/lib.rs")),
+            PlanSource::System,
+        );
+
+        let ir = StructureViewIR::from_execution_plan(&plan);
+        let diff = DiffView::from_execution_plan(&plan);
+
+        assert_eq!(ir.nodes.len(), 1);
+        assert!(ir.scene_3d.is_some());
+        assert_eq!(diff.plan_operation, "validate");
+        assert_eq!(diff.target.as_deref(), Some("apps/cli/src/lib.rs"));
     }
 }

@@ -58,14 +58,14 @@ impl ModuleSourceIndex {
         for include_root in include_roots(root) {
             collect_source_files(root, &include_root, &mut files)?;
         }
-        files.sort();
+        files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
         files.dedup();
 
         let mut debug_files = Vec::new();
         for include_root in include_roots(root) {
             collect_debug_source_files(root, &include_root, &mut debug_files)?;
         }
-        debug_files.sort();
+        debug_files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
         debug_files.dedup();
 
         let mut by_qualified = BTreeMap::new();
@@ -168,10 +168,10 @@ impl ModuleSourceIndex {
             return self.by_qualified.get(&id).cloned().map(|path| (id, path));
         }
 
-        if let Ok(Some(path)) = self.resolve(module) {
-            if let Some(id) = qualified_module_id(&path, self.preferred_crate.as_deref()) {
-                return Some((id, path));
-            }
+        if let Ok(Some(path)) = self.resolve(module)
+            && let Some(id) = qualified_module_id(&path, self.preferred_crate.as_deref())
+        {
+            return Some((id, path));
         }
         None
     }
@@ -461,10 +461,10 @@ impl ModuleSourceIndex {
         current_id: &QualifiedModuleId,
         symbol: &str,
     ) -> Result<Option<String>, String> {
-        if let Some(preferred_module) = preferred_symbol_module(symbol) {
-            if self.crate_module_defines_symbol(root, crate_name, preferred_module, symbol)? {
-                return Ok(Some(preferred_module.to_string()));
-            }
+        if let Some(preferred_module) = preferred_symbol_module(symbol)
+            && self.crate_module_defines_symbol(root, crate_name, preferred_module, symbol)?
+        {
+            return Ok(Some(preferred_module.to_string()));
         }
         self.resolve_symbol_module(root, crate_name, Some(&current_id.module_path), symbol)
     }
@@ -784,10 +784,10 @@ fn module_path(relative: &Path, preferred_crate: Option<&str>) -> Option<String>
 
 fn path_priority(relative: &Path, preferred_crate: Option<&str>) -> u8 {
     let id = qualified_module_id(relative, preferred_crate);
-    if let (Some(id), Some(preferred)) = (id.as_ref(), preferred_crate) {
-        if id.crate_name == normalize_key(preferred) {
-            return 0;
-        }
+    if let (Some(id), Some(preferred)) = (id.as_ref(), preferred_crate)
+        && id.crate_name == normalize_key(preferred)
+    {
+        return 0;
     }
     source_binding_rank(relative)
 }
@@ -874,9 +874,9 @@ fn representative_rank(path: &Path, module_leaf: &str) -> (u8, u8, usize) {
         .map(normalize_key)
         .unwrap_or_default();
     let depth = path_parts(path).len();
-    let kind = if file_name == "mod.rs" && parent == module_leaf {
+    let kind = if normalize_key(stem) == module_leaf {
         0
-    } else if normalize_key(stem) == module_leaf {
+    } else if file_name == "mod.rs" && parent == module_leaf {
         1
     } else {
         2

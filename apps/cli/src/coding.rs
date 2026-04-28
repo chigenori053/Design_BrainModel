@@ -656,8 +656,7 @@ pub fn deterministic_repl_v2_wiring_patches(
 pub fn load_patches_from_json(path: &Path) -> Result<Vec<CodePatch>, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    let value: Value = serde_json::from_str(&raw)
-        .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
+    let value = parse_json_with_boundary(&raw, JsonRoot::ObjectOrArray, Some(path))?;
     if value.is_array() {
         return serde_json::from_value(value).map_err(|err| err.to_string());
     }
@@ -670,7 +669,170 @@ pub fn load_patches_from_json(path: &Path) -> Result<Vec<CodePatch>, String> {
 pub fn load_mutation_plan_from_json(path: &Path) -> Result<MutationPlan, String> {
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read {}: {err}", path.display()))?;
-    serde_json::from_str(&raw).map_err(|err| format!("failed to parse {}: {err}", path.display()))
+    let value = parse_json_with_boundary(&raw, JsonRoot::Object, Some(path))?;
+    serde_json::from_value(value)
+        .map_err(|err| format!("failed to parse {}: {err}", path.display()))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JsonRoot {
+    Object,
+    ObjectOrArray,
+}
+
+fn parse_json_with_boundary(
+    raw: &str,
+    root: JsonRoot,
+    source: Option<&Path>,
+) -> Result<Value, String> {
+    trace_json_parse(raw);
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err(json_boundary_error("Invalid JSON empty", source));
+    }
+    let valid_start = match root {
+        JsonRoot::Object => trimmed.starts_with('{'),
+        JsonRoot::ObjectOrArray => trimmed.starts_with('{') || trimmed.starts_with('['),
+    };
+    if !valid_start {
+        return Err(json_boundary_error("Invalid JSON start", source));
+    }
+    let valid_end = match root {
+        JsonRoot::Object => trimmed.ends_with('}'),
+        JsonRoot::ObjectOrArray => {
+            (trimmed.starts_with('{') && trimmed.ends_with('}'))
+                || (trimmed.starts_with('[') && trimmed.ends_with(']'))
+        }
+    };
+    if !valid_end {
+        return Err(json_boundary_error("Invalid JSON end", source));
+    }
+    if contains_concatenated_json(trimmed) {
+        return Err(json_boundary_error("Multiple JSON values detected", source));
+    }
+
+    let mut deserializer = serde_json::Deserializer::from_str(trimmed);
+    let value = Value::deserialize(&mut deserializer).map_err(|err| {
+        log_parse_error(trimmed, &err);
+        json_parse_error(err, source)
+    })?;
+    deserializer.end().map_err(|err| {
+        log_parse_error(trimmed, &err);
+        json_parse_error(err, source)
+    })?;
+    Ok(value)
+}
+
+fn contains_concatenated_json(raw: &str) -> bool {
+    raw.contains("}{") || raw.contains("}[") || raw.contains("]{") || raw.contains("][")
+}
+
+fn trace_json_parse(raw: &str) {
+    eprintln!(
+        "[TRACE_JSON_PARSE]\nraw.len={}\nraw.head={}\nraw.tail={}\nraw={}",
+        raw.len(),
+        json_trace_head(raw).escape_debug(),
+        json_trace_tail(raw).escape_debug(),
+        raw.escape_debug()
+    );
+}
+
+fn json_trace_head(raw: &str) -> String {
+    raw.chars().take(80).collect()
+}
+
+fn json_trace_tail(raw: &str) -> String {
+    let mut chars = raw.chars().rev().take(80).collect::<Vec<_>>();
+    chars.reverse();
+    chars.into_iter().collect()
+}
+
+fn log_parse_error(raw: &str, err: &serde_json::Error) {
+    eprintln!(
+        "[TRACE_JSON_PARSE_ERROR]\nerror={err}\nraw.len={}\nraw.head={}\nraw.tail={}\nraw={}",
+        raw.len(),
+        json_trace_head(raw).escape_debug(),
+        json_trace_tail(raw).escape_debug(),
+        raw.escape_debug()
+    );
+}
+
+fn json_boundary_error(reason: &str, source: Option<&Path>) -> String {
+    match source {
+        Some(path) => format!("failed to parse {}: {reason}", path.display()),
+        None => reason.to_string(),
+    }
+}
+
+fn json_parse_error(err: serde_json::Error, source: Option<&Path>) -> String {
+    match source {
+        Some(path) => format!("failed to parse {}: {err}", path.display()),
+        None => err.to_string(),
+    }
+}
+
+#[cfg(test)]
+mod json_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn json_boundary_rejects_debug_suffix() {
+        let err = parse_json_with_boundary(r#"{"patches":[]} [DEBUG]"#, JsonRoot::Object, None)
+            .expect_err("debug suffix must be rejected");
+        assert!(err.contains("Invalid JSON end"));
+    }
+
+    #[test]
+    fn json_boundary_rejects_concatenated_objects() {
+        let err =
+            parse_json_with_boundary(r#"{"patches":[]}{"patches":[]}"#, JsonRoot::Object, None)
+                .expect_err("concatenated json must be rejected");
+        assert!(err.contains("Multiple JSON values detected"));
+    }
+
+    #[test]
+    fn json_boundary_accepts_single_object() {
+        let value = parse_json_with_boundary(r#"{"patches":[]}"#, JsonRoot::Object, None)
+            .expect("single object json should parse");
+        assert!(value.get("patches").is_some());
+    }
+
+    #[test]
+    fn empty_diff_change_set_returns_noop_without_execution() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let change_set = CodeChangeSet {
+            patches: Vec::new(),
+            changes: Vec::new(),
+            summary: ChangeSummary::default(),
+            canonical_target: None,
+        };
+        let options = CodingOptions {
+            apply: true,
+            check: true,
+            no_build: false,
+            backup: true,
+            format: false,
+            safe_mode: true,
+            auto_commit: false,
+            confirm_commit: false,
+            prompt_commit: false,
+            auto_push: false,
+            confirm_push: false,
+            auto_pr: false,
+            confirm_pr: false,
+            pr_base: "main".to_string(),
+            patch_scope: PatchScope::WorkspaceWide,
+            explicit_target: None,
+        };
+
+        let result =
+            execute_code_change_set(temp.path(), &change_set, &options, None).expect("execute");
+
+        assert_eq!(result.status, "noop");
+        assert!(!result.applied);
+        assert!(!result.checked);
+        assert_eq!(result.reason.as_deref(), Some("No changes detected"));
+    }
 }
 
 pub fn load_patches_from_design_snapshot(
@@ -1153,9 +1315,7 @@ pub fn semantic_cluster_for_target(target: &Path) -> Vec<&'static str> {
 /// excluded to prevent accidental hits on compound names like
 /// `adapter_app_interface`.
 fn exact_module_token_matches_cluster(module: &str, cluster: &[&str]) -> bool {
-    module
-        .split("::")
-        .any(|segment| cluster.iter().any(|&kw| segment == kw))
+    module.split("::").any(|segment| cluster.contains(&segment))
 }
 
 pub fn patch_matches_cluster(patch: &CodePatch, cluster: &[&str]) -> bool {
@@ -1174,7 +1334,7 @@ pub fn patch_matches_cluster(patch: &CodePatch, cluster: &[&str]) -> bool {
                 || exact_module_token_matches_cluster(to, cluster)
                 || via
                     .as_deref()
-                    .map_or(false, |v| exact_module_token_matches_cluster(v, cluster))
+                    .is_some_and(|v| exact_module_token_matches_cluster(v, cluster))
         }
         integration_layer::RefactorPlanAction::RemoveDependency { from, to } => {
             exact_module_token_matches_cluster(from, cluster)
@@ -1213,7 +1373,7 @@ pub fn patch_matches_cluster(patch: &CodePatch, cluster: &[&str]) -> bool {
                 || exact_module_token_matches_cluster(to, cluster)
                 || via
                     .as_deref()
-                    .map_or(false, |v| exact_module_token_matches_cluster(v, cluster))
+                    .is_some_and(|v| exact_module_token_matches_cluster(v, cluster))
         }
         PatchOperation::SplitModule {
             module,
@@ -1935,9 +2095,7 @@ fn strip_string_literal_contents(source: &str) -> String {
             {
                 // Closing delimiter: keep it, exit raw string.
                 out.push(b'"');
-                for _ in 0..hashes {
-                    out.push(b'#');
-                }
+                out.extend(std::iter::repeat_n(b'#', hashes));
                 i += 1 + hashes;
                 raw_close_hashes = None;
             } else {
@@ -1977,9 +2135,7 @@ fn strip_string_literal_contents(source: &str) -> String {
                 if j < len && src[j] == b'"' {
                     // Confirmed raw string: push prefix verbatim, enter raw mode.
                     out.push(b'r');
-                    for _ in 0..hashes {
-                        out.push(b'#');
-                    }
+                    out.extend(std::iter::repeat_n(b'#', hashes));
                     out.push(b'"');
                     i = j + 1;
                     raw_close_hashes = Some(hashes);
@@ -2910,6 +3066,32 @@ pub fn execute_code_change_set(
         transactional_candidate.map(|candidate| candidate.source_path.as_path()),
     )
     .map(|path| path.display().to_string());
+    if diff.diffs.is_empty() {
+        return Ok(CodingExecutionResult {
+            status: "noop".to_string(),
+            applied: false,
+            checked: false,
+            build_fixed: false,
+            build_ok: true,
+            rolled_back: false,
+            backed_up: false,
+            reason: Some("No changes detected".to_string()),
+            sandbox_root: None,
+            files_changed: 0,
+            diff,
+            committed: false,
+            commit_id: None,
+            branch: None,
+            transactional_apply: None,
+            git_commit: None,
+            git_push: None,
+            pull_request: None,
+            canonical_target_path: representative_target,
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
+            stale_artifact_detected: false,
+        });
+    }
     if options.safe_mode {
         validate_diff_report(&diff)?;
     }
@@ -2999,9 +3181,9 @@ pub fn execute_code_change_set(
                 Ok(commit) => {
                     result.committed = commit.commit_created;
                     result.commit_id = commit.commit_hash.clone();
-                    result.branch = if commit.status_before.detached_head {
-                        None
-                    } else if commit.status_before.branch_name.is_empty() {
+                    result.branch = if commit.status_before.detached_head
+                        || commit.status_before.branch_name.is_empty()
+                    {
                         None
                     } else {
                         Some(commit.status_before.branch_name.clone())
@@ -3234,9 +3416,7 @@ pub fn execute_code_change_set(
     let backups = snapshot_workspace(root, change_set)?;
     match apply_code_change_set(root, change_set)
         .and_then(|_| {
-            if options.no_build {
-                Ok(FixResult::default())
-            } else if fence.scope == PatchScope::ExplicitTargetOnly {
+            if options.no_build || fence.scope == PatchScope::ExplicitTargetOnly {
                 Ok(FixResult::default())
             } else {
                 fix_build_for_change_set(root, change_set, transactional_candidate)
@@ -3335,7 +3515,7 @@ pub fn transactional_apply(
     let mut cleanup_ok = false;
     let mut sandbox_elapsed_ms = 0;
     let mut cargo_check_ms = 0;
-    let cleanup_ms;
+
     let rollback_count = 0usize;
     let modified_files = change_set
         .changes
@@ -3424,7 +3604,7 @@ pub fn transactional_apply(
             let _ = TransactionalApplyError::CleanupFailed;
         }
     }
-    cleanup_ms = cleanup_started.elapsed().as_millis();
+    let cleanup_ms = cleanup_started.elapsed().as_millis();
 
     if sandbox_result.is_err() {
         let build_succeeded = skip_build || build_ok;
@@ -4253,12 +4433,12 @@ pub fn restricted_push(
     let branch = current_branch(workspace_root)?
         .filter(|branch| !branch.is_empty() && branch != "HEAD")
         .ok_or_else(|| "DetachedHead: current HEAD is not attached to a branch".to_string())?;
-    if let Some(expected) = expected_branch {
-        if branch != expected {
-            return Err(format!(
-                "PushFailed: branch mismatch, expected '{expected}' but found '{branch}'"
-            ));
-        }
+    if let Some(expected) = expected_branch
+        && branch != expected
+    {
+        return Err(format!(
+            "PushFailed: branch mismatch, expected '{expected}' but found '{branch}'"
+        ));
     }
     if is_protected_branch(&branch) {
         return Err("RemoteBlocked: protected branch".to_string());
@@ -4580,10 +4760,9 @@ fn ensure_gh_auth(root: &Path) -> Result<(), String> {
     }
 }
 
-fn duplicate_pull_request(
-    root: &Path,
-    branch_name: &str,
-) -> Result<Option<(Option<u64>, Option<String>)>, String> {
+type PullRequestIdentity = Option<(Option<u64>, Option<String>)>;
+
+fn duplicate_pull_request(root: &Path, branch_name: &str) -> Result<PullRequestIdentity, String> {
     let output = Command::new(resolve_gh_tool())
         .args(["pr", "view", branch_name, "--json", "number,url"])
         .current_dir(root)
@@ -4593,8 +4772,8 @@ fn duplicate_pull_request(
         return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let value: Value =
-        serde_json::from_str(&stdout).map_err(|err| format!("DuplicatePullRequest: {err}"))?;
+    let value = parse_json_with_boundary(&stdout, JsonRoot::Object, None)
+        .map_err(|err| format!("DuplicatePullRequest: {err}"))?;
     let Some(first) = value.as_object() else {
         return Ok(None);
     };
@@ -4818,7 +4997,7 @@ fn classify_semantic_compile_error(message: &str) -> Option<SemanticCompileError
     }
     let trait_name = ["Send", "Sync", "Clone", "Debug"]
         .into_iter()
-        .find(|name| message.contains(&format!("trait bound")) && message.contains(name))?;
+        .find(|name| message.contains(&"trait bound".to_string()) && message.contains(name))?;
     Some(SemanticCompileError::TraitBoundMissing {
         target_file,
         trait_name: trait_name.to_string(),
@@ -5307,15 +5486,15 @@ fn top_import_block_range(content: &str) -> Option<(usize, usize)> {
             end += 1;
             continue;
         }
-        if !trimmed.starts_with("use ")
-            && !trimmed.starts_with("pub use ")
-            && !(brace_depth > 0 && looks_like_import_continuation(trimmed))
+        if !(trimmed.starts_with("use ")
+            || trimmed.starts_with("pub use ")
+            || brace_depth > 0 && looks_like_import_continuation(trimmed))
         {
             break;
         }
         brace_depth += trimmed.matches('{').count() as isize;
         brace_depth -= trimmed.matches('}').count() as isize;
-        if brace_depth < 0 || brace_depth > 2 {
+        if !(0..=2).contains(&brace_depth) {
             return None;
         }
         saw_group |= trimmed.contains('{');
@@ -5414,7 +5593,7 @@ fn parse_tolerant_import_block(lines: &[String]) -> Option<ParsedImportBlock> {
 }
 
 fn collect_group_items(fragment: &str, items: &mut Vec<String>) {
-    let cleaned = fragment.replace("};", "").replace('}', "").replace('{', "");
+    let cleaned = fragment.replace("};", "").replace(['}', '{'], "");
     for item in cleaned.split(',') {
         let trimmed = item.trim();
         if let Some(normalized) = normalize_group_item(trimmed) {
@@ -5911,12 +6090,12 @@ fn patch_primary_target_path(
     if let Some(path) = resolved_paths.get(module) {
         return Ok(Some(path.clone()));
     }
-    Ok(source_index
+    source_index
         .resolve_apply_target(module)
         .map(|resolution| resolution.resolved_relative_path)
         .or_else(|| source_index.resolve(module).ok().flatten())
         .map(|path| normalize_target_scope_path(root, &path))
-        .transpose()?)
+        .transpose()
 }
 
 fn patch_is_interface_synthesis(patch: &CodePatch) -> bool {
@@ -6110,10 +6289,8 @@ fn rewrite_imports_in_content(
         )?;
     }
     let mut updated = lines.join("\n");
-    if content.ends_with('\n') || !updated.is_empty() {
-        if !updated.ends_with('\n') {
-            updated.push('\n');
-        }
+    if (content.ends_with('\n') || !updated.is_empty()) && !updated.ends_with('\n') {
+        updated.push('\n');
     }
     Ok(updated)
 }
@@ -6186,7 +6363,7 @@ fn rewrite_rust_use_statement(
         if !passthrough.is_empty() {
             imports.push(format!("use crate::{{{}}};", passthrough.join(", ")));
         }
-        imports.sort_by(|lhs, rhs| import_sort_key(lhs).cmp(&import_sort_key(rhs)));
+        imports.sort_by_key(|lhs| import_sort_key(lhs));
         return Ok(imports.join("\n"));
     }
 
@@ -6463,7 +6640,7 @@ fn sort_leading_rust_imports(content: &str) -> String {
                 .collect::<Vec<_>>()
         })
         .collect::<Vec<_>>();
-    imports.sort_by(|lhs, rhs| import_sort_key(lhs).cmp(&import_sort_key(rhs)));
+    imports.sort_by_key(|lhs| import_sort_key(lhs));
     imports.dedup();
     lines.splice(start..end, imports);
     let mut updated = lines.join("\n");
@@ -7158,10 +7335,10 @@ fn infer_affected_crate_from_workspace_path(
     let mut current = workspace_path.parent().map(Path::to_path_buf);
     while let Some(dir) = current {
         let manifest = dir.join("Cargo.toml");
-        if manifest.exists() {
-            if let Some(name) = parse_package_name(&manifest).ok().flatten() {
-                return Some(name);
-            }
+        if manifest.exists()
+            && let Some(name) = parse_package_name(&manifest).ok().flatten()
+        {
+            return Some(name);
         }
         if dir == workspace_root {
             break;
@@ -7177,10 +7354,10 @@ fn infer_affected_crate(
     canonical_target_path: &Path,
 ) -> Result<String, String> {
     // Priority 1: candidate carries a known crate name.
-    if let Some(candidate) = candidate {
-        if !candidate.module_id.crate_name.is_empty() {
-            return Ok(candidate.module_id.crate_name.clone());
-        }
+    if let Some(candidate) = candidate
+        && !candidate.module_id.crate_name.is_empty()
+    {
+        return Ok(candidate.module_id.crate_name.clone());
     }
     // Priority 2: infer directly from the canonical workspace-relative target path.
     if let Some(name) = infer_affected_crate_from_workspace_path(root, canonical_target_path) {
@@ -7188,10 +7365,10 @@ fn infer_affected_crate(
     }
     // Priority 3: root-level Cargo.toml fallback (single-package workspace).
     let manifest = root.join("Cargo.toml");
-    if manifest.exists() {
-        if let Some(name) = parse_package_name(&manifest)? {
-            return Ok(name);
-        }
+    if manifest.exists()
+        && let Some(name) = parse_package_name(&manifest)?
+    {
+        return Ok(name);
     }
     Err("unable to determine affected crate for transactional cargo check".to_string())
 }

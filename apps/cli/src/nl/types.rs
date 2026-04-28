@@ -25,6 +25,7 @@ pub enum IntentType {
     DesignDeltaReasoning,
     ExplainDesignTradeoff,
     MetaPlannerEdit,
+    Repair,
     Unknown,
 }
 
@@ -61,6 +62,17 @@ impl Default for CodingOptions {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RefactorSpec {
+    pub target: PathBuf,
+    pub request: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepairSpec {
+    pub target: PathBuf,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlannedStep {
     Analyze(PathBuf),
     Coding(PathBuf, CodingOptions),
@@ -78,21 +90,15 @@ pub enum PlannedStep {
     AlternativeMutationSearch(String),
     DesignDeltaReasoning(String),
     ExplainDesignTradeoff(String),
-    /// R1: previous coding dry-run transaction を apply へ昇格するステップ。
-    /// generic planner を bypass し、前回 checked && !applied の transaction を再利用する。
     ApplyPreviousCodingStep,
-    /// Explicit IR rollback transition for the active REPL transaction lifecycle.
     RollbackCurrentTransaction,
-    /// Phase 4 (DBM-IR-SYNC-SPEC v1.0): re-sync the IR with the on-disk file.
-    ///
-    /// Clears any pending (unapplied) transaction / diff so that the next
-    /// `refactor` command reads a fresh snapshot.  Emits telemetry that
-    /// includes the current file hash and drift status.
     IrReload(PathBuf),
-    /// Phase B-3: reload the whole Project IR graph.
     IrReloadAll(PathBuf),
-    /// Phase B-3: render dependency edges for a tracked file.
     ShowDeps(PathBuf),
+    Refactor(RefactorSpec),
+    Repair(RepairSpec),
+    Apply,
+    Reload,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -124,4 +130,250 @@ pub struct CommandPlan {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub intent: Option<CodingIntent>,
     pub steps: Vec<PlannedStep>,
+}
+
+// ── ExecutionPlan（DBM-PLAN-EXEC-STRUCT-SPEC v1.0） ───────────────────────
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Operation {
+    Analyze,
+    Refactor,
+    Validate,
+    Composite(Vec<Operation>),
+    Apply,
+    Rollback,
+    Reload,
+    Repair,
+    NoOp,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanArgs {
+    pub query: Option<String>,
+    pub flags: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum PlanSource {
+    ReplInput,
+    FileRoute,
+    System,
+}
+
+impl Default for PlanSource {
+    fn default() -> Self {
+        PlanSource::ReplInput
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PlanMetadata {
+    pub source: PlanSource,
+    pub timestamp: u64,
+}
+
+impl Default for PlanMetadata {
+    fn default() -> Self {
+        Self {
+            source: PlanSource::default(),
+            timestamp: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
+        }
+    }
+}
+
+impl PlanMetadata {
+    pub fn with_source(source: PlanSource) -> Self {
+        Self {
+            source,
+            ..Self::default()
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ValidationPolicy {
+    Strict,
+    Advisory,
+}
+
+impl Default for ValidationPolicy {
+    fn default() -> Self {
+        Self::Strict
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ExecutionStage {
+    Plan,
+    Validate,
+    Execute,
+    PostValidate,
+    Commit,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionMetadata {
+    pub deterministic: bool,
+    pub rollback_required: bool,
+    pub audit_enabled: bool,
+}
+
+impl Default for ExecutionMetadata {
+    fn default() -> Self {
+        Self {
+            deterministic: true,
+            rollback_required: true,
+            audit_enabled: true,
+        }
+    }
+}
+
+/// Plannerの出力、Executorの入力となる中核データ構造。
+/// 文字列・JSONは一切含まない。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExecutionPlan {
+    pub operation: Operation,
+    pub target: Option<PathBuf>,
+    pub args: PlanArgs,
+    pub metadata: PlanMetadata,
+    pub validation_policy: ValidationPolicy,
+    pub execution_stages: Vec<ExecutionStage>,
+    pub execution_metadata: ExecutionMetadata,
+}
+
+impl ExecutionPlan {
+    pub fn new(operation: Operation, target: Option<PathBuf>, source: PlanSource) -> Self {
+        Self {
+            operation,
+            target,
+            args: PlanArgs::default(),
+            metadata: PlanMetadata::with_source(source),
+            validation_policy: ValidationPolicy::default(),
+            execution_stages: default_execution_stages(),
+            execution_metadata: ExecutionMetadata::default(),
+        }
+    }
+
+    pub fn noop() -> Self {
+        Self::new(Operation::NoOp, None, PlanSource::System)
+    }
+
+    pub fn with_query(mut self, query: impl Into<String>) -> Self {
+        self.args.query = Some(query.into());
+        self
+    }
+
+    pub fn has_effect(&self) -> bool {
+        match &self.operation {
+            Operation::NoOp => false,
+            Operation::Composite(ops) => ops.iter().any(|op| !matches!(op, Operation::NoOp)),
+            Operation::Refactor
+            | Operation::Analyze
+            | Operation::Validate
+            | Operation::Apply
+            | Operation::Rollback
+            | Operation::Reload
+            | Operation::Repair => true,
+        }
+    }
+}
+
+fn default_execution_stages() -> Vec<ExecutionStage> {
+    vec![
+        ExecutionStage::Plan,
+        ExecutionStage::Validate,
+        ExecutionStage::Execute,
+        ExecutionStage::PostValidate,
+    ]
+}
+
+impl From<PlannedStep> for ExecutionPlan {
+    fn from(step: PlannedStep) -> Self {
+        match step {
+            PlannedStep::Analyze(path) => {
+                ExecutionPlan::new(Operation::Analyze, Some(path), PlanSource::System)
+            }
+            PlannedStep::Refactor(spec) => ExecutionPlan {
+                operation: Operation::Refactor,
+                target: Some(spec.target),
+                args: PlanArgs {
+                    query: Some(spec.request),
+                    flags: vec![],
+                },
+                metadata: PlanMetadata::default(),
+                validation_policy: ValidationPolicy::default(),
+                execution_stages: default_execution_stages(),
+                execution_metadata: ExecutionMetadata::default(),
+            },
+            PlannedStep::Repair(spec) => {
+                ExecutionPlan::new(Operation::Repair, Some(spec.target), PlanSource::System)
+            }
+            PlannedStep::Validate(path) => {
+                ExecutionPlan::new(Operation::Validate, Some(path), PlanSource::System)
+            }
+            PlannedStep::Apply => ExecutionPlan::new(Operation::Apply, None, PlanSource::System),
+            PlannedStep::RollbackCurrentTransaction => {
+                ExecutionPlan::new(Operation::Rollback, None, PlanSource::System)
+            }
+            PlannedStep::Reload => ExecutionPlan::new(Operation::Reload, None, PlanSource::System),
+            PlannedStep::IrReload(path) => {
+                ExecutionPlan::new(Operation::Reload, Some(path), PlanSource::System)
+            }
+            PlannedStep::IrReloadAll(path) => {
+                ExecutionPlan::new(Operation::Reload, Some(path), PlanSource::System)
+            }
+            _ => ExecutionPlan::noop(),
+        }
+    }
+}
+
+impl From<CommandPlan> for ExecutionPlan {
+    fn from(plan: CommandPlan) -> Self {
+        plan.steps
+            .into_iter()
+            .next()
+            .map(ExecutionPlan::from)
+            .unwrap_or_else(ExecutionPlan::noop)
+    }
+}
+
+/// ExecutionPlan → CommandPlan（IR内部ストレージ・mlaal互換レイヤー用）
+impl From<&ExecutionPlan> for CommandPlan {
+    fn from(plan: &ExecutionPlan) -> Self {
+        let target = plan.target.clone().unwrap_or_else(|| PathBuf::from("."));
+        let step = match &plan.operation {
+            Operation::Analyze => PlannedStep::Analyze(target),
+            Operation::Refactor => PlannedStep::Refactor(RefactorSpec {
+                target,
+                request: plan.args.query.clone().unwrap_or_default(),
+            }),
+            Operation::Validate => PlannedStep::Validate(target),
+            Operation::Composite(ops) => {
+                let Some(first) = ops.first() else {
+                    return CommandPlan::default();
+                };
+                return CommandPlan::from(&ExecutionPlan {
+                    operation: first.clone(),
+                    target: plan.target.clone(),
+                    args: plan.args.clone(),
+                    metadata: plan.metadata.clone(),
+                    validation_policy: plan.validation_policy,
+                    execution_stages: plan.execution_stages.clone(),
+                    execution_metadata: plan.execution_metadata.clone(),
+                });
+            }
+            Operation::Apply => PlannedStep::Apply,
+            Operation::Rollback => PlannedStep::RollbackCurrentTransaction,
+            Operation::Reload => PlannedStep::Reload,
+            Operation::Repair => PlannedStep::Repair(RepairSpec { target }),
+            Operation::NoOp => return CommandPlan::default(),
+        };
+        CommandPlan {
+            intent: None,
+            steps: vec![step],
+        }
+    }
 }
