@@ -87,9 +87,7 @@ impl ArchitectureCognitionSearchIntegration {
         } else {
             0.6
         };
-        let beam_scale = if has_constraints {
-            0.5
-        } else if confidence >= 0.6 {
+        let beam_scale = if has_constraints || confidence >= 0.6 {
             0.5
         } else {
             0.75

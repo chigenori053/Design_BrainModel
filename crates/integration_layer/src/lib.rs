@@ -1284,7 +1284,7 @@ fn layer_type_name(layer_type: &LayerType) -> &'static str {
 }
 
 fn enrich_violations_with_layer_names(
-    violations: &mut Vec<LayerViolation>,
+    violations: &mut [LayerViolation],
     semantic_layers: &[SemanticLayer],
 ) {
     let level_to_name: BTreeMap<usize, &'static str> = semantic_layers
@@ -1530,7 +1530,7 @@ pub fn detect_patterns(
             });
         }
     }
-    patterns.sort_by(|lhs, rhs| pattern_sort_key(lhs).cmp(&pattern_sort_key(rhs)));
+    patterns.sort_by_key(pattern_sort_key);
     patterns.dedup();
     patterns
 }
@@ -1642,7 +1642,7 @@ pub fn action_set_from_issues(issues: &[Issue]) -> ActionSet {
         .filter(|issue| should_emit_action(issue))
         .flat_map(map_issue_to_actions)
         .collect::<Vec<_>>();
-    actions.sort_by(|lhs, rhs| action_sort_key(lhs).cmp(&action_sort_key(rhs)));
+    actions.sort_by_key(action_sort_key);
     actions.dedup();
     actions = resolve_conflicts(actions);
     actions.truncate(MAX_ACTIONS);
@@ -1666,7 +1666,7 @@ pub fn refactor_plan(action_set: &ActionSet) -> RefactorPlan {
         PhaseType::OptimizeFlow,
     ] {
         if let Some(actions) = grouped.get_mut(&phase_type) {
-            actions.sort_by(|lhs, rhs| action_sort_key(lhs).cmp(&action_sort_key(rhs)));
+            actions.sort_by_key(action_sort_key);
             actions.dedup();
             if !actions.is_empty() {
                 phases.push(RefactorPhase {
@@ -2262,27 +2262,26 @@ fn generate_issues(
             .cmp(&rhs.weight_milli)
             .then_with(|| lhs.from.cmp(&rhs.from))
             .then_with(|| lhs.to.cmp(&rhs.to))
-    }) {
-        if max_flow.weight_milli >= 850 {
-            issues.push(Issue {
-                id: issue_id(
-                    IssueType::DataFlowAnomaly,
-                    &IssueScope::Edge(max_flow.from.clone(), max_flow.to.clone()),
-                    &[Evidence {
-                        kind: EvidenceType::Metric,
-                        value: format!("weight:{}", max_flow.weight_milli),
-                    }],
-                ),
-                kind: IssueType::DataFlowAnomaly,
-                severity: Severity::Medium,
-                scope: IssueScope::Edge(max_flow.from.clone(), max_flow.to.clone()),
-                description: "High data-flow concentration observed".to_string(),
-                evidence: vec![Evidence {
+    }) && max_flow.weight_milli >= 850
+    {
+        issues.push(Issue {
+            id: issue_id(
+                IssueType::DataFlowAnomaly,
+                &IssueScope::Edge(max_flow.from.clone(), max_flow.to.clone()),
+                &[Evidence {
                     kind: EvidenceType::Metric,
                     value: format!("weight:{}", max_flow.weight_milli),
                 }],
-            });
-        }
+            ),
+            kind: IssueType::DataFlowAnomaly,
+            severity: Severity::Medium,
+            scope: IssueScope::Edge(max_flow.from.clone(), max_flow.to.clone()),
+            description: "High data-flow concentration observed".to_string(),
+            evidence: vec![Evidence {
+                kind: EvidenceType::Metric,
+                value: format!("weight:{}", max_flow.weight_milli),
+            }],
+        });
     }
 
     for edge in &ir.edges {
@@ -2337,7 +2336,7 @@ fn generate_issues(
         }
     }
 
-    issues.sort_by(|lhs, rhs| issue_sort_key(lhs).cmp(&issue_sort_key(rhs)));
+    issues.sort_by_key(issue_sort_key);
     issues.dedup_by(|lhs, rhs| lhs.id == rhs.id);
     issues
 }
@@ -2491,13 +2490,13 @@ fn action_sort_key(action: &RefactorPlanAction) -> (u8, String) {
 }
 
 fn virtual_interface_node(from: &str, to: &str) -> String {
-    let mut pair = vec![from.to_string(), to.to_string()];
+    let mut pair = [from.to_string(), to.to_string()];
     pair.sort();
     format!("{}_{}_interface", pair[0], pair[1])
 }
 
 fn interface_name(from: &str, to: &str) -> String {
-    let mut pair = vec![pascal_case(from), pascal_case(to)];
+    let mut pair = [pascal_case(from), pascal_case(to)];
     pair.sort();
     format!("{}{}Interface", pair[0], pair[1])
 }

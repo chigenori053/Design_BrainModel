@@ -1,4 +1,4 @@
-use ai_context::{AIContext, EvaluationState, ExperienceState, RuntimeState};
+use ai_context::{AIContext, AIContextParts, EvaluationState, ExperienceState, RuntimeState};
 use architecture_domain::ArchitectureState;
 use design_domain::{Architecture, DesignUnit, Layer};
 use evaluation_engine::EvaluationEngine;
@@ -14,43 +14,43 @@ fn ai_context_is_deterministic_for_same_input() {
     let semantic = semantic_parser("Build scalable REST API").semantic_graph;
     let evaluation = EvaluationEngine::default().evaluate(&architecture_state);
 
-    let baseline = AIContext::new(
-        architecture_state.clone(),
-        semantic.clone(),
-        KnowledgeGraph::default(),
-        Default::default(),
-        Default::default(),
-        LifecycleMetrics::default(),
-        ExperienceState::default(),
-        EvaluationState {
+    let baseline = AIContext::new(AIContextParts {
+        architecture_state: architecture_state.clone(),
+        semantic_graph: semantic.clone(),
+        knowledge_graph: KnowledgeGraph::default(),
+        inferred_knowledge: Default::default(),
+        stabilized_knowledge: Default::default(),
+        lifecycle_metrics: LifecycleMetrics::default(),
+        experience_state: ExperienceState::default(),
+        evaluation_state: EvaluationState {
             latest: Some(evaluation),
             history: vec![evaluation],
         },
-        RuntimeState {
+        runtime_state: RuntimeState {
             request_id: "req-1".to_string(),
             stage: "Output".to_string(),
             event_count: 3,
         },
-    );
+    });
 
-    let candidate = AIContext::new(
+    let candidate = AIContext::new(AIContextParts {
         architecture_state,
-        semantic,
-        KnowledgeGraph::default(),
-        Default::default(),
-        Default::default(),
-        LifecycleMetrics::default(),
-        ExperienceState::default(),
-        EvaluationState {
+        semantic_graph: semantic,
+        knowledge_graph: KnowledgeGraph::default(),
+        inferred_knowledge: Default::default(),
+        stabilized_knowledge: Default::default(),
+        lifecycle_metrics: LifecycleMetrics::default(),
+        experience_state: ExperienceState::default(),
+        evaluation_state: EvaluationState {
             latest: Some(evaluation),
             history: vec![evaluation],
         },
-        RuntimeState {
+        runtime_state: RuntimeState {
             request_id: "req-1".to_string(),
             stage: "Output".to_string(),
             event_count: 3,
         },
-    );
+    });
 
     assert_eq!(candidate, baseline);
 }

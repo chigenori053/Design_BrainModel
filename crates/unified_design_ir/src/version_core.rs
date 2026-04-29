@@ -372,7 +372,7 @@ fn canonicalize_value(field_name: Option<&str>, value: &mut Value) {
     }
 }
 
-fn normalize_array(field_name: &str, values: &mut Vec<Value>) {
+fn normalize_array(field_name: &str, values: &mut [Value]) {
     if is_order_insensitive(field_name) {
         values.sort_by_key(|value| serde_json::to_string(value).unwrap_or_default());
     }

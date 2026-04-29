@@ -1,6 +1,6 @@
 use ai_context::{
-    AIContext, EvaluationState, ExperienceState, InferredKnowledge, RuntimeState as AiRuntimeState,
-    StabilizedKnowledge,
+    AIContext, AIContextParts, EvaluationState, ExperienceState, InferredKnowledge,
+    RuntimeState as AiRuntimeState, StabilizedKnowledge,
 };
 use architecture_domain::ArchitectureState;
 use evaluation_engine::EvaluationEngine;
@@ -19,7 +19,7 @@ use language_reasoning::{
     knowledge_query_from_semantic_graph, knowledge_reasoning_effective_confidence,
     meaning_reasoning_search, reasoning_graph_to_constraints,
 };
-use memory_graph::DesignExperienceGraph;
+use memory_graph::{DesignExperienceGraph, ExperienceLifecycleRecord};
 use memory_space_core::{
     InMemoryMemoryStore, MemoryEngine, MemoryRecord, ModalityInput, RecallConfig, RecallQuery,
 };
@@ -190,45 +190,45 @@ impl Phase9RuntimeAdapter {
                 policy_score_mean: 0.0,
                 architecture_similarity: 1.0,
             }),
-            ai_context: Some(AIContext::new(
+            ai_context: Some(AIContext::new(AIContextParts {
                 architecture_state,
-                language_state
+                semantic_graph: language_state
                     .as_ref()
                     .map(|state| state.semantic_graph.clone())
                     .unwrap_or_default(),
-                knowledge_graph.clone(),
-                InferredKnowledge {
+                knowledge_graph: knowledge_graph.clone(),
+                inferred_knowledge: InferredKnowledge {
                     graph: inferred_knowledge_graph.clone(),
                 },
-                StabilizedKnowledge {
+                stabilized_knowledge: StabilizedKnowledge {
                     graph: knowledge_graph.clone(),
                 },
-                lifecycle_state.lifecycle_metrics.clone(),
-                ExperienceState {
+                lifecycle_metrics: lifecycle_state.lifecycle_metrics.clone(),
+                experience_state: ExperienceState {
                     graph: DesignExperienceGraph::default(),
                 },
-                EvaluationState {
+                evaluation_state: EvaluationState {
                     latest: Some(evaluation_result),
                     history: vec![evaluation_result],
                 },
-                AiRuntimeState {
+                runtime_state: AiRuntimeState {
                     request_id,
                     stage: format!("{:?}", map_stage(ctx)),
                     event_count: 0,
                 },
-            )),
+            })),
         };
 
-        publish_taxonomy_events(
-            &mut phase9,
-            parsed_language_state.as_ref(),
-            reasoned_language_state.as_ref(),
-            language_state.as_ref(),
-            &lifecycle_state,
-            &knowledge_graph,
+        publish_taxonomy_events(TaxonomyEventInput {
+            ctx: &mut phase9,
+            parsed_language_state: parsed_language_state.as_ref(),
+            reasoned_language_state: reasoned_language_state.as_ref(),
+            language_state: language_state.as_ref(),
+            lifecycle_state: &lifecycle_state,
+            knowledge_graph: &knowledge_graph,
             knowledge_validation,
             knowledge_retrieved,
-        );
+        });
         phase9
     }
 
@@ -278,16 +278,28 @@ fn map_stage(ctx: &RuntimeContext) -> RuntimeStage {
     }
 }
 
-fn publish_taxonomy_events(
-    ctx: &mut Phase9RuntimeContext,
-    parsed_language_state: Option<&LanguageState>,
-    reasoned_language_state: Option<&LanguageState>,
-    language_state: Option<&LanguageState>,
-    lifecycle_state: &KnowledgeLifecycleState,
-    knowledge_graph: &KnowledgeGraph,
+struct TaxonomyEventInput<'a> {
+    ctx: &'a mut Phase9RuntimeContext,
+    parsed_language_state: Option<&'a LanguageState>,
+    reasoned_language_state: Option<&'a LanguageState>,
+    language_state: Option<&'a LanguageState>,
+    lifecycle_state: &'a KnowledgeLifecycleState,
+    knowledge_graph: &'a KnowledgeGraph,
     knowledge_validation: ValidationScore,
     knowledge_retrieved: bool,
-) {
+}
+
+fn publish_taxonomy_events(input: TaxonomyEventInput<'_>) {
+    let TaxonomyEventInput {
+        ctx,
+        parsed_language_state,
+        reasoned_language_state,
+        language_state,
+        lifecycle_state,
+        knowledge_graph,
+        knowledge_validation,
+        knowledge_retrieved,
+    } = input;
     ctx.event_bus.publish(RuntimeEvent::InputAccepted);
     ctx.advance(RuntimeStage::Normalize);
     ctx.event_bus.publish(RuntimeEvent::ModalityNormalized);
@@ -451,50 +463,50 @@ fn publish_taxonomy_events(
                 ctx.event_bus.publish(RuntimeEvent::ExperienceStored);
                 ctx.event_bus.publish(RuntimeEvent::PolicyUpdated);
             }
-            if let Some(ai_context) = ctx.ai_context.as_mut() {
-                if let Some(result) = ai_context.evaluation_state.latest {
-                    ai_context
-                        .experience_state
-                        .graph
-                        .record_experience_with_lifecycle(
-                            reasoned_language_state
-                                .map(|state| state.to_meaning_graph())
-                                .unwrap_or_default(),
-                            Some(ai_context.knowledge_graph.clone()),
-                            Some(knowledge_validation),
-                            Some(ai_context.inferred_knowledge.graph.clone()),
-                            Some(ai_context.stabilized_knowledge.graph.clone()),
-                            Some(KnowledgeLifecycleState {
-                                cycle: world_state.state_id,
-                                quality_metrics: Default::default(),
-                                lifecycle_metrics: ai_context.lifecycle_metrics.clone(),
-                                source_reliabilities: Vec::new(),
-                                half_life: Default::default(),
-                                provenance_recorded: ai_context
-                                    .stabilized_knowledge
-                                    .graph
-                                    .relations
-                                    .len(),
-                                reliability_evaluated: 0,
-                                embeddings_generated: 0,
-                                aged_relations: 0,
-                                reinforced_relations: 0,
-                                pruned_relations: 0,
-                                semantic_clusters: 0,
-                                semantic_pruned_relations: 0,
-                                conflicts_resolved: 0,
-                                diversification_triggered: false,
-                                exploration_weight: 1.0,
-                                reinforcement_rate_applied: 0.0,
-                                turnover_metrics: Default::default(),
-                            }),
-                            Some(ai_context.lifecycle_metrics.clone()),
-                            architecture_hash(world_state),
-                            ai_context.architecture_state.clone(),
-                            result,
-                        );
-                    ctx.event_bus.publish(RuntimeEvent::ExperienceGraphUpdated);
-                }
+            if let Some(ai_context) = ctx.ai_context.as_mut()
+                && let Some(result) = ai_context.evaluation_state.latest
+            {
+                ai_context
+                    .experience_state
+                    .graph
+                    .record_experience_with_lifecycle(ExperienceLifecycleRecord {
+                        semantic_graph: reasoned_language_state
+                            .map(|state| state.to_meaning_graph())
+                            .unwrap_or_default(),
+                        knowledge_graph: Some(ai_context.knowledge_graph.clone()),
+                        validation: Some(knowledge_validation),
+                        inferred_knowledge: Some(ai_context.inferred_knowledge.graph.clone()),
+                        stabilized_knowledge: Some(ai_context.stabilized_knowledge.graph.clone()),
+                        lifecycle_state: Some(KnowledgeLifecycleState {
+                            cycle: world_state.state_id,
+                            quality_metrics: Default::default(),
+                            lifecycle_metrics: ai_context.lifecycle_metrics.clone(),
+                            source_reliabilities: Vec::new(),
+                            half_life: Default::default(),
+                            provenance_recorded: ai_context
+                                .stabilized_knowledge
+                                .graph
+                                .relations
+                                .len(),
+                            reliability_evaluated: 0,
+                            embeddings_generated: 0,
+                            aged_relations: 0,
+                            reinforced_relations: 0,
+                            pruned_relations: 0,
+                            semantic_clusters: 0,
+                            semantic_pruned_relations: 0,
+                            conflicts_resolved: 0,
+                            diversification_triggered: false,
+                            exploration_weight: 1.0,
+                            reinforcement_rate_applied: 0.0,
+                            turnover_metrics: Default::default(),
+                        }),
+                        lifecycle_metrics: Some(ai_context.lifecycle_metrics.clone()),
+                        architecture_hash: architecture_hash(world_state),
+                        architecture: ai_context.architecture_state.clone(),
+                        result,
+                    });
+                ctx.event_bus.publish(RuntimeEvent::ExperienceGraphUpdated);
             }
             ctx.event_bus
                 .publish(RuntimeEvent::PolicyEvaluationCompleted);
@@ -574,7 +586,7 @@ fn fallback_hypotheses(ctx: &RuntimeContext) -> Vec<Hypothesis> {
         .map(|(idx, hypothesis)| Hypothesis {
             hypothesis_id: idx as u64,
             predicted_state: WorldState::new(
-                hypothesis.concept_a.0 as u64,
+                hypothesis.concept_a.0,
                 vec![hypothesis.concept_a.0 as f64, hypothesis.concept_b.0 as f64],
             ),
             score: 0.5,

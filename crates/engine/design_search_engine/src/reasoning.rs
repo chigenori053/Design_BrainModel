@@ -126,16 +126,9 @@ impl IntentParser {
     }
 }
 
+#[derive(Default)]
 pub struct KnowledgeRetriever {
     engine: KnowledgeEngine,
-}
-
-impl Default for KnowledgeRetriever {
-    fn default() -> Self {
-        Self {
-            engine: KnowledgeEngine::default(),
-        }
-    }
 }
 
 impl KnowledgeRetriever {
@@ -459,7 +452,7 @@ pub fn runtime_hypotheses_from_reasoning(
     result: &ReasoningResult,
     concepts: &[ConceptId],
 ) -> Vec<(ConceptId, ConceptId)> {
-    let available = concepts.iter().copied().collect::<Vec<_>>();
+    let available = concepts.to_vec();
     let mut pairs = Vec::new();
     for hypothesis in &result.architecture_hypotheses {
         let mut labels = hypothesis

@@ -24,7 +24,7 @@ pub struct MemoryConfig {
     pub recall_top_k: usize,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub struct MemoryController {
     pub config: MemoryConfig,
 }
@@ -132,14 +132,6 @@ impl Default for MemoryConfig {
             decay_lambda: 0.0,
             max_memory_size: usize::MAX,
             recall_top_k: 3,
-        }
-    }
-}
-
-impl Default for MemoryController {
-    fn default() -> Self {
-        Self {
-            config: MemoryConfig::default(),
         }
     }
 }

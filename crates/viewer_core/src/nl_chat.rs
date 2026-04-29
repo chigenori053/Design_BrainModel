@@ -47,6 +47,12 @@ pub struct NlChatPanel {
     pub pending: bool,
 }
 
+impl Default for NlChatPanel {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NlChatPanel {
     pub fn new() -> Self {
         Self {

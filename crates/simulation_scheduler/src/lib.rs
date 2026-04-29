@@ -53,7 +53,7 @@ pub struct LightSimulationTrace {
     pub light_simulation: LightSimulationResult,
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct SimulationSchedulerTrace {
     pub filtered_candidates: usize,
     pub knowledge_evaluated: usize,
@@ -63,21 +63,6 @@ pub struct SimulationSchedulerTrace {
     pub cache_misses: usize,
     pub full_simulations: usize,
     pub telemetry_events: Vec<SchedulerTelemetryEvent>,
-}
-
-impl Default for SimulationSchedulerTrace {
-    fn default() -> Self {
-        Self {
-            filtered_candidates: 0,
-            knowledge_evaluated: 0,
-            light_simulated: 0,
-            scheduled_candidates: 0,
-            cache_hits: 0,
-            cache_misses: 0,
-            full_simulations: 0,
-            telemetry_events: Vec::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, PartialEq)]

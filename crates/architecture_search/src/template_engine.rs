@@ -131,10 +131,10 @@ impl ArchitectureTemplateEngine {
                 visibility: Visibility::Public,
                 metrics: ComponentMetrics::default(),
             });
-            if let Some(layer_id) = layer_id {
-                if let Some(layer) = ir.layers.iter_mut().find(|layer| layer.id == layer_id) {
-                    layer.components.push(component_id);
-                }
+            if let Some(layer_id) = layer_id
+                && let Some(layer) = ir.layers.iter_mut().find(|layer| layer.id == layer_id)
+            {
+                layer.components.push(component_id);
             }
         }
 

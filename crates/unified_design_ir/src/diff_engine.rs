@@ -124,7 +124,7 @@ pub fn diff_semantic(
     after: &CanonicalDesign,
 ) -> Result<SemanticDiff, DiffError> {
     validate_stage_match(before, after)?;
-    Ok(semantic_diff(None, before, after)?)
+    semantic_diff(None, before, after)
 }
 
 pub fn compute_impact(summary: &DiffSummary, semantic: &SemanticDiff) -> (Impact, ImpactReason) {
@@ -443,7 +443,7 @@ fn summarize(changes: &[FieldChange]) -> DiffSummary {
     summary
 }
 
-fn keyed_values<'a>(values: &'a [Value]) -> BTreeMap<String, &'a Value> {
+fn keyed_values(values: &[Value]) -> BTreeMap<String, &Value> {
     let mut counts = BTreeMap::new();
     let mut keyed = BTreeMap::new();
     for (index, value) in values.iter().enumerate() {

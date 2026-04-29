@@ -9,7 +9,7 @@ use memory_space_phase14::{
     embed_architecture,
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ArchitectureSearchEngine {
     pub config: SearchConfig,
 }
@@ -21,14 +21,6 @@ pub struct SearchResult {
     pub candidates: Vec<ArchitectureCandidate>,
     pub pareto_frontier: Vec<ArchitectureCandidate>,
     pub telemetry: crate::SearchTelemetry,
-}
-
-impl Default for ArchitectureSearchEngine {
-    fn default() -> Self {
-        Self {
-            config: SearchConfig::default(),
-        }
-    }
 }
 
 impl ArchitectureSearchEngine {

@@ -87,7 +87,7 @@ impl Default for DefaultExecutionController {
             filesystem_guard: FilesystemGuard,
             network_guard: NetworkGuard::default(),
             determinism_validator: DeterminismValidator,
-            replay_engine: DefaultReplayEngine::default(),
+            replay_engine: DefaultReplayEngine,
             config: ExecutionConfig::default(),
             dry_run: false,
             stop_on_failure: true,
@@ -367,14 +367,14 @@ impl DefaultExecutionController {
             self.timeout_policy.dependency_timeout_ms,
             traces,
         );
-        if result.success {
-            if let Err(error) = write_lockfile(&workspace.project_root, plan) {
-                return StepResult {
-                    success: false,
-                    stdout: result.stdout,
-                    stderr: error,
-                };
-            }
+        if result.success
+            && let Err(error) = write_lockfile(&workspace.project_root, plan)
+        {
+            return StepResult {
+                success: false,
+                stdout: result.stdout,
+                stderr: error,
+            };
         }
         result
     }

@@ -342,7 +342,7 @@ impl SemanticClusterEngine {
             .cloned()
             .collect::<Vec<_>>();
         survivors.extend(keep);
-        survivors.sort_by(|lhs, rhs| relation_key(lhs).cmp(&relation_key(rhs)));
+        survivors.sort_by_key(relation_key);
         graph.relations = survivors;
         before.saturating_sub(graph.relations.len())
     }
@@ -699,9 +699,7 @@ impl KnowledgeLifecycleEngine {
                     })
                 });
                 graph.relations.extend(resolution.resolved_relations);
-                graph
-                    .relations
-                    .sort_by(|lhs, rhs| relation_key(lhs).cmp(&relation_key(rhs)));
+                graph.relations.sort_by_key(relation_key);
                 graph
                     .relations
                     .dedup_by(|lhs, rhs| relation_key(lhs) == relation_key(rhs));

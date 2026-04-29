@@ -568,10 +568,10 @@ fn remove_vec_item(values: &mut Vec<String>, key: &str) -> Result<(), FixFailure
 }
 
 fn split_segment_ordinal(segment: &str) -> (&str, usize) {
-    if let Some((base, suffix)) = segment.rsplit_once('#') {
-        if let Ok(index) = suffix.parse::<usize>() {
-            return (base, index);
-        }
+    if let Some((base, suffix)) = segment.rsplit_once('#')
+        && let Ok(index) = suffix.parse::<usize>()
+    {
+        return (base, index);
     }
     (segment, 0)
 }

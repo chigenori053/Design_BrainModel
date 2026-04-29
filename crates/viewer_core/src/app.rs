@@ -274,71 +274,65 @@ impl eframe::App for ViewerApp {
         if self.show_node_popup {
             // render_node_popup は ctx への参照が必要なため egui::Window を直接使う
             let node_id = self.selected_node.clone();
-            if let Some(node_id) = node_id {
-                if let Some(node) = self
+            if let Some(node_id) = node_id
+                && let Some(node) = self
                     .ir
                     .nodes
                     .iter()
                     .find(|n| n.id == node_id || n.label == node_id)
                     .cloned()
-                {
-                    let incoming = self.ir.edges.iter().filter(|e| e.to == node.id).count();
-                    let outgoing = self.ir.edges.iter().filter(|e| e.from == node.id).count();
-                    let cycles = self
-                        .ir
-                        .edges
-                        .iter()
-                        .filter(|e| (e.from == node.id || e.to == node.id) && e.cycle)
-                        .count();
-                    let source_binding = self.source_binding();
-                    let mut close = false;
-                    let mut open_src = false;
+            {
+                let incoming = self.ir.edges.iter().filter(|e| e.to == node.id).count();
+                let outgoing = self.ir.edges.iter().filter(|e| e.from == node.id).count();
+                let cycles = self
+                    .ir
+                    .edges
+                    .iter()
+                    .filter(|e| (e.from == node.id || e.to == node.id) && e.cycle)
+                    .count();
+                let source_binding = self.source_binding();
+                let mut close = false;
+                let mut open_src = false;
 
-                    egui::Window::new(format!("● {}", node.label))
-                        .id(egui::Id::new("node_popup"))
-                        .collapsible(false)
-                        .resizable(false)
-                        .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-340.0, 42.0))
-                        .show(ctx, |ui| {
-                            ui.label(
-                                RichText::new(format!(
-                                    "layer: {}  role: {}",
-                                    node.layer, node.role
-                                ))
+                egui::Window::new(format!("● {}", node.label))
+                    .id(egui::Id::new("node_popup"))
+                    .collapsible(false)
+                    .resizable(false)
+                    .anchor(egui::Align2::RIGHT_TOP, egui::vec2(-340.0, 42.0))
+                    .show(ctx, |ui| {
+                        ui.label(
+                            RichText::new(format!("layer: {}  role: {}", node.layer, node.role))
                                 .small()
                                 .color(Color32::GRAY),
+                        );
+                        ui.label(format!("in: {incoming}  out: {outgoing}"));
+                        if cycles > 0 {
+                            ui.label(
+                                RichText::new(format!("⚠ cycles: {cycles}"))
+                                    .color(Color32::from_rgb(196, 73, 61)),
                             );
-                            ui.label(format!("in: {incoming}  out: {outgoing}"));
-                            if cycles > 0 {
-                                ui.label(
-                                    RichText::new(format!("⚠ cycles: {cycles}"))
-                                        .color(Color32::from_rgb(196, 73, 61)),
-                                );
-                            }
-                            ui.add_space(4.0);
-                            ui.horizontal(|ui| {
-                                if source_binding.is_some() && ui.small_button("Source").clicked() {
-                                    open_src = true;
-                                }
-                                if ui.small_button("✕").clicked() {
-                                    close = true;
-                                }
-                            });
-                        });
-
-                    if open_src {
-                        if let Some(binding) = source_binding {
-                            if let Err(e) =
-                                crate::source_jump::open_source(&binding, Some(&self.config.root))
-                            {
-                                self.status = e;
-                            }
                         }
-                    }
-                    if close {
-                        self.selected_node = None;
-                        self.show_node_popup = false;
-                    }
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            if source_binding.is_some() && ui.small_button("Source").clicked() {
+                                open_src = true;
+                            }
+                            if ui.small_button("✕").clicked() {
+                                close = true;
+                            }
+                        });
+                    });
+
+                if open_src
+                    && let Some(binding) = source_binding
+                    && let Err(e) =
+                        crate::source_jump::open_source(&binding, Some(&self.config.root))
+                {
+                    self.status = e;
+                }
+                if close {
+                    self.selected_node = None;
+                    self.show_node_popup = false;
                 }
             }
         }

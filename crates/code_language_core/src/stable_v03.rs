@@ -1303,13 +1303,12 @@ pub mod dynamic_ir {
         } else {
             Vec::new()
         };
-        if profile.name == "rust" {
-            if let Some(TransformTemplate::MutationMarker { pattern }) = transforms
+        if profile.name == "rust"
+            && let Some(TransformTemplate::MutationMarker { pattern }) = transforms
                 .into_iter()
                 .find(|transform| matches!(transform, TransformTemplate::MutationMarker { .. }))
-            {
-                return format!("&{} {}", pattern, base);
-            }
+        {
+            return format!("&{} {}", pattern, base);
         }
         base
     }
@@ -1421,10 +1420,10 @@ pub mod dynamic_ir {
                 }
                 continue;
             }
-            if let Some(value) = relation.strip_prefix("rule:") {
-                if let Some(rule) = parse_rule(value) {
-                    profile.rules.push(rule);
-                }
+            if let Some(value) = relation.strip_prefix("rule:")
+                && let Some(rule) = parse_rule(value)
+            {
+                profile.rules.push(rule);
             }
         }
         profile.rules.sort_by(|lhs, rhs| {
@@ -3074,7 +3073,7 @@ fn render_typescript(module: &CodeModule) -> String {
             let output = function
                 .output
                 .as_ref()
-                .map(|output| map_typescript_type(output))
+                .map(map_typescript_type)
                 .unwrap_or_else(|| "void".to_string());
             format!(
                 "export function {}({}): {} {{\n  throw new Error(\"not implemented\");\n}}",

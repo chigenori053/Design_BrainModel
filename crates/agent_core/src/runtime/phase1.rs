@@ -138,35 +138,38 @@ fn run_phase1_variant(
         let world_mode_entries = front_entries
             .into_iter()
             .map(|(state, obj, rid)| {
-                if config.world_model_enabled {
-                    if let Some(simulated) = crate::runtime::world_model::simulate_best_action(
+                if config.world_model_enabled
+                    && let Some(simulated) = crate::runtime::world_model::simulate_best_action(
                         &state,
                         obj.clone(),
-                        &mut hybrid_vm,
-                        config.world_model_alpha,
-                        config.world_model_beta,
-                        config.world_model_beta_profile,
-                        config.world_model_actions_per_state,
-                        config.world_model_max_depth,
-                        config.intent_profile,
-                        config.world_model_mode,
-                        config.world_model_variance_penalty,
-                        config.world_model_semantic_variance_penalty,
-                        config.world_model_semantic_variance_max_penalty,
-                        config.world_model_confidence_floor,
-                        &mut learning_engine,
-                        search_controller
-                            .as_ref()
-                            .map(|controller| &controller.metrics),
-                        &mut simulation_cache,
-                    ) {
-                        return (
-                            simulated.state,
-                            simulated.objective,
-                            rid,
-                            Some(simulated.delta),
-                        );
-                    }
+                        &mut crate::runtime::world_model::BestActionSimulation {
+                            vm: &mut hybrid_vm,
+                            base_alpha: config.world_model_alpha,
+                            base_beta: config.world_model_beta,
+                            beta_profile: config.world_model_beta_profile,
+                            actions_per_state: config.world_model_actions_per_state,
+                            max_depth: config.world_model_max_depth,
+                            intent_profile: config.intent_profile,
+                            mode: config.world_model_mode,
+                            variance_penalty: config.world_model_variance_penalty,
+                            semantic_variance_penalty: config.world_model_semantic_variance_penalty,
+                            semantic_variance_max_penalty: config
+                                .world_model_semantic_variance_max_penalty,
+                            confidence_floor: config.world_model_confidence_floor,
+                            learning_engine: &mut learning_engine,
+                            search_metrics: search_controller
+                                .as_ref()
+                                .map(|controller| &controller.metrics),
+                            cache: &mut simulation_cache,
+                        },
+                    )
+                {
+                    return (
+                        simulated.state,
+                        simulated.objective,
+                        rid,
+                        Some(simulated.delta),
+                    );
                 }
                 (state, obj, rid, None)
             })

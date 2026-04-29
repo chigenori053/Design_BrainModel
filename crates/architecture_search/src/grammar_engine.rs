@@ -92,13 +92,13 @@ impl ArchitectureGrammarEngine {
                 ));
             }
 
-            if let Some(rule) = component_rules.get(&from.component_type) {
-                if !rule.allowed_dependencies.contains(&to.component_type) {
-                    issues.push(format!(
-                        "component rule violation: {:?} cannot depend on {:?}",
-                        from.component_type, to.component_type
-                    ));
-                }
+            if let Some(rule) = component_rules.get(&from.component_type)
+                && !rule.allowed_dependencies.contains(&to.component_type)
+            {
+                issues.push(format!(
+                    "component rule violation: {:?} cannot depend on {:?}",
+                    from.component_type, to.component_type
+                ));
             }
         }
 

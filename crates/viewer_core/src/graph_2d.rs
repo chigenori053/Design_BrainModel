@@ -206,10 +206,10 @@ fn paint_nodes(
             Color32::from_gray(25),
         );
 
-        if let Some(ptr) = pointer_pos {
-            if ptr.distance(pos) <= radius {
-                *selected = Some(node.id.clone());
-            }
+        if let Some(ptr) = pointer_pos
+            && ptr.distance(pos) <= radius
+        {
+            *selected = Some(node.id.clone());
         }
     }
 }

@@ -46,18 +46,33 @@ pub struct AIContext {
     pub runtime_state: RuntimeState,
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AIContextParts {
+    pub architecture_state: ArchitectureState,
+    pub semantic_graph: SemanticGraph,
+    pub knowledge_graph: KnowledgeGraph,
+    pub inferred_knowledge: InferredKnowledge,
+    pub stabilized_knowledge: StabilizedKnowledge,
+    pub lifecycle_metrics: LifecycleMetrics,
+    pub experience_state: ExperienceState,
+    pub evaluation_state: EvaluationState,
+    pub runtime_state: RuntimeState,
+}
+
 impl AIContext {
-    pub fn new(
-        architecture_state: ArchitectureState,
-        semantic_graph: SemanticGraph,
-        knowledge_graph: KnowledgeGraph,
-        inferred_knowledge: InferredKnowledge,
-        stabilized_knowledge: StabilizedKnowledge,
-        lifecycle_metrics: LifecycleMetrics,
-        experience_state: ExperienceState,
-        evaluation_state: EvaluationState,
-        runtime_state: RuntimeState,
-    ) -> Self {
+    pub fn new(parts: AIContextParts) -> Self {
+        let AIContextParts {
+            architecture_state,
+            semantic_graph,
+            knowledge_graph,
+            inferred_knowledge,
+            stabilized_knowledge,
+            lifecycle_metrics,
+            experience_state,
+            evaluation_state,
+            runtime_state,
+        } = parts;
+
         Self {
             architecture_state,
             semantic_graph,

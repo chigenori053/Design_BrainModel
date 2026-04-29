@@ -363,7 +363,7 @@ fn parse_use_identifiers(line: &str) -> Vec<String> {
             return rest
                 .trim_matches('"')
                 .split('/')
-                .last()
+                .next_back()
                 .map(|segment| segment.trim().to_string())
                 .into_iter()
                 .filter(|segment| !segment.is_empty())

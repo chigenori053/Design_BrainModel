@@ -95,11 +95,7 @@ impl GeneralizedMemory {
 ///
 /// 最初の文 (句読点で区切る) を取り出し、120 文字以内に丸める。
 fn generalize_text(text: &str) -> String {
-    let sentence = text
-        .split(|c: char| c == '.' || c == '!' || c == '\n')
-        .next()
-        .unwrap_or(text)
-        .trim();
+    let sentence = text.split(['.', '!', '\n']).next().unwrap_or(text).trim();
     if sentence.len() > 120 {
         format!("{}…", &sentence[..120])
     } else {

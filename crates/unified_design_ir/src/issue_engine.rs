@@ -186,11 +186,11 @@ fn filter_candidates(candidates: Vec<IssueCandidate>) -> Vec<IssueCandidate> {
         .filter(|candidate| !matches!(candidate.change.change_type, ChangeType::Moved))
         .filter(|candidate| !matches!(candidate.semantic_reason, SemanticReason::OrderDifference))
         .filter(|candidate| {
-            !(candidate.impact == Impact::Improved
-                && !matches!(
+            candidate.impact != Impact::Improved
+                || matches!(
                     candidate.semantic_reason,
                     SemanticReason::ValueMismatch | SemanticReason::TypeMismatch
-                ))
+                )
         })
         .collect()
 }
@@ -310,7 +310,7 @@ fn assign_blocks(mut issues: Vec<Issue>) -> Vec<Issue> {
 }
 
 fn assign_order_and_sort(mut issues: Vec<Issue>) -> Vec<Issue> {
-    issues.sort_by(|left, right| compare_issue_priority(left, right));
+    issues.sort_by(compare_issue_priority);
     for (index, issue) in issues.iter_mut().enumerate() {
         issue.order = index as u64 + 1;
     }
@@ -479,10 +479,10 @@ fn resolve_array_segment<'a>(items: &'a [Value], segment: &str) -> Option<&'a Va
 }
 
 fn split_segment_ordinal(segment: &str) -> (&str, usize) {
-    if let Some((base, suffix)) = segment.rsplit_once('#') {
-        if let Ok(index) = suffix.parse::<usize>() {
-            return (base, index);
-        }
+    if let Some((base, suffix)) = segment.rsplit_once('#')
+        && let Ok(index) = suffix.parse::<usize>()
+    {
+        return (base, index);
     }
     (segment, 0)
 }

@@ -350,20 +350,20 @@ pub fn explain_decisions(trace: &IntentTrace) -> Vec<DecisionExplanation> {
             message: "Interface inferred from keyword 'api'".to_string(),
         });
     }
-    if let Some(value) = trace.final_slots.core.get(&CoreSlot::Framework) {
-        if value.source == SlotSource::Default {
-            decisions.push(DecisionExplanation {
-                message: format!(
-                    "Framework defaulted from language '{}'",
-                    trace
-                        .final_slots
-                        .core
-                        .get(&CoreSlot::Language)
-                        .map(|slot| slot.value.as_str())
-                        .unwrap_or("unknown")
-                ),
-            });
-        }
+    if let Some(value) = trace.final_slots.core.get(&CoreSlot::Framework)
+        && value.source == SlotSource::Default
+    {
+        decisions.push(DecisionExplanation {
+            message: format!(
+                "Framework defaulted from language '{}'",
+                trace
+                    .final_slots
+                    .core
+                    .get(&CoreSlot::Language)
+                    .map(|slot| slot.value.as_str())
+                    .unwrap_or("unknown")
+            ),
+        });
     }
 
     decisions

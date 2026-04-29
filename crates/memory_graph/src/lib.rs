@@ -4,6 +4,20 @@ use knowledge_engine::{KnowledgeGraph, ValidationScore};
 use knowledge_lifecycle::{KnowledgeLifecycleState, LifecycleMetrics};
 use semantic_domain::MeaningGraph;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExperienceLifecycleRecord {
+    pub semantic_graph: MeaningGraph,
+    pub knowledge_graph: Option<KnowledgeGraph>,
+    pub validation: Option<ValidationScore>,
+    pub inferred_knowledge: Option<KnowledgeGraph>,
+    pub stabilized_knowledge: Option<KnowledgeGraph>,
+    pub lifecycle_state: Option<KnowledgeLifecycleState>,
+    pub lifecycle_metrics: Option<LifecycleMetrics>,
+    pub architecture_hash: u64,
+    pub architecture: ArchitectureState,
+    pub result: EvaluationResult,
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct ProblemId(pub u64);
 
@@ -135,33 +149,34 @@ impl DesignExperienceGraph {
         let lifecycle_state = KnowledgeLifecycleState {
             ..KnowledgeLifecycleState::default()
         };
-        self.record_experience_with_lifecycle(
+        self.record_experience_with_lifecycle(ExperienceLifecycleRecord {
             semantic_graph,
             knowledge_graph,
             validation,
-            inferred,
-            stabilized,
-            Some(lifecycle_state),
-            Some(LifecycleMetrics::default()),
+            inferred_knowledge: inferred,
+            stabilized_knowledge: stabilized,
+            lifecycle_state: Some(lifecycle_state),
+            lifecycle_metrics: Some(LifecycleMetrics::default()),
             architecture_hash,
             architecture,
             result,
-        );
+        });
     }
 
-    pub fn record_experience_with_lifecycle(
-        &mut self,
-        semantic_graph: MeaningGraph,
-        knowledge_graph: Option<KnowledgeGraph>,
-        validation: Option<ValidationScore>,
-        inferred_knowledge: Option<KnowledgeGraph>,
-        stabilized_knowledge: Option<KnowledgeGraph>,
-        lifecycle_state: Option<KnowledgeLifecycleState>,
-        lifecycle_metrics: Option<LifecycleMetrics>,
-        architecture_hash: u64,
-        architecture: ArchitectureState,
-        result: EvaluationResult,
-    ) {
+    pub fn record_experience_with_lifecycle(&mut self, record: ExperienceLifecycleRecord) {
+        let ExperienceLifecycleRecord {
+            semantic_graph,
+            knowledge_graph,
+            validation,
+            inferred_knowledge,
+            stabilized_knowledge,
+            lifecycle_state,
+            lifecycle_metrics,
+            architecture_hash,
+            architecture,
+            result,
+        } = record;
+
         let problem_id = ProblemId(self.problems.len() as u64 + 1);
         let knowledge_id = knowledge_graph
             .as_ref()

@@ -1595,6 +1595,20 @@ struct ViolationSample {
     severity: f64,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct ViolationInputs {
+    edge_density: f64,
+    max_degree: f64,
+    degree_gini: f64,
+    isolated_ratio: f64,
+    category_entropy: f64,
+    category_presence: f64,
+    fragmentation_ratio: f64,
+    propagation_score: f64,
+    impact: f64,
+    structural_variance: f64,
+}
+
 impl Default for StructuralEvaluator {
     fn default() -> Self {
         Self {
@@ -1645,7 +1659,7 @@ impl StructuralEvaluator {
         let coupling = clamp01(0.45 * edge_density + 0.35 * max_degree + 0.20 * degree_gini);
         let impact = sanitize_unit(depth * coupling);
 
-        let violations = self.collect_violations(
+        let violations = self.collect_violations(ViolationInputs {
             edge_density,
             max_degree,
             degree_gini,
@@ -1656,7 +1670,7 @@ impl StructuralEvaluator {
             propagation_score,
             impact,
             structural_variance,
-        );
+        });
         let violation_intensity = mean_square_severity(&violations);
         let violation_distribution = violation_entropy(&violations);
 
@@ -1696,39 +1710,33 @@ impl StructuralEvaluator {
         }
     }
 
-    fn collect_violations(
-        &self,
-        edge_density: f64,
-        max_degree: f64,
-        degree_gini: f64,
-        isolated_ratio: f64,
-        category_entropy: f64,
-        category_presence: f64,
-        fragmentation_ratio: f64,
-        propagation_score: f64,
-        impact: f64,
-        structural_variance: f64,
-    ) -> Vec<ViolationSample> {
+    fn collect_violations(&self, inputs: ViolationInputs) -> Vec<ViolationSample> {
         [
             (
                 ViolationKind::DenseCoupling,
-                clamp01(0.6 * edge_density + 0.4 * impact),
+                clamp01(0.6 * inputs.edge_density + 0.4 * inputs.impact),
             ),
             (
                 ViolationKind::HubDominance,
-                clamp01(0.55 * max_degree + 0.45 * degree_gini),
+                clamp01(0.55 * inputs.max_degree + 0.45 * inputs.degree_gini),
             ),
-            (ViolationKind::Isolation, isolated_ratio),
+            (ViolationKind::Isolation, inputs.isolated_ratio),
             (
                 ViolationKind::CategoryCollapse,
-                clamp01((1.0 - category_entropy) * (0.5 + 0.5 * (1.0 - category_presence))),
+                clamp01(
+                    (1.0 - inputs.category_entropy)
+                        * (0.5 + 0.5 * (1.0 - inputs.category_presence)),
+                ),
             ),
-            (ViolationKind::Fragmentation, fragmentation_ratio),
+            (ViolationKind::Fragmentation, inputs.fragmentation_ratio),
             (
                 ViolationKind::Propagation,
-                clamp01(propagation_score * impact),
+                clamp01(inputs.propagation_score * inputs.impact),
             ),
-            (ViolationKind::StructuralImbalance, structural_variance),
+            (
+                ViolationKind::StructuralImbalance,
+                inputs.structural_variance,
+            ),
         ]
         .into_iter()
         .filter_map(|(kind, severity)| {

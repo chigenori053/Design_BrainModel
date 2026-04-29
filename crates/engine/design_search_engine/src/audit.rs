@@ -35,57 +35,37 @@ pub struct PolicyRule {
     pub patterns: &'static [&'static str],
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum SubscriptionStatus {
+    #[default]
     Active,
     Expired,
     Suspended,
     Trial,
 }
 
-impl Default for SubscriptionStatus {
-    fn default() -> Self {
-        Self::Active
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PlanTier {
     Basic,
     Pro,
+    #[default]
     Enterprise,
 }
 
-impl Default for PlanTier {
-    fn default() -> Self {
-        Self::Enterprise
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum FeatureAccess {
+    #[default]
     ArchitectureSearch,
     CodeGeneration,
     WebSearch,
     KnowledgeImport,
 }
 
-impl Default for FeatureAccess {
-    fn default() -> Self {
-        Self::ArchitectureSearch
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum PaymentStatus {
+    #[default]
     Current,
     Delinquent,
-}
-
-impl Default for PaymentStatus {
-    fn default() -> Self {
-        Self::Current
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -436,17 +416,27 @@ pub struct AuditResult {
     pub telemetry: AuditTelemetry,
 }
 
+pub struct PolicyRequest<'a> {
+    pub context: &'a AuditContext,
+    pub feature: FeatureAccess,
+    pub request: &'a str,
+    pub registry: &'a PolicyRegistry,
+    pub intent_auditor: &'a IntentAuditor,
+    pub access_controller: &'a AccessController,
+    pub subscription_controller: &'a SubscriptionController,
+}
+
 impl PolicyEngine {
-    pub fn evaluate_request(
-        &self,
-        context: &AuditContext,
-        feature: FeatureAccess,
-        request: &str,
-        registry: &PolicyRegistry,
-        intent_auditor: &IntentAuditor,
-        access_controller: &AccessController,
-        subscription_controller: &SubscriptionController,
-    ) -> AuditResult {
+    pub fn evaluate_request(&self, policy_request: PolicyRequest<'_>) -> AuditResult {
+        let PolicyRequest {
+            context,
+            feature,
+            request,
+            registry,
+            intent_auditor,
+            access_controller,
+            subscription_controller,
+        } = policy_request;
         let mut telemetry = AuditTelemetry::default();
         let subscription_decision = subscription_controller.check(context, &mut telemetry);
         if subscription_decision == AuditDecision::Block {
@@ -505,15 +495,15 @@ impl AuditCore {
         feature: FeatureAccess,
         request: &str,
     ) -> AuditResult {
-        self.policy_engine.evaluate_request(
+        self.policy_engine.evaluate_request(PolicyRequest {
             context,
             feature,
             request,
-            &self.policy_registry,
-            &self.intent_auditor,
-            &self.access_controller,
-            &self.subscription_controller,
-        )
+            registry: &self.policy_registry,
+            intent_auditor: &self.intent_auditor,
+            access_controller: &self.access_controller,
+            subscription_controller: &self.subscription_controller,
+        })
     }
 
     pub fn audit_architecture(&self, architecture_state: &ArchitectureState) -> AuditResult {

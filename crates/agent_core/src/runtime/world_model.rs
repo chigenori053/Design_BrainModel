@@ -619,25 +619,44 @@ pub(crate) fn generate_actions(state: &CodeState, limit: usize) -> Vec<Action> {
     actions
 }
 
+pub(crate) struct BestActionSimulation<'a> {
+    pub vm: &'a mut HybridVM,
+    pub base_alpha: f64,
+    pub base_beta: f64,
+    pub beta_profile: crate::BetaProfile,
+    pub actions_per_state: usize,
+    pub max_depth: usize,
+    pub intent_profile: crate::IntentProfile,
+    pub mode: crate::WorldModelMode,
+    pub variance_penalty: f64,
+    pub semantic_variance_penalty: f64,
+    pub semantic_variance_max_penalty: f64,
+    pub confidence_floor: f64,
+    pub learning_engine: &'a mut LearningEngine,
+    pub search_metrics: Option<&'a SearchMetrics>,
+    pub cache: &'a mut SimulationCache,
+}
+
 pub(crate) fn simulate_best_action(
     state: &DesignState,
     objective: ObjectiveVector,
-    vm: &mut HybridVM,
-    base_alpha: f64,
-    base_beta: f64,
-    beta_profile: crate::BetaProfile,
-    actions_per_state: usize,
-    max_depth: usize,
-    intent_profile: crate::IntentProfile,
-    mode: crate::WorldModelMode,
-    variance_penalty: f64,
-    semantic_variance_penalty: f64,
-    semantic_variance_max_penalty: f64,
-    confidence_floor: f64,
-    learning_engine: &mut LearningEngine,
-    search_metrics: Option<&SearchMetrics>,
-    cache: &mut SimulationCache,
+    simulation: &mut BestActionSimulation<'_>,
 ) -> Option<SimulationOutcome> {
+    let vm = &mut *simulation.vm;
+    let base_alpha = simulation.base_alpha;
+    let base_beta = simulation.base_beta;
+    let beta_profile = simulation.beta_profile;
+    let actions_per_state = simulation.actions_per_state;
+    let max_depth = simulation.max_depth;
+    let intent_profile = simulation.intent_profile;
+    let mode = simulation.mode;
+    let variance_penalty = simulation.variance_penalty;
+    let semantic_variance_penalty = simulation.semantic_variance_penalty;
+    let semantic_variance_max_penalty = simulation.semantic_variance_max_penalty;
+    let confidence_floor = simulation.confidence_floor;
+    let learning_engine = &mut *simulation.learning_engine;
+    let search_metrics = simulation.search_metrics;
+    let cache = &mut *simulation.cache;
     let code_state = build_code_state(state, objective.clone());
     let static_score = crate::scalar_score(&objective);
     let intent_model = IntentModel::from_profile(intent_profile);
@@ -646,12 +665,12 @@ pub(crate) fn simulate_best_action(
     let first_pass = actions
         .into_iter()
         .filter_map(|action| {
-            simulate_action(
+            simulate_action(ActionSimulation {
                 state,
-                &code_state,
-                &action,
+                code_state: &code_state,
+                action: &action,
                 vm,
-                simulation_alpha(
+                alpha: simulation_alpha(
                     base_alpha,
                     beta_controller(
                         base_beta,
@@ -666,7 +685,7 @@ pub(crate) fn simulate_best_action(
                         max_depth,
                     ),
                 ),
-                beta_controller(
+                beta: beta_controller(
                     base_beta,
                     beta_profile,
                     BetaContext {
@@ -679,7 +698,7 @@ pub(crate) fn simulate_best_action(
                     max_depth,
                 ),
                 static_score,
-                &intent_model,
+                intent_model: &intent_model,
                 intent_profile,
                 mode,
                 variance_penalty,
@@ -688,9 +707,9 @@ pub(crate) fn simulate_best_action(
                 confidence_floor,
                 learning_engine,
                 cache,
-                &world_model,
-                1,
-            )
+                world_model: &world_model,
+                depth: 1,
+            })
         })
         .collect::<Vec<_>>();
     let mut best = first_pass.iter().cloned().max_by(|lhs, rhs| {
@@ -714,12 +733,12 @@ pub(crate) fn simulate_best_action(
                 actions_per_state.min(MULTISTEP_BRANCH_LIMIT),
             );
             for action2 in actions2.into_iter().take(MULTISTEP_BRANCH_LIMIT) {
-                if let Some(second) = simulate_action(
-                    &first.state,
-                    &first.code_state,
-                    &action2,
+                if let Some(second) = simulate_action(ActionSimulation {
+                    state: &first.state,
+                    code_state: &first.code_state,
+                    action: &action2,
                     vm,
-                    simulation_alpha(
+                    alpha: simulation_alpha(
                         base_alpha,
                         beta_controller(
                             base_beta,
@@ -734,7 +753,7 @@ pub(crate) fn simulate_best_action(
                             max_depth,
                         ),
                     ),
-                    beta_controller(
+                    beta: beta_controller(
                         base_beta,
                         beta_profile,
                         BetaContext {
@@ -746,8 +765,8 @@ pub(crate) fn simulate_best_action(
                         },
                         max_depth,
                     ),
-                    crate::scalar_score(&first.objective),
-                    &intent_model,
+                    static_score: crate::scalar_score(&first.objective),
+                    intent_model: &intent_model,
                     intent_profile,
                     mode,
                     variance_penalty,
@@ -756,9 +775,9 @@ pub(crate) fn simulate_best_action(
                     confidence_floor,
                     learning_engine,
                     cache,
-                    &world_model,
-                    2,
-                ) {
+                    world_model: &world_model,
+                    depth: 2,
+                }) {
                     best = match best {
                         Some(current) if current.delta.final_score >= second.delta.final_score => {
                             Some(current)
@@ -793,26 +812,49 @@ pub(crate) fn simulate_best_action(
     best
 }
 
-fn simulate_action(
-    state: &DesignState,
-    code_state: &CodeState,
-    action: &Action,
-    vm: &mut HybridVM,
+struct ActionSimulation<'a, W: WorldModel> {
+    state: &'a DesignState,
+    code_state: &'a CodeState,
+    action: &'a Action,
+    vm: &'a mut HybridVM,
     alpha: f64,
     beta: f64,
     static_score: f64,
-    intent_model: &IntentModel,
+    intent_model: &'a IntentModel,
     intent_profile: crate::IntentProfile,
     mode: crate::WorldModelMode,
     variance_penalty: f64,
     semantic_variance_penalty: f64,
     semantic_variance_max_penalty: f64,
     confidence_floor: f64,
-    learning_engine: &LearningEngine,
-    cache: &mut SimulationCache,
-    world_model: &impl WorldModel,
+    learning_engine: &'a LearningEngine,
+    cache: &'a mut SimulationCache,
+    world_model: &'a W,
     depth: usize,
-) -> Option<SimulationOutcome> {
+}
+
+fn simulate_action<W: WorldModel>(request: ActionSimulation<'_, W>) -> Option<SimulationOutcome> {
+    let ActionSimulation {
+        state,
+        code_state,
+        action,
+        vm,
+        alpha,
+        beta,
+        static_score,
+        intent_model,
+        intent_profile,
+        mode,
+        variance_penalty,
+        semantic_variance_penalty,
+        semantic_variance_max_penalty,
+        confidence_floor,
+        learning_engine,
+        cache,
+        world_model,
+        depth,
+    } = request;
+
     if let Some(cached) = cache.get(state, action) {
         return Some(cached);
     }
@@ -856,24 +898,24 @@ fn simulate_action(
     let intent_score = intent_model.score(&next_code_state, action, consistency_score);
     let learning_bias = learning_engine.bias_for(intent_profile, action.kind())
         + learning_engine.exploration_bonus(intent_profile, action.kind());
-    let evaluation = evaluate_probabilistic_outcome(
+    let evaluation = evaluate_probabilistic_outcome(ProbabilisticOutcomeInput {
         static_score,
-        blended_score,
+        simulated_score: blended_score,
         intent_score,
         consistency_score,
-        &next_code_state,
+        code_state: &next_code_state,
         variance_penalty,
         semantic_variance_penalty,
         semantic_variance_max_penalty,
         confidence_floor,
         learning_bias,
-        beta,
-        code_state,
+        beta_reliance: beta,
+        previous_code_state: code_state,
         action,
-        &intent_model.rules,
+        intent_rules: &intent_model.rules,
         mode,
         depth,
-    );
+    });
     let outcome = SimulationOutcome {
         state: next_state,
         objective: blended_obj,
@@ -919,24 +961,44 @@ fn blend_objective(
     }
 }
 
-fn evaluate_probabilistic_outcome(
+struct ProbabilisticOutcomeInput<'a> {
     static_score: f64,
     simulated_score: f64,
     intent_score: f64,
     consistency_score: f64,
-    code_state: &CodeState,
+    code_state: &'a CodeState,
     variance_penalty: f64,
     semantic_variance_penalty: f64,
     semantic_variance_max_penalty: f64,
     confidence_floor: f64,
     learning_bias: f64,
     beta_reliance: f64,
-    previous_code_state: &CodeState,
-    action: &Action,
-    intent_rules: &[crate::IntentRule],
+    previous_code_state: &'a CodeState,
+    action: &'a Action,
+    intent_rules: &'a [crate::IntentRule],
     mode: crate::WorldModelMode,
     depth: usize,
-) -> ProbabilisticEvaluation {
+}
+
+fn evaluate_probabilistic_outcome(input: ProbabilisticOutcomeInput<'_>) -> ProbabilisticEvaluation {
+    let ProbabilisticOutcomeInput {
+        static_score,
+        simulated_score,
+        intent_score,
+        consistency_score,
+        code_state,
+        variance_penalty,
+        semantic_variance_penalty,
+        semantic_variance_max_penalty,
+        confidence_floor,
+        learning_bias,
+        beta_reliance,
+        previous_code_state,
+        action,
+        intent_rules,
+        mode,
+        depth,
+    } = input;
     let scenario_scores = scenario_scores(
         static_score,
         simulated_score,

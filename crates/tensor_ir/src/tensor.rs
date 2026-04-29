@@ -48,10 +48,11 @@ impl Tensor3 {
 
         let mut composed = Vec::new();
         for subject in 0..self.entity_count {
+            let subject_row = &plane[subject];
             for object in 0..self.entity_count {
                 let mut weight = 0.0;
-                for pivot in 0..self.entity_count {
-                    weight += plane[subject][pivot] * plane[pivot][object];
+                for (pivot, pivot_row) in plane.iter().take(self.entity_count).enumerate() {
+                    weight += subject_row[pivot] * pivot_row[object];
                 }
                 if weight > 0.0 {
                     composed.push(Relation::new(

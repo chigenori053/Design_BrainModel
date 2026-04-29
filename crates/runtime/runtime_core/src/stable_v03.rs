@@ -91,7 +91,7 @@ pub struct RuntimeResult {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum RuntimeExecutionResult {
-    Executed(RuntimeResult),
+    Executed(Box<RuntimeResult>),
     Clarification(Clarification),
 }
 
@@ -161,7 +161,7 @@ impl CoreRuntime {
         match execution {
             IntentExecution::Ready(intent) => {
                 let result = self.executor.execute_structured(intent, Some(trace))?;
-                Ok(RuntimeExecutionResult::Executed(result))
+                Ok(RuntimeExecutionResult::Executed(Box::new(result)))
             }
             IntentExecution::NeedClarification(clarification) => {
                 Ok(RuntimeExecutionResult::Clarification(clarification))

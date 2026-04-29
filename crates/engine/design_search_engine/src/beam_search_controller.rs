@@ -134,14 +134,12 @@ impl BeamSearchController {
         let mut root_state = initial_state.clone();
         if let Some(recalled) =
             recall.and_then(|recall_result| initial_state.recall_seed(recall_result))
-        {
-            if recall
+            && recall
                 .and_then(|result| result.candidates.first())
                 .map(|candidate| candidate.relevance_score >= 0.8)
                 .unwrap_or(false)
-            {
-                root_state = recalled;
-            }
+        {
+            root_state = recalled;
         }
 
         let mut root = SearchState::new(root_state.state_id, root_state.clone());
@@ -275,18 +273,18 @@ impl BeamSearchController {
             }
             let mut finalized_candidates = Vec::new();
             for scheduled in scheduled_batch.scheduled {
-                if let Some(group) = candidate_map.get_mut(&scheduled.architecture_hash) {
-                    if !group.is_empty() {
-                        let mut state = group.remove(0);
-                        finalize_state_with_simulation(
-                            &mut state,
-                            scheduled.simulation_result,
-                            &evaluator,
-                            effective_config.experience_bias,
-                            effective_config.policy_bias,
-                        );
-                        finalized_candidates.push(state);
-                    }
+                if let Some(group) = candidate_map.get_mut(&scheduled.architecture_hash)
+                    && !group.is_empty()
+                {
+                    let mut state = group.remove(0);
+                    finalize_state_with_simulation(
+                        &mut state,
+                        scheduled.simulation_result,
+                        &evaluator,
+                        effective_config.experience_bias,
+                        effective_config.policy_bias,
+                    );
+                    finalized_candidates.push(state);
                 }
             }
             if finalized_candidates.is_empty() {

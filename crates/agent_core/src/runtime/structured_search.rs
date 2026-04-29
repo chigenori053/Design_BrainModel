@@ -156,14 +156,15 @@ impl StructureClusterer for DeterministicKMeansClusterer {
             rebalance_empty_clusters(&mut assignments, features, target_k, &centroids);
 
             let mut next_centroids = centroids.clone();
-            for cluster_id in 0..target_k {
+            for (cluster_id, next_centroid) in next_centroids.iter_mut().enumerate().take(target_k)
+            {
                 let members = assignments
                     .iter()
                     .enumerate()
                     .filter_map(|(idx, assigned)| (*assigned == cluster_id).then_some(idx))
                     .collect::<Vec<_>>();
                 if !members.is_empty() {
-                    next_centroids[cluster_id] = centroid_of(features, &members);
+                    *next_centroid = centroid_of(features, &members);
                 }
             }
             if next_centroids == centroids {
@@ -318,13 +319,15 @@ impl FrontierManager for StableFrontierManager {
             }
             if let Some(best) = pick_best_member(
                 &clusters[cluster_idx],
-                &candidates,
-                &used,
-                &selected_indices,
-                beta,
-                global_centroid,
-                &previous_scores,
-                &mut smoothed_scores,
+                &mut MemberSelectionContext {
+                    candidates: &candidates,
+                    used: &used,
+                    selected_indices: &selected_indices,
+                    beta,
+                    global_centroid,
+                    previous_scores: &previous_scores,
+                    smoothed_scores: &mut smoothed_scores,
+                },
             ) {
                 used.insert(best);
                 selected_indices.push(best);
@@ -337,13 +340,15 @@ impl FrontierManager for StableFrontierManager {
             let cluster_idx = fill_order[cursor % fill_order.len()];
             if let Some(best) = pick_best_member(
                 &clusters[cluster_idx],
-                &candidates,
-                &used,
-                &selected_indices,
-                beta,
-                global_centroid,
-                &previous_scores,
-                &mut smoothed_scores,
+                &mut MemberSelectionContext {
+                    candidates: &candidates,
+                    used: &used,
+                    selected_indices: &selected_indices,
+                    beta,
+                    global_centroid,
+                    previous_scores: &previous_scores,
+                    smoothed_scores: &mut smoothed_scores,
+                },
             ) {
                 used.insert(best);
                 selected_indices.push(best);
@@ -438,7 +443,7 @@ impl ClusterManager for AdaptiveClusterManager {
             return false;
         }
 
-        let fallback = fallback_rule_based_clusters(candidates, beam_width.min(7).max(2));
+        let fallback = fallback_rule_based_clusters(candidates, beam_width.clamp(2, 7));
         if fallback.len() <= 1 {
             return false;
         }
@@ -519,7 +524,7 @@ pub(crate) fn select_controlled_frontier(
         .iter()
         .map(|candidate| candidate.feature)
         .collect::<Vec<_>>();
-    let mut clusters = DeterministicKMeansClusterer::cluster(&features, beam_width.min(7).max(1));
+    let mut clusters = DeterministicKMeansClusterer::cluster(&features, beam_width.clamp(1, 7));
     let reconfigured =
         AdaptiveClusterManager::rebalance(&mut clusters, &merged_candidates, beam_width, previous);
     let cluster_collapsed = clusters.len() <= 1;
@@ -705,51 +710,59 @@ fn cluster_priority(
     variance + structural_spread + exploration_boost
 }
 
-fn pick_best_member(
-    cluster: &Cluster,
-    candidates: &[SearchCandidate],
-    used: &BTreeSet<usize>,
-    selected_indices: &[usize],
+struct MemberSelectionContext<'a> {
+    candidates: &'a [SearchCandidate],
+    used: &'a BTreeSet<usize>,
+    selected_indices: &'a [usize],
     beta: f64,
     global_centroid: SearchFeatureVector,
-    previous_scores: &BTreeMap<u128, f64>,
-    smoothed_scores: &mut BTreeMap<u128, f64>,
-) -> Option<usize> {
+    previous_scores: &'a BTreeMap<u128, f64>,
+    smoothed_scores: &'a mut BTreeMap<u128, f64>,
+}
+
+fn pick_best_member(cluster: &Cluster, context: &mut MemberSelectionContext<'_>) -> Option<usize> {
     cluster
         .members
         .iter()
         .copied()
-        .filter(|member| !used.contains(member))
+        .filter(|member| !context.used.contains(member))
         .max_by(|lhs, rhs| {
             smoothed_candidate_score(
                 *lhs,
-                candidates,
-                selected_indices,
-                beta,
-                global_centroid,
-                previous_scores,
+                context.candidates,
+                context.selected_indices,
+                context.beta,
+                context.global_centroid,
+                context.previous_scores,
             )
             .partial_cmp(&smoothed_candidate_score(
                 *rhs,
-                candidates,
-                selected_indices,
-                beta,
-                global_centroid,
-                previous_scores,
+                context.candidates,
+                context.selected_indices,
+                context.beta,
+                context.global_centroid,
+                context.previous_scores,
             ))
             .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| candidates[*rhs].state.id.cmp(&candidates[*lhs].state.id))
+            .then_with(|| {
+                context.candidates[*rhs]
+                    .state
+                    .id
+                    .cmp(&context.candidates[*lhs].state.id)
+            })
         })
         .inspect(|idx| {
             let score = smoothed_candidate_score(
                 *idx,
-                candidates,
-                selected_indices,
-                beta,
-                global_centroid,
-                previous_scores,
+                context.candidates,
+                context.selected_indices,
+                context.beta,
+                context.global_centroid,
+                context.previous_scores,
             );
-            smoothed_scores.insert(candidates[*idx].state.id.as_u128(), score);
+            context
+                .smoothed_scores
+                .insert(context.candidates[*idx].state.id.as_u128(), score);
         })
 }
 
@@ -989,8 +1002,8 @@ fn rebalance_empty_clusters(
     k: usize,
     centroids: &[SearchFeatureVector],
 ) {
-    for cluster_id in 0..k {
-        if assignments.iter().any(|assigned| *assigned == cluster_id) {
+    for (cluster_id, _) in centroids.iter().enumerate().take(k) {
+        if assignments.contains(&cluster_id) {
             continue;
         }
         let mut donor = None::<usize>;

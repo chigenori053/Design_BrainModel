@@ -219,15 +219,14 @@ impl ArchitectureIrEvaluator for ArchitectureEvaluatorEngine {
     fn evaluate_ir(&self, architecture: &ArchitectureIR) -> IrEvaluationResult {
         let key = architecture_hash(architecture);
         let hash_key = format!("{:016x}", key);
-        if let Some(memory_space) = &self.memory_space {
-            if let Some(cached) = memory_space
+        if let Some(memory_space) = &self.memory_space
+            && let Some(cached) = memory_space
                 .lock()
                 .expect("memory space poisoned")
                 .find_evaluation(&hash_key)
                 .cloned()
-            {
-                return ir_result_from_memory_record(cached, true);
-            }
+        {
+            return ir_result_from_memory_record(cached, true);
         }
         if let Some(cached) = self
             .cache
@@ -549,17 +548,22 @@ fn detect_interface_mismatch(architecture: &ArchitectureIR) -> Vec<String> {
                 })
             })
         })
-        .chain(architecture.interfaces.iter().filter_map(|interface| {
+        .chain(
             architecture
-                .component_by_id(interface.owner_component)
-                .is_none()
-                .then(|| {
+                .interfaces
+                .iter()
+                .filter(|interface| {
+                    architecture
+                        .component_by_id(interface.owner_component)
+                        .is_none()
+                })
+                .map(|interface| {
                     format!(
                         "interface {} has missing owner {}",
                         interface.name, interface.owner_component
                     )
-                })
-        }))
+                }),
+        )
         .collect()
 }
 

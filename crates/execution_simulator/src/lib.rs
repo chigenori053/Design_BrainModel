@@ -39,13 +39,13 @@ fn detect_bottlenecks(graph: &ExecutionGraph, estimate: &PerformanceEstimate) ->
             _ => None,
         })
         .collect::<Vec<_>>();
-    if bottlenecks.is_empty() {
-        if let Some(first_component) = graph.nodes.iter().find_map(|node| match node {
+    if bottlenecks.is_empty()
+        && let Some(first_component) = graph.nodes.iter().find_map(|node| match node {
             ExecutionNode::Component(id) => Some(*id),
             _ => None,
-        }) {
-            bottlenecks.push(first_component);
-        }
+        })
+    {
+        bottlenecks.push(first_component);
     }
     if graph
         .edges

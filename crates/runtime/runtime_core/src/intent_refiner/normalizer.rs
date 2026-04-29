@@ -4,9 +4,8 @@ pub struct Normalizer;
 impl Normalizer {
     pub fn normalize(&self, input: &str) -> String {
         input
-            .trim()
             .split_whitespace()
-            .map(|part| canonicalize_token(part))
+            .map(canonicalize_token)
             .collect::<Vec<_>>()
             .join(" ")
     }
