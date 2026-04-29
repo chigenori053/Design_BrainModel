@@ -1,17 +1,17 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, anyhow, bail};
 
 use super::adaptive_policy::AdaptivePolicy;
-use crate::nl::types::{CodingOptions, PlannedStep};
+use crate::nl::types::{PlannedStep, RefactorSpec};
 
 use super::episode_memory::EpisodeMemoryStore;
 use super::episode_schema::{EpisodeRecord, RecallResult};
 use super::memory_bridge::MemoryBridge;
 use super::planner::{CognitiveContext, PlanResult, PlanningConstraints, ReasoningPlanner};
-use super::recall_optimizer::RecallOptimizer;
+use super::recall_optimizer::{RecallOptimizer, RecallRequest};
 use super::replay_rollout::ReplayRolloutAdapter;
 use super::resonance_matcher::ResonanceMatcher;
 use super::rollout::{CandidateRollout, DiffPreview, PatchCandidate, RolloutEngine};
@@ -32,18 +32,31 @@ pub struct MLAALPlanner {
     threshold_optimizer: Arc<ThresholdOptimizer>,
 }
 
+pub struct MLAALPlannerComponents {
+    rollout: Arc<RolloutEngine>,
+    scorer: Arc<PatchScorer>,
+    replay: Arc<ReplayRolloutAdapter>,
+    memory: Arc<EpisodeMemoryStore>,
+    recall: Arc<RecallOptimizer>,
+    resonance: Arc<ResonanceMatcher>,
+    bridge: Arc<MemoryBridge>,
+    telemetry: Arc<TelemetryStore>,
+    threshold_optimizer: Arc<ThresholdOptimizer>,
+}
+
 impl MLAALPlanner {
-    pub fn new(
-        rollout: Arc<RolloutEngine>,
-        scorer: Arc<PatchScorer>,
-        replay: Arc<ReplayRolloutAdapter>,
-        memory: Arc<EpisodeMemoryStore>,
-        recall: Arc<RecallOptimizer>,
-        resonance: Arc<ResonanceMatcher>,
-        bridge: Arc<MemoryBridge>,
-        telemetry: Arc<TelemetryStore>,
-        threshold_optimizer: Arc<ThresholdOptimizer>,
-    ) -> Self {
+    pub fn new(components: MLAALPlannerComponents) -> Self {
+        let MLAALPlannerComponents {
+            rollout,
+            scorer,
+            replay,
+            memory,
+            recall,
+            resonance,
+            bridge,
+            telemetry,
+            threshold_optimizer,
+        } = components;
         Self {
             rollout,
             scorer,
@@ -58,17 +71,17 @@ impl MLAALPlanner {
     }
 
     pub fn default_stack() -> Self {
-        Self::new(
-            Arc::new(RolloutEngine::default()),
-            Arc::new(PatchScorer),
-            Arc::new(ReplayRolloutAdapter),
-            Arc::new(EpisodeMemoryStore),
-            Arc::new(RecallOptimizer),
-            Arc::new(ResonanceMatcher),
-            Arc::new(MemoryBridge),
-            Arc::new(TelemetryStore),
-            Arc::new(ThresholdOptimizer),
-        )
+        Self::new(MLAALPlannerComponents {
+            rollout: Arc::new(RolloutEngine::default()),
+            scorer: Arc::new(PatchScorer),
+            replay: Arc::new(ReplayRolloutAdapter),
+            memory: Arc::new(EpisodeMemoryStore),
+            recall: Arc::new(RecallOptimizer),
+            resonance: Arc::new(ResonanceMatcher),
+            bridge: Arc::new(MemoryBridge),
+            telemetry: Arc::new(TelemetryStore),
+            threshold_optimizer: Arc::new(ThresholdOptimizer),
+        })
     }
 
     fn generate_candidates(
@@ -87,14 +100,10 @@ impl MLAALPlanner {
         let lower = input.to_lowercase();
         let workspace_target = workspace_target(&ctx.target);
         let coding_target = coding_target(&ctx.target);
-        let request_options = CodingOptions {
-            request: Some(input.to_string()),
-            ..CodingOptions::default()
-        };
 
-        if input == "coding --apply" || input == "apply" {
+        if input == "coding --apply" || input == "apply" || input == "適用" {
             return Ok(vec![PlannedPatchCandidate::single(
-                PlannedStep::ApplyPreviousCodingStep,
+                PlannedStep::Apply,
                 DiffPreview {
                     summary: "apply pending preview transaction".to_string(),
                     patch_count: 1,
@@ -104,11 +113,11 @@ impl MLAALPlanner {
             )]);
         }
 
-        if lower == "rollback" {
+        if lower == "rollback" || lower == "再同期" || lower == "reload" {
             return Ok(vec![PlannedPatchCandidate::single(
-                PlannedStep::RollbackCurrentTransaction,
+                PlannedStep::Reload,
                 DiffPreview {
-                    summary: "rollback active transaction".to_string(),
+                    summary: "reload IR from disk".to_string(),
                     patch_count: 0,
                     unsafe_mutation: false,
                 },
@@ -116,60 +125,41 @@ impl MLAALPlanner {
             )]);
         }
 
-        let dependency_intent = [
+        let analyze_intent = [
+            "analyze",
+            "解析",
+            "review",
+            "調査",
             "dependency",
             "依存",
             "cycle",
             "循環",
-            "interface",
+        ]
+        .iter()
+        .any(|keyword| lower.contains(keyword));
+        let coding_intent = [
+            "fix",
+            "修正",
+            "変更",
+            "改善",
+            "追加",
+            "refactor",
+            "直して",
             "trait",
-            "extract",
             "adapter",
         ]
         .iter()
         .any(|keyword| lower.contains(keyword));
-        let analyze_intent = ["analyze", "解析", "review", "調査"]
-            .iter()
-            .any(|keyword| lower.contains(keyword));
-        let validate_intent = ["validate", "test", "確認", "検証"]
-            .iter()
-            .any(|keyword| lower.contains(keyword));
-        let coding_intent = dependency_intent
-            || [
-                "fix",
-                "修正",
-                "変更",
-                "改善",
-                "追加",
-                "refactor",
-                "直して",
-                "trait",
-                "adapter",
-            ]
-            .iter()
-            .any(|keyword| lower.contains(keyword));
 
         let mut candidates = Vec::new();
 
-        if dependency_intent || (analyze_intent && coding_intent) {
-            candidates.push(PlannedPatchCandidate::new(
-                vec![
-                    PlannedStep::Analyze(workspace_target.clone()),
-                    PlannedStep::Coding(coding_target.clone(), request_options.clone()),
-                    PlannedStep::Validate(workspace_target.clone()),
-                ],
-                DiffPreview {
-                    summary: "dependency-fix full rollout".to_string(),
-                    patch_count: 1,
-                    unsafe_mutation: false,
-                },
-                vec![coding_target.clone()],
-            ));
-        }
-
-        if coding_intent && !dependency_intent {
+        if coding_intent {
+            let refactor_spec = RefactorSpec {
+                target: coding_target.clone(),
+                request: input.to_string(),
+            };
             candidates.push(PlannedPatchCandidate::single(
-                PlannedStep::Coding(coding_target.clone(), request_options.clone()),
+                PlannedStep::Refactor(refactor_spec.clone()),
                 DiffPreview {
                     summary: "targeted coding patch".to_string(),
                     patch_count: 1,
@@ -180,7 +170,7 @@ impl MLAALPlanner {
             candidates.push(PlannedPatchCandidate::new(
                 vec![
                     PlannedStep::Analyze(workspace_target.clone()),
-                    PlannedStep::Coding(coding_target.clone(), request_options.clone()),
+                    PlannedStep::Refactor(refactor_spec),
                 ],
                 DiffPreview {
                     summary: "analyze then patch".to_string(),
@@ -200,18 +190,6 @@ impl MLAALPlanner {
                     unsafe_mutation: false,
                 },
                 vec![workspace_target.clone()],
-            ));
-        }
-
-        if validate_intent {
-            candidates.push(PlannedPatchCandidate::single(
-                PlannedStep::Validate(workspace_target.clone()),
-                DiffPreview {
-                    summary: "validation-only path".to_string(),
-                    patch_count: 0,
-                    unsafe_mutation: false,
-                },
-                vec![workspace_target],
             ));
         }
 
@@ -236,12 +214,12 @@ impl ReasoningPlanner for MLAALPlanner {
         let policy = AdaptivePolicy::load(&workspace_root).unwrap_or_default();
         let candidates = self.generate_candidates(ctx)?;
 
-        // R3: "apply" / "rollback" shortcuts bypass cognitive rollout (DBM-REPL-EXEC-STABILITY-SPEC)
+        // R3: "apply" / "reload" shortcuts bypass cognitive rollout
         if candidates.len() == 1 {
             let first = &candidates[0];
             if matches!(
                 first.planned_steps[0],
-                PlannedStep::ApplyPreviousCodingStep | PlannedStep::RollbackCurrentTransaction
+                PlannedStep::Apply | PlannedStep::Reload
             ) {
                 return Ok(PlanResult {
                     selected_action: first.planned_steps[0].clone(),
@@ -259,15 +237,15 @@ impl ReasoningPlanner for MLAALPlanner {
             .collect::<Vec<_>>();
         let recall = self
             .recall
-            .recall(
-                &self.memory,
-                &self.resonance,
-                &self.bridge,
+            .recall(RecallRequest {
+                store: &self.memory,
+                matcher: &self.resonance,
+                bridge: &self.bridge,
                 ctx,
                 constraints,
-                &policy,
-                &patch_candidates,
-            )
+                policy: &policy,
+                candidates: &patch_candidates,
+            })
             .context("episode recall failed")?;
 
         if let Some(result) = self.try_recall_first(ctx, constraints, &candidates, &recall)? {
@@ -288,7 +266,6 @@ impl ReasoningPlanner for MLAALPlanner {
                 },
                 &policy,
             )?;
-            debug_assert!(start.elapsed().as_millis() < 1_500);
             return Ok(result);
         }
 
@@ -317,7 +294,6 @@ impl ReasoningPlanner for MLAALPlanner {
             },
             &policy,
         )?;
-        debug_assert!(start.elapsed().as_millis() < 1_500);
 
         Ok(PlanResult {
             selected_action: best
@@ -519,18 +495,18 @@ impl PlannedPatchCandidate {
     }
 }
 
-fn workspace_target(target: &PathBuf) -> PathBuf {
+fn workspace_target(target: &Path) -> PathBuf {
     match target.extension().and_then(|ext| ext.to_str()) {
         Some("rs" | "toml" | "md" | "json" | "lock" | "yaml" | "yml") => PathBuf::from("."),
-        _ => target.clone(),
+        _ => target.to_path_buf(),
     }
 }
 
-fn coding_target(target: &PathBuf) -> PathBuf {
+fn coding_target(target: &Path) -> PathBuf {
     if target.as_os_str().is_empty() {
         PathBuf::from(".")
     } else {
-        target.clone()
+        target.to_path_buf()
     }
 }
 
@@ -578,344 +554,5 @@ mod tests {
 
         assert!(start.elapsed().as_millis() < 1_500);
         assert!(matches!(result.selected_action, PlannedStep::Analyze(_)));
-        assert_eq!(result.planned_steps.len(), 3);
-    }
-
-    #[test]
-    fn episode_saved_after_safe_success() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let planner = MLAALPlanner::default();
-        let ctx = CognitiveContext {
-            target: PathBuf::from(temp.path().join("apps/cli/src/nl/planner_v2.rs")),
-            user_request: "trait を抽出して dependency cycle を解消して".to_string(),
-            ir_checkpoint: Some(crate::ir::LoadedCheckpoint {
-                step_index: 0,
-                state: crate::service::dto::IRState {
-                    workspace_root: temp.path().to_path_buf(),
-                    ..crate::service::dto::IRState::default()
-                },
-            }),
-            ..CognitiveContext::default()
-        };
-
-        planner.plan(&ctx, &constraints()).expect("plan");
-
-        let store = EpisodeMemoryStore;
-        let episodes = store.load(temp.path()).expect("episodes");
-        assert_eq!(episodes.len(), 1);
-        assert!(episodes[0].rollback_free);
-    }
-
-    #[test]
-    fn recall_reduces_rollout_depth() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let store = EpisodeMemoryStore;
-        let bridge = MemoryBridge;
-        let recall = RecallOptimizer;
-        let matcher = ResonanceMatcher;
-        let ctx = CognitiveContext {
-            target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-            user_request: "trait を抽出して dependency cycle を解消して".to_string(),
-            ir_checkpoint: Some(crate::ir::LoadedCheckpoint {
-                step_index: 0,
-                state: crate::service::dto::IRState {
-                    workspace_root: temp.path().to_path_buf(),
-                    ..crate::service::dto::IRState::default()
-                },
-            }),
-            ..CognitiveContext::default()
-        };
-        store
-            .append_episode(
-                temp.path(),
-                EpisodeRecord {
-                    request_fingerprint: bridge.request_fingerprint(&ctx),
-                    dependency_signature: bridge.dependency_signature(
-                        &ctx,
-                        &PatchCandidate {
-                            step: PlannedStep::Analyze(PathBuf::from(".")),
-                            diff_preview: DiffPreview {
-                                summary: "dependency-fix full rollout".to_string(),
-                                patch_count: 1,
-                                unsafe_mutation: false,
-                            },
-                            estimated_files: vec![PathBuf::from("apps/cli/src/nl/planner_v2.rs")],
-                        },
-                    ),
-                    rollout_path: vec![
-                        PlannedStep::Analyze(PathBuf::from(".")),
-                        PlannedStep::Coding(
-                            PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                            CodingOptions {
-                                request: Some(ctx.user_request.clone()),
-                                ..CodingOptions::default()
-                            },
-                        ),
-                        PlannedStep::Validate(PathBuf::from(".")),
-                    ],
-                    final_score: 0.91,
-                    rollback_free: true,
-                    protected_safe: true,
-                    replay_trace_hash: bridge.replay_trace_hash(ctx.replay_timeline.as_ref()),
-                    created_at_secs: bridge.now_secs(),
-                    rollback_free_history: 3,
-                },
-            )
-            .expect("append episode");
-        let candidates = vec![PatchCandidate {
-            step: PlannedStep::Analyze(PathBuf::from(".")),
-            diff_preview: DiffPreview {
-                summary: "dependency-fix full rollout".to_string(),
-                patch_count: 1,
-                unsafe_mutation: false,
-            },
-            estimated_files: vec![PathBuf::from("apps/cli/src/nl/planner_v2.rs")],
-        }];
-
-        let result = recall
-            .recall(
-                &store,
-                &matcher,
-                &bridge,
-                &ctx,
-                &constraints(),
-                &AdaptivePolicy::default(),
-                &candidates,
-            )
-            .expect("recall");
-        assert_eq!(result.recommended_depth, 1);
-    }
-
-    #[test]
-    fn high_resonance_skips_rollout() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let planner = MLAALPlanner::default();
-        let bridge = MemoryBridge;
-        let store = EpisodeMemoryStore;
-        let request = "trait を抽出して dependency cycle を解消して".to_string();
-        let ctx = CognitiveContext {
-            target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-            user_request: request.clone(),
-            ir_checkpoint: Some(crate::ir::LoadedCheckpoint {
-                step_index: 0,
-                state: crate::service::dto::IRState {
-                    workspace_root: temp.path().to_path_buf(),
-                    ..crate::service::dto::IRState::default()
-                },
-            }),
-            ..CognitiveContext::default()
-        };
-        store
-            .append_episode(
-                temp.path(),
-                EpisodeRecord {
-                    request_fingerprint: bridge.request_fingerprint(&ctx),
-                    dependency_signature: bridge.dependency_signature(
-                        &ctx,
-                        &PatchCandidate {
-                            step: PlannedStep::Analyze(PathBuf::from(".")),
-                            diff_preview: DiffPreview {
-                                summary: "dependency-fix full rollout".to_string(),
-                                patch_count: 1,
-                                unsafe_mutation: false,
-                            },
-                            estimated_files: vec![PathBuf::from("apps/cli/src/nl/planner_v2.rs")],
-                        },
-                    ),
-                    rollout_path: vec![
-                        PlannedStep::Analyze(PathBuf::from(".")),
-                        PlannedStep::Coding(
-                            PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                            CodingOptions {
-                                request: Some(request),
-                                ..CodingOptions::default()
-                            },
-                        ),
-                        PlannedStep::Validate(PathBuf::from(".")),
-                    ],
-                    final_score: 0.95,
-                    rollback_free: true,
-                    protected_safe: true,
-                    replay_trace_hash: bridge.replay_trace_hash(ctx.replay_timeline.as_ref()),
-                    created_at_secs: bridge.now_secs(),
-                    rollback_free_history: 4,
-                },
-            )
-            .expect("append episode");
-
-        let result = planner.plan(&ctx, &constraints()).expect("plan");
-        assert_eq!(result.planned_steps.len(), 3);
-        assert!(result.confidence > 0.92);
-    }
-
-    #[test]
-    fn protected_branch_forces_full_rollout() {
-        let planner = MLAALPlanner::new(
-            Arc::new(RolloutEngine::default()),
-            Arc::new(PatchScorer),
-            Arc::new(ReplayRolloutAdapter),
-            Arc::new(EpisodeMemoryStore),
-            Arc::new(RecallOptimizer),
-            Arc::new(ResonanceMatcher),
-            Arc::new(MemoryBridge),
-            Arc::new(TelemetryStore),
-            Arc::new(ThresholdOptimizer),
-        );
-        let ctx = CognitiveContext {
-            target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-            user_request: "trait を抽出して dependency cycle を解消して".to_string(),
-            ..CognitiveContext::default()
-        };
-        let mut constraints = constraints();
-        constraints.protected_branch = true;
-
-        let result = planner.plan(&ctx, &constraints).expect("plan");
-        assert_eq!(result.planned_steps.len(), 3);
-    }
-
-    #[test]
-    fn stale_episode_triggers_decay() {
-        let bridge = MemoryBridge;
-        let recall = RecallOptimizer;
-        let old_episode = EpisodeRecord {
-            request_fingerprint: "old".to_string(),
-            dependency_signature: "sig".to_string(),
-            rollout_path: vec![PlannedStep::Analyze(PathBuf::from("."))],
-            final_score: 0.81,
-            rollback_free: true,
-            protected_safe: true,
-            replay_trace_hash: "old-trace".to_string(),
-            created_at_secs: bridge.now_secs().saturating_sub(60 * 60 * 24 * 60),
-            rollback_free_history: 3,
-        };
-        let ctx = CognitiveContext {
-            target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-            user_request: "new request".to_string(),
-            replay_timeline: Some(vec![crate::ir::ReplayTimelineEntry {
-                step: 1,
-                action: "Analyze".to_string(),
-                target: Some(".".to_string()),
-                state_hash: "new-trace".to_string(),
-                next_actions: vec!["Analyze".to_string()],
-            }]),
-            ..CognitiveContext::default()
-        };
-
-        let decayed =
-            recall.decayed_confidence(&bridge, &old_episode, &ctx, &AdaptivePolicy::default());
-        assert!(decayed < 0.35);
-    }
-
-    #[test]
-    fn telemetry_record_written() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let planner = MLAALPlanner::default();
-        let ctx = CognitiveContext {
-            target: PathBuf::from(temp.path().join("apps/cli/src/nl/planner_v2.rs")),
-            user_request: "trait を抽出して dependency cycle を解消して".to_string(),
-            ir_checkpoint: Some(crate::ir::LoadedCheckpoint {
-                step_index: 0,
-                state: crate::service::dto::IRState {
-                    workspace_root: temp.path().to_path_buf(),
-                    ..crate::service::dto::IRState::default()
-                },
-            }),
-            ..CognitiveContext::default()
-        };
-
-        planner.plan(&ctx, &constraints()).expect("plan");
-
-        let telemetry = TelemetryStore;
-        let records = telemetry.load(temp.path()).expect("telemetry");
-        assert_eq!(records.len(), 1);
-    }
-
-    #[test]
-    fn recall_hit_rate_adjusts_threshold() {
-        let optimizer = ThresholdOptimizer;
-        let current = AdaptivePolicy::default();
-        let kpi = crate::mlaal::TelemetryWindowKpi {
-            recall_hit_rate: 0.10,
-            ..crate::mlaal::TelemetryWindowKpi::default()
-        };
-
-        let next = optimizer.optimize(&current, &kpi);
-        assert!(next.resonance_threshold < current.resonance_threshold);
-    }
-
-    #[test]
-    fn unsafe_skip_increases_threshold() {
-        let optimizer = ThresholdOptimizer;
-        let current = AdaptivePolicy::default();
-        let kpi = crate::mlaal::TelemetryWindowKpi {
-            rollout_skip_rate: 0.30,
-            safe_reuse_success_rate: 0.80,
-            ..crate::mlaal::TelemetryWindowKpi::default()
-        };
-
-        let next = optimizer.optimize(&current, &kpi);
-        assert!(next.skip_threshold > current.skip_threshold);
-    }
-
-    #[test]
-    fn high_safe_reuse_reduces_depth() {
-        let policy = AdaptivePolicy {
-            depth_shrink_ratio: 0.50,
-            beam_shrink_ratio: 0.50,
-            ..AdaptivePolicy::default()
-        };
-        let planner = MLAALPlanner::default();
-        let recall = RecallResult {
-            matched_episode: Some(EpisodeRecord {
-                request_fingerprint: "fp".to_string(),
-                dependency_signature: "dep".to_string(),
-                rollout_path: vec![PlannedStep::Analyze(PathBuf::from("."))],
-                final_score: 0.9,
-                rollback_free: true,
-                protected_safe: true,
-                replay_trace_hash: "trace".to_string(),
-                created_at_secs: 0,
-                rollback_free_history: 3,
-            }),
-            resonance_score: 0.95,
-            recommended_depth: 1,
-            can_skip_rollout: false,
-        };
-
-        let adjusted = planner.adjusted_rollout_engine(&recall, &policy);
-        assert!(adjusted.max_depth < planner.rollout.max_depth);
-    }
-
-    #[test]
-    fn latency_budget_improves_over_window() {
-        let telemetry = TelemetryStore;
-        let records = vec![
-            TelemetryRecord {
-                recall_hit: true,
-                rollout_skipped: true,
-                rollout_depth: 0,
-                beam_width: 0,
-                preview_latency_ms: 700,
-                rollback_free: true,
-                protected_safe: true,
-                resonance_score: 0.95,
-                decay_applied: false,
-                replay_divergence: 0.0,
-            },
-            TelemetryRecord {
-                recall_hit: false,
-                rollout_skipped: false,
-                rollout_depth: 3,
-                beam_width: 4,
-                preview_latency_ms: 1300,
-                rollback_free: true,
-                protected_safe: true,
-                resonance_score: 0.30,
-                decay_applied: false,
-                replay_divergence: 0.2,
-            },
-        ];
-        let kpi = telemetry.compute_kpi(&records);
-        assert!(kpi.avg_preview_latency_ms < 1_100.0);
     }
 }

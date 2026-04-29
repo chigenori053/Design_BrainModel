@@ -9,17 +9,27 @@ use super::rollout::PatchCandidate;
 #[derive(Debug, Default)]
 pub struct RecallOptimizer;
 
+pub struct RecallRequest<'a> {
+    pub store: &'a EpisodeMemoryStore,
+    pub matcher: &'a ResonanceMatcher,
+    pub bridge: &'a MemoryBridge,
+    pub ctx: &'a CognitiveContext,
+    pub constraints: &'a PlanningConstraints,
+    pub policy: &'a AdaptivePolicy,
+    pub candidates: &'a [PatchCandidate],
+}
+
 impl RecallOptimizer {
-    pub fn recall(
-        &self,
-        store: &EpisodeMemoryStore,
-        matcher: &ResonanceMatcher,
-        bridge: &MemoryBridge,
-        ctx: &CognitiveContext,
-        constraints: &PlanningConstraints,
-        policy: &AdaptivePolicy,
-        candidates: &[PatchCandidate],
-    ) -> anyhow::Result<RecallResult> {
+    pub fn recall(&self, request: RecallRequest<'_>) -> anyhow::Result<RecallResult> {
+        let RecallRequest {
+            store,
+            matcher,
+            bridge,
+            ctx,
+            constraints,
+            policy,
+            candidates,
+        } = request;
         let workspace_root = bridge.workspace_root(ctx);
         let episodes = store.load(&workspace_root)?;
         if episodes.is_empty() {

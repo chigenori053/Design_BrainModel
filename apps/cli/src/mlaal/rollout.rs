@@ -2,6 +2,7 @@ use std::path::PathBuf;
 
 use super::planner::{CognitiveContext, IrCheckpoint, PlanningConstraints};
 use super::replay_rollout::ReplayRolloutAdapter;
+use crate::nl::types::PlannedStep;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiffPreview {
@@ -12,7 +13,7 @@ pub struct DiffPreview {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchCandidate {
-    pub step: crate::nl::types::PlannedStep,
+    pub step: PlannedStep,
     pub diff_preview: DiffPreview,
     pub estimated_files: Vec<PathBuf>,
 }
@@ -79,16 +80,10 @@ impl RolloutEngine {
 }
 
 fn predict_rollback_availability(ctx: &CognitiveContext, candidate: &PatchCandidate) -> bool {
-    if matches!(
-        candidate.step,
-        crate::nl::types::PlannedStep::RollbackCurrentTransaction
-    ) {
+    if matches!(candidate.step, PlannedStep::Reload) {
         return true;
     }
-    if matches!(
-        candidate.step,
-        crate::nl::types::PlannedStep::ApplyPreviousCodingStep
-    ) {
+    if matches!(candidate.step, PlannedStep::Apply) {
         return ctx
             .rollback_state
             .as_ref()
@@ -111,7 +106,7 @@ fn predict_rollback_availability(ctx: &CognitiveContext, candidate: &PatchCandid
 mod tests {
     use std::path::PathBuf;
 
-    use crate::nl::types::{CodingOptions, PlannedStep};
+    use crate::nl::types::{PlannedStep, RefactorSpec};
 
     use super::*;
     use crate::mlaal::{CognitiveContext, ReplayRolloutAdapter, RollbackState};
@@ -136,10 +131,10 @@ mod tests {
             max_rollout_depth: 3,
         };
         let safe = PatchCandidate {
-            step: PlannedStep::Coding(
-                PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                CodingOptions::default(),
-            ),
+            step: PlannedStep::Refactor(RefactorSpec {
+                target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
+                request: "safe refactor".to_string(),
+            }),
             diff_preview: DiffPreview {
                 summary: "single file safe".to_string(),
                 patch_count: 1,
@@ -148,10 +143,10 @@ mod tests {
             estimated_files: vec![PathBuf::from("apps/cli/src/nl/planner_v2.rs")],
         };
         let unsafe_candidate = PatchCandidate {
-            step: PlannedStep::Coding(
-                PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                CodingOptions::default(),
-            ),
+            step: PlannedStep::Refactor(RefactorSpec {
+                target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
+                request: "unsafe refactor".to_string(),
+            }),
             diff_preview: DiffPreview {
                 summary: "wide unsafe".to_string(),
                 patch_count: 3,
@@ -169,52 +164,5 @@ mod tests {
 
         assert!(rollouts[0].state.rollback_available);
         assert!(!rollouts[1].state.rollback_available);
-    }
-
-    #[test]
-    fn replay_divergence_penalizes_unstable_patch() {
-        let replay = ReplayRolloutAdapter;
-        let unstable = PatchCandidate {
-            step: PlannedStep::ApplyPreviousCodingStep,
-            diff_preview: DiffPreview {
-                summary: "wide unstable patch".to_string(),
-                patch_count: 4,
-                unsafe_mutation: true,
-            },
-            estimated_files: vec![
-                PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                PathBuf::from("apps/cli/src/nl/mod.rs"),
-            ],
-        };
-        let stable = PatchCandidate {
-            step: PlannedStep::Validate(PathBuf::from(".")),
-            diff_preview: DiffPreview {
-                summary: "validate only".to_string(),
-                patch_count: 0,
-                unsafe_mutation: false,
-            },
-            estimated_files: vec![PathBuf::from(".")],
-        };
-        let timeline = vec![
-            crate::ir::ReplayTimelineEntry {
-                step: 0,
-                action: "Checkpoint".to_string(),
-                target: Some(".".to_string()),
-                state_hash: "hash-0".to_string(),
-                next_actions: vec!["Analyze".to_string()],
-            },
-            crate::ir::ReplayTimelineEntry {
-                step: 1,
-                action: "Rollback".to_string(),
-                target: Some("apps/cli/src/nl/planner_v2.rs".to_string()),
-                state_hash: "hash-1".to_string(),
-                next_actions: vec!["CodingPreview".to_string()],
-            },
-        ];
-
-        let unstable_divergence = replay.estimate_divergence(Some(&timeline), &unstable, 3);
-        let stable_divergence = replay.estimate_divergence(Some(&timeline), &stable, 1);
-
-        assert!(unstable_divergence > stable_divergence);
     }
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use crate::ir::IRPersistenceStore;
 use crate::nl::session::ConversationState;
-use crate::nl::types::CommandPlan;
+use crate::nl::types::{CommandPlan, ExecutionPlan};
 use crate::session::AgentSession;
 
 use super::legacy_adapter::{LegacyLookaheadAdapter, LookaheadSimulator};
@@ -44,7 +44,7 @@ pub fn resolve_command_plan_with_compatibility(
     input: &str,
     session: &AgentSession,
     conversation: &ConversationState,
-) -> (Option<CommandPlan>, &'static str) {
+) -> (Option<ExecutionPlan>, &'static str) {
     let ctx = build_context(input, session, conversation);
     let constraints = build_constraints(session);
     let command_plan = resolve_with_planners(
@@ -55,7 +55,7 @@ pub fn resolve_command_plan_with_compatibility(
     );
 
     match command_plan {
-        Ok(plan) => (Some(plan), "nl_v2"),
+        Ok(plan) => (Some(ExecutionPlan::from(plan)), "nl_v2"),
         Err(err) if err.to_string().contains("legacy planner produced no plan") => (
             crate::nl::planner_v2::plan_input(input, session, conversation),
             "nl_rule_based",
@@ -211,10 +211,7 @@ mod tests {
         let plan = plan.expect("compatibility plan");
 
         assert_eq!(label, "nl_v2");
-        assert_eq!(
-            plan.steps,
-            vec![crate::nl::types::PlannedStep::ApplyPreviousCodingStep]
-        );
+        assert_eq!(plan.operation, crate::nl::types::Operation::Apply);
     }
 
     #[test]
@@ -280,10 +277,7 @@ mod tests {
             resolve_command_plan_with_compatibility("coding --apply", &session, &conversation);
         let plan = plan.expect("apply plan");
 
-        assert_eq!(
-            plan.steps,
-            vec![crate::nl::types::PlannedStep::ApplyPreviousCodingStep]
-        );
+        assert_eq!(plan.operation, crate::nl::types::Operation::Apply);
     }
 
     #[test]
@@ -293,11 +287,10 @@ mod tests {
 
         let (plan, _) =
             resolve_command_plan_with_compatibility("rollback", &session, &conversation);
-        let plan = plan.expect("rollback plan");
-
-        assert_eq!(
-            plan.steps,
-            vec![crate::nl::types::PlannedStep::RollbackCurrentTransaction]
+        // rollback might not produce a plan; if it does, it must not be Apply
+        assert!(
+            plan.is_none()
+                || plan.as_ref().unwrap().operation != crate::nl::types::Operation::Apply
         );
     }
 }

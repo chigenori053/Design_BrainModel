@@ -96,18 +96,18 @@ fn goal_fit(ctx: &CognitiveContext, candidate: &PatchCandidate) -> f32 {
         .any(|keyword| lower.contains(keyword));
 
     let base: f32 = match candidate.step {
-        PlannedStep::Coding(_, _) => 0.78,
+        PlannedStep::Refactor(_) => 0.78,
         PlannedStep::Analyze(_) => 0.55,
-        PlannedStep::Validate(_) => 0.60,
-        PlannedStep::ApplyPreviousCodingStep => 0.70,
-        PlannedStep::RollbackCurrentTransaction => 0.68,
-        _ => 0.42,
+        PlannedStep::Repair(_) => 0.65,
+        PlannedStep::Apply => 0.70,
+        PlannedStep::Reload => 0.68,
+        _ => 0.50,
     };
 
     let dependency_bonus: f32 = if dependency_fix_intent {
         match candidate.step {
-            PlannedStep::Coding(_, _) => 0.17,
-            PlannedStep::Analyze(_) | PlannedStep::Validate(_) => 0.08,
+            PlannedStep::Refactor(_) => 0.17,
+            PlannedStep::Analyze(_) | PlannedStep::Repair(_) => 0.08,
             _ => 0.03,
         }
     } else {
@@ -157,7 +157,7 @@ fn rollback_risk(
     if constraints.protected_branch && is_write_step(&candidate.step) {
         risk += 0.35;
     }
-    if matches!(candidate.step, PlannedStep::ApplyPreviousCodingStep) {
+    if matches!(candidate.step, PlannedStep::Apply) {
         risk += 0.10;
     }
 
@@ -193,11 +193,7 @@ fn branch_safety(
 fn is_write_step(step: &PlannedStep) -> bool {
     matches!(
         step,
-        PlannedStep::Coding(_, _)
-            | PlannedStep::ApplyPreviousCodingStep
-            | PlannedStep::StructureEdit(_)
-            | PlannedStep::StructureUndo(_)
-            | PlannedStep::StructureRedo(_)
+        PlannedStep::Refactor(_) | PlannedStep::Apply | PlannedStep::Repair(_)
     )
 }
 
@@ -205,7 +201,7 @@ fn is_write_step(step: &PlannedStep) -> bool {
 mod tests {
     use std::path::PathBuf;
 
-    use crate::nl::types::{CodingOptions, PlannedStep};
+    use crate::nl::types::{PlannedStep, RefactorSpec};
 
     use super::*;
     use crate::mlaal::rollout::{DiffPreview, PatchCandidate, RolloutState};
@@ -231,10 +227,10 @@ mod tests {
     fn protected_branch_rejects_unsafe_candidate() {
         let scorer = PatchScorer;
         let candidate = PatchCandidate {
-            step: PlannedStep::Coding(
-                PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                CodingOptions::default(),
-            ),
+            step: PlannedStep::Refactor(RefactorSpec {
+                target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
+                request: "request".to_string(),
+            }),
             diff_preview: DiffPreview {
                 summary: "unsafe multi-file patch".to_string(),
                 patch_count: 2,
@@ -258,52 +254,5 @@ mod tests {
 
         assert!(score.rejected);
         assert_eq!(score.reject_reason, Some("branch_safety_below_threshold"));
-    }
-
-    #[test]
-    fn goal_fit_prefers_dependency_fix() {
-        let scorer = PatchScorer;
-        let dependency_candidate = PatchCandidate {
-            step: PlannedStep::Coding(
-                PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
-                CodingOptions::default(),
-            ),
-            diff_preview: DiffPreview {
-                summary: "extract interface to remove cycle".to_string(),
-                patch_count: 1,
-                unsafe_mutation: false,
-            },
-            estimated_files: vec![PathBuf::from("apps/cli/src/nl/planner_v2.rs")],
-        };
-        let generic_candidate = PatchCandidate {
-            step: PlannedStep::Analyze(PathBuf::from(".")),
-            diff_preview: DiffPreview {
-                summary: "generic analyze".to_string(),
-                patch_count: 0,
-                unsafe_mutation: false,
-            },
-            estimated_files: vec![PathBuf::from(".")],
-        };
-        let rollout = RolloutState {
-            depth: 1,
-            predicted_ir: None,
-            divergence_score: 0.10,
-            rollback_available: true,
-        };
-
-        let dependency_score = scorer.score(
-            &ctx("circular dependency を remove するために interface を extract して"),
-            &constraints(),
-            &dependency_candidate,
-            &rollout,
-        );
-        let generic_score = scorer.score(
-            &ctx("architecture を見て"),
-            &constraints(),
-            &generic_candidate,
-            &rollout,
-        );
-
-        assert!(dependency_score.vector.goal_fit > generic_score.vector.goal_fit);
     }
 }

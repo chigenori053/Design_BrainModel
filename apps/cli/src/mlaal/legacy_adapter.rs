@@ -4,6 +4,7 @@ use anyhow::{Context, anyhow};
 
 use crate::nl::planner_v2;
 use crate::nl::session::ConversationState;
+use crate::nl::types::{CommandPlan, ExecutionPlan};
 use crate::session::AgentSession;
 
 use super::planner::{CognitiveContext, PlanResult, PlanningConstraints, ReasoningPlanner};
@@ -17,7 +18,7 @@ impl LookaheadSimulator {
         input: &str,
         session: &AgentSession,
         conversation: &ConversationState,
-    ) -> Option<crate::nl::types::CommandPlan> {
+    ) -> Option<ExecutionPlan> {
         planner_v2::plan_input(input, session, conversation)
     }
 }
@@ -48,22 +49,24 @@ impl ReasoningPlanner for LegacyLookaheadAdapter {
         ctx: &CognitiveContext,
         constraints: &PlanningConstraints,
     ) -> anyhow::Result<PlanResult> {
-        let command_plan = self
+        let exec_plan = self
             .simulator
             .plan(&ctx.user_request, &self.session, &self.conversation)
             .with_context(|| format!("legacy planner produced no plan for {}", ctx.user_request))?;
-        let selected_action = command_plan
+        // ExecutionPlan → CommandPlan for mlaal-internal PlanResult (PlannedStep based)
+        let cmd_plan = CommandPlan::from(&exec_plan);
+        let selected_action = cmd_plan
             .steps
             .first()
             .cloned()
             .ok_or_else(|| anyhow!("legacy planner returned an empty plan"))?;
 
         Ok(PlanResult {
-            selected_action,
+            selected_action: selected_action.clone(),
             confidence: 1.0,
             risk_score: if constraints.rollback_safe { 0.0 } else { 0.25 },
             compatibility_mode: true,
-            planned_steps: command_plan.steps,
+            planned_steps: vec![selected_action],
         })
     }
 }
@@ -75,7 +78,7 @@ mod tests {
 
     use crate::nl::planner_v2;
     use crate::nl::session::ConversationState;
-    use crate::nl::types::PlannedStep;
+    use crate::nl::types::{CommandPlan, PlannedStep};
     use crate::session::AgentSession;
 
     use super::*;
@@ -104,12 +107,13 @@ mod tests {
             ..CognitiveContext::default()
         };
 
-        let legacy_plan =
+        let legacy_exec =
             planner_v2::plan_input(&ctx.user_request, &session, &conversation).expect("legacy");
+        let legacy_steps = CommandPlan::from(&legacy_exec).steps;
         let result = adapter.plan(&ctx, &constraints()).expect("adapter result");
 
-        assert_eq!(result.selected_action, legacy_plan.steps[0]);
-        assert_eq!(result.planned_steps, legacy_plan.steps);
+        assert_eq!(result.selected_action, legacy_steps[0]);
+        assert_eq!(result.planned_steps, legacy_steps);
     }
 
     #[test]
@@ -126,7 +130,7 @@ mod tests {
         };
 
         let result = adapter.plan(&ctx, &constraints()).expect("adapter result");
-        assert_eq!(result.selected_action, PlannedStep::ApplyPreviousCodingStep);
+        assert_eq!(result.selected_action, PlannedStep::Apply);
         assert!(result.compatibility_mode);
     }
 }
