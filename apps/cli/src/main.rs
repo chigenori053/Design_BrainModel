@@ -19,6 +19,7 @@ Core:
 Workflow:
   repl           Interactive natural language and command workflow
   run            Execute controlled project workflows
+  run-dsl        Execute isolated task.json DSL workflows
   rules          Inspect, validate, and promote learned rules
   memory         Import and verify memory seeds
 
@@ -67,6 +68,8 @@ enum Commands {
     Repl(PassThroughArgs),
     #[command(about = "Execute controlled project workflows")]
     Run(PassThroughArgs),
+    #[command(about = "Execute isolated task.json DSL workflows")]
+    RunDsl(PassThroughArgs),
     #[command(about = "Inspect, validate, and promote learned rules")]
     Rules(PassThroughArgs),
     #[command(about = "Internal phased analyzer")]
@@ -153,6 +156,10 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
         return Ok(());
     }
 
+    if let Some(run_id) = run_dsl_replay_id(&args) {
+        return design_cli::run_dsl::handle_replay(run_id);
+    }
+
     if should_use_legacy_app(&args) {
         return design_cli::app::run_with_args(args);
     }
@@ -186,9 +193,10 @@ fn dispatch(args: Vec<OsString>) -> Result<(), String> {
         Some(Commands::Coding(args)) => pass_through_app_command("coding", args),
         Some(Commands::Validate(args)) => pass_through_app_command("validate", args),
         Some(Commands::Structure(args)) => pass_through_app_command("structure", args),
-        Some(Commands::Replay(args)) => pass_through_app_command("replay", args),
+        Some(Commands::Replay(args)) => pass_through_replay_command(args),
         Some(Commands::Repl(args)) => pass_through_app_command("repl", args),
         Some(Commands::Run(args)) => pass_through_app_command("run", args),
+        Some(Commands::RunDsl(args)) => pass_through_app_command("run-dsl", args),
         Some(Commands::Rules(args)) => pass_through_app_command("rules", args),
         Some(Commands::PhaseAnalyze(args)) => design_cli::design_main::run_with_args(
             std::iter::once(OsString::from("design_cli"))
@@ -213,6 +221,27 @@ fn pass_through_app_command(command: &str, args: PassThroughArgs) -> Result<(), 
             .chain(args.args)
             .collect::<Vec<_>>(),
     )
+}
+
+fn pass_through_replay_command(args: PassThroughArgs) -> Result<(), String> {
+    if args.args.len() == 1 {
+        if let Some(run_id) = args.args[0].to_str()
+            && !matches!(run_id, "session" | "export" | "step")
+        {
+            return design_cli::run_dsl::handle_replay(run_id);
+        }
+    }
+    pass_through_app_command("replay", args)
+}
+
+fn run_dsl_replay_id(args: &[OsString]) -> Option<&str> {
+    match args {
+        [_, command, run_id] if command == "replay" => {
+            let run_id = run_id.to_str()?;
+            (!matches!(run_id, "session" | "export" | "step")).then_some(run_id)
+        }
+        _ => None,
+    }
 }
 
 fn should_print_onboarding_help(args: &[OsString]) -> bool {
@@ -248,6 +277,7 @@ fn should_use_legacy_app(args: &[OsString]) -> bool {
             | "exec"
             | "execute"
             | "run"
+            | "run-dsl"
             | "wizard"
             | "repl"
             | "tui"

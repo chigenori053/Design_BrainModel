@@ -7,10 +7,12 @@ Core:
   coding         Generate or safely apply code changes
   validate       Validate design and runtime constraints
   structure      Open structure viewer and edit sessions
+  replay         Replay persisted IR sessions and export timelines
 
 Workflow:
   repl           Interactive natural language and command workflow
   run            Execute controlled project workflows
+  run-dsl        Execute isolated task.json DSL workflows
   rules          Inspect, validate, and promote learned rules
   memory         Import and verify memory seeds
 

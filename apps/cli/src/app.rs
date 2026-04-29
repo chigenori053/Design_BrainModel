@@ -85,6 +85,7 @@ enum Commands {
     Exec(ExecArgs),
     Execute(ExecuteArgs),
     Run(RunArgs),
+    RunDsl(RunDslArgs),
     Wizard(WizardArgs),
     Repl(ReplArgs),
     Replay(ReplayArgs),
@@ -304,6 +305,11 @@ pub struct RunArgs {
     pub allow_fs_write: bool,
     #[arg(long, default_value_t = false)]
     pub json: bool,
+}
+
+#[derive(clap::Args, Debug, Clone)]
+pub struct RunDslArgs {
+    pub input: PathBuf,
 }
 
 #[derive(clap::Args, Debug, Clone)]
@@ -544,6 +550,7 @@ fn dispatch(cli: Cli) -> Result<(), String> {
         Some(Commands::Exec(args)) => execute_exec(args),
         Some(Commands::Execute(args)) => execute_autonomous(args),
         Some(Commands::Run(args)) => execute_run(args),
+        Some(Commands::RunDsl(args)) => crate::run_dsl::handle_run_dsl(args.input),
         Some(Commands::Wizard(args)) => wizard_mode(args),
         Some(Commands::Repl(args)) => repl_mode(args),
         Some(Commands::Replay(args)) => execute_replay(args),

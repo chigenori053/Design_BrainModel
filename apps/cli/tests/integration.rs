@@ -94,6 +94,8 @@ mod repl_session_continuity;
 mod repl_stability_verification;
 #[path = "integration/repl_subcommand_dispatch.rs"]
 mod repl_subcommand_dispatch;
+#[path = "integration/run_dsl.rs"]
+mod run_dsl;
 #[path = "integration/structure_session.rs"]
 mod structure_session;
 #[path = "integration/transaction_execution_bridge.rs"]

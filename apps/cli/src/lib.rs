@@ -37,6 +37,7 @@ pub mod repair_engine;
 pub mod repl;
 pub mod report;
 pub mod router;
+pub mod run_dsl;
 pub mod runner;
 pub mod service;
 pub mod service_coding_interface;
