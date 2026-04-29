@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use design_cli::nl::context::merge_target;
 use design_cli::nl::planner_v2::plan_input;
 use design_cli::nl::session::ConversationState;
-use design_cli::nl::types::{CodingOptions, PlannedStep};
+use design_cli::nl::types::Operation;
 use design_cli::session::AgentSession;
 
 #[test]
@@ -20,45 +20,26 @@ fn context_merge_inherits_target_and_node() {
 }
 
 #[test]
-fn viewer_undo_maps_from_conversation_state() {
+fn mutation_followup_routes_to_refactor() {
     let session = AgentSession::new();
     let conversation = ConversationState {
         last_target: Some(PathBuf::from(".")),
-        last_viewer_session: Some("viewer-session".to_string()),
         ..ConversationState::default()
     };
-    let plan = plan_input("1つ戻して", &session, &conversation).expect("plan");
-    assert_eq!(
-        plan.steps,
-        vec![PlannedStep::StructureUndo(PathBuf::from("."))]
-    );
+    let plan =
+        plan_input("presentation layer 側だけ直して", &session, &conversation).expect("plan");
+    assert_eq!(plan.operation, Operation::Refactor);
 }
 
 #[test]
-fn git_steps_default_to_dry_run_safe_workflow() {
+fn analyze_only_does_not_produce_refactor() {
     let session = AgentSession::new();
     let conversation = ConversationState {
         last_target: Some(PathBuf::from(".")),
         ..ConversationState::default()
     };
-    let plan = plan_input("commitしてPR作って", &session, &conversation).expect("plan");
-    assert_eq!(
-        plan.steps,
-        vec![
-            PlannedStep::GitCommit(PathBuf::from(".")),
-            PlannedStep::GitPR(PathBuf::from("."))
-        ]
-    );
-    let followup = plan_input("presentation layer 側だけ直して", &session, &conversation)
-        .expect("followup plan");
-    assert_eq!(
-        followup.steps,
-        vec![PlannedStep::Coding(
-            PathBuf::from("."),
-            CodingOptions {
-                request: Some("presentation layer 側だけ直して".to_string()),
-                ..CodingOptions::default()
-            }
-        )]
-    );
+    let plan = plan_input("プロジェクト全体を解析して", &session, &conversation);
+    if let Some(plan) = plan {
+        assert_ne!(plan.operation, Operation::Refactor);
+    }
 }

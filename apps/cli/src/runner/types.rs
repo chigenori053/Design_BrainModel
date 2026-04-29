@@ -156,7 +156,7 @@ impl std::error::Error for RunnerError {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunnerResult {
-    Success(ExecutionResult),
+    Success(Box<ExecutionResult>),
     Panic,
 }
 

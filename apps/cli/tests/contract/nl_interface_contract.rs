@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use design_cli::nl::intent::primary_intent;
 use design_cli::nl::planner::plan_input;
 use design_cli::nl::target::resolve_target;
-use design_cli::nl::types::{CodingOptions, IntentType, PlannedStep};
+use design_cli::nl::types::{IntentType, Operation};
 use design_cli::session::AgentSession;
 
 #[test]
@@ -35,15 +35,8 @@ fn nl_target_resolution_uses_project_phrase_and_last_path() {
 }
 
 #[test]
-fn nl_multi_step_plan_enforces_safe_coding_defaults() {
+fn nl_coding_input_produces_refactor_plan() {
     let session = AgentSession::new();
     let plan = plan_input("unsafeを減らして cargo check して", &session).expect("plan");
-    assert_eq!(
-        plan.steps,
-        vec![
-            PlannedStep::Analyze(PathBuf::from(".")),
-            PlannedStep::Coding(PathBuf::from("."), CodingOptions::default()),
-            PlannedStep::Validate(PathBuf::from(".")),
-        ]
-    );
+    assert_eq!(plan.operation, Operation::Refactor);
 }

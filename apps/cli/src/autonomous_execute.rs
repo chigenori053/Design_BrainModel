@@ -308,10 +308,7 @@ impl TaskPlanner {
         }
 
         if tasks.is_empty() {
-            push_command(
-                &mut tasks,
-                default_tasks(&commands).first().map(|command| *command),
-            );
+            push_command(&mut tasks, default_tasks(&commands).first().copied());
         }
 
         TaskPlan { tasks }

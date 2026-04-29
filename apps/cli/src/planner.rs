@@ -33,7 +33,7 @@ impl PlannerMode {
     }
 
     /// 文字列から PlannerMode をパースする
-    pub fn from_str(s: &str) -> Option<Self> {
+    pub fn parse(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "rule" | "rule_based" => Some(Self::RuleBased),
             "dbm" => Some(Self::DBM),
@@ -83,21 +83,21 @@ mod tests {
 
     #[test]
     fn mode_from_str_rule() {
-        assert_eq!(PlannerMode::from_str("rule"), Some(PlannerMode::RuleBased));
+        assert_eq!(PlannerMode::parse("rule"), Some(PlannerMode::RuleBased));
         assert_eq!(
-            PlannerMode::from_str("rule_based"),
+            PlannerMode::parse("rule_based"),
             Some(PlannerMode::RuleBased)
         );
     }
 
     #[test]
     fn mode_from_str_dbm() {
-        assert_eq!(PlannerMode::from_str("dbm"), Some(PlannerMode::DBM));
+        assert_eq!(PlannerMode::parse("dbm"), Some(PlannerMode::DBM));
     }
 
     #[test]
     fn mode_from_str_unknown_returns_none() {
-        assert_eq!(PlannerMode::from_str("unknown"), None);
+        assert_eq!(PlannerMode::parse("unknown"), None);
     }
 
     #[test]

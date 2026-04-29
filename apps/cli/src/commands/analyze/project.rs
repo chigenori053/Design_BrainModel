@@ -569,19 +569,19 @@ fn highest_complexity_action(result: &ProjectAnalysisResult) -> String {
 }
 
 fn safest_action(result: &ProjectAnalysisResult, violations: &[String]) -> String {
-    if let Some(dep) = result.dependencies.first() {
-        if violations.iter().any(|issue| issue.contains("cycle")) {
-            return format!("RemoveDependency({} -> {})", dep.from, dep.to);
-        }
+    if let Some(dep) = result.dependencies.first()
+        && violations.iter().any(|issue| issue.contains("cycle"))
+    {
+        return format!("RemoveDependency({} -> {})", dep.from, dep.to);
     }
     "PreserveCurrentStructure".to_string()
 }
 
 fn balanced_action(result: &ProjectAnalysisResult, violations: &[String]) -> String {
-    if violations.iter().any(|issue| issue.contains("cycle")) {
-        if let Some(dep) = result.dependencies.first() {
-            return format!("RemoveDependency({} -> {})", dep.from, dep.to);
-        }
+    if violations.iter().any(|issue| issue.contains("cycle"))
+        && let Some(dep) = result.dependencies.first()
+    {
+        return format!("RemoveDependency({} -> {})", dep.from, dep.to);
     }
     if result.files.iter().any(|file| !file.todos.is_empty()) {
         return "ResolveTodoMarkers".to_string();

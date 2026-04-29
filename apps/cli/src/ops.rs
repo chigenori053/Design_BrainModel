@@ -215,11 +215,11 @@ pub fn write_analyze_log(log: &AnalyzeLog, path: &Path) -> Result<(), String> {
 }
 
 fn write_json<T: serde::Serialize>(value: &T, path: &Path) -> Result<(), String> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            std::fs::create_dir_all(parent)
-                .map_err(|e| format!("cannot create log dir {}: {e}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("cannot create log dir {}: {e}", parent.display()))?;
     }
     let json =
         serde_json::to_string_pretty(value).map_err(|e| format!("log serialization: {e}"))?;

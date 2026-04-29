@@ -5,6 +5,7 @@ pub mod cli;
 pub mod coding;
 pub mod coding_service_interface;
 pub mod command;
+pub mod command_executor;
 pub mod commands;
 pub mod consistency_engine;
 pub mod control_event;

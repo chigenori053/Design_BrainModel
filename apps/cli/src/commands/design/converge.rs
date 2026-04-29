@@ -16,16 +16,14 @@ pub fn handler() -> SubCommandHandler {
 fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, CommandError> {
     let root = resolve_root(args.first().map(|s| s.as_str()));
 
-    let (initial, history) = load_versions(&root).map_err(|e| CommandError::ExecutionError(e))?;
+    let (initial, history) = load_versions(&root).map_err(CommandError::ExecutionError)?;
 
     let result = converge(ConvergenceInput { initial, history });
 
     // Persist results
-    save_design_doc(&root, &result.final_version.design)
-        .map_err(|e| CommandError::ExecutionError(e))?;
-    save_baseline(&root, &result.final_version).map_err(|e| CommandError::ExecutionError(e))?;
-    save_version_snapshot(&root, &result.final_version)
-        .map_err(|e| CommandError::ExecutionError(e))?;
+    save_design_doc(&root, &result.final_version.design).map_err(CommandError::ExecutionError)?;
+    save_baseline(&root, &result.final_version).map_err(CommandError::ExecutionError)?;
+    save_version_snapshot(&root, &result.final_version).map_err(CommandError::ExecutionError)?;
 
     // Build report
     let status_str = match &result.status {

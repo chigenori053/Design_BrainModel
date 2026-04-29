@@ -21,8 +21,8 @@ pub fn detect_language(input: &str) -> LanguageDetectionResult {
     let mixed_language = japanese_units > 0 && english_units > 0;
     let detected_language = match (japanese_units, english_units) {
         (0, 0) => SupportedLanguage::Unknown,
-        (japanese, english) if japanese == 0 => SupportedLanguage::English,
-        (japanese, english) if english == 0 => SupportedLanguage::Japanese,
+        (0, _english) => SupportedLanguage::English,
+        (_japanese, 0) => SupportedLanguage::Japanese,
         (japanese, english) if japanese >= english => SupportedLanguage::Japanese,
         _ => SupportedLanguage::English,
     };

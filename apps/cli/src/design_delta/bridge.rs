@@ -1,4 +1,4 @@
-use crate::nl::types::{CodingOptions, CommandPlan, PlannedStep};
+use crate::nl::types::{ExecutionPlan, Operation, PlanSource};
 
 use super::{CodingPatchPlan, MutationPlan};
 
@@ -22,27 +22,13 @@ pub fn to_coding_patch_plan(plan: &MutationPlan) -> CodingPatchPlan {
     }
 }
 
-pub fn to_command_plan(plan: &MutationPlan, request: &str) -> CommandPlan {
-    let mut steps = Vec::new();
-    for path in &plan.target_files {
-        steps.push(PlannedStep::Coding(
-            path.clone(),
-            CodingOptions {
-                request: Some(request.to_string()),
-                ..CodingOptions::default()
-            },
-        ));
-        steps.push(PlannedStep::Validate(path.clone()));
-    }
-    if steps.is_empty() {
-        steps.push(PlannedStep::Validate(std::path::PathBuf::from(".")));
-    }
-    steps.push(PlannedStep::GitCommit(plan.delta.workspace_root.clone()));
-    steps.push(PlannedStep::GitPR(plan.delta.workspace_root.clone()));
-    CommandPlan {
-        intent: None,
-        steps,
-    }
+pub fn to_execution_plan(plan: &MutationPlan, request: &str) -> ExecutionPlan {
+    ExecutionPlan::new(
+        Operation::Refactor,
+        Some(plan.delta.workspace_root.clone()),
+        PlanSource::System,
+    )
+    .with_query(request)
 }
 
 #[cfg(test)]
@@ -53,7 +39,9 @@ mod tests {
     use crate::design_delta::{DesignDelta, MutationPlan};
 
     #[test]
-    fn bridge_creates_patch_and_command_plan() {
+    fn bridge_creates_patch_and_execution_plan() {
+        use crate::nl::types::Operation;
+
         let plan = MutationPlan {
             delta: DesignDelta {
                 workspace_root: PathBuf::from("."),
@@ -65,8 +53,8 @@ mod tests {
             rollback_units: vec!["crate::design_cli".to_string()],
         };
         let patch = to_coding_patch_plan(&plan);
-        let commands = to_command_plan(&plan, "trait 分離して");
+        let exec_plan = to_execution_plan(&plan, "trait 分離して");
         assert_eq!(patch.target_files.len(), 1);
-        assert_eq!(commands.steps.len(), 4);
+        assert_eq!(exec_plan.operation, Operation::Refactor);
     }
 }

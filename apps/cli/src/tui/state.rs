@@ -85,11 +85,11 @@ impl TuiState {
             }
             ActivePanel::Hypothesis => {
                 let ids = self.visible_hypothesis_ids();
-                if let Some(pos) = self.hypothesis_list_pos(&ids) {
-                    if pos > 0 {
-                        self.selected_hypothesis = Some(ids[pos - 1]);
-                        self.sync_step_to_hypothesis();
-                    }
+                if let Some(pos) = self.hypothesis_list_pos(&ids)
+                    && pos > 0
+                {
+                    self.selected_hypothesis = Some(ids[pos - 1]);
+                    self.sync_step_to_hypothesis();
                 }
             }
             ActivePanel::Memory => {
@@ -108,11 +108,11 @@ impl TuiState {
             }
             ActivePanel::Hypothesis => {
                 let ids = self.visible_hypothesis_ids();
-                if let Some(pos) = self.hypothesis_list_pos(&ids) {
-                    if pos + 1 < ids.len() {
-                        self.selected_hypothesis = Some(ids[pos + 1]);
-                        self.sync_step_to_hypothesis();
-                    }
+                if let Some(pos) = self.hypothesis_list_pos(&ids)
+                    && pos + 1 < ids.len()
+                {
+                    self.selected_hypothesis = Some(ids[pos + 1]);
+                    self.sync_step_to_hypothesis();
                 }
             }
             ActivePanel::Memory => {
@@ -142,18 +142,18 @@ impl TuiState {
 
     /// Hypothesis selected → move trace step to matching depth.
     fn sync_step_to_hypothesis(&mut self) {
-        if let Some(id) = self.selected_hypothesis {
-            if let Some(h) = self.payload.hypotheses.iter().find(|h| h.id == id) {
-                let depth = h.depth;
-                if let Some(pos) = self
-                    .payload
-                    .trace
-                    .steps
-                    .iter()
-                    .position(|s| s.depth == depth)
-                {
-                    self.selected_step = pos;
-                }
+        if let Some(id) = self.selected_hypothesis
+            && let Some(h) = self.payload.hypotheses.iter().find(|h| h.id == id)
+        {
+            let depth = h.depth;
+            if let Some(pos) = self
+                .payload
+                .trace
+                .steps
+                .iter()
+                .position(|s| s.depth == depth)
+            {
+                self.selected_step = pos;
             }
         }
     }

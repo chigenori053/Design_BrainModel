@@ -2,6 +2,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+type GraphPlanParts = (
+    StructureGraph,
+    Vec<StructureEdge>,
+    Vec<(PathBuf, PathBuf)>,
+    Option<String>,
+    f32,
+);
+
 use integration_layer::{generate_patches, simulate_refactor};
 
 use crate::service::AnalysisReport;
@@ -276,17 +284,7 @@ pub fn create_refactor_plan(
     })
 }
 
-fn plan_extract_interface(
-    before_graph: &StructureGraph,
-    from: &str,
-    to: &str,
-) -> (
-    StructureGraph,
-    Vec<StructureEdge>,
-    Vec<(PathBuf, PathBuf)>,
-    Option<String>,
-    f32,
-) {
+fn plan_extract_interface(before_graph: &StructureGraph, from: &str, to: &str) -> GraphPlanParts {
     let mut after = before_graph.clone();
     after
         .edges
@@ -322,16 +320,7 @@ fn plan_extract_interface(
 fn plan_cycle_break(
     report: &AnalysisReport,
     before_graph: &StructureGraph,
-) -> Result<
-    (
-        StructureGraph,
-        Vec<StructureEdge>,
-        Vec<(PathBuf, PathBuf)>,
-        Option<String>,
-        f32,
-    ),
-    String,
-> {
+) -> Result<GraphPlanParts, String> {
     let selected = report
         .cycles
         .cycles

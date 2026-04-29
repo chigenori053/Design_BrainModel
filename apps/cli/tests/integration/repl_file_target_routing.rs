@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use design_cli::nl::intent::{wants_analyze, wants_coding};
 use design_cli::nl::planner_v2::plan_input;
 use design_cli::nl::session::ConversationState;
-use design_cli::nl::types::PlannedStep;
+use design_cli::nl::types::Operation;
 use design_cli::session::AgentSession;
 
 fn session() -> AgentSession {
@@ -30,7 +30,7 @@ fn wants_coding_recognizes_mutation_verbs() {
     }
 }
 
-// ─── Case 1: file-local coding → Coding { target } ───────────────────────────
+// ─── Case 1: file-local coding → Refactor { target } ─────────────────────────
 
 #[test]
 fn file_path_with_mutation_routes_to_coding() {
@@ -49,13 +49,16 @@ fn file_path_with_mutation_routes_to_coding() {
         ),
     ] {
         let plan = plan_input(input, &session(), &conv()).expect("must produce a plan");
-        assert_eq!(plan.steps.len(), 1, "must produce exactly one step");
-        match &plan.steps[0] {
-            PlannedStep::Coding(path, _) => {
-                assert_eq!(path, &PathBuf::from(expected_path));
-            }
-            other => panic!("expected Coding step, got {other:?}"),
-        }
+        assert_eq!(
+            plan.operation,
+            Operation::Refactor,
+            "must produce Refactor for: {input}"
+        );
+        assert_eq!(
+            plan.target,
+            Some(PathBuf::from(expected_path)),
+            "must route to file target for: {input}"
+        );
     }
 }
 
@@ -71,12 +74,16 @@ fn previous_target_reuse_on_mutation_followup() {
         let plan = plan_input(input, &session(), &conv_with_last(prev))
             .expect("must produce a plan with previous target");
 
-        match &plan.steps[0] {
-            PlannedStep::Coding(path, _) => {
-                assert_eq!(path, &PathBuf::from(prev), "must reuse last target");
-            }
-            other => panic!("expected Coding with previous target, got {other:?}"),
-        }
+        assert_eq!(
+            plan.operation,
+            Operation::Refactor,
+            "must be Refactor for: {input}"
+        );
+        assert_eq!(
+            plan.target,
+            Some(PathBuf::from(prev)),
+            "must reuse last target for: {input}"
+        );
     }
 }
 
@@ -84,27 +91,24 @@ fn previous_target_reuse_on_mutation_followup() {
 fn analyze_intent_does_not_route_to_coding() {
     let project_wide = plan_input("プロジェクト全体を解析して", &session(), &conv());
     if let Some(plan) = project_wide {
-        for step in &plan.steps {
-            assert!(
-                !matches!(step, PlannedStep::Coding(_, _)),
-                "project-wide analyze must not produce a Coding step, got {step:?}"
-            );
-        }
+        assert_ne!(
+            plan.operation,
+            Operation::Refactor,
+            "project-wide analyze must not produce a Refactor operation"
+        );
     }
 
     let analyze =
         plan_input("このプロジェクトを解析して", &session(), &conv()).expect("must produce a plan");
-    for step in &analyze.steps {
-        assert!(
-            !matches!(step, PlannedStep::Coding(_, _)),
-            "解析 without mutation must not produce Coding: {step:?}"
-        );
-    }
-    assert!(
-        analyze
-            .steps
-            .iter()
-            .any(|s| matches!(s, PlannedStep::Analyze(_)))
+    assert_ne!(
+        analyze.operation,
+        Operation::Refactor,
+        "解析 without mutation must not produce Refactor"
+    );
+    assert_eq!(
+        analyze.operation,
+        Operation::Analyze,
+        "解析 must produce Analyze"
     );
 }
 
@@ -113,12 +117,11 @@ fn non_mutating_file_reference_does_not_force_coding() {
     let plan = plan_input("apps/cli/src/coding.rs を見せて", &session(), &conv());
 
     if let Some(plan) = plan {
-        for step in &plan.steps {
-            assert!(
-                !matches!(step, PlannedStep::Coding(_, _)),
-                "view intent must not produce Coding: {step:?}"
-            );
-        }
+        assert_ne!(
+            plan.operation,
+            Operation::Refactor,
+            "view intent must not produce Refactor"
+        );
     }
 
     assert!(wants_analyze("このプロジェクトを解析して"));
@@ -129,23 +132,22 @@ fn non_mutating_file_reference_does_not_force_coding() {
 
 #[test]
 fn coding_step_with_rs_path_remaps_to_target_flag() {
-    use design_cli::nl::types::{CodingOptions, CommandPlan, PlannedStep};
+    use design_cli::nl::render_plan_summary_with_label;
+    use design_cli::nl::types::{ExecutionPlan, Operation, PlanSource};
 
-    // Build a plan with a .rs file path directly
-    let plan = CommandPlan {
-        intent: None,
-        steps: vec![PlannedStep::Coding(
-            PathBuf::from("apps/cli/src/coding.rs"),
-            CodingOptions::default(),
-        )],
-    };
+    let plan = ExecutionPlan::new(
+        Operation::Refactor,
+        Some(PathBuf::from("apps/cli/src/coding.rs")),
+        PlanSource::ReplInput,
+    );
 
-    // Execute in test mode (cfg!(test) = true) — executor will NOT run the
-    // real subprocess; it stores the legacy plan. We verify the command args
-    // via the to_canonical_command output by inspecting plan rendering.
-    let summary = design_cli::nl::render_plan_summary(&plan);
+    let summary = render_plan_summary_with_label(&plan, "test");
     assert!(
-        summary.contains("1 steps") || summary.contains("1 step"),
-        "plan must have 1 step: {summary}"
+        summary.contains("Refactor") || summary.contains("refactor"),
+        "plan summary must contain operation name: {summary}"
+    );
+    assert!(
+        summary.contains("coding.rs"),
+        "plan summary must contain target path: {summary}"
     );
 }

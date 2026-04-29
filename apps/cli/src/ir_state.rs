@@ -34,9 +34,8 @@
 //! - **Executor**: calls operations; never holds IR directly.
 //! - **ir_sync**: low-level hashing primitives (FNV-1a) – reused here.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
@@ -77,7 +76,10 @@ pub struct IrSnapshot {
     /// FNV-1a hash of the file content at snapshot time.
     pub file_hash: u64,
     pub ir: CodeIr,
-    /// Unix-seconds wall clock at snapshot creation (for telemetry only).
+    /// Deterministic snapshot timestamp placeholder.
+    ///
+    /// Phase D-3 forbids execution-visible wall-clock dependence. Keep this field
+    /// for compatibility, but derive snapshots from content only.
     pub generated_at: u64,
 }
 
@@ -138,6 +140,9 @@ pub struct IrStateManager {
 /// Canonical error returned by [`get_ir`] when the state is Drifted.
 pub const IR_DRIFT_ERROR: &str = "ERROR: IR out of sync. Run 'reload' to refresh.";
 pub const DEPENDENCY_DRIFT_ERROR: &str = "ERROR: dependency drift detected. Run 'reload'.";
+pub const EXPLORATION_LIMIT_ERROR: &str = "ERROR: exploration limit reached";
+pub const MAX_PROPAGATION_DEPTH: usize = 2;
+pub const MAX_PROPAGATION_NODES: usize = 100;
 
 // ─── § 5 Operations ───────────────────────────────────────────────────────────
 
@@ -152,16 +157,12 @@ pub fn build_ir(path: &Path) -> Result<IrState, String> {
     let content = std::fs::read_to_string(path)
         .map_err(|e| format!("ir_state: cannot read {}: {e}", path.display()))?;
     let file_hash = crate::ir_sync::hash_content(&content);
-    let generated_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
     Ok(IrState {
         snapshot: IrSnapshot {
             file_path: path.to_path_buf(),
             file_hash,
             ir: CodeIr::from_source(&content, path),
-            generated_at,
+            generated_at: 0,
         },
         dirty: false,
         dependencies: Vec::new(),
@@ -272,11 +273,22 @@ impl IrStateManager {
     /// Use this after writing to disk (e.g. after a successful `apply`) so
     /// that the next `refactor` call reloads a fresh snapshot.
     pub fn mark_dirty(&mut self, path: &Path) {
-        let mut visited = HashSet::new();
         let target = self
             .resolve_tracked_path(path)
             .unwrap_or_else(|| path.to_path_buf());
-        self.mark_dirty_recursive(&target, &mut visited);
+        let propagation = self.bounded_dependent_closure(&target);
+        for candidate in propagation.paths {
+            if let Some(state) = self.states.get_mut(&candidate) {
+                state.dirty = true;
+            }
+        }
+        eprintln!(
+            "[IR] propagation_depth={}, nodes={}",
+            propagation.max_depth, propagation.nodes
+        );
+        if propagation.limited {
+            eprintln!("[CONTROL] limited: {EXPLORATION_LIMIT_ERROR}");
+        }
     }
 
     /// Re-evaluate the dirty flag by hashing the current on-disk content.
@@ -349,8 +361,24 @@ impl IrStateManager {
 
     /// Reload one file plus every known dependent, with cycle protection.
     pub fn reload_recursive(&mut self, path: &Path) -> Result<(), String> {
-        let mut visited = HashSet::new();
-        self.reload_recursive_inner(path, &mut visited)
+        let target = self
+            .resolve_tracked_path(path)
+            .unwrap_or_else(|| path.to_path_buf());
+        let propagation = self.bounded_dependent_closure(&target);
+        eprintln!(
+            "[IR] propagation_depth={}, nodes={}",
+            propagation.max_depth, propagation.nodes
+        );
+        if propagation.limited {
+            eprintln!("[CONTROL] limited: {EXPLORATION_LIMIT_ERROR}");
+        }
+        for candidate in propagation.paths {
+            let state = build_ir(&candidate)?;
+            self.states.insert(candidate, state);
+            self.sync_count += 1;
+        }
+        self.rebuild_graph_metadata();
+        Ok(())
     }
 
     /// Reload every tracked file. If nothing is tracked yet, build a project from `root`.
@@ -428,38 +456,45 @@ impl IrStateManager {
             .cloned()
     }
 
-    fn mark_dirty_recursive(&mut self, path: &Path, visited: &mut HashSet<PathBuf>) {
-        if !visited.insert(path.to_path_buf()) {
-            return;
-        }
-        let dependents = if let Some(state) = self.states.get_mut(path) {
-            state.dirty = true;
-            state.dependents.clone()
-        } else {
-            Vec::new()
-        };
-        for dependent in dependents {
-            self.mark_dirty_recursive(&dependent, visited);
-        }
-    }
+    fn bounded_dependent_closure(&self, path: &Path) -> BoundedPropagation {
+        let mut queue = VecDeque::new();
+        let mut visited = BTreeSet::new();
+        let mut paths = Vec::new();
+        let mut max_depth = 0usize;
+        let mut limited = false;
 
-    fn reload_recursive_inner(
-        &mut self,
-        path: &Path,
-        visited: &mut HashSet<PathBuf>,
-    ) -> Result<(), String> {
-        if !visited.insert(path.to_path_buf()) {
-            return Ok(());
+        queue.push_back((path.to_path_buf(), 0usize));
+        while let Some((current, depth)) = queue.pop_front() {
+            if visited.len() >= MAX_PROPAGATION_NODES {
+                limited = true;
+                break;
+            }
+            if !visited.insert(current.clone()) {
+                continue;
+            }
+            max_depth = max_depth.max(depth);
+            paths.push(current.clone());
+
+            if depth >= MAX_PROPAGATION_DEPTH {
+                if !self.dependents(&current).is_empty() {
+                    limited = true;
+                }
+                continue;
+            }
+
+            for dependent in self.dependents(&current) {
+                if !visited.contains(&dependent) {
+                    queue.push_back((dependent, depth + 1));
+                }
+            }
         }
-        let dependents = self.dependents(path);
-        let state = build_ir(path)?;
-        self.states.insert(path.to_path_buf(), state);
-        self.sync_count += 1;
-        self.rebuild_graph_metadata();
-        for dependent in dependents {
-            self.reload_recursive_inner(&dependent, visited)?;
+
+        BoundedPropagation {
+            nodes: paths.len(),
+            paths,
+            max_depth,
+            limited,
         }
-        Ok(())
     }
 
     fn rebuild_graph_metadata(&mut self) {
@@ -504,6 +539,13 @@ impl IrStateManager {
     }
 }
 
+struct BoundedPropagation {
+    paths: Vec<PathBuf>,
+    nodes: usize,
+    max_depth: usize,
+    limited: bool,
+}
+
 fn collect_rust_files(root: &Path) -> Result<Vec<PathBuf>, String> {
     let mut files = Vec::new();
     if root.is_file() {
@@ -519,11 +561,14 @@ fn collect_rust_files(root: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 fn collect_rust_files_inner(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
-    let entries = std::fs::read_dir(dir)
-        .map_err(|e| format!("ir_state: cannot read dir {}: {e}", dir.display()))?;
+    let mut entries = std::fs::read_dir(dir)
+        .map_err(|e| format!("ir_state: cannot read dir {}: {e}", dir.display()))?
+        .map(|entry| entry.map(|entry| entry.path()))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| format!("ir_state: cannot read dir entry: {e}"))?;
+    entries.sort();
     for entry in entries {
-        let entry = entry.map_err(|e| format!("ir_state: cannot read dir entry: {e}"))?;
-        let path = entry.path();
+        let path = entry;
         let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
         if name == "target" || name == ".git" {
             continue;
@@ -551,10 +596,10 @@ fn extract_dependencies(path: &Path, source: &str, known: &HashSet<PathBuf>) -> 
             Vec::new()
         };
         for candidate in candidates {
-            if let Some(dep) = resolve_dependency(path, &candidate, known) {
-                if dep != path {
-                    deps.push(dep);
-                }
+            if let Some(dep) = resolve_dependency(path, &candidate, known)
+                && dep != path
+            {
+                deps.push(dep);
             }
         }
     }
@@ -629,6 +674,8 @@ pub struct IrStateTelemetry {
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
 
     fn write_temp(name: &str, content: &str) -> PathBuf {
@@ -928,6 +975,55 @@ mod tests {
         assert!(mgr.is_synced(&util));
         assert!(mgr.is_synced(&coding));
         assert!(get_ir(&coding, &mgr).is_ok());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn dirty_propagation_is_bounded_to_max_depth() {
+        let root = temp_project("ir_state_dirty_bounded");
+        let util = root.join("src/util.rs");
+        let mid = root.join("src/mid.rs");
+        let top = root.join("src/top.rs");
+        let app = root.join("src/app.rs");
+        std::fs::write(&util, "pub struct Thing;\n").unwrap();
+        std::fs::write(&mid, "use util::Thing;\n").unwrap();
+        std::fs::write(&top, "use mid::Thing;\n").unwrap();
+        std::fs::write(&app, "use top::Thing;\n").unwrap();
+
+        let mut mgr = IrStateManager::new();
+        mgr.build_project(&root).unwrap();
+        mgr.mark_dirty(&util);
+
+        assert!(MAX_PROPAGATION_DEPTH <= 2);
+        assert!(mgr.is_drifted(&util));
+        assert!(mgr.is_drifted(&mid));
+        assert!(mgr.is_drifted(&top));
+        assert!(!mgr.is_drifted(&app));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reload_recursive_is_bounded_bfs() {
+        let root = temp_project("ir_state_reload_bounded");
+        let util = root.join("src/util.rs");
+        let mid = root.join("src/mid.rs");
+        let top = root.join("src/top.rs");
+        let app = root.join("src/app.rs");
+        std::fs::write(&util, "pub struct Thing;\n").unwrap();
+        std::fs::write(&mid, "use util::Thing;\n").unwrap();
+        std::fs::write(&top, "use mid::Thing;\n").unwrap();
+        std::fs::write(&app, "use top::Thing;\n").unwrap();
+
+        let mut mgr = IrStateManager::new();
+        mgr.build_project(&root).unwrap();
+        mgr.mark_dirty(&util);
+        mgr.reload_recursive(&util).unwrap();
+
+        assert!(MAX_PROPAGATION_NODES >= 100);
+        assert!(mgr.is_synced(&util));
+        assert!(mgr.is_synced(&mid));
+        assert!(mgr.is_synced(&top));
+        assert!(mgr.is_synced(&app));
         let _ = std::fs::remove_dir_all(root);
     }
 

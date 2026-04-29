@@ -710,9 +710,8 @@ fn issue_hint(issue: &Issue) -> Option<String> {
                 .iter()
                 .find(|ev| ev.kind == EvidenceType::Role)
                 .and_then(|ev| {
-                    let mut parts = ev.value.splitn(2, "->");
-                    let from_role = parts.next()?;
-                    let to_role = parts.next()?;
+                    let (from_role, to_role) = ev.value.split_once("->")?;
+
                     Some(format!(
                         "→ {} layer should not depend on {} layer. \
                          Suggested fix: extract shared interface to a lower-level (Core/Service) layer.",

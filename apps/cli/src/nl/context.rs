@@ -15,9 +15,7 @@ pub fn merge_target(
     let has_explicit = has_explicit_target_reference(input);
 
     ResolvedTarget {
-        path: if has_explicit {
-            current.path
-        } else if current.path != PathBuf::from(".") {
+        path: if has_explicit || current.path != PathBuf::from(".") {
             current.path
         } else if let Some(path) = conversation.last_target.clone() {
             path

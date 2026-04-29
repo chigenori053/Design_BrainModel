@@ -425,7 +425,7 @@ fn render_stats_panel(frame: &mut Frame, stats: &OptimizationStats, area: Rect) 
         stats.last_ingest_id.as_deref().unwrap_or("-"),
     );
 
-    let bar_w = (area.width as usize).saturating_sub(6).min(30).max(8);
+    let bar_w = (area.width as usize).saturating_sub(6).clamp(8, 30);
     let store_bar = progress_bar(stored_pct / 100.0, bar_w);
     let upg_bar = progress_bar(upgraded_pct / 100.0, bar_w);
     let skip_bar = progress_bar(skipped_pct / 100.0, bar_w);
@@ -771,12 +771,11 @@ fn run_event_loop(
             .draw(|frame| render(frame, state))
             .map_err(|e| e.to_string())?;
 
-        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
-            if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
-                if handle_key(state, key) {
-                    break;
-                }
-            }
+        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())?
+            && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
+            && handle_key(state, key)
+        {
+            break;
         }
     }
     Ok(())
@@ -998,17 +997,15 @@ fn run_app(args: Args) -> Result<(), String> {
     terminal.show_cursor().ok();
 
     // --store 指定かつ未保存の変更がある場合は自動保存
-    if state.dirty {
-        if let Some(path) = &state.store_path {
-            match state.store.save(path) {
-                Ok(()) => eprintln!("Auto-saved to {}.", path.display()),
-                Err(e) => eprintln!("Auto-save failed: {e}"),
-            }
+    if state.dirty
+        && let Some(path) = &state.store_path
+    {
+        match state.store.save(path) {
+            Ok(()) => eprintln!("Auto-saved to {}.", path.display()),
+            Err(e) => eprintln!("Auto-save failed: {e}"),
         }
     }
 
-    if let Err(e) = result {
-        return Err(e);
-    }
+    result?;
     Ok(())
 }

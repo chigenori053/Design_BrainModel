@@ -4,19 +4,18 @@ use crate::session::AgentSession;
 
 use super::{CommandError, Output};
 
+type CommandFn = fn(&[String], &mut AgentSession) -> Result<Output, CommandError>;
+
 /// 実際の処理を担う最小単位
 ///
 /// 関数ポインタを使うことで軽量かつテスト容易性を確保する。
 pub struct SubCommandHandler {
     pub name: String,
-    pub execute: fn(&[String], &mut AgentSession) -> Result<Output, CommandError>,
+    pub execute: CommandFn,
 }
 
 impl SubCommandHandler {
-    pub fn new(
-        name: &str,
-        execute: fn(&[String], &mut AgentSession) -> Result<Output, CommandError>,
-    ) -> Self {
+    pub fn new(name: &str, execute: CommandFn) -> Self {
         Self {
             name: name.to_string(),
             execute,
@@ -28,7 +27,7 @@ impl SubCommandHandler {
 pub struct CommandHandler {
     pub name: String,
     subcommands: HashMap<String, SubCommandHandler>,
-    default: Option<fn(&[String], &mut AgentSession) -> Result<Output, CommandError>>,
+    default: Option<CommandFn>,
 }
 
 impl CommandHandler {

@@ -1674,7 +1674,7 @@ fn rules_report_from_store(
                 source: rule_source_label(&record.rule.source).to_string(),
             })
             .collect(),
-        retired: retired_rule_reports(&store),
+        retired: retired_rule_reports(store),
         message,
     }
 }

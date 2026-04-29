@@ -9,6 +9,12 @@ pub struct CommandResolver {
     overrides: HashMap<String, String>,
 }
 
+impl Default for CommandResolver {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CommandResolver {
     pub fn new() -> Self {
         Self {

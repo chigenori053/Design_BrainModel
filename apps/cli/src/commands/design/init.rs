@@ -34,7 +34,7 @@ fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, Comma
 
     // Save baseline = initial template
     let (initial_version, _) = make_initial_version(template);
-    save_baseline(&root, &initial_version).map_err(|e| CommandError::ExecutionError(e))?;
+    save_baseline(&root, &initial_version).map_err(CommandError::ExecutionError)?;
 
     // Ensure history dir exists
     let hist = super::history_dir(&root);

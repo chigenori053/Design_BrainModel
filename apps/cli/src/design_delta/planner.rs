@@ -157,7 +157,7 @@ fn infer_impacted_crates(graph: &DesignGraph, lower: &str) -> Vec<String> {
             .take(if lower.contains("workspace") || lower.contains("全体") {
                 graph.crates.len().max(1)
             } else {
-                graph.crates.len().min(2).max(1)
+                graph.crates.len().clamp(1, 2)
             })
             .map(|krate| krate.name.clone())
             .collect::<Vec<_>>();

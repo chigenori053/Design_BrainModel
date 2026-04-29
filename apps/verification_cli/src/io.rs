@@ -18,11 +18,11 @@ pub fn write_json<T>(path: &Path, value: &T) -> Result<()>
 where
     T: Serialize,
 {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            fs::create_dir_all(parent)
-                .with_context(|| format!("failed to create output dir: {}", parent.display()))?;
-        }
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("failed to create output dir: {}", parent.display()))?;
     }
     let text = serde_json::to_string_pretty(value)?;
     fs::write(path, format!("{text}\n"))

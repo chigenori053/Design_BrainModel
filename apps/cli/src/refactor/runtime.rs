@@ -584,17 +584,17 @@ fn collect_target_files(ir: &StructureViewIR, candidate: &super::RefactorCandida
     let mut target_files = Vec::new();
 
     for node_id in &candidate.target_nodes {
-        if let Some(path) = resolve_source_binding_file(ir, node_id) {
-            if !target_files.iter().any(|existing| existing == &path) {
-                target_files.push(path);
-            }
+        if let Some(path) = resolve_source_binding_file(ir, node_id)
+            && !target_files.iter().any(|existing| existing == &path)
+        {
+            target_files.push(path);
         }
     }
 
-    if target_files.is_empty() {
-        if let Some(path) = resolve_source_binding_file(ir, &candidate.from_node.logical_name) {
-            target_files.push(path);
-        }
+    if target_files.is_empty()
+        && let Some(path) = resolve_source_binding_file(ir, &candidate.from_node.logical_name)
+    {
+        target_files.push(path);
     }
 
     if target_files.is_empty() && !candidate.source_path.as_os_str().is_empty() {

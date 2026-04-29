@@ -209,8 +209,7 @@ fn build_semantic_graph_3d(
     let max_centrality = centrality.values().copied().max().unwrap_or(1) as f32;
     let nodes = node_names
         .iter()
-        .enumerate()
-        .map(|(_index, name)| {
+        .map(|name| {
             let role = roles
                 .get(name)
                 .cloned()
@@ -755,10 +754,10 @@ fn build_delta_animation(graph: &SemanticGraph3D, plan: &RefactorPlan) -> GraphD
                 after.x += 10.0;
                 after.z += 24.0;
                 after.y += 18.0;
-                if let Some(target_name) = to.file_stem().and_then(|stem| stem.to_str()) {
-                    if let Some(target) = positions.get(target_name).copied() {
-                        after.x = target.x;
-                    }
+                if let Some(target_name) = to.file_stem().and_then(|stem| stem.to_str())
+                    && let Some(target) = positions.get(target_name).copied()
+                {
+                    after.x = target.x;
                 }
                 Some(NodeMoveDelta {
                     node_id,

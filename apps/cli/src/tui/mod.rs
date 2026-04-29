@@ -54,15 +54,15 @@ fn run_event_loop(
             .draw(|frame| render::render(frame, state))
             .map_err(|e| e.to_string())?;
 
-        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
-            if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
-                match key.code {
-                    KeyCode::Char('q') | KeyCode::Esc => break,
-                    KeyCode::Up | KeyCode::Char('k') => state.move_up(),
-                    KeyCode::Down | KeyCode::Char('j') => state.move_down(),
-                    KeyCode::Tab => state.toggle_panel(),
-                    _ => {}
-                }
+        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())?
+            && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
+        {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Esc => break,
+                KeyCode::Up | KeyCode::Char('k') => state.move_up(),
+                KeyCode::Down | KeyCode::Char('j') => state.move_down(),
+                KeyCode::Tab => state.toggle_panel(),
+                _ => {}
             }
         }
     }

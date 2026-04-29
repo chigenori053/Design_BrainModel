@@ -12,7 +12,7 @@ const WATCHER_JOIN_TIMEOUT: Duration = Duration::from_secs(1);
 const THREAD_CONVERGENCE_TIMEOUT: Duration = Duration::from_secs(1);
 const CHILD_EXIT_TIMEOUT: Duration = Duration::from_secs(1);
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TestScopeTelemetry {
     pub thread_count_before: usize,
     pub thread_count_after: usize,
@@ -21,20 +21,6 @@ pub struct TestScopeTelemetry {
     pub idle_recovery_ms: u64,
     pub temp_dir_residue: usize,
     pub fd_count: usize,
-}
-
-impl Default for TestScopeTelemetry {
-    fn default() -> Self {
-        Self {
-            thread_count_before: 0,
-            thread_count_after: 0,
-            child_count_after: 0,
-            zombie_count: 0,
-            idle_recovery_ms: 0,
-            temp_dir_residue: 0,
-            fd_count: 0,
-        }
-    }
 }
 
 struct WatcherRegistration {
@@ -381,7 +367,7 @@ fn terminate_pid(pid: u32, signal: i32) -> io::Result<()> {
         if rc == 0 || !pid_alive(pid) {
             return Ok(());
         }
-        return Err(io::Error::last_os_error());
+        Err(io::Error::last_os_error())
     }
 
     #[cfg(not(unix))]

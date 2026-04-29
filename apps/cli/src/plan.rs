@@ -2,7 +2,6 @@
 ///
 /// Planner が生成し、Executor が実行する計画を表す。
 /// 各 Step は CommandInvocation（コマンド呼び出し仕様）を持つ。
-
 /// コマンド呼び出しの仕様
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CommandInvocation {

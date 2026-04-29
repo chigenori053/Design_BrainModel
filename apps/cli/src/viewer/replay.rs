@@ -75,7 +75,7 @@ pub fn replay_structure(
         resolved_tick
     };
     let graph = rebuilt.get(index).cloned().unwrap_or_else(|| {
-        let core = session.current_ir.into_core();
+        let core = session.current_ir.to_core();
         viewer_core::model::SnapshotGraph {
             nodes: core.nodes,
             edges: core.edges,
@@ -100,9 +100,8 @@ pub fn export_demo_replay_assets(
     if ir.scene_3d.is_none() {
         ir = export_structure_view(root)?;
     }
-    let core_ir = ir.into_core();
-    let compacted =
-        compact_delta_chain(&core_ir.snapshots.iter().cloned().collect::<Vec<_>>(), 100);
+    let core_ir = ir.to_core();
+    let compacted = compact_delta_chain(&core_ir.snapshots.to_vec(), 100);
     let dir = export_dir
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.join(".dbm").join("replay"));

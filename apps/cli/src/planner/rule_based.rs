@@ -284,8 +284,7 @@ impl RuleBasedPlanner {
                         | "で"
                 )
             })
-            .filter(|t| Self::is_likely_path_token(t))
-            .last();
+            .rfind(|t| Self::is_likely_path_token(t));
 
         match last_token {
             Some(t) => t.to_string(),

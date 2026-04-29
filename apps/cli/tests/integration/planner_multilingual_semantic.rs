@@ -3,7 +3,7 @@ use std::path::PathBuf;
 use design_cli::nl::language_intent_bridge::infer_planner_intent;
 use design_cli::nl::planner_v2::plan_input;
 use design_cli::nl::session::ConversationState;
-use design_cli::nl::types::{IntentType, PlannedStep, SupportedLanguage};
+use design_cli::nl::types::{IntentType, Operation, SupportedLanguage};
 use design_cli::session::AgentSession;
 
 fn assert_replay_is_deterministic(input: &str, conversation: &ConversationState) {
@@ -34,13 +34,8 @@ fn japanese_semantic_request_prefers_semantic_frontend() {
         &ConversationState::default(),
     )
     .expect("plan");
-    assert_eq!(
-        plan.steps,
-        vec![
-            PlannedStep::Analyze(PathBuf::from(".")),
-            PlannedStep::Validate(PathBuf::from(".")),
-        ]
-    );
+    // Validate is not a top-level Operation; the primary operation is Analyze
+    assert_eq!(plan.operation, Operation::Analyze);
 }
 
 #[test]

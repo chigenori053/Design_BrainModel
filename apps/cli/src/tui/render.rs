@@ -307,7 +307,7 @@ fn render_score_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
         .border_style(Style::default().fg(Color::DarkGray));
 
     if let Some(hyp) = state.selected_hypothesis_data() {
-        let bar_width = (area.width as usize).saturating_sub(4).min(20).max(8);
+        let bar_width = (area.width as usize).saturating_sub(4).clamp(8, 20);
         let content = build_score_content(hyp.id, hyp.score, &hyp.score_parts, bar_width);
         frame.render_widget(
             Paragraph::new(content)
@@ -368,13 +368,12 @@ fn render_memory_panel(frame: &mut Frame, state: &TuiState, area: Rect) {
         return;
     }
 
-    let bar_width = (area.width as usize).saturating_sub(38).min(16).max(6);
+    let bar_width = (area.width as usize).saturating_sub(38).clamp(6, 16);
 
     let items: Vec<ListItem> = candidates
         .iter()
         .skip(state.memory_scroll)
-        .enumerate()
-        .map(|(_i, m)| {
+        .map(|m| {
             let bar = memory_bar(m.score, bar_width);
             let source_color = match m.source.as_str() {
                 "exact" => Color::Green,

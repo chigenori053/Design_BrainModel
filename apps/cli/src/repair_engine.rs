@@ -9,6 +9,8 @@ use std::path::{Path, PathBuf};
 use crate::consistency_engine::{ConsistencyReport, Violation};
 use crate::ir_state::{IrStateManager, ProjectIr};
 
+pub const MAX_FIXES_PER_VIOLATION: usize = 1;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepairInput {
     pub project: ProjectIr,
@@ -65,6 +67,7 @@ pub struct RepairEngine;
 
 impl RepairEngine {
     pub fn build_plan(input: RepairInput) -> RepairPlan {
+        let violation_count = input.report.violations.len();
         let mut fixes = Vec::new();
 
         for violation in input.report.violations {
@@ -94,8 +97,11 @@ impl RepairEngine {
             fixes.push(fix);
         }
 
-        fixes.sort();
-        fixes.dedup();
+        debug_assert!(fixes.len() <= violation_count * MAX_FIXES_PER_VIOLATION);
+        eprintln!(
+            "[REPAIR] violations={violation_count}, fixes={}",
+            fixes.len()
+        );
         let is_safe = is_safe_fixes(&fixes);
         RepairPlan { fixes, is_safe }
     }
@@ -495,5 +501,31 @@ mod tests {
         assert!(err.contains("refusing to remove non-import line"));
         assert_eq!(fs::read_to_string(&file).unwrap(), "fn main() {}\n");
         let _ = fs::remove_file(file);
+    }
+
+    #[test]
+    fn repair_preserves_one_fix_per_violation_in_stable_order() {
+        let file = PathBuf::from("apps/stable.rs");
+        let plan = RepairEngine::build_plan(RepairInput {
+            project: ProjectIr::default(),
+            report: ConsistencyReport {
+                is_consistent: false,
+                violations: vec![
+                    Violation::DriftDetected(file.clone()),
+                    Violation::DriftDetected(file.clone()),
+                    Violation::DirtyDependency(file.clone()),
+                ],
+            },
+        });
+
+        assert_eq!(plan.fixes.len(), 3);
+        assert_eq!(
+            plan.fixes,
+            vec![
+                FixAction::ReloadFile { file: file.clone() },
+                FixAction::ReloadFile { file: file.clone() },
+                FixAction::ReloadSubgraph { roots: vec![file] },
+            ]
+        );
     }
 }

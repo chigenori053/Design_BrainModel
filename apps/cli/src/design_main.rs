@@ -154,12 +154,11 @@ fn language_parse(input: &str) -> LanguageOutput {
         .collect::<Vec<_>>();
 
     let mut concepts = Vec::new();
-    if input.contains("このプロジェクト") || lower.contains("this project") {
-        concepts.push(Concept {
-            key: "target".to_string(),
-            value: "./project".to_string(),
-        });
-    } else if input.contains("これ") || lower.contains("this") {
+    if input.contains("このプロジェクト")
+        || lower.contains("this project")
+        || input.contains("これ")
+        || lower.contains("this")
+    {
         concepts.push(Concept {
             key: "target".to_string(),
             value: "./project".to_string(),
@@ -242,10 +241,8 @@ fn resolve_intent(
     }
 
     let mut arguments = std::collections::HashMap::new();
-    if top.intent == IntentType::AnalyzeProject {
-        if !context.default_path.trim().is_empty() {
-            arguments.insert("path".to_string(), Value::String(context.default_path));
-        }
+    if top.intent == IntentType::AnalyzeProject && !context.default_path.trim().is_empty() {
+        arguments.insert("path".to_string(), Value::String(context.default_path));
     }
     Ok(ResolvedIntent {
         intent: top.intent,
@@ -1952,8 +1949,7 @@ fn normalize_objective_cases(mut cases: Vec<ObjectiveCase>) -> Result<Vec<Object
     let mut matrix = Vec::<[f64; 4]>::with_capacity(cases.len());
     for case in &cases {
         let row = case.objective.raw;
-        for i in 0..4 {
-            let value = row[i];
+        for (i, value) in row.iter().copied().enumerate() {
             if !value.is_finite() {
                 return Err(format!(
                     "objective raw value must be finite: case_id={} index={} value={value}",

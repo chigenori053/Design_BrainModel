@@ -30,7 +30,7 @@ pub fn run_protected(
         run(config, timeout, policy, project_root, sandbox_mode)
     }));
     match result {
-        Ok(result) => result.map(RunnerResult::Success),
+        Ok(result) => result.map(|result| RunnerResult::Success(Box::new(result))),
         Err(_) => Ok(RunnerResult::Panic),
     }
 }

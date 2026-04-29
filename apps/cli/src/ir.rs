@@ -866,8 +866,18 @@ impl IRPersistenceStore {
         plan: CommandPlan,
         planner: impl Into<String>,
     ) -> Result<Uuid, String> {
+        self.emit_plan_proposed_with_id(session_id, Uuid::new_v4(), plan, planner)
+    }
+
+    pub fn emit_plan_proposed_with_id(
+        &self,
+        session_id: &str,
+        plan_id: Uuid,
+        plan: CommandPlan,
+        planner: impl Into<String>,
+    ) -> Result<Uuid, String> {
         let payload = PlanPayload {
-            plan_id: Uuid::new_v4(),
+            plan_id,
             intent: plan.intent.clone(),
             steps: plan_steps_from_command_plan(&plan),
             planner: planner.into(),
@@ -1056,7 +1066,7 @@ impl IRPersistenceStore {
         matches!(
             action_kind,
             ActionKind::Apply | ActionKind::Validate | ActionKind::Rollback
-        ) || step_index % CHECKPOINT_INTERVAL == 0
+        ) || step_index.is_multiple_of(CHECKPOINT_INTERVAL)
     }
 
     fn dbm_dir(&self) -> PathBuf {
@@ -1233,10 +1243,10 @@ impl IRPersistenceStore {
     fn step_state(&self, session_id: &str, step_id: Uuid) -> Result<StepState, String> {
         // Cache hit: the entry is present and `scheduled` being set means the cache
         // was populated for this step (every scheduled step reaches the cache).
-        if let Some(state) = self.cache.get(step_id) {
-            if state.scheduled {
-                return Ok(state);
-            }
+        if let Some(state) = self.cache.get(step_id)
+            && state.scheduled
+        {
+            return Ok(state);
         }
         // Cache miss: read the full log and warm the cache for all steps at once.
         let events =
@@ -1253,6 +1263,29 @@ impl IRPersistenceStore {
         step_kind: impl Into<String>,
     ) -> Result<Uuid, String> {
         let step_id = Uuid::new_v4();
+        let step_kind = step_kind.into();
+        self.append_execution_event(
+            session_id,
+            IRExecutionEventPayload::StepScheduled(StepScheduledPayload {
+                step_id,
+                plan_id,
+                step_index,
+                step_kind: step_kind.clone(),
+            }),
+        )?;
+        self.cache.set_scheduled(step_id);
+        trace!("[TRACE] StepScheduled step_id={step_id} kind={step_kind} index={step_index}");
+        Ok(step_id)
+    }
+
+    pub fn emit_step_scheduled_with_id(
+        &self,
+        session_id: &str,
+        step_id: Uuid,
+        plan_id: Uuid,
+        step_index: usize,
+        step_kind: impl Into<String>,
+    ) -> Result<Uuid, String> {
         let step_kind = step_kind.into();
         self.append_execution_event(
             session_id,
@@ -1623,6 +1656,21 @@ pub fn emit_plan_proposed(
     )
 }
 
+pub fn emit_plan_proposed_with_id(
+    ir_state: &IRState,
+    plan_id: Uuid,
+    plan: CommandPlan,
+    planner: impl Into<String>,
+) -> Result<Uuid, String> {
+    let session_id = non_empty_session_id(ir_state, ir_state)?;
+    IRPersistenceStore::new(ir_state.workspace_root.clone()).emit_plan_proposed_with_id(
+        &session_id,
+        plan_id,
+        plan,
+        planner,
+    )
+}
+
 pub fn emit_runtime_plan_proposed(
     ir_state: &IRState,
     plan: &Plan,
@@ -1682,6 +1730,17 @@ pub fn emit_step_scheduled(
 ) -> Result<Uuid, String> {
     let (store, session_id) = execution_store(ir_state)?;
     store.emit_step_scheduled(&session_id, plan_id, step_index, step_kind)
+}
+
+pub fn emit_step_scheduled_with_id(
+    ir_state: &IRState,
+    step_id: Uuid,
+    plan_id: Uuid,
+    step_index: usize,
+    step_kind: impl Into<String>,
+) -> Result<Uuid, String> {
+    let (store, session_id) = execution_store(ir_state)?;
+    store.emit_step_scheduled_with_id(&session_id, step_id, plan_id, step_index, step_kind)
 }
 
 pub fn emit_step_started(ir_state: &IRState, step_id: Uuid) -> Result<String, String> {
@@ -1893,6 +1952,16 @@ fn plan_step_from_planned_step(step: &PlannedStep) -> PlanStepRecord {
         PlannedStep::ShowDeps(path) => {
             simple_plan_step("show_deps", Some(path.clone()), Vec::new())
         }
+        PlannedStep::Refactor(spec) => simple_plan_step(
+            "refactor",
+            Some(spec.target.clone()),
+            vec![spec.request.clone()],
+        ),
+        PlannedStep::Repair(spec) => {
+            simple_plan_step("repair", Some(spec.target.clone()), Vec::new())
+        }
+        PlannedStep::Apply => simple_plan_step("apply", None, Vec::new()),
+        PlannedStep::Reload => simple_plan_step("reload", None, Vec::new()),
     }
 }
 
@@ -1972,6 +2041,10 @@ fn memory_step_kind(step: &PlannedStep) -> &'static str {
         PlannedStep::IrReload(_) => "ir_reload",
         PlannedStep::IrReloadAll(_) => "ir_reload_all",
         PlannedStep::ShowDeps(_) => "show_deps",
+        PlannedStep::Refactor(_) => "refactor",
+        PlannedStep::Repair(_) => "repair",
+        PlannedStep::Apply => "apply",
+        PlannedStep::Reload => "reload",
     }
 }
 
@@ -2005,16 +2078,24 @@ fn memory_tags_for_step(step: &PlannedStep) -> Vec<String> {
                 tags.push(node.clone());
             }
         }
+        PlannedStep::Refactor(spec) => {
+            tags.push(spec.target.display().to_string());
+            tags.push(spec.request.clone());
+        }
+        PlannedStep::Repair(spec) => {
+            tags.push(spec.target.display().to_string());
+        }
         PlannedStep::AlternativeMutationSearch(spec)
         | PlannedStep::DesignDeltaReasoning(spec)
         | PlannedStep::ExplainDesignTradeoff(spec) => tags.push(spec.clone()),
-        PlannedStep::Rules
+        PlannedStep::Apply
+        | PlannedStep::Reload
+        | PlannedStep::Rules
         | PlannedStep::ApplyPreviousCodingStep
         | PlannedStep::RollbackCurrentTransaction => {}
     }
     tags
 }
-
 fn tag_overlap(query_tags: &[String], entry_tags: &[String]) -> f32 {
     query_tags
         .iter()
@@ -2111,8 +2192,14 @@ fn embed_query(step: &PlannedStep, query_tags: &[String]) -> Embedding {
 
 fn memory_query_key(step: &PlannedStep) -> String {
     match step {
-        PlannedStep::Analyze(path)
-        | PlannedStep::Validate(path)
+        PlannedStep::Analyze(path) => format!("{}:{}", memory_step_kind(step), path.display()),
+        PlannedStep::Coding(path, options) => format!(
+            "{}:{}:{}",
+            memory_step_kind(step),
+            path.display(),
+            options.request.as_deref().unwrap_or("")
+        ),
+        PlannedStep::Validate(path)
         | PlannedStep::StructureView(path)
         | PlannedStep::StructureEdit(path)
         | PlannedStep::StructureUndo(path)
@@ -2124,29 +2211,28 @@ fn memory_query_key(step: &PlannedStep) -> String {
         | PlannedStep::IrReload(path)
         | PlannedStep::IrReloadAll(path)
         | PlannedStep::ShowDeps(path) => format!("{}:{}", memory_step_kind(step), path.display()),
-        PlannedStep::Coding(path, options) => format!(
+        PlannedStep::StructureDiff(path, node) => {
+            format!("{}:{}:{node:?}", memory_step_kind(step), path.display())
+        }
+        PlannedStep::Refactor(spec) => format!(
             "{}:{}:{}",
             memory_step_kind(step),
-            path.display(),
-            options.request.clone().unwrap_or_default()
+            spec.target.display(),
+            spec.request
         ),
-        PlannedStep::StructureDiff(path, node) => format!(
-            "{}:{}:{}",
-            memory_step_kind(step),
-            path.display(),
-            node.clone().unwrap_or_default()
-        ),
+        PlannedStep::Repair(spec) => {
+            format!("{}:{}", memory_step_kind(step), spec.target.display())
+        }
         PlannedStep::AlternativeMutationSearch(spec)
         | PlannedStep::DesignDeltaReasoning(spec)
-        | PlannedStep::ExplainDesignTradeoff(spec) => {
-            format!("{}:{spec}", memory_step_kind(step))
-        }
-        PlannedStep::Rules
+        | PlannedStep::ExplainDesignTradeoff(spec) => format!("{}:{spec}", memory_step_kind(step)),
+        PlannedStep::Apply
+        | PlannedStep::Reload
+        | PlannedStep::Rules
         | PlannedStep::ApplyPreviousCodingStep
         | PlannedStep::RollbackCurrentTransaction => memory_step_kind(step).to_string(),
     }
 }
-
 fn deterministic_embedding(text: &str) -> Embedding {
     let mut embedding = vec![0.0; EMBEDDING_DIMENSION];
     for token in tokenize_embedding_source(text) {

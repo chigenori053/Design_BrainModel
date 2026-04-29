@@ -6,7 +6,7 @@
 /// ルーティングルール：
 /// - `/コマンド [サブコマンド] [引数...]` → Command ルート
 /// - それ以外 → Agent ルート（将来 /plan に接続）
-
+///
 /// ルーティング結果
 ///
 /// `Route::Command` は Phase1 で CommandRegistry.execute() に直接接続される。

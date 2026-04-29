@@ -25,7 +25,7 @@ fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, Comma
     }
 
     // Fall back: baseline vs. current design.md
-    let doc = load_design_doc(&root).map_err(|e| CommandError::ExecutionError(e))?;
+    let doc = load_design_doc(&root).map_err(CommandError::ExecutionError)?;
     let stage = doc.stage.clone();
 
     let baseline = load_baseline(&root)

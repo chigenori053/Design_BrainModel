@@ -7,14 +7,14 @@ use crate::design_delta::{
 use crate::service::dto::{ActionKind, IRActiveTransaction, IRState, SessionAppliedDiff};
 use uuid::Uuid;
 
-use super::types::CommandPlan;
+use super::types::ExecutionPlan;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConversationState {
     pub autonomous_label: Option<String>,
     pub last_target: Option<PathBuf>,
     pub last_node: Option<String>,
-    pub last_plan: Option<CommandPlan>,
+    pub last_plan: Option<ExecutionPlan>,
     pub last_accepted_plan_id: Option<Uuid>,
     pub last_viewer_session: Option<String>,
     pub last_analysis_summary: Option<String>,
@@ -108,6 +108,18 @@ impl ConversationState {
             ActionKind::Refactor,
             ActionKind::Rollback,
         ];
+    }
+
+    pub fn apply_transaction(&mut self) -> Result<Option<SessionAppliedDiff>, String> {
+        let snapshot = self
+            .ir_state
+            .active_transaction
+            .as_ref()
+            .ok_or_else(|| "no active transaction".to_string())?
+            .latest_diff_ref
+            .clone();
+        self.mark_transaction_applied(snapshot.clone());
+        Ok(snapshot)
     }
 
     pub fn mark_transaction_validated(&mut self) {

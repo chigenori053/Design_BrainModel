@@ -251,7 +251,7 @@ fn snapshot_graph(ir: &StructureViewIR) -> SnapshotGraph {
 }
 
 fn checkpoint_base(ir: &StructureViewIR, history_len: usize) -> Option<SnapshotGraph> {
-    if history_len % 20 == 0 {
+    if history_len.is_multiple_of(20) {
         Some(snapshot_graph(ir))
     } else {
         None

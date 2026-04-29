@@ -190,10 +190,10 @@ impl ConsistencyEngine {
                     violations.push(Violation::MissingDependency(dep.clone()));
                 }
                 // Dirty propagation: dependency is drifted.
-                if let Some(dep_state) = project.nodes.get(dep) {
-                    if dep_state.dirty {
-                        violations.push(Violation::DirtyDependency(dep.clone()));
-                    }
+                if let Some(dep_state) = project.nodes.get(dep)
+                    && dep_state.dirty
+                {
+                    violations.push(Violation::DirtyDependency(dep.clone()));
                 }
             }
         }
@@ -273,10 +273,10 @@ fn dfs_cycle(
                 cycle.push(dep.clone()); // close the loop
                 return Some(cycle);
             }
-            if dep_color == 0 {
-                if let Some(cycle) = dfs_cycle(dep, project, color, stack) {
-                    return Some(cycle);
-                }
+            if dep_color == 0
+                && let Some(cycle) = dfs_cycle(dep, project, color, stack)
+            {
+                return Some(cycle);
             }
         }
     }

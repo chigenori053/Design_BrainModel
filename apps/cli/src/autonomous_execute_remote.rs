@@ -1,6 +1,8 @@
 use super::git_integration::{GitExecutor, git_command, is_auto_fix_branch};
 use super::*;
 
+type PullRequestIdentity = Option<(Option<u64>, Option<String>)>;
+
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct RemoteAction {
     pub r#type: String,
@@ -364,10 +366,7 @@ impl PushController {
 struct PRManager;
 
 impl PRManager {
-    fn duplicate(
-        root: &Path,
-        branch: &str,
-    ) -> Result<Option<(Option<u64>, Option<String>)>, String> {
+    fn duplicate(root: &Path, branch: &str) -> Result<PullRequestIdentity, String> {
         let args = ["pr", "view", branch, "--json", "number,url"];
         if RemoteGuard::classify_gh(&args) != CommandType::SafeRead {
             return Err("dangerous gh command rejected".to_string());
@@ -469,7 +468,7 @@ fn pr_title(attempts: &[ExecuteAttempt]) -> String {
     let summary = attempts
         .iter()
         .filter_map(|attempt| attempt.fix.as_ref())
-        .last()
+        .next_back()
         .map(|fix| fix.content.clone())
         .unwrap_or_else(|| "deterministic update".to_string());
     format!("auto fix: {summary}")

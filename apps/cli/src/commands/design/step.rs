@@ -17,10 +17,9 @@ pub fn handler() -> SubCommandHandler {
 fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, CommandError> {
     let root = resolve_root(args.first().map(|s| s.as_str()));
 
-    let (current, history) = load_versions(&root).map_err(|e| CommandError::ExecutionError(e))?;
+    let (current, history) = load_versions(&root).map_err(CommandError::ExecutionError)?;
 
-    let issues =
-        detect_issues_for(&history, &current).map_err(|e| CommandError::ExecutionError(e))?;
+    let issues = detect_issues_for(&history, &current).map_err(CommandError::ExecutionError)?;
 
     if is_converged(&issues) {
         return Ok(Output::text(
@@ -43,9 +42,9 @@ fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, Comma
 
     let next = &fix_result.next_version;
 
-    save_design_doc(&root, &next.design).map_err(|e| CommandError::ExecutionError(e))?;
-    save_baseline(&root, next).map_err(|e| CommandError::ExecutionError(e))?;
-    save_version_snapshot(&root, next).map_err(|e| CommandError::ExecutionError(e))?;
+    save_design_doc(&root, &next.design).map_err(CommandError::ExecutionError)?;
+    save_baseline(&root, next).map_err(CommandError::ExecutionError)?;
+    save_version_snapshot(&root, next).map_err(CommandError::ExecutionError)?;
 
     let fix_str = fix_result
         .applied

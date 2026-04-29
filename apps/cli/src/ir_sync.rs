@@ -98,7 +98,7 @@ impl IrSyncTelemetry {
         Self {
             ir_hash: ir_hash.map(|h| format!("{h:016x}")),
             file_hash: format!("{file_hash:016x}"),
-            drift: ir_hash.map_or(false, |h| h != file_hash),
+            drift: ir_hash.is_some_and(|h| h != file_hash),
             last_sync_unix,
             sync_count,
         }

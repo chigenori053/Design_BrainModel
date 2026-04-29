@@ -14,10 +14,9 @@ pub fn handler() -> SubCommandHandler {
 fn execute(args: &[String], _session: &mut AgentSession) -> Result<Output, CommandError> {
     let root = resolve_root(args.first().map(|s| s.as_str()));
 
-    let (current, history) = load_versions(&root).map_err(|e| CommandError::ExecutionError(e))?;
+    let (current, history) = load_versions(&root).map_err(CommandError::ExecutionError)?;
 
-    let issues =
-        detect_issues_for(&history, &current).map_err(|e| CommandError::ExecutionError(e))?;
+    let issues = detect_issues_for(&history, &current).map_err(CommandError::ExecutionError)?;
 
     if is_converged(&issues) {
         return Ok(Output::text(

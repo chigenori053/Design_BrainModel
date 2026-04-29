@@ -162,6 +162,22 @@ pub fn execute_ir_plan(
 
         Operation::NoOp => "[NOOP]".to_string(),
     };
+
+    // §6.3 NOOP final guard: diff empty → skip post-validation and JSON parse path
+    if output.trim().starts_with("[NOOP]") {
+        let _ = emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Skipped);
+        let payload = StepExecutionResultPayload {
+            step_id,
+            stdout: Some(output.clone()),
+            stderr: None,
+            structured_output: None,
+            artifacts: Vec::new(),
+        };
+        let _ = emit_execution_result(&conversation.ir_state, payload.clone());
+        let _ = store_execution_memory(&conversation.ir_state, &ir_step, 0, &payload);
+        return vec![format!("[step 0] {label}\n{output}")];
+    }
+
     execution_state.set_output_diff(&output);
     execution_state.advance(ExecutionStage::PostValidate, "post validation started");
     let post_validation = validate_after_execution(plan, &output);
@@ -298,6 +314,18 @@ fn execute_composite_plan(
             Operation::Composite(_) => "[ERROR] nested composite rejected".to_string(),
             Operation::NoOp => "[NOOP]".to_string(),
         };
+
+        // §6.2 NOOP guard: diff empty → stop composite immediately
+        if child_output.trim().starts_with("[NOOP]") {
+            let _ = emit_step_completed(
+                &conversation.ir_state,
+                child_step_id,
+                ExecutionStatus::Skipped,
+            );
+            outputs.push(format!("[composite step {index}] {label}\n{child_output}"));
+            return outputs.join("\n");
+        }
+
         let status = if child_output.contains("ERROR:") || child_output.contains("[ERROR]") {
             ExecutionStatus::Failure
         } else {
@@ -512,7 +540,8 @@ mod tests {
             &mut conversation,
         );
         let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
-        assert!(output.iter().any(|o| o.contains("[ANALYZE]")));
+        // [ANALYZE] is emitted to stderr via eprintln!; the output vec contains the step label
+        assert!(output.iter().any(|o| o.contains("[step 0] analyze")));
     }
 
     #[test]
@@ -550,5 +579,74 @@ mod tests {
 
         assert!(output.iter().any(|line| line.contains("[NOOP]")));
         assert!(!conversation.has_pending_transaction());
+    }
+
+    // §10.1 — No-op 時に execution が走らない
+    #[test]
+    fn no_diff_does_not_execute() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("src.rs");
+        fs::write(&file, "pub fn sample() {}\n").expect("write sample");
+        let store = crate::ir::IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().unwrap();
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState::default();
+        conversation.ir_state = recovered.state;
+        let (plan, plan_id) = make_plan_and_id(Operation::Refactor, Some(file), &mut conversation);
+
+        let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
+        let joined = output.join("\n");
+
+        assert!(joined.contains("[NOOP]"), "expected [NOOP] in: {joined}");
+        assert!(
+            !joined.contains("Execution failed"),
+            "unexpected error in: {joined}"
+        );
+    }
+
+    // §10.2 — No-op 時に trailing characters が発生しない
+    #[test]
+    fn no_trailing_characters_on_noop() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("src.rs");
+        fs::write(&file, "pub fn sample() {}\n").expect("write sample");
+        let store = crate::ir::IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().unwrap();
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState::default();
+        conversation.ir_state = recovered.state;
+        let (plan, plan_id) = make_plan_and_id(Operation::Refactor, Some(file), &mut conversation);
+
+        let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
+
+        for line in &output {
+            assert!(
+                !line.contains("trailing characters"),
+                "trailing characters in: {line}"
+            );
+        }
+    }
+
+    // §10.3 — Determinism: 同じ入力で同じ出力
+    #[test]
+    fn noop_is_deterministic() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let file = temp.path().join("src.rs");
+        fs::write(&file, "pub fn sample() {}\n").expect("write sample");
+
+        let run = || {
+            let store = crate::ir::IRPersistenceStore::new(temp.path());
+            let recovered = store.recover_or_create().unwrap();
+            let mut session = AgentSession::with_root(temp.path().to_path_buf());
+            let mut conversation = ConversationState::default();
+            conversation.ir_state = recovered.state;
+            let (plan, plan_id) =
+                make_plan_and_id(Operation::Refactor, Some(file.clone()), &mut conversation);
+            execute_ir_plan(plan_id, &plan, &mut session, &mut conversation).join("\n")
+        };
+
+        let r1 = run();
+        let r2 = run();
+        assert_eq!(r1, r2, "noop output must be deterministic");
     }
 }

@@ -1115,6 +1115,10 @@ fn execute_direct_subcommand<W: Write>(
     session.current_plan = Some(to_runtime_plan(&exec_plan));
     session.state = State::Completed;
     let _ = writer;
+    // §7 NOOP guard: treat [NOOP] as normal result, not error
+    if output.contains("[NOOP]") {
+        return Ok(Some(output));
+    }
     Ok(Some(output))
 }
 
