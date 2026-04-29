@@ -279,6 +279,47 @@ pub enum RunLogEntry {
         reason: String,
         timestamp: String,
     },
+    AgentPrompt {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        #[serde(default)]
+        attempt: u8,
+        prompt: String,
+    },
+    AgentResponseRaw {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        raw: String,
+    },
+    AgentResponseParsed {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        response: ControlResponse,
+    },
+    RetryAttempt {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        error_kind: String,
+        error: String,
+    },
+    FallbackTriggered {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_raw: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error_kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        last_error: Option<String>,
+        response: ControlResponse,
+    },
 }
 
 // ── RunLogger ─────────────────────────────────────────────────────────────────

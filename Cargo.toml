@@ -91,6 +91,7 @@ members = [
     "apps/server",
     "apps/lsp",
     "apps/verification_cli",
+    "apps/agent_runner",
     "crates/core/world_model_core",
     "tests/contract",
     "tests/pipeline",
