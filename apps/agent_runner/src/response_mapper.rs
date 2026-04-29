@@ -2,6 +2,7 @@ use design_cli::control_event::{
     ControlEvent, ControlEventKind, ControlPayload, ControlResponse, DecisionAction,
 };
 use serde::Deserialize;
+use std::collections::BTreeMap;
 use std::fmt;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +45,24 @@ impl RetryErrorKind {
             Self::Validation => "Validation failed",
             Self::Semantic => "Semantic validation failed",
             Self::Agent => "Agent call failed",
+        }
+    }
+
+    pub fn retry_reason(self) -> &'static str {
+        match self {
+            Self::Parse => "Invalid JSON format",
+            Self::Validation => "Schema validation failed",
+            Self::Semantic => "Invalid action",
+            Self::Agent => "Agent call failed",
+        }
+    }
+
+    pub fn retry_fix_hint(self) -> &'static str {
+        match self {
+            Self::Parse => "fixing JSON format",
+            Self::Validation => "fixing schema fields",
+            Self::Semantic => "fixing allowed action",
+            Self::Agent => "retrying agent call",
         }
     }
 }
@@ -93,6 +112,13 @@ impl ResponseMapper {
                 format!("invalid agent response JSON: {err}"),
             )
         })?;
+        if !output.extra.is_empty() {
+            let fields = output.extra.keys().cloned().collect::<Vec<_>>().join(", ");
+            return Err(RetryError::new(
+                RetryErrorKind::Validation,
+                format!("unknown response field(s): {fields}"),
+            ));
+        }
         if output.response_to != event.event {
             return Err(RetryError::new(
                 RetryErrorKind::Validation,
@@ -165,6 +191,8 @@ struct AgentOutput {
     action: Option<DecisionAction>,
     #[serde(default)]
     data: Option<serde_json::Value>,
+    #[serde(flatten)]
+    extra: BTreeMap<String, serde_json::Value>,
 }
 
 fn response(
@@ -209,8 +237,7 @@ mod tests {
         let raw = serde_json::json!({
             "response_to": "decision_required",
             "request_id": event.request_id,
-            "action": "retry",
-            "data": {}
+            "action": "retry"
         })
         .to_string();
         let response = ResponseMapper::default().parse(&raw, &event).unwrap();

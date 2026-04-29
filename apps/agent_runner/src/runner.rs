@@ -158,17 +158,16 @@ where
         let mut last_raw = None::<String>;
         let mut last_error = None::<RetryError>;
         let max_retries = self.response_mapper.max_retries();
-        let max_attempts = max_retries.saturating_add(1);
 
-        for attempt in 0..=self.response_mapper.max_retries() {
+        for attempt in 0..max_retries {
             let prompt = match &last_error {
                 Some(error) => self.prompt_builder.build_retry(
                     event,
                     session,
                     &RetryPromptContext {
-                        attempt: attempt.saturating_add(1),
-                        max_attempts,
-                        reason: error.to_string(),
+                        retry_count: attempt.saturating_add(1),
+                        max_retries,
+                        last_error: error.kind.retry_reason().to_string(),
                     },
                 )?,
                 None => self.prompt_builder.build(event, session)?,
@@ -185,8 +184,8 @@ where
                             self.sink.send_response(&response)?;
                             return Ok(());
                         }
-                        Err(err) if attempt < self.response_mapper.max_retries() => {
-                            self.emit_retry_notice(&err, attempt.saturating_add(2), max_attempts);
+                        Err(err) if attempt.saturating_add(1) < max_retries => {
+                            self.emit_retry_notice(&err, attempt.saturating_add(2), max_retries);
                             self.log_retry_attempt(event, attempt, &err)?;
                             last_error = Some(err);
                         }
@@ -197,9 +196,9 @@ where
                         }
                     }
                 }
-                Err(err) if attempt < self.response_mapper.max_retries() => {
+                Err(err) if attempt.saturating_add(1) < max_retries => {
                     let err = RetryError::new(RetryErrorKind::Agent, err);
-                    self.emit_retry_notice(&err, attempt.saturating_add(2), max_attempts);
+                    self.emit_retry_notice(&err, attempt.saturating_add(2), max_retries);
                     self.log_retry_attempt(event, attempt, &err)?;
                     last_error = Some(err);
                 }
@@ -219,12 +218,15 @@ where
     }
 
     fn emit_retry_notice(&self, error: &RetryError, next_attempt: u8, max_attempts: u8) {
-        eprintln!("→ {}: {}", error.kind.label(), error.message);
-        eprintln!("→ Retrying (attempt {next_attempt}/{max_attempts})...");
+        eprintln!("→ {}", error.kind.label());
+        eprintln!(
+            "→ Retrying ({next_attempt}/{max_attempts}): {}",
+            error.kind.retry_fix_hint()
+        );
     }
 
     fn emit_fallback_notice(&self) {
-        eprintln!("→ Agent response invalid, using fallback");
+        eprintln!("→ Fallback triggered");
     }
 
     fn log_agent_prompt(
@@ -294,6 +296,19 @@ where
                 "attempt": attempt,
                 "error_kind": error.kind.as_str(),
                 "error": error.message,
+                "reason": error.kind.retry_reason(),
+            }),
+        )?;
+        self.log_json(
+            LogLevel::Info,
+            &serde_json::json!({
+                "type": "retry_reason",
+                "event": "retry_reason",
+                "run_id": event.run_id,
+                "step_id": event.step_id,
+                "request_id": event.request_id,
+                "attempt": attempt.saturating_add(1),
+                "reason": error.kind.retry_reason(),
             }),
         )
     }
@@ -315,6 +330,7 @@ where
                 "last_raw": last_raw,
                 "last_error_kind": last_error.map(|err| err.kind.as_str()),
                 "last_error": last_error.map(|err| err.message.as_str()),
+                "last_reason": last_error.map(|err| err.kind.retry_reason()),
                 "response": response,
             }),
         )
@@ -461,9 +477,85 @@ mod tests {
         assert!(log.contains("\"type\":\"agent_prompt\""));
         assert!(log.contains("\"type\":\"agent_response_raw\""));
         assert!(log.contains("\"type\":\"retry_attempt\""));
+        assert!(log.contains("\"type\":\"retry_reason\""));
         assert!(log.contains("\"type\":\"agent_response_parsed\""));
-        assert!(log.contains("Previous response failure"));
+        assert!(log.contains("Previous attempt failed."));
+        assert!(log.contains("Invalid JSON format"));
+        assert!(log.contains("Retry attempt: 2/2"));
         assert!(log.contains("parse_error"));
+    }
+
+    #[test]
+    fn schema_violation_retries_with_reason_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("run.jsonl");
+        let event = event();
+        let client = MockAgentClient::from_json_responses(vec![
+            serde_json::json!({
+                "response_to": "decision_required",
+                "request_id": event.request_id,
+                "action": "retry",
+                "extra": true
+            })
+            .to_string(),
+            serde_json::json!({
+                "response_to": "decision_required",
+                "request_id": event.request_id,
+                "action": "retry"
+            })
+            .to_string(),
+        ]);
+        let sink = VecResponseSink::default();
+        let mut loop_core = AgentLoop::new(client, sink, &log);
+        loop_core.set_log_level(LogLevel::Debug);
+        let line = serde_json::json!({"type": "event", "event": event}).to_string();
+        let mut stream = EventStream::new(Cursor::new(format!("{line}\n")));
+        let mut session = Session::new("run", "fix it");
+
+        loop_core.run(&mut stream, &mut session).unwrap();
+        assert_eq!(loop_core.sink.responses.len(), 1);
+        assert_eq!(
+            loop_core.sink.responses[0].action,
+            Some(DecisionAction::Retry)
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(log.contains("Schema validation failed"));
+    }
+
+    #[test]
+    fn action_violation_retries_with_reason_and_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("run.jsonl");
+        let event = event();
+        let client = MockAgentClient::from_json_responses(vec![
+            serde_json::json!({
+                "response_to": "decision_required",
+                "request_id": event.request_id,
+                "action": "skip"
+            })
+            .to_string(),
+            serde_json::json!({
+                "response_to": "decision_required",
+                "request_id": event.request_id,
+                "action": "retry"
+            })
+            .to_string(),
+        ]);
+        let sink = VecResponseSink::default();
+        let mut loop_core = AgentLoop::new(client, sink, &log);
+        loop_core.set_log_level(LogLevel::Debug);
+        let line = serde_json::json!({"type": "event", "event": event}).to_string();
+        let mut stream = EventStream::new(Cursor::new(format!("{line}\n")));
+        let mut session = Session::new("run", "fix it");
+
+        loop_core.run(&mut stream, &mut session).unwrap();
+        assert_eq!(loop_core.sink.responses.len(), 1);
+        assert_eq!(
+            loop_core.sink.responses[0].action,
+            Some(DecisionAction::Retry)
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(log.contains("Invalid action"));
     }
 
     #[test]

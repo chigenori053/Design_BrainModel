@@ -17,6 +17,15 @@ struct RunDsl {
     version: String,
     task: String,
     pipeline: Vec<RunDslStep>,
+    context: Option<RunDslContext>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RunDslContext {
+    file: Option<String>,
+    code: Option<String>,
+    validation_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -38,6 +47,7 @@ enum RunDslStepType {
 struct RunDslPlan {
     run_id: String,
     task: String,
+    context: Option<RunDslContext>,
     steps: Vec<PlanStep>,
 }
 
@@ -124,7 +134,20 @@ fn load_and_validate(input: &Path) -> Result<RunDsl, String> {
     if dsl.pipeline.is_empty() {
         return Err("ValidationError: pipeline must not be empty".to_string());
     }
+    if let Some(context) = &dsl.context {
+        validate_context(context)?;
+    }
     Ok(dsl)
+}
+
+fn validate_context(context: &RunDslContext) -> Result<(), String> {
+    if context.file.is_none() && context.code.is_none() {
+        return Err("ValidationError: context requires file or code".to_string());
+    }
+    if context.validation_error.is_some() && context.code.is_none() {
+        return Err("ValidationError: validation_error requires code".to_string());
+    }
+    Ok(())
 }
 
 fn build_plan(input: &Path, dsl: &RunDsl) -> Result<RunDslPlan, String> {
@@ -143,6 +166,7 @@ fn build_plan(input: &Path, dsl: &RunDsl) -> Result<RunDslPlan, String> {
     Ok(RunDslPlan {
         run_id,
         task: dsl.task.clone(),
+        context: dsl.context.clone(),
         steps,
     })
 }
@@ -214,15 +238,50 @@ fn run_agent_loop(
     let responses = deterministic_agent_responses(event, step_type);
     let mut last_raw = None::<String>;
     let mut last_error = None::<String>;
+    let validation_error = validation_error_from_event(event);
+
+    if let Some(validation_error) = validation_error.as_deref() {
+        logger
+            .append(&RunLogEntry::ValidationError {
+                run_id: event.run_id.clone(),
+                step_id: event.step_id.clone(),
+                request_id: event.request_id,
+                error: validation_error.to_string(),
+            })
+            .map_err(|err| err.to_string())?;
+    }
 
     for (attempt, raw) in responses.iter().enumerate() {
+        if attempt > 0 {
+            if let Some(validation_error) = validation_error.as_deref() {
+                logger
+                    .append(&RunLogEntry::RetryReason {
+                        run_id: event.run_id.clone(),
+                        step_id: event.step_id.clone(),
+                        request_id: event.request_id,
+                        attempt: attempt as u8,
+                        reason: validation_error.to_string(),
+                    })
+                    .map_err(|err| err.to_string())?;
+                logger
+                    .append(&RunLogEntry::FixAttempt {
+                        run_id: event.run_id.clone(),
+                        step_id: event.step_id.clone(),
+                        request_id: event.request_id,
+                        attempt: attempt as u8,
+                        validation_error: validation_error.to_string(),
+                        strategy: fix_strategy(validation_error).to_string(),
+                    })
+                    .map_err(|err| err.to_string())?;
+            }
+        }
         logger
             .append(&RunLogEntry::AgentPrompt {
                 run_id: event.run_id.clone(),
                 step_id: event.step_id.clone(),
                 request_id: event.request_id,
                 attempt: attempt as u8,
-                prompt: format!("task_step={} event={}", event.step_id, event.event.as_str()),
+                prompt: build_agent_prompt(event),
             })
             .map_err(|err| err.to_string())?;
         logger
@@ -299,13 +358,18 @@ fn run_agent_loop(
 
 fn build_control_event(plan: &RunDslPlan, step: &PlanStep) -> ControlEvent {
     let request_id = deterministic_request_id(&plan.run_id, &step.id);
+    let context = serde_json::json!({
+        "task": plan.task,
+        "step": step.step_type.as_str(),
+        "context": plan.context.as_ref().map(context_json).unwrap_or(serde_json::Value::Null),
+    });
     match step.step_type {
         RunDslStepType::GeneratePatch => ControlEvent::decision_required(
             &plan.run_id,
             &step.id,
             request_id,
             "generate_patch",
-            serde_json::json!({ "task": plan.task, "step": step.step_type.as_str() }),
+            context,
             vec![
                 DecisionAction::Modify,
                 DecisionAction::Retry,
@@ -318,7 +382,7 @@ fn build_control_event(plan: &RunDslPlan, step: &PlanStep) -> ControlEvent {
             &step.id,
             request_id,
             "validate",
-            serde_json::json!({ "task": plan.task, "step": step.step_type.as_str() }),
+            context,
             vec![
                 DecisionAction::Modify,
                 DecisionAction::Retry,
@@ -338,21 +402,112 @@ fn build_control_event(plan: &RunDslPlan, step: &PlanStep) -> ControlEvent {
     }
 }
 
+fn build_agent_prompt(event: &ControlEvent) -> String {
+    let (task, context) = match &event.payload {
+        ControlPayload::Decision { context, .. } => {
+            let task = context
+                .get("task")
+                .and_then(|value| value.as_str())
+                .unwrap_or_default()
+                .to_string();
+            let context_section = context
+                .get("context")
+                .filter(|value| !value.is_null())
+                .map(build_context_section)
+                .unwrap_or_default();
+            (task, context_section)
+        }
+        ControlPayload::Approval { .. } | ControlPayload::Input { .. } => {
+            (String::new(), String::new())
+        }
+    };
+    format!(
+        "Task:\n{}\n\nContext:\n{}\nCurrent Event:\n{}",
+        task,
+        context,
+        event.event.as_str()
+    )
+}
+
+fn build_context_section(context: &serde_json::Value) -> String {
+    let mut section = String::new();
+    if let Some(file) = context.get("file").and_then(|value| value.as_str()) {
+        section.push_str(&format!("File: {file}\n"));
+    }
+    if let Some(code) = context.get("code").and_then(|value| value.as_str()) {
+        section.push_str(&format!("Code:\n{code}\n"));
+    }
+    if let Some(error) = context
+        .get("validation_error")
+        .and_then(|value| value.as_str())
+    {
+        section.push_str(&format!("Validation Error:\n{error}\n"));
+    }
+    section
+}
+
+fn context_json(context: &RunDslContext) -> serde_json::Value {
+    serde_json::json!({
+        "file": context.file,
+        "code": context.code,
+        "validation_error": context.validation_error,
+    })
+}
+
 fn deterministic_agent_responses(event: &ControlEvent, step_type: RunDslStepType) -> Vec<String> {
     match step_type {
         RunDslStepType::GeneratePatch | RunDslStepType::Apply => {
             vec![agent_response(event, DecisionAction::Modify)]
         }
-        RunDslStepType::Validate => vec![
-            "not-json".to_string(),
-            serde_json::json!({
-                "response_to": event.event,
-                "request_id": RequestId::from_u128(7),
-                "action": "modify"
-            })
-            .to_string(),
-            "still-not-json".to_string(),
-        ],
+        RunDslStepType::Validate => match validation_error_from_event(event) {
+            Some(error) if is_supported_validation_error(&error) => {
+                vec![
+                    "not-json".to_string(),
+                    agent_response(event, DecisionAction::Modify),
+                ]
+            }
+            Some(_) | None => vec![
+                "not-json".to_string(),
+                serde_json::json!({
+                    "response_to": event.event,
+                    "request_id": RequestId::from_u128(7),
+                    "action": "modify"
+                })
+                .to_string(),
+                "still-not-json".to_string(),
+            ],
+        },
+    }
+}
+
+fn validation_error_from_event(event: &ControlEvent) -> Option<String> {
+    let ControlPayload::Decision { context, .. } = &event.payload else {
+        return None;
+    };
+    context
+        .get("context")
+        .and_then(|context| context.get("validation_error"))
+        .and_then(|value| value.as_str())
+        .filter(|value| !value.trim().is_empty())
+        .map(|value| value.to_string())
+}
+
+fn is_supported_validation_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("missing semicolon")
+        || normalized.contains("expected `;`")
+        || normalized.contains("type mismatch")
+        || normalized.contains("mismatched types")
+}
+
+fn fix_strategy(error: &str) -> &'static str {
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("semicolon") || normalized.contains("expected `;`") {
+        "insert_missing_semicolon"
+    } else if normalized.contains("type mismatch") || normalized.contains("mismatched types") {
+        "align_expression_type"
+    } else {
+        "fallback"
     }
 }
 
@@ -508,5 +663,67 @@ mod tests {
         .unwrap();
         assert_eq!(dsl.version, "1.0");
         assert_eq!(dsl.pipeline[0].step_type, RunDslStepType::Validate);
+    }
+
+    #[test]
+    fn accepts_context_with_file_or_code() {
+        let dsl: RunDsl = serde_json::from_str(
+            r#"{
+                "version":"1.0",
+                "task":"demo",
+                "context":{"file":"src/main.rs","code":"fn main() {}","validation_error":"missing semicolon"},
+                "pipeline":[{"type":"generate_patch"}]
+            }"#,
+        )
+        .unwrap();
+
+        validate_context(dsl.context.as_ref().unwrap()).unwrap();
+    }
+
+    #[test]
+    fn rejects_empty_context() {
+        let dsl: RunDsl = serde_json::from_str(
+            r#"{
+                "version":"1.0",
+                "task":"demo",
+                "context":{},
+                "pipeline":[{"type":"generate_patch"}]
+            }"#,
+        )
+        .unwrap();
+
+        let err = validate_context(dsl.context.as_ref().unwrap()).unwrap_err();
+        assert!(err.contains("context requires file or code"));
+    }
+
+    #[test]
+    fn rejects_validation_error_without_code() {
+        let dsl: RunDsl = serde_json::from_str(
+            r#"{
+                "version":"1.0",
+                "task":"demo",
+                "context":{"file":"src/main.rs","validation_error":"missing semicolon"},
+                "pipeline":[{"type":"generate_patch"}]
+            }"#,
+        )
+        .unwrap();
+
+        let err = validate_context(dsl.context.as_ref().unwrap()).unwrap_err();
+        assert!(err.contains("validation_error requires code"));
+    }
+
+    #[test]
+    fn rejects_unknown_context_fields() {
+        let err = serde_json::from_str::<RunDsl>(
+            r#"{
+                "version":"1.0",
+                "task":"demo",
+                "context":{"diff":"nope"},
+                "pipeline":[{"type":"generate_patch"}]
+            }"#,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown field"));
     }
 }

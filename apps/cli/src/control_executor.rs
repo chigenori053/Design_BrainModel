@@ -320,6 +320,27 @@ pub enum RunLogEntry {
         last_error: Option<String>,
         response: ControlResponse,
     },
+    ValidationError {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        error: String,
+    },
+    RetryReason {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        reason: String,
+    },
+    FixAttempt {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        validation_error: String,
+        strategy: String,
+    },
 }
 
 // ── RunLogger ─────────────────────────────────────────────────────────────────
