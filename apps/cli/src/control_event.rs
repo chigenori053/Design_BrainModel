@@ -374,8 +374,14 @@ impl ControlOutcome {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ControlError {
     /// Response `request_id` did not match the emitted event (§10).
-    RequestIdMismatch { expected: RequestId, got: RequestId },
-    StepIdMismatch { expected: String, got: String },
+    RequestIdMismatch {
+        expected: RequestId,
+        got: RequestId,
+    },
+    StepIdMismatch {
+        expected: String,
+        got: String,
+    },
     ResponseTypeMismatch {
         expected: ControlEventKind,
         got: ControlEventKind,
@@ -384,6 +390,8 @@ pub enum ControlError {
     UnknownAction(String),
     /// The response JSON could not be parsed.
     ParseError(String),
+    /// Safety or replay state is inconsistent and execution must abort.
+    InvalidState(String),
     /// An I/O error occurred during emit or receive.
     IoError(String),
     /// The run log could not be written.
@@ -409,6 +417,7 @@ impl std::fmt::Display for ControlError {
             }
             Self::UnknownAction(a) => write!(f, "unknown action: {a}"),
             Self::ParseError(e) => write!(f, "parse error: {e}"),
+            Self::InvalidState(e) => write!(f, "invalid state: {e}"),
             Self::IoError(e) => write!(f, "I/O error: {e}"),
             Self::LogError(e) => write!(f, "log error: {e}"),
         }
@@ -474,7 +483,11 @@ mod tests {
             request_id(),
             DecisionReason::ValidationFailed.as_str(),
             json!({"message": "type mismatch"}),
-            vec![DecisionAction::Retry, DecisionAction::Skip, DecisionAction::Abort],
+            vec![
+                DecisionAction::Retry,
+                DecisionAction::Skip,
+                DecisionAction::Abort,
+            ],
             DecisionAction::Abort,
         );
         let json = serde_json::to_string(&event).unwrap();
@@ -508,8 +521,14 @@ mod tests {
 
     #[test]
     fn test_input_required_roundtrip() {
-        let event =
-            ControlEvent::input_required("run-001", "step-1", request_id(), "Specify target file", json!({"type": "string"}), true);
+        let event = ControlEvent::input_required(
+            "run-001",
+            "step-1",
+            request_id(),
+            "Specify target file",
+            json!({"type": "string"}),
+            true,
+        );
         let json = serde_json::to_string(&event).unwrap();
         let de: ControlEvent = serde_json::from_str(&json).unwrap();
         assert_eq!(de.event, ControlEventKind::InputRequired);
@@ -552,7 +571,10 @@ mod tests {
         assert_eq!(DecisionAction::parse("retry"), Some(DecisionAction::Retry));
         assert_eq!(DecisionAction::parse("skip"), Some(DecisionAction::Skip));
         assert_eq!(DecisionAction::parse("abort"), Some(DecisionAction::Abort));
-        assert_eq!(DecisionAction::parse("modify"), Some(DecisionAction::Modify));
+        assert_eq!(
+            DecisionAction::parse("modify"),
+            Some(DecisionAction::Modify)
+        );
         assert_eq!(DecisionAction::parse("unknown"), None);
         assert_eq!(DecisionAction::parse("approve"), None);
     }

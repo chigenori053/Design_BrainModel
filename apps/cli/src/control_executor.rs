@@ -14,6 +14,7 @@
 //! - `"response"` — the raw [`ControlResponse`] from the agent
 //! - `"decision"` — the resolved [`ControlOutcome`] (canonical record)
 
+use std::collections::BTreeMap;
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
@@ -23,18 +24,219 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::control_event::{
-    timestamp_now, ControlError, ControlEvent, ControlOutcome, ControlPayload, ControlResponse,
-    DecisionAction, DecisionSource, RequestId,
+    ControlError, ControlEvent, ControlOutcome, ControlPayload, ControlResponse, DecisionAction,
+    DecisionSource, RequestId, timestamp_now,
 };
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 
 /// Default response timeout in milliseconds (§9.1).
 pub const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+pub const DEFAULT_MAX_ATTEMPTS: u8 = 3;
+pub const DEFAULT_MAX_LOOPS: u8 = 5;
+pub const MAX_ATTEMPTS_LIMIT: u8 = 10;
+pub const MAX_LOOPS_LIMIT: u8 = 20;
+pub const MIN_TIMEOUT_MS: u64 = 1_000;
 
 /// Safe default action when no executor is provided (abort is the safest
 /// no-op for most decision branches).
 pub const DEFAULT_FALLBACK_ACTION: &str = "abort";
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SafetyConfig {
+    pub max_attempts: u8,
+    pub max_loops: u8,
+    pub decision_timeout_ms: u64,
+}
+
+impl SafetyConfig {
+    pub fn new(
+        max_attempts: u8,
+        max_loops: u8,
+        decision_timeout_ms: u64,
+    ) -> Result<Self, ControlError> {
+        if max_attempts == 0 || max_attempts > MAX_ATTEMPTS_LIMIT {
+            return Err(ControlError::InvalidState(format!(
+                "max_attempts must be 1..={MAX_ATTEMPTS_LIMIT}, got {max_attempts}"
+            )));
+        }
+        if max_loops == 0 || max_loops > MAX_LOOPS_LIMIT {
+            return Err(ControlError::InvalidState(format!(
+                "max_loops must be 1..={MAX_LOOPS_LIMIT}, got {max_loops}"
+            )));
+        }
+        if decision_timeout_ms < MIN_TIMEOUT_MS {
+            return Err(ControlError::InvalidState(format!(
+                "decision_timeout_ms must be >= {MIN_TIMEOUT_MS}, got {decision_timeout_ms}"
+            )));
+        }
+        Ok(Self {
+            max_attempts,
+            max_loops,
+            decision_timeout_ms,
+        })
+    }
+}
+
+impl Default for SafetyConfig {
+    fn default() -> Self {
+        Self {
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_loops: DEFAULT_MAX_LOOPS,
+            decision_timeout_ms: DEFAULT_TIMEOUT_MS,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AttemptCounter {
+    pub step_id: String,
+    pub attempts: u8,
+    pub max_attempts: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DecisionLoopGuard {
+    pub run_id: String,
+    pub loop_count: u8,
+    pub max_loops: u8,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SafetyLimitType {
+    MaxAttempts,
+    MaxLoops,
+    InvalidState,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SafetyLimitTriggered {
+    pub event: String,
+    pub limit_type: SafetyLimitType,
+    pub run_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempts: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_count: Option<u8>,
+    pub abort_reason: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SafetySnapshot {
+    pub event: String,
+    pub run_id: String,
+    pub step_id: String,
+    pub attempts: u8,
+    pub max_attempts: u8,
+    pub loop_count: u8,
+    pub max_loops: u8,
+}
+
+#[derive(Debug, Clone)]
+pub struct ControlSafetyLayer {
+    config: SafetyConfig,
+    attempts: BTreeMap<String, AttemptCounter>,
+    loop_guard: Option<DecisionLoopGuard>,
+}
+
+impl ControlSafetyLayer {
+    pub fn new(config: SafetyConfig) -> Self {
+        Self {
+            config,
+            attempts: BTreeMap::new(),
+            loop_guard: None,
+        }
+    }
+
+    pub fn config(&self) -> SafetyConfig {
+        self.config
+    }
+
+    pub fn record_event(
+        &mut self,
+        event: &ControlEvent,
+    ) -> Result<SafetySnapshot, SafetyLimitTriggered> {
+        let guard = self.loop_guard.get_or_insert_with(|| DecisionLoopGuard {
+            run_id: event.run_id.clone(),
+            loop_count: 0,
+            max_loops: self.config.max_loops,
+        });
+        if guard.run_id != event.run_id {
+            return Err(SafetyLimitTriggered {
+                event: "safety_limit_triggered".to_string(),
+                limit_type: SafetyLimitType::InvalidState,
+                run_id: event.run_id.clone(),
+                step_id: Some(event.step_id.clone()),
+                attempts: None,
+                loop_count: Some(guard.loop_count),
+                abort_reason: format!(
+                    "safety guard run_id mismatch: expected {}, got {}",
+                    guard.run_id, event.run_id
+                ),
+            });
+        }
+        guard.loop_count = guard.loop_count.saturating_add(1);
+        let loop_count = guard.loop_count;
+        let max_loops = guard.max_loops;
+
+        let counter = self
+            .attempts
+            .entry(event.step_id.clone())
+            .or_insert_with(|| AttemptCounter {
+                step_id: event.step_id.clone(),
+                attempts: 0,
+                max_attempts: self.config.max_attempts,
+            });
+        counter.attempts = counter.attempts.saturating_add(1);
+        let attempts = counter.attempts;
+        let max_attempts = counter.max_attempts;
+
+        if attempts > max_attempts {
+            return Err(SafetyLimitTriggered {
+                event: "safety_limit_triggered".to_string(),
+                limit_type: SafetyLimitType::MaxAttempts,
+                run_id: event.run_id.clone(),
+                step_id: Some(event.step_id.clone()),
+                attempts: Some(attempts),
+                loop_count: Some(loop_count),
+                abort_reason: format!(
+                    "step {} exceeded max_attempts {}",
+                    event.step_id, max_attempts
+                ),
+            });
+        }
+        if loop_count > max_loops {
+            return Err(SafetyLimitTriggered {
+                event: "safety_limit_triggered".to_string(),
+                limit_type: SafetyLimitType::MaxLoops,
+                run_id: event.run_id.clone(),
+                step_id: Some(event.step_id.clone()),
+                attempts: Some(attempts),
+                loop_count: Some(loop_count),
+                abort_reason: format!("run {} exceeded max_loops {}", event.run_id, max_loops),
+            });
+        }
+
+        Ok(SafetySnapshot {
+            event: "safety_snapshot".to_string(),
+            run_id: event.run_id.clone(),
+            step_id: event.step_id.clone(),
+            attempts,
+            max_attempts,
+            loop_count,
+            max_loops,
+        })
+    }
+}
+
+impl Default for ControlSafetyLayer {
+    fn default() -> Self {
+        Self::new(SafetyConfig::default())
+    }
+}
 
 // ── RunLogEntry ───────────────────────────────────────────────────────────────
 
@@ -57,6 +259,24 @@ pub enum RunLogEntry {
         request_id: RequestId,
         step_id: String,
         outcome: ControlOutcome,
+        timestamp: String,
+    },
+    SafetyLimitTriggered {
+        #[serde(flatten)]
+        safety: SafetyLimitTriggered,
+        timestamp: String,
+    },
+    SafetySnapshot {
+        #[serde(flatten)]
+        safety: SafetySnapshot,
+        timestamp: String,
+    },
+    RunFailed {
+        event: String,
+        run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        step_id: Option<String>,
+        reason: String,
         timestamp: String,
     },
 }
@@ -97,9 +317,10 @@ impl RunLogger {
             .create(true)
             .append(true)
             .open(&self.path)
-            .map_err(|e| ControlError::LogError(format!("open log {}: {e}", self.path.display())))?;
-        writeln!(file, "{line}")
-            .map_err(|e| ControlError::LogError(format!("write log: {e}")))?;
+            .map_err(|e| {
+                ControlError::LogError(format!("open log {}: {e}", self.path.display()))
+            })?;
+        writeln!(file, "{line}").map_err(|e| ControlError::LogError(format!("write log: {e}")))?;
         Ok(())
     }
 
@@ -145,17 +366,31 @@ pub trait ControlExecutor {
 /// - Times out after `timeout_ms` milliseconds and falls back to the `default` action.
 /// - Writes event / response / decision records to the run log if a [`RunLogger`] is set.
 pub struct StdioControlExecutor {
-    timeout_ms: u64,
     logger: Option<RunLogger>,
     debug_plain_text: bool,
+    safety: ControlSafetyLayer,
 }
 
 impl StdioControlExecutor {
     pub fn new(timeout_ms: u64, logger: Option<RunLogger>) -> Self {
+        let config = SafetyConfig::new(
+            DEFAULT_MAX_ATTEMPTS,
+            DEFAULT_MAX_LOOPS,
+            timeout_ms.max(MIN_TIMEOUT_MS),
+        )
+        .unwrap_or_default();
         Self {
-            timeout_ms,
             logger,
             debug_plain_text: false,
+            safety: ControlSafetyLayer::new(config),
+        }
+    }
+
+    pub fn with_safety_config(config: SafetyConfig, logger: Option<RunLogger>) -> Self {
+        Self {
+            logger,
+            debug_plain_text: false,
+            safety: ControlSafetyLayer::new(config),
         }
     }
 
@@ -183,12 +418,25 @@ impl ControlExecutor for StdioControlExecutor {
                 timestamp: timestamp_now(),
             })?;
         }
+        match self.safety.record_event(&event) {
+            Ok(snapshot) => {
+                if let Some(logger) = &self.logger {
+                    logger.append(&RunLogEntry::SafetySnapshot {
+                        safety: snapshot,
+                        timestamp: timestamp_now(),
+                    })?;
+                }
+            }
+            Err(limit) => {
+                return self.abort_for_safety_limit(&event, limit);
+            }
+        }
 
         // ── 2. Display human-readable prompt ──────────────────────────────────
         print_control_event_prompt(&event);
 
         // ── 3. Read response from stdin with timeout (§8.1, §9.1) ────────────
-        let timeout = Duration::from_millis(self.timeout_ms);
+        let timeout = Duration::from_millis(self.safety.config().decision_timeout_ms);
         let (tx, rx) = mpsc::channel::<String>();
         thread::spawn(move || {
             let stdin = std::io::stdin();
@@ -206,7 +454,10 @@ impl ControlExecutor for StdioControlExecutor {
         // ── 4. Resolve the outcome ────────────────────────────────────────────
         let outcome = if timed_out {
             // §9.3 — fallback to default action
-            eprintln!("\n[Timeout] No response within {}s — using default.", self.timeout_ms / 1000);
+            eprintln!(
+                "\n[Timeout] No response within {}s — using default.",
+                self.safety.config().decision_timeout_ms / 1000
+            );
             resolve_default(&event, DecisionSource::Timeout)
         } else {
             let resp = match try_parse_json_response(&raw) {
@@ -251,6 +502,36 @@ impl ControlExecutor for StdioControlExecutor {
     }
 }
 
+impl StdioControlExecutor {
+    fn abort_for_safety_limit(
+        &self,
+        event: &ControlEvent,
+        limit: SafetyLimitTriggered,
+    ) -> Result<ControlOutcome, ControlError> {
+        let outcome = forced_abort();
+        if let Some(logger) = &self.logger {
+            logger.append(&RunLogEntry::SafetyLimitTriggered {
+                safety: limit.clone(),
+                timestamp: timestamp_now(),
+            })?;
+            logger.append(&RunLogEntry::RunFailed {
+                event: "run_failed".to_string(),
+                run_id: event.run_id.clone(),
+                step_id: Some(event.step_id.clone()),
+                reason: limit.abort_reason,
+                timestamp: timestamp_now(),
+            })?;
+            logger.append(&RunLogEntry::Decision {
+                request_id: event.request_id,
+                step_id: event.step_id.clone(),
+                outcome: outcome.clone(),
+                timestamp: timestamp_now(),
+            })?;
+        }
+        Ok(outcome)
+    }
+}
+
 // ── ReplayControlExecutor ──────────────────────────────────────────────────────
 
 /// Deterministic replay executor (§11, §14).
@@ -266,7 +547,9 @@ pub struct ReplayControlExecutor {
 impl ReplayControlExecutor {
     /// Load from an existing run log file.
     pub fn from_log(path: &Path) -> Result<Self, ControlError> {
-        let logger = RunLogger { path: path.to_path_buf() };
+        let logger = RunLogger {
+            path: path.to_path_buf(),
+        };
         let entries = logger.read_all()?;
         Ok(Self { entries, pos: 0 })
     }
@@ -465,32 +748,24 @@ fn resolve_plain(
     match &event.payload {
         ControlPayload::Decision { options, .. } => {
             // §10 — must be in global allowlist AND options list
-            let action = DecisionAction::parse(raw).ok_or_else(|| {
-                ControlError::UnknownAction(raw.to_string())
-            })?;
+            let action = DecisionAction::parse(raw)
+                .ok_or_else(|| ControlError::UnknownAction(raw.to_string()))?;
             if !options.contains(&action) {
                 return Err(ControlError::UnknownAction(raw.to_string()));
             }
-            Ok(ControlOutcome::Decision {
-                action,
-                source,
-            })
+            Ok(ControlOutcome::Decision { action, source })
         }
         ControlPayload::Input { .. } => Ok(ControlOutcome::Input {
             data: serde_json::Value::String(raw.to_string()),
             source,
         }),
         ControlPayload::Approval { .. } => {
-            let action = DecisionAction::parse(raw).ok_or_else(|| {
-                ControlError::UnknownAction(raw.to_string())
-            })?;
+            let action = DecisionAction::parse(raw)
+                .ok_or_else(|| ControlError::UnknownAction(raw.to_string()))?;
             if !matches!(action, DecisionAction::Modify | DecisionAction::Abort) {
                 return Err(ControlError::UnknownAction(raw.to_string()));
             }
-            Ok(ControlOutcome::Decision {
-                action,
-                source,
-            })
+            Ok(ControlOutcome::Decision { action, source })
         }
     }
 }
@@ -514,10 +789,23 @@ fn resolve_default(event: &ControlEvent, source: DecisionSource) -> ControlOutco
     }
 }
 
-fn validate_outcome_type(event: &ControlEvent, outcome: &ControlOutcome) -> Result<(), ControlError> {
+fn forced_abort() -> ControlOutcome {
+    ControlOutcome::Decision {
+        action: DecisionAction::Abort,
+        source: DecisionSource::Default,
+    }
+}
+
+fn validate_outcome_type(
+    event: &ControlEvent,
+    outcome: &ControlOutcome,
+) -> Result<(), ControlError> {
     match (&event.payload, outcome) {
         (ControlPayload::Input { .. }, ControlOutcome::Input { .. }) => Ok(()),
-        (ControlPayload::Decision { .. } | ControlPayload::Approval { .. }, ControlOutcome::Decision { .. }) => Ok(()),
+        (
+            ControlPayload::Decision { .. } | ControlPayload::Approval { .. },
+            ControlOutcome::Decision { .. },
+        ) => Ok(()),
         _ => Err(ControlError::ParseError(
             "replay outcome type does not match control event type".to_string(),
         )),
@@ -686,6 +974,41 @@ mod tests {
         assert_eq!(outcome.source(), DecisionSource::Timeout);
     }
 
+    #[test]
+    fn replay_executor_replays_safety_abort_decision() {
+        let entries = vec![
+            RunLogEntry::SafetyLimitTriggered {
+                safety: SafetyLimitTriggered {
+                    event: "safety_limit_triggered".to_string(),
+                    limit_type: SafetyLimitType::MaxAttempts,
+                    run_id: "run-001".to_string(),
+                    step_id: Some("step-2".to_string()),
+                    attempts: Some(4),
+                    loop_count: Some(4),
+                    abort_reason: "step step-2 exceeded max_attempts 3".to_string(),
+                },
+                timestamp: "2026-04-29T00:00:00Z".to_string(),
+            },
+            RunLogEntry::RunFailed {
+                event: "run_failed".to_string(),
+                run_id: "run-001".to_string(),
+                step_id: Some("step-2".to_string()),
+                reason: "step step-2 exceeded max_attempts 3".to_string(),
+                timestamp: "2026-04-29T00:00:01Z".to_string(),
+            },
+            RunLogEntry::Decision {
+                request_id: req(1),
+                step_id: "step-2".to_string(),
+                outcome: forced_abort(),
+                timestamp: "2026-04-29T00:00:02Z".to_string(),
+            },
+        ];
+        let mut exec = ReplayControlExecutor::from_entries(entries);
+        let outcome = exec.emit(decision_event()).unwrap();
+        assert_eq!(outcome.action(), Some("abort"));
+        assert_eq!(outcome.source(), DecisionSource::Default);
+    }
+
     // ── RunLogger ──────────────────────────────────────────────────────────────
 
     #[test]
@@ -735,12 +1058,104 @@ mod tests {
                 timestamp: "2026-04-29T00:00:02Z".to_string(),
             })
             .unwrap();
+        logger
+            .append(&RunLogEntry::SafetyLimitTriggered {
+                safety: SafetyLimitTriggered {
+                    event: "safety_limit_triggered".to_string(),
+                    limit_type: SafetyLimitType::MaxLoops,
+                    run_id: "run-001".to_string(),
+                    step_id: Some("step-2".to_string()),
+                    attempts: Some(2),
+                    loop_count: Some(6),
+                    abort_reason: "run run-001 exceeded max_loops 5".to_string(),
+                },
+                timestamp: "2026-04-29T00:00:03Z".to_string(),
+            })
+            .unwrap();
+        logger
+            .append(&RunLogEntry::SafetySnapshot {
+                safety: SafetySnapshot {
+                    event: "safety_snapshot".to_string(),
+                    run_id: "run-001".to_string(),
+                    step_id: "step-2".to_string(),
+                    attempts: 2,
+                    max_attempts: 3,
+                    loop_count: 2,
+                    max_loops: 5,
+                },
+                timestamp: "2026-04-29T00:00:04Z".to_string(),
+            })
+            .unwrap();
 
         let entries = logger.read_all().unwrap();
-        assert_eq!(entries.len(), 3);
+        assert_eq!(entries.len(), 5);
         assert!(matches!(entries[0], RunLogEntry::Event { .. }));
         assert!(matches!(entries[1], RunLogEntry::Response { .. }));
         assert!(matches!(entries[2], RunLogEntry::Decision { .. }));
+        assert!(matches!(
+            entries[3],
+            RunLogEntry::SafetyLimitTriggered { .. }
+        ));
+        assert!(matches!(entries[4], RunLogEntry::SafetySnapshot { .. }));
+    }
+
+    // ── Safety Layer ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn safety_config_enforces_bounds() {
+        assert!(SafetyConfig::new(0, DEFAULT_MAX_LOOPS, DEFAULT_TIMEOUT_MS).is_err());
+        assert!(SafetyConfig::new(11, DEFAULT_MAX_LOOPS, DEFAULT_TIMEOUT_MS).is_err());
+        assert!(SafetyConfig::new(DEFAULT_MAX_ATTEMPTS, 0, DEFAULT_TIMEOUT_MS).is_err());
+        assert!(SafetyConfig::new(DEFAULT_MAX_ATTEMPTS, 21, DEFAULT_TIMEOUT_MS).is_err());
+        assert!(SafetyConfig::new(DEFAULT_MAX_ATTEMPTS, DEFAULT_MAX_LOOPS, 999).is_err());
+        assert_eq!(
+            SafetyConfig::new(3, 5, 30_000).unwrap(),
+            SafetyConfig::default()
+        );
+    }
+
+    #[test]
+    fn safety_layer_aborts_after_max_attempts() {
+        let config = SafetyConfig::new(3, 20, 30_000).unwrap();
+        let mut safety = ControlSafetyLayer::new(config);
+        let event = decision_event();
+        let snapshot = safety.record_event(&event).unwrap();
+        assert_eq!(snapshot.attempts, 1);
+        assert_eq!(snapshot.loop_count, 1);
+        assert!(safety.record_event(&event).is_ok());
+        assert!(safety.record_event(&event).is_ok());
+        let limit = safety.record_event(&event).unwrap_err();
+        assert_eq!(limit.limit_type, SafetyLimitType::MaxAttempts);
+        assert_eq!(limit.attempts, Some(4));
+        assert_eq!(limit.loop_count, Some(4));
+    }
+
+    #[test]
+    fn safety_layer_aborts_after_max_loops() {
+        let config = SafetyConfig::new(10, 2, 30_000).unwrap();
+        let mut safety = ControlSafetyLayer::new(config);
+        assert!(safety.record_event(&decision_event()).is_ok());
+        assert!(safety.record_event(&approval_event()).is_ok());
+        let limit = safety.record_event(&input_event()).unwrap_err();
+        assert_eq!(limit.limit_type, SafetyLimitType::MaxLoops);
+        assert_eq!(limit.loop_count, Some(3));
+    }
+
+    #[test]
+    fn safety_layer_rejects_run_id_mismatch() {
+        let mut safety = ControlSafetyLayer::default();
+        assert!(safety.record_event(&decision_event()).is_ok());
+        let other = ControlEvent::decision_required(
+            "run-002",
+            "step-2",
+            req(4),
+            DecisionReason::Conflict.as_str(),
+            json!({}),
+            vec![DecisionAction::Abort],
+            DecisionAction::Abort,
+        );
+        let limit = safety.record_event(&other).unwrap_err();
+        assert_eq!(limit.limit_type, SafetyLimitType::InvalidState);
     }
 
     // ── validate_and_resolve ───────────────────────────────────────────────────

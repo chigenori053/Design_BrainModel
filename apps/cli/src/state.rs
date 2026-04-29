@@ -139,6 +139,8 @@ mod tests {
         assert_eq!(State::TestPlanReady.as_str(), "test_plan_ready");
         assert_eq!(State::Repairing.as_str(), "repairing");
         assert_eq!(State::CommitReady.as_str(), "commit_ready");
+        assert_eq!(State::Blocked.as_str(), "blocked");
+        assert_eq!(State::Failed.as_str(), "failed");
     }
 
     #[test]
