@@ -2,7 +2,6 @@
 ///
 /// CLIはstatelessではなく状態を持つシステムとして扱う。
 /// Phase2以降でPlanner/Executorと接続するための拡張ポイントを備える。
-
 /// CLIセッションの状態遷移
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum State {
@@ -30,6 +29,9 @@ pub enum State {
     TestPlanReady,
     Repairing,
     CommitReady,
+    /// Executor is blocked waiting for a Control Event response.
+    Blocked,
+    Failed,
 }
 
 impl State {
@@ -52,6 +54,8 @@ impl State {
             Self::TestPlanReady => "test_plan_ready",
             Self::Repairing => "repairing",
             Self::CommitReady => "commit_ready",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
         }
     }
 }

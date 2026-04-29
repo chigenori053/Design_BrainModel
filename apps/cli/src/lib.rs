@@ -7,6 +7,8 @@ pub mod coding_service_interface;
 pub mod command;
 pub mod commands;
 pub mod consistency_engine;
+pub mod control_event;
+pub mod control_executor;
 pub mod dbm;
 pub mod design_delta;
 pub mod design_main;

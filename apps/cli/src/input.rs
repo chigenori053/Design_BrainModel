@@ -64,8 +64,9 @@ pub fn print_prompt_with_label<W: Write>(
         | State::PatchPlanReady
         | State::TestPlanReady
         | State::Repairing => "DBM..",
-        State::Error => "DBM!",
+        State::Error | State::Failed => "DBM!",
         State::Ready | State::CommitReady => "DBM?",
+        State::Blocked => "DBM[?]",
     };
     match label {
         Some(label) if !label.is_empty() => write!(writer, "{indicator}[{label}] > ")?,

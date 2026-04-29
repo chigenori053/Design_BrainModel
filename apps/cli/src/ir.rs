@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+use crate::control_event::{DecisionAction, DecisionSource, RequestId};
 use crate::nl::types::{CodingIntent, CodingOptions, CommandPlan, PlannedStep};
 use crate::plan::Plan;
 use crate::service::dto::{ActionKind, IRState, SessionAppliedDiff};
@@ -112,6 +113,33 @@ pub enum IRPlanEventPayload {
     PlanProposed(PlanPayload),
     PlanAccepted(PlanAcceptedPayload),
     PlanRejected(PlanRejectedPayload),
+}
+
+// ── Control Event IR Payload Types ───────────────────────────────────────────
+
+/// Recorded when the Executor emits a Control Event to an Agent (§8.1).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlEventEmittedPayload {
+    /// Step that triggered the control event.
+    pub step_id: String,
+    /// Unique per-request identifier matching the emitted [`ControlEvent`].
+    pub request_id: RequestId,
+    /// `"decision_required"` | `"input_required"` | `"approval_required"`.
+    pub event_kind: String,
+    /// Full serialised [`ControlEvent`] for audit and replay (§11).
+    pub event: serde_json::Value,
+}
+
+/// Recorded when the Executor receives an Agent response and resumes (§8.2).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ControlEventResolvedPayload {
+    pub step_id: String,
+    pub request_id: RequestId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub action: Option<DecisionAction>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
+    pub source: DecisionSource,
 }
 
 // ── Phase 2: Step Lifecycle Event Types ──────────────────────────────────────
@@ -264,6 +292,10 @@ pub enum IRExecutionEventPayload {
     MemoryReferenced(MemoryReferencePayload),
     MemoryStored(MemoryStorePayload),
     MemoryOutcomeRecorded(MemoryOutcomePayload),
+    /// Executor blocked — Control Event emitted to Agent (§8.1).
+    ControlEventEmitted(ControlEventEmittedPayload),
+    /// Executor resumed — Agent response received and validated (§8.2).
+    ControlEventResolved(ControlEventResolvedPayload),
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
