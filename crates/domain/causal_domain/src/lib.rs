@@ -1,6 +1,8 @@
 use std::{
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque, hash_map::DefaultHasher},
+    fs,
     hash::{Hash, Hasher},
+    path::{Path, PathBuf},
 };
 
 pub const MIN_GRAPHS: usize = 2;
@@ -54,6 +56,13 @@ impl ActionType {
 pub enum Target {
     Unknown,
     Symbol(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ResolvedTarget {
+    File(PathBuf),
+    Function { file: PathBuf, name: String },
+    SymbolUnknown,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
@@ -189,6 +198,81 @@ pub struct IrStep {
     pub op: IrOp,
     pub target: Target,
     pub params: HashMap<String, String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Change {
+    Add {
+        path: String,
+        content: String,
+    },
+    Remove {
+        path: String,
+    },
+    Modify {
+        path: String,
+        before: String,
+        after: String,
+    },
+    InsertLine {
+        file: PathBuf,
+        line: usize,
+        content: String,
+    },
+    DeleteLine {
+        file: PathBuf,
+        line: usize,
+    },
+    ReplaceBlock {
+        file: PathBuf,
+        start: usize,
+        end: usize,
+        content: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Diff {
+    pub changes: Vec<Change>,
+    pub checksum: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExecutionStatus {
+    PreviewOnly,
+    Applied,
+    Rejected,
+    Failed,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ExecutionResult {
+    pub status: ExecutionStatus,
+    pub diff: Option<Diff>,
+    pub applied: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionOptions {
+    pub preview_only: bool,
+    pub apply: bool,
+    pub allow_destructive: bool,
+    pub max_changes: usize,
+    pub force_dry_run: bool,
+    pub simulate_apply_failure: bool,
+}
+
+impl Default for ExecutionOptions {
+    fn default() -> Self {
+        Self {
+            preview_only: true,
+            apply: false,
+            allow_destructive: false,
+            max_changes: 50,
+            force_dry_run: false,
+            simulate_apply_failure: false,
+        }
+    }
 }
 
 impl CausalGraph {
@@ -470,6 +554,83 @@ pub fn causal_graph_to_ir(graph: &CausalGraph) -> Vec<IrStep> {
     }
 }
 
+pub fn execute_ir_steps(steps: Vec<IrStep>) -> ExecutionResult {
+    execute_ir_steps_with_options(steps, ExecutionOptions::default())
+}
+
+pub fn execute_ir_steps_with_options(
+    steps: Vec<IrStep>,
+    mut options: ExecutionOptions,
+) -> ExecutionResult {
+    if options.force_dry_run {
+        options.apply = false;
+    }
+
+    if !pre_validate_ir(&steps) {
+        return ExecutionResult {
+            status: ExecutionStatus::Rejected,
+            diff: None,
+            applied: false,
+        };
+    }
+
+    let resolved_targets = resolve_ir_targets(&steps);
+    let diff = preview_diff(&steps);
+    if !validate_diff(&diff, &resolved_targets, &options) {
+        return ExecutionResult {
+            status: ExecutionStatus::Rejected,
+            diff: Some(diff),
+            applied: false,
+        };
+    }
+
+    if options.force_dry_run {
+        return ExecutionResult {
+            status: ExecutionStatus::PreviewOnly,
+            diff: Some(diff),
+            applied: false,
+        };
+    }
+
+    if options.preview_only || !options.apply {
+        return ExecutionResult {
+            status: ExecutionStatus::PreviewOnly,
+            diff: Some(diff),
+            applied: false,
+        };
+    }
+
+    if diff.checksum == 0 || diff.checksum != checksum_changes(&diff.changes) {
+        return ExecutionResult {
+            status: ExecutionStatus::Rejected,
+            diff: Some(diff),
+            applied: false,
+        };
+    }
+
+    let mut state = HashMap::new();
+    let before_apply = state.clone();
+    if options.simulate_apply_failure
+        || !apply_diff(&diff, &mut state)
+        || !post_validate(&diff, &state)
+        || checksum_changes(&diff.changes) != diff.checksum
+    {
+        state = before_apply;
+        let _rolled_back = state;
+        return ExecutionResult {
+            status: ExecutionStatus::Failed,
+            diff: Some(diff),
+            applied: false,
+        };
+    }
+
+    ExecutionResult {
+        status: ExecutionStatus::Applied,
+        diff: Some(diff),
+        applied: true,
+    }
+}
+
 pub fn score_graph(graph: &CausalGraph) -> f32 {
     let score = 0.5 * safety_score(graph) + 0.3 * action_score(graph) + 0.2 * goal_score(graph);
     if score.is_finite() {
@@ -477,6 +638,411 @@ pub fn score_graph(graph: &CausalGraph) -> f32 {
     } else {
         0.0
     }
+}
+
+fn pre_validate_ir(steps: &[IrStep]) -> bool {
+    !steps.is_empty() && steps.iter().all(|step| target_is_valid(&step.target))
+}
+
+pub fn resolve_target(target: &Target) -> ResolvedTarget {
+    match target {
+        Target::Unknown => ResolvedTarget::SymbolUnknown,
+        Target::Symbol(symbol) => {
+            let path = PathBuf::from(symbol);
+            if path.is_file() {
+                ResolvedTarget::File(path)
+            } else {
+                ResolvedTarget::SymbolUnknown
+            }
+        }
+    }
+}
+
+fn resolve_ir_targets(steps: &[IrStep]) -> Vec<ResolvedTarget> {
+    steps
+        .iter()
+        .map(|step| resolve_target(&step.target))
+        .collect()
+}
+
+fn target_is_valid(target: &Target) -> bool {
+    match target {
+        Target::Unknown => true,
+        Target::Symbol(symbol) => !symbol.trim().is_empty(),
+    }
+}
+
+fn preview_diff(steps: &[IrStep]) -> Diff {
+    let changes: Vec<Change> = steps.iter().map(preview_change).collect();
+    let checksum = checksum_changes(&changes);
+    Diff { changes, checksum }
+}
+
+fn preview_change(step: &IrStep) -> Change {
+    if let ResolvedTarget::File(file) = resolve_target(&step.target) {
+        return preview_file_change(step, file);
+    }
+
+    let path = deterministic_ir_path(step);
+    match step.op {
+        IrOp::RefactorExtractFunction => Change::Add {
+            path,
+            content: "refactor.extract_function".to_string(),
+        },
+        IrOp::RefactorInline => Change::Modify {
+            path,
+            before: "before.refactor_inline".to_string(),
+            after: "after.refactor_inline".to_string(),
+        },
+        IrOp::RefactorRename => Change::Modify {
+            path,
+            before: "before.refactor_rename".to_string(),
+            after: "after.refactor_rename".to_string(),
+        },
+        IrOp::FixBug => Change::Modify {
+            path,
+            before: "before.fix_bug".to_string(),
+            after: "after.fix_bug".to_string(),
+        },
+        IrOp::RemoveCode => Change::Remove { path },
+    }
+}
+
+fn preview_file_change(step: &IrStep, file: PathBuf) -> Change {
+    let line_count = read_lines(&file).map(|lines| lines.len()).unwrap_or(0);
+    match step.op {
+        IrOp::RefactorExtractFunction => Change::InsertLine {
+            file,
+            line: line_count.saturating_add(1),
+            content: "// dbm: extract function placeholder".to_string(),
+        },
+        IrOp::RefactorInline => Change::ReplaceBlock {
+            file,
+            start: 1,
+            end: 1,
+            content: "// dbm: inline preview".to_string(),
+        },
+        IrOp::RefactorRename => Change::ReplaceBlock {
+            file,
+            start: 1,
+            end: 1,
+            content: "// dbm: rename preview".to_string(),
+        },
+        IrOp::FixBug => Change::ReplaceBlock {
+            file,
+            start: 1,
+            end: 1,
+            content: "// dbm: fix bug preview".to_string(),
+        },
+        IrOp::RemoveCode => Change::DeleteLine { file, line: 1 },
+    }
+}
+
+fn checksum_changes(changes: &[Change]) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    changes.len().hash(&mut hasher);
+    for change in changes {
+        hash_change(change, &mut hasher);
+    }
+    let checksum = hasher.finish();
+    if checksum == 0 { 1 } else { checksum }
+}
+
+fn hash_change(change: &Change, hasher: &mut DefaultHasher) {
+    match change {
+        Change::Add { path, content } => {
+            0_u8.hash(hasher);
+            path.hash(hasher);
+            content.hash(hasher);
+        }
+        Change::Remove { path } => {
+            1_u8.hash(hasher);
+            path.hash(hasher);
+        }
+        Change::Modify {
+            path,
+            before,
+            after,
+        } => {
+            2_u8.hash(hasher);
+            path.hash(hasher);
+            before.hash(hasher);
+            after.hash(hasher);
+        }
+        Change::InsertLine {
+            file,
+            line,
+            content,
+        } => {
+            3_u8.hash(hasher);
+            file.hash(hasher);
+            line.hash(hasher);
+            content.hash(hasher);
+        }
+        Change::DeleteLine { file, line } => {
+            4_u8.hash(hasher);
+            file.hash(hasher);
+            line.hash(hasher);
+        }
+        Change::ReplaceBlock {
+            file,
+            start,
+            end,
+            content,
+        } => {
+            5_u8.hash(hasher);
+            file.hash(hasher);
+            start.hash(hasher);
+            end.hash(hasher);
+            content.hash(hasher);
+        }
+    }
+}
+
+fn deterministic_ir_path(step: &IrStep) -> String {
+    let target = match &step.target {
+        Target::Unknown => "unknown".to_string(),
+        Target::Symbol(symbol) => format!("symbol/{symbol}"),
+    };
+    format!("ir/{}/{}.plan", target, ir_op_name(step.op))
+}
+
+fn ir_op_name(op: IrOp) -> &'static str {
+    match op {
+        IrOp::RefactorExtractFunction => "refactor_extract_function",
+        IrOp::RefactorInline => "refactor_inline",
+        IrOp::RefactorRename => "refactor_rename",
+        IrOp::FixBug => "fix_bug",
+        IrOp::RemoveCode => "remove_code",
+    }
+}
+
+fn validate_diff(
+    diff: &Diff,
+    resolved_targets: &[ResolvedTarget],
+    options: &ExecutionOptions,
+) -> bool {
+    !diff.changes.is_empty()
+        && diff.checksum != 0
+        && diff.checksum == checksum_changes(&diff.changes)
+        && diff.changes.len() <= options.max_changes
+        && !(options.force_dry_run && options.apply)
+        && (!options.apply
+            || resolved_targets
+                .iter()
+                .all(|target| !matches!(target, ResolvedTarget::SymbolUnknown)))
+        && diff
+            .changes
+            .iter()
+            .all(|change| validate_change(change, options))
+}
+
+fn validate_change(change: &Change, options: &ExecutionOptions) -> bool {
+    match change {
+        Change::Add { .. } | Change::Modify { .. } => true,
+        Change::Remove { .. } | Change::DeleteLine { .. } => options.allow_destructive,
+        Change::InsertLine { file, line, .. } => validate_file_line(file, *line, true),
+        Change::ReplaceBlock {
+            file,
+            start,
+            end,
+            content,
+        } => {
+            validate_file_range(file, *start, *end)
+                && !content.trim_start().starts_with("pub ")
+                && !range_contains_public_item(file, *start, *end)
+                && end.saturating_sub(*start).saturating_add(1) <= options.max_changes
+        }
+    }
+}
+
+fn validate_file_line(file: &Path, line: usize, allow_eof_insert: bool) -> bool {
+    let Ok(lines) = read_lines(file) else {
+        return false;
+    };
+    let upper = if allow_eof_insert {
+        lines.len().saturating_add(1)
+    } else {
+        lines.len()
+    };
+    line >= 1 && line <= upper
+}
+
+fn validate_file_range(file: &Path, start: usize, end: usize) -> bool {
+    let Ok(lines) = read_lines(file) else {
+        return false;
+    };
+    start >= 1 && start <= end && end <= lines.len()
+}
+
+fn apply_diff(diff: &Diff, state: &mut HashMap<String, String>) -> bool {
+    for change in &diff.changes {
+        match change {
+            Change::Add { path, content } => {
+                state.insert(path.clone(), content.clone());
+            }
+            Change::Modify { path, after, .. } => {
+                state.insert(path.clone(), after.clone());
+            }
+            Change::Remove { path } => {
+                state.remove(path);
+            }
+            Change::InsertLine {
+                file,
+                line,
+                content,
+            } => {
+                if !apply_file_change(change, file) {
+                    return false;
+                }
+                state.insert(
+                    file.to_string_lossy().to_string(),
+                    format!("insert:{line}:{content}"),
+                );
+            }
+            Change::DeleteLine { file, line } => {
+                if !apply_file_change(change, file) {
+                    return false;
+                }
+                state.insert(file.to_string_lossy().to_string(), format!("delete:{line}"));
+            }
+            Change::ReplaceBlock {
+                file,
+                start,
+                end,
+                content,
+            } => {
+                if !apply_file_change(change, file) {
+                    return false;
+                }
+                state.insert(
+                    file.to_string_lossy().to_string(),
+                    format!("replace:{start}:{end}:{content}"),
+                );
+            }
+        }
+    }
+    true
+}
+
+fn post_validate(diff: &Diff, state: &HashMap<String, String>) -> bool {
+    diff.changes.iter().all(|change| match change {
+        Change::Add { path, content } => state.get(path) == Some(content),
+        Change::Modify { path, after, .. } => state.get(path) == Some(after),
+        Change::Remove { path } => !state.contains_key(path),
+        Change::InsertLine {
+            file,
+            line,
+            content,
+        } => state
+            .get(&file.to_string_lossy().to_string())
+            .is_some_and(|value| value == &format!("insert:{line}:{content}")),
+        Change::DeleteLine { file, line } => state
+            .get(&file.to_string_lossy().to_string())
+            .is_some_and(|value| value == &format!("delete:{line}")),
+        Change::ReplaceBlock {
+            file,
+            start,
+            end,
+            content,
+        } => state
+            .get(&file.to_string_lossy().to_string())
+            .is_some_and(|value| value == &format!("replace:{start}:{end}:{content}")),
+    })
+}
+
+fn read_lines(path: &Path) -> std::io::Result<Vec<String>> {
+    Ok(fs::read_to_string(path)?
+        .lines()
+        .map(ToString::to_string)
+        .collect())
+}
+
+fn range_contains_public_item(file: &Path, start: usize, end: usize) -> bool {
+    read_lines(file)
+        .map(|lines| {
+            lines
+                .iter()
+                .enumerate()
+                .filter(|(index, _)| {
+                    let line_number = index + 1;
+                    line_number >= start && line_number <= end
+                })
+                .any(|(_, line)| line.trim_start().starts_with("pub "))
+        })
+        .unwrap_or(true)
+}
+
+fn apply_file_change(change: &Change, file: &Path) -> bool {
+    let backup = backup_path(file);
+    if fs::copy(file, &backup).is_err() {
+        return false;
+    }
+
+    let result = apply_file_change_inner(change, file);
+    if result.is_err() {
+        let _ = fs::copy(&backup, file);
+        return false;
+    }
+
+    true
+}
+
+fn apply_file_change_inner(change: &Change, file: &Path) -> std::io::Result<()> {
+    let mut lines = read_lines(file)?;
+    match change {
+        Change::InsertLine { line, content, .. } => {
+            let index = line.saturating_sub(1).min(lines.len());
+            lines.insert(index, content.clone());
+        }
+        Change::DeleteLine { line, .. } => {
+            let index = line.saturating_sub(1);
+            if index >= lines.len() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "delete line out of range",
+                ));
+            }
+            lines.remove(index);
+        }
+        Change::ReplaceBlock {
+            start,
+            end,
+            content,
+            ..
+        } => {
+            let start_index = start.saturating_sub(1);
+            let end_index = *end;
+            if start_index >= lines.len() || end_index > lines.len() || start > end {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "replace range out of bounds",
+                ));
+            }
+            lines.splice(start_index..end_index, [content.clone()]);
+        }
+        Change::Add { .. } | Change::Remove { .. } | Change::Modify { .. } => {}
+    }
+
+    atomic_write(file, &lines.join("\n"))
+}
+
+fn atomic_write(path: &Path, content: &str) -> std::io::Result<()> {
+    let tmp = path.with_extension(format!(
+        "{}tmp",
+        path.extension()
+            .and_then(|extension| extension.to_str())
+            .map(|extension| format!("{extension}."))
+            .unwrap_or_default()
+    ));
+    fs::write(&tmp, format!("{content}\n"))?;
+    fs::rename(tmp, path)
+}
+
+fn backup_path(path: &Path) -> PathBuf {
+    let mut backup = path.as_os_str().to_os_string();
+    backup.push(".bak");
+    PathBuf::from(backup)
 }
 
 fn action_type_to_ir_op(action_type: ActionType) -> IrOp {
@@ -700,6 +1266,15 @@ impl Default for CausalValidation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_file(name: &str, content: &str) -> PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("causal_domain_{}_{}", std::process::id(), name));
+        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(backup_path(&path));
+        std::fs::write(&path, content).expect("write test file");
+        path
+    }
 
     #[test]
     fn phase1_step1_refactor_from_clean_up_text() {
@@ -1097,6 +1672,369 @@ mod tests {
         assert_eq!(ir[0].op, IrOp::RefactorExtractFunction);
         assert_eq!(ir[0].target, Target::Unknown);
         assert!(ir[0].params.is_empty());
+    }
+
+    #[test]
+    fn phase3_preview_generates_diff_without_apply() {
+        let ir = vec![IrStep {
+            op: IrOp::RefactorExtractFunction,
+            target: Target::Unknown,
+            params: HashMap::new(),
+        }];
+        let expected_changes = vec![Change::Add {
+            path: "ir/unknown/refactor_extract_function.plan".to_string(),
+            content: "refactor.extract_function".to_string(),
+        }];
+
+        let result = execute_ir_steps(ir);
+
+        assert_eq!(result.status, ExecutionStatus::PreviewOnly);
+        assert!(!result.applied);
+        assert_eq!(
+            result.diff,
+            Some(Diff {
+                checksum: checksum_changes(&expected_changes),
+                changes: expected_changes,
+            })
+        );
+    }
+
+    #[test]
+    fn phase3_remove_code_validation_rejects_diff() {
+        let ir = vec![IrStep {
+            op: IrOp::RemoveCode,
+            target: Target::Unknown,
+            params: HashMap::new(),
+        }];
+        let expected_changes = vec![Change::Remove {
+            path: "ir/unknown/remove_code.plan".to_string(),
+        }];
+
+        let result = execute_ir_steps(ir);
+
+        assert_eq!(result.status, ExecutionStatus::Rejected);
+        assert!(!result.applied);
+        assert_eq!(
+            result.diff,
+            Some(Diff {
+                checksum: checksum_changes(&expected_changes),
+                changes: expected_changes,
+            })
+        );
+    }
+
+    #[test]
+    fn phase3_apply_success_marks_result_applied() {
+        let file = test_file("phase3_apply_success.rs", "fn buggy_fn() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::FixBug,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                simulate_apply_failure: false,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Applied);
+        assert!(result.applied);
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "// dbm: fix bug preview\n"
+        );
+    }
+
+    #[test]
+    fn phase3_apply_failure_rolls_back_and_reports_failed() {
+        let file = test_file("phase3_apply_failure.rs", "fn name() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RefactorRename,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                simulate_apply_failure: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Failed);
+        assert!(!result.applied);
+        assert!(result.diff.is_some());
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fn name() {}\n");
+    }
+
+    #[test]
+    fn phase3_execution_is_deterministic_for_same_ir() {
+        let ir = vec![IrStep {
+            op: IrOp::RefactorInline,
+            target: Target::Unknown,
+            params: HashMap::new(),
+        }];
+
+        let lhs = execute_ir_steps(ir.clone());
+        let rhs = execute_ir_steps(ir);
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn phase4_target_resolution_maps_existing_symbol_to_file() {
+        let file = test_file("phase4_resolve.rs", "fn main() {}\n");
+
+        let resolved = resolve_target(&Target::Symbol(file.to_string_lossy().to_string()));
+
+        assert_eq!(resolved, ResolvedTarget::File(file));
+        assert_eq!(
+            resolve_target(&Target::Unknown),
+            ResolvedTarget::SymbolUnknown
+        );
+    }
+
+    #[test]
+    fn phase4_normal_apply_updates_file_and_creates_backup() {
+        let file = test_file("phase4_apply.rs", "fn main() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RefactorExtractFunction,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+        let expected_changes = vec![Change::InsertLine {
+            file: file.clone(),
+            line: 2,
+            content: "// dbm: extract function placeholder".to_string(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Applied);
+        assert!(result.applied);
+        assert_eq!(
+            result.diff,
+            Some(Diff {
+                checksum: checksum_changes(&expected_changes),
+                changes: expected_changes,
+            })
+        );
+        assert_eq!(
+            std::fs::read_to_string(&file).unwrap(),
+            "fn main() {}\n// dbm: extract function placeholder\n"
+        );
+        assert!(backup_path(&file).exists());
+    }
+
+    #[test]
+    fn phase4_unknown_target_cannot_apply_to_files() {
+        let ir = vec![IrStep {
+            op: IrOp::FixBug,
+            target: Target::Unknown,
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Rejected);
+        assert!(!result.applied);
+    }
+
+    #[test]
+    fn phase4_remove_code_is_rejected_without_destructive_permission() {
+        let file = test_file("phase4_remove.rs", "fn dead() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RemoveCode,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                allow_destructive: false,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Rejected);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fn dead() {}\n");
+    }
+
+    #[test]
+    fn phase4_apply_failure_restores_original_file() {
+        let file = test_file("phase4_rollback.rs", "fn keep() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RefactorInline,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                simulate_apply_failure: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::Failed);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fn keep() {}\n");
+    }
+
+    #[test]
+    fn phase4_same_ir_produces_same_file_diff() {
+        let file = test_file("phase4_determinism.rs", "fn stable() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RefactorExtractFunction,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let lhs = execute_ir_steps(ir.clone());
+        let rhs = execute_ir_steps(ir);
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn phase4_hardening_force_dry_run_overrides_apply() {
+        let file = test_file("phase4_force_dry_run.rs", "fn stable() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::RefactorExtractFunction,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                force_dry_run: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::PreviewOnly);
+        assert!(!result.applied);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fn stable() {}\n");
+    }
+
+    #[test]
+    fn phase4_hardening_checksum_is_deterministic() {
+        let changes = vec![
+            Change::Add {
+                path: "a".to_string(),
+                content: "one".to_string(),
+            },
+            Change::Modify {
+                path: "b".to_string(),
+                before: "two".to_string(),
+                after: "three".to_string(),
+            },
+        ];
+
+        assert_eq!(checksum_changes(&changes), checksum_changes(&changes));
+        assert_ne!(checksum_changes(&changes), 0);
+    }
+
+    #[test]
+    fn phase4_hardening_checksum_order_is_part_of_hash() {
+        let lhs = vec![
+            Change::Add {
+                path: "a".to_string(),
+                content: "one".to_string(),
+            },
+            Change::Remove {
+                path: "b".to_string(),
+            },
+        ];
+        let rhs = vec![
+            Change::Remove {
+                path: "b".to_string(),
+            },
+            Change::Add {
+                path: "a".to_string(),
+                content: "one".to_string(),
+            },
+        ];
+
+        assert_ne!(checksum_changes(&lhs), checksum_changes(&rhs));
+    }
+
+    #[test]
+    fn phase4_hardening_checksum_mismatch_is_rejected() {
+        let file = test_file("phase4_checksum_mismatch.rs", "fn stable() {}\n");
+        let changes = vec![Change::InsertLine {
+            file: file.clone(),
+            line: 2,
+            content: "// dbm: extract function placeholder".to_string(),
+        }];
+        let diff = Diff {
+            changes,
+            checksum: 1,
+        };
+        let resolved_targets = vec![ResolvedTarget::File(file)];
+
+        assert!(!validate_diff(
+            &diff,
+            &resolved_targets,
+            &ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                ..ExecutionOptions::default()
+            }
+        ));
+    }
+
+    #[test]
+    fn phase4_hardening_force_dry_run_has_priority_over_apply() {
+        let file = test_file("phase4_force_priority.rs", "fn stable() {}\n");
+        let ir = vec![IrStep {
+            op: IrOp::FixBug,
+            target: Target::Symbol(file.to_string_lossy().to_string()),
+            params: HashMap::new(),
+        }];
+
+        let result = execute_ir_steps_with_options(
+            ir,
+            ExecutionOptions {
+                preview_only: false,
+                apply: true,
+                force_dry_run: true,
+                ..ExecutionOptions::default()
+            },
+        );
+
+        assert_eq!(result.status, ExecutionStatus::PreviewOnly);
+        assert_eq!(std::fs::read_to_string(file).unwrap(), "fn stable() {}\n");
     }
 
     #[test]
