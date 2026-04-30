@@ -64,6 +64,26 @@ impl PromptBuilder {
         self.build_with_retry(event, session, Some(retry))
     }
 
+    pub fn build_json_retry(
+        &self,
+        event: &ControlEvent,
+        retry: &RetryPromptContext,
+    ) -> Result<String, String> {
+        let required_action = !matches!(event.payload, ControlPayload::Input { .. });
+        let action_line = if required_action { "- action\n" } else { "" };
+        Ok(format!(
+            "Your previous response was invalid.\n\nError:\n{}\n\nYou MUST return a valid JSON object with ALL required fields:\n\nRequired fields:\n{}- request_id\n- run_id\n- step_id\n- response_to\n\nRules:\n- Do not omit any field\n- Do not add extra fields\n- Do not return plain text\n- Output JSON only\n\nExpected values:\n- response_to: {}\n- request_id: {}\n- run_id: {}\n- step_id: {}\n\nRetry attempt: {}/{}",
+            retry.last_error,
+            action_line,
+            event.event.as_str(),
+            event.request_id,
+            event.run_id,
+            event.step_id,
+            retry.retry_count,
+            retry.max_retries
+        ))
+    }
+
     fn build_with_retry(
         &self,
         event: &ControlEvent,
@@ -158,10 +178,12 @@ fn response_schema_json(
         ControlPayload::Input { .. } => serde_json::json!({
             "type": "object",
             "additionalProperties": false,
-            "required": ["response_to", "request_id", "data"],
+            "required": ["response_to", "request_id", "run_id", "step_id", "data"],
             "properties": {
                 "response_to": { "const": event.event.as_str() },
                 "request_id": { "const": event.request_id },
+                "run_id": { "const": event.run_id },
+                "step_id": { "const": event.step_id },
                 "data": {}
             }
         }),
@@ -169,10 +191,12 @@ fn response_schema_json(
             serde_json::json!({
                 "type": "object",
                 "additionalProperties": false,
-                "required": ["response_to", "request_id", "action"],
+                "required": ["response_to", "request_id", "run_id", "step_id", "action"],
                 "properties": {
                     "response_to": { "const": event.event.as_str() },
                     "request_id": { "const": event.request_id },
+                    "run_id": { "const": event.run_id },
+                    "step_id": { "const": event.step_id },
                     "action": {
                         "enum": allowed_actions
                             .iter()
@@ -266,5 +290,30 @@ mod tests {
         assert!(prompt.contains("Retry attempt: 1/2"));
         assert!(prompt.contains("- abort (default)"));
         assert!(prompt.contains("\"additionalProperties\": false"));
+    }
+
+    #[test]
+    fn json_retry_prompt_requires_protocol_fields() {
+        let event = ControlEvent::decision_required(
+            "run",
+            "step",
+            RequestId::from_u128(1),
+            DecisionReason::Ambiguity.as_str(),
+            serde_json::json!({}),
+            vec![DecisionAction::Retry, DecisionAction::Abort],
+            DecisionAction::Abort,
+        );
+        let retry = RetryPromptContext {
+            retry_count: 1,
+            max_retries: 2,
+            last_error: "agent output must be a JSON object".to_string(),
+        };
+
+        let prompt = PromptBuilder.build_json_retry(&event, &retry).unwrap();
+
+        assert!(prompt.contains("Your previous response was invalid."));
+        assert!(prompt.contains("- run_id"));
+        assert!(prompt.contains("- step_id"));
+        assert!(prompt.contains("Output JSON only"));
     }
 }

@@ -1,7 +1,6 @@
 use design_cli::control_event::{
-    ControlEvent, ControlEventKind, ControlPayload, ControlResponse, DecisionAction,
+    ControlEvent, ControlEventKind, ControlPayload, ControlResponse, DecisionAction, RequestId,
 };
-use serde::Deserialize;
 use std::collections::BTreeMap;
 use std::fmt;
 
@@ -32,10 +31,10 @@ pub enum RetryErrorKind {
 impl RetryErrorKind {
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Parse => "parse_error",
-            Self::Validation => "validation_error",
-            Self::Semantic => "semantic_error",
-            Self::Agent => "agent_error",
+            Self::Parse => "JsonParse",
+            Self::Validation => "SchemaValidation",
+            Self::Semantic => "Semantic",
+            Self::Agent => "Agent",
         }
     }
 
@@ -100,18 +99,16 @@ impl ResponseMapper {
     }
 
     pub fn parse(&self, raw: &str, event: &ControlEvent) -> Result<ControlResponse, RetryError> {
-        if !raw.trim_start().starts_with('{') {
+        let value: serde_json::Value = serde_json::from_str(raw).map_err(|_| {
+            RetryError::new(RetryErrorKind::Parse, "agent output must be a JSON object")
+        })?;
+        if !value.is_object() {
             return Err(RetryError::new(
                 RetryErrorKind::Parse,
                 "agent output must be a JSON object",
             ));
         }
-        let output: AgentOutput = serde_json::from_str(raw).map_err(|err| {
-            RetryError::new(
-                RetryErrorKind::Parse,
-                format!("invalid agent response JSON: {err}"),
-            )
-        })?;
+        let output = parse_agent_output(value)?;
         if !output.extra.is_empty() {
             let fields = output.extra.keys().cloned().collect::<Vec<_>>().join(", ");
             return Err(RetryError::new(
@@ -135,6 +132,24 @@ impl ResponseMapper {
                 format!(
                     "request_id mismatch: expected {}, got {}",
                     event.request_id, output.request_id
+                ),
+            ));
+        }
+        if output.run_id != event.run_id {
+            return Err(RetryError::new(
+                RetryErrorKind::Validation,
+                format!(
+                    "run_id mismatch: expected {}, got {}",
+                    event.run_id, output.run_id
+                ),
+            ));
+        }
+        if output.step_id != event.step_id {
+            return Err(RetryError::new(
+                RetryErrorKind::Validation,
+                format!(
+                    "step_id mismatch: expected {}, got {}",
+                    event.step_id, output.step_id
                 ),
             ));
         }
@@ -183,16 +198,59 @@ impl ResponseMapper {
     }
 }
 
-#[derive(Debug, Deserialize)]
 struct AgentOutput {
     response_to: ControlEventKind,
-    request_id: design_cli::control_event::RequestId,
-    #[serde(default)]
+    request_id: RequestId,
+    run_id: String,
+    step_id: String,
     action: Option<DecisionAction>,
-    #[serde(default)]
     data: Option<serde_json::Value>,
-    #[serde(flatten)]
     extra: BTreeMap<String, serde_json::Value>,
+}
+
+fn parse_agent_output(value: serde_json::Value) -> Result<AgentOutput, RetryError> {
+    let mut object = value.as_object().cloned().ok_or_else(|| {
+        RetryError::new(RetryErrorKind::Parse, "agent output must be a JSON object")
+    })?;
+    let response_to = take_required(&mut object, "response_to").and_then(parse_value)?;
+    let request_id = take_required(&mut object, "request_id").and_then(parse_value)?;
+    let run_id = take_required(&mut object, "run_id").and_then(parse_value)?;
+    let step_id = take_required(&mut object, "step_id").and_then(parse_value)?;
+    let action = match object.remove("action") {
+        Some(value) => Some(parse_value(value)?),
+        None => None,
+    };
+    let data = object.remove("data");
+    Ok(AgentOutput {
+        response_to,
+        request_id,
+        run_id,
+        step_id,
+        action,
+        data,
+        extra: object.into_iter().collect(),
+    })
+}
+
+fn take_required(
+    object: &mut serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<serde_json::Value, RetryError> {
+    object.remove(field).ok_or_else(|| {
+        RetryError::new(
+            RetryErrorKind::Validation,
+            format!("missing required field `{field}`"),
+        )
+    })
+}
+
+fn parse_value<T: serde::de::DeserializeOwned>(value: serde_json::Value) -> Result<T, RetryError> {
+    serde_json::from_value(value).map_err(|err| {
+        RetryError::new(
+            RetryErrorKind::Validation,
+            format!("schema validation failed: {err}"),
+        )
+    })
 }
 
 fn response(
@@ -237,6 +295,8 @@ mod tests {
         let raw = serde_json::json!({
             "response_to": "decision_required",
             "request_id": event.request_id,
+            "run_id": event.run_id,
+            "step_id": event.step_id,
             "action": "retry"
         })
         .to_string();
@@ -260,6 +320,8 @@ mod tests {
         let raw = serde_json::json!({
             "response_to": "decision_required",
             "request_id": design_cli::control_event::RequestId::from_u128(7),
+            "run_id": event.run_id,
+            "step_id": event.step_id,
             "action": "retry"
         })
         .to_string();
@@ -269,11 +331,27 @@ mod tests {
     }
 
     #[test]
+    fn rejects_missing_required_protocol_fields_as_schema_validation() {
+        let event = decision_event();
+        let raw = serde_json::json!({
+            "response_to": "decision_required",
+            "request_id": event.request_id,
+            "action": "retry"
+        })
+        .to_string();
+        let err = ResponseMapper::default().parse(&raw, &event).unwrap_err();
+        assert_eq!(err.kind, RetryErrorKind::Validation);
+        assert!(err.message.contains("missing required field `run_id`"));
+    }
+
+    #[test]
     fn classifies_disallowed_action_as_semantic_error() {
         let event = decision_event();
         let raw = serde_json::json!({
             "response_to": "decision_required",
             "request_id": event.request_id,
+            "run_id": event.run_id,
+            "step_id": event.step_id,
             "action": "skip"
         })
         .to_string();

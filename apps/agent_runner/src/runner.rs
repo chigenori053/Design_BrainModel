@@ -66,6 +66,12 @@ pub struct AgentLoop<C, S> {
     config: AgentLoopConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RetryRoute {
+    Protocol,
+    Code,
+}
+
 impl<C, S> AgentLoop<C, S>
 where
     C: AgentClient,
@@ -158,14 +164,27 @@ where
         let mut last_raw = None::<String>;
         let mut last_error = None::<RetryError>;
         let max_retries = self.response_mapper.max_retries();
+        let mut protocol_retries = 0u8;
+        let mut code_retries = 0u8;
+        let mut attempt = 0u8;
 
-        for attempt in 0..max_retries {
+        loop {
             let prompt = match &last_error {
+                Some(error) if retry_route(error.kind) == RetryRoute::Protocol => {
+                    self.prompt_builder.build_json_retry(
+                        event,
+                        &RetryPromptContext {
+                            retry_count: protocol_retries,
+                            max_retries,
+                            last_error: error.message.clone(),
+                        },
+                    )?
+                }
                 Some(error) => self.prompt_builder.build_retry(
                     event,
                     session,
                     &RetryPromptContext {
-                        retry_count: attempt.saturating_add(1),
+                        retry_count: code_retries,
                         max_retries,
                         last_error: error.kind.retry_reason().to_string(),
                     },
@@ -184,29 +203,44 @@ where
                             self.sink.send_response(&response)?;
                             return Ok(());
                         }
-                        Err(err) if attempt.saturating_add(1) < max_retries => {
-                            self.emit_retry_notice(&err, attempt.saturating_add(2), max_retries);
-                            self.log_retry_attempt(event, attempt, &err)?;
-                            last_error = Some(err);
-                        }
                         Err(err) => {
-                            self.log_retry_attempt(event, attempt, &err)?;
+                            let Some(next_attempt) = self.prepare_retry(
+                                event,
+                                attempt,
+                                &err,
+                                &mut protocol_retries,
+                                &mut code_retries,
+                                max_retries,
+                            )?
+                            else {
+                                self.log_retry_attempt(event, attempt, &err)?;
+                                last_error = Some(err);
+                                break;
+                            };
                             last_error = Some(err);
-                            break;
+                            attempt = next_attempt;
+                            continue;
                         }
                     }
                 }
-                Err(err) if attempt.saturating_add(1) < max_retries => {
-                    let err = RetryError::new(RetryErrorKind::Agent, err);
-                    self.emit_retry_notice(&err, attempt.saturating_add(2), max_retries);
-                    self.log_retry_attempt(event, attempt, &err)?;
-                    last_error = Some(err);
-                }
                 Err(err) => {
                     let err = RetryError::new(RetryErrorKind::Agent, err);
-                    self.log_retry_attempt(event, attempt, &err)?;
+                    let Some(next_attempt) = self.prepare_retry(
+                        event,
+                        attempt,
+                        &err,
+                        &mut protocol_retries,
+                        &mut code_retries,
+                        max_retries,
+                    )?
+                    else {
+                        self.log_retry_attempt(event, attempt, &err)?;
+                        last_error = Some(err);
+                        break;
+                    };
                     last_error = Some(err);
-                    break;
+                    attempt = next_attempt;
+                    continue;
                 }
             }
         }
@@ -223,6 +257,38 @@ where
             "→ Retrying ({next_attempt}/{max_attempts}): {}",
             error.kind.retry_fix_hint()
         );
+    }
+
+    fn prepare_retry(
+        &self,
+        event: &ControlEvent,
+        attempt: u8,
+        error: &RetryError,
+        protocol_retries: &mut u8,
+        code_retries: &mut u8,
+        max_retries: u8,
+    ) -> Result<Option<u8>, String> {
+        match retry_route(error.kind) {
+            RetryRoute::Protocol => {
+                if *protocol_retries >= max_retries {
+                    return Ok(None);
+                }
+                *protocol_retries = protocol_retries.saturating_add(1);
+                self.emit_retry_notice(error, *protocol_retries, max_retries);
+                self.log_retry_attempt(event, attempt, error)?;
+                self.log_protocol_retry(event, attempt, *protocol_retries, error)?;
+                Ok(Some(attempt.saturating_add(1)))
+            }
+            RetryRoute::Code => {
+                if *code_retries >= max_retries {
+                    return Ok(None);
+                }
+                *code_retries = code_retries.saturating_add(1);
+                self.emit_retry_notice(error, *code_retries, max_retries);
+                self.log_retry_attempt(event, attempt, error)?;
+                Ok(Some(attempt.saturating_add(1)))
+            }
+        }
     }
 
     fn emit_fallback_notice(&self) {
@@ -297,6 +363,7 @@ where
                 "error_kind": error.kind.as_str(),
                 "error": error.message,
                 "reason": error.kind.retry_reason(),
+                "protocol_error_kind": protocol_error_kind(error.kind),
             }),
         )?;
         self.log_json(
@@ -309,6 +376,41 @@ where
                 "request_id": event.request_id,
                 "attempt": attempt.saturating_add(1),
                 "reason": error.kind.retry_reason(),
+            }),
+        )
+    }
+
+    fn log_protocol_retry(
+        &self,
+        event: &ControlEvent,
+        attempt: u8,
+        retry_count: u8,
+        error: &RetryError,
+    ) -> Result<(), String> {
+        self.log_json(
+            LogLevel::Info,
+            &serde_json::json!({
+                "type": "protocol_retry",
+                "event": "protocol_retry",
+                "run_id": event.run_id,
+                "step_id": event.step_id,
+                "request_id": event.request_id,
+                "attempt": attempt,
+                "retry_count": retry_count,
+                "protocol_error_kind": protocol_error_kind(error.kind),
+                "reason": error.message,
+            }),
+        )?;
+        self.log_json(
+            LogLevel::Info,
+            &serde_json::json!({
+                "type": "protocol_fix_attempt",
+                "event": "protocol_fix_attempt",
+                "run_id": event.run_id,
+                "step_id": event.step_id,
+                "request_id": event.request_id,
+                "attempt": attempt.saturating_add(1),
+                "required_fields": ["action", "request_id", "run_id", "step_id", "response_to"],
             }),
         )
     }
@@ -334,6 +436,21 @@ where
                 "response": response,
             }),
         )
+    }
+}
+
+fn retry_route(kind: RetryErrorKind) -> RetryRoute {
+    match kind {
+        RetryErrorKind::Parse | RetryErrorKind::Validation => RetryRoute::Protocol,
+        RetryErrorKind::Semantic | RetryErrorKind::Agent => RetryRoute::Code,
+    }
+}
+
+fn protocol_error_kind(kind: RetryErrorKind) -> Option<&'static str> {
+    match kind {
+        RetryErrorKind::Parse => Some("JsonParse"),
+        RetryErrorKind::Validation => Some("SchemaValidation"),
+        RetryErrorKind::Semantic | RetryErrorKind::Agent => None,
     }
 }
 
@@ -389,17 +506,23 @@ mod tests {
         )
     }
 
+    fn valid_response(event: &ControlEvent, action: DecisionAction) -> String {
+        serde_json::json!({
+            "response_to": event.event,
+            "request_id": event.request_id,
+            "run_id": event.run_id,
+            "step_id": event.step_id,
+            "action": action
+        })
+        .to_string()
+    }
+
     #[test]
     fn loop_maps_control_event_to_response() {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("run.jsonl");
         let event = event();
-        let raw = serde_json::json!({
-            "response_to": "decision_required",
-            "request_id": event.request_id,
-            "action": "retry"
-        })
-        .to_string();
+        let raw = valid_response(&event, DecisionAction::Retry);
         let client = MockAgentClient::from_json_responses(vec![raw]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -426,15 +549,12 @@ mod tests {
             serde_json::json!({
                 "response_to": "decision_required",
                 "request_id": RequestId::from_u128(7),
+                "run_id": event.run_id,
+                "step_id": event.step_id,
                 "action": "retry"
             })
             .to_string(),
-            serde_json::json!({
-                "response_to": "decision_required",
-                "request_id": event.request_id,
-                "action": "skip"
-            })
-            .to_string(),
+            valid_response(&event, DecisionAction::Skip),
         ]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -457,12 +577,7 @@ mod tests {
         let event = event();
         let client = MockAgentClient::from_json_responses(vec![
             "not-json".to_string(),
-            serde_json::json!({
-                "response_to": "decision_required",
-                "request_id": event.request_id,
-                "action": "retry"
-            })
-            .to_string(),
+            valid_response(&event, DecisionAction::Retry),
         ]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -479,10 +594,12 @@ mod tests {
         assert!(log.contains("\"type\":\"retry_attempt\""));
         assert!(log.contains("\"type\":\"retry_reason\""));
         assert!(log.contains("\"type\":\"agent_response_parsed\""));
-        assert!(log.contains("Previous attempt failed."));
-        assert!(log.contains("Invalid JSON format"));
-        assert!(log.contains("Retry attempt: 2/2"));
-        assert!(log.contains("parse_error"));
+        assert!(log.contains("Your previous response was invalid."));
+        assert!(log.contains("agent output must be a JSON object"));
+        assert!(log.contains("Retry attempt: 1/2"));
+        assert!(log.contains("JsonParse"));
+        assert!(log.contains("\"type\":\"protocol_retry\""));
+        assert!(log.contains("\"type\":\"protocol_fix_attempt\""));
     }
 
     #[test]
@@ -494,16 +611,13 @@ mod tests {
             serde_json::json!({
                 "response_to": "decision_required",
                 "request_id": event.request_id,
+                "run_id": event.run_id,
+                "step_id": event.step_id,
                 "action": "retry",
                 "extra": true
             })
             .to_string(),
-            serde_json::json!({
-                "response_to": "decision_required",
-                "request_id": event.request_id,
-                "action": "retry"
-            })
-            .to_string(),
+            valid_response(&event, DecisionAction::Retry),
         ]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -520,6 +634,36 @@ mod tests {
         );
         let log = std::fs::read_to_string(log).unwrap();
         assert!(log.contains("Schema validation failed"));
+        assert!(log.contains("SchemaValidation"));
+    }
+
+    #[test]
+    fn missing_protocol_fields_retry_and_succeed() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("run.jsonl");
+        let event = event();
+        let client = MockAgentClient::from_json_responses(vec![
+            serde_json::json!({
+                "response_to": "decision_required",
+                "request_id": event.request_id,
+                "action": "retry"
+            })
+            .to_string(),
+            valid_response(&event, DecisionAction::Retry),
+        ]);
+        let sink = VecResponseSink::default();
+        let mut loop_core = AgentLoop::new(client, sink, &log);
+        loop_core.set_log_level(LogLevel::Debug);
+        let line = serde_json::json!({"type": "event", "event": event}).to_string();
+        let mut stream = EventStream::new(Cursor::new(format!("{line}\n")));
+        let mut session = Session::new("run", "fix it");
+
+        loop_core.run(&mut stream, &mut session).unwrap();
+        assert_eq!(loop_core.sink.responses.len(), 1);
+        let log = std::fs::read_to_string(log).unwrap();
+        assert!(log.contains("missing required field `run_id`"));
+        assert!(log.contains("\"type\":\"protocol_retry\""));
+        assert!(log.contains("\"type\":\"protocol_fix_attempt\""));
     }
 
     #[test]
@@ -531,15 +675,12 @@ mod tests {
             serde_json::json!({
                 "response_to": "decision_required",
                 "request_id": event.request_id,
+                "run_id": event.run_id,
+                "step_id": event.step_id,
                 "action": "skip"
             })
             .to_string(),
-            serde_json::json!({
-                "response_to": "decision_required",
-                "request_id": event.request_id,
-                "action": "retry"
-            })
-            .to_string(),
+            valid_response(&event, DecisionAction::Retry),
         ]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -563,12 +704,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let log = dir.path().join("run.jsonl");
         let event = event();
-        let raw = serde_json::json!({
-            "response_to": "decision_required",
-            "request_id": event.request_id,
-            "action": "retry"
-        })
-        .to_string();
+        let raw = valid_response(&event, DecisionAction::Retry);
         let client = MockAgentClient::from_json_responses(vec![raw]);
         let sink = VecResponseSink::default();
         let mut loop_core = AgentLoop::new(client, sink, &log);
@@ -582,5 +718,34 @@ mod tests {
         assert!(!log.contains("\"type\":\"agent_prompt\""));
         assert!(!log.contains("\"type\":\"agent_response_raw\""));
         assert!(log.contains("\"type\":\"agent_response_parsed\""));
+        assert!(!log.contains("\"type\":\"retry_attempt\""));
+    }
+
+    #[test]
+    fn repeated_json_failures_fallback_after_protocol_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log = dir.path().join("run.jsonl");
+        let event = event();
+        let client = MockAgentClient::from_json_responses(vec![
+            "not-json".to_string(),
+            "still-not-json".to_string(),
+            "again-not-json".to_string(),
+        ]);
+        let sink = VecResponseSink::default();
+        let mut loop_core = AgentLoop::new(client, sink, &log);
+        loop_core.set_log_level(LogLevel::Debug);
+        let line = serde_json::json!({"type": "event", "event": event}).to_string();
+        let mut stream = EventStream::new(Cursor::new(format!("{line}\n")));
+        let mut session = Session::new("run", "fix it");
+
+        loop_core.run(&mut stream, &mut session).unwrap();
+        assert_eq!(loop_core.sink.responses.len(), 1);
+        assert_eq!(
+            loop_core.sink.responses[0].action,
+            Some(DecisionAction::Abort)
+        );
+        let log = std::fs::read_to_string(log).unwrap();
+        assert_eq!(log.matches("\"type\":\"protocol_retry\"").count(), 2);
+        assert!(log.contains("\"type\":\"fallback_triggered\""));
     }
 }
