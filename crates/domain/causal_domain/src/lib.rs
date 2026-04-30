@@ -1,10 +1,22 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque, hash_map::DefaultHasher},
+    hash::{Hash, Hasher},
+};
+
+pub const MIN_GRAPHS: usize = 2;
+pub const MAX_GRAPHS: usize = 5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum IntentType {
     Refactor,
     FixBug,
     Rename,
+}
+
+impl Default for IntentType {
+    fn default() -> Self {
+        Self::Refactor
+    }
 }
 
 impl IntentType {
@@ -23,6 +35,7 @@ pub enum ActionType {
     Inline,
     Rename,
     FixBug,
+    RemoveCode,
 }
 
 impl ActionType {
@@ -32,6 +45,47 @@ impl ActionType {
             Self::Inline => "inline",
             Self::Rename => "rename",
             Self::FixBug => "fix_bug",
+            Self::RemoveCode => "remove_code",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum Target {
+    Unknown,
+    Symbol(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum Cause {
+    ReadabilityLow,
+    DuplicationHigh,
+    BugPresent,
+}
+
+impl Cause {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ReadabilityLow => "readability_low",
+            Self::DuplicationHigh => "duplication_high",
+            Self::BugPresent => "bug_present",
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum Goal {
+    ImproveReadability,
+    ReduceDuplication,
+    RemoveBug,
+}
+
+impl Goal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ImproveReadability => "improve_readability",
+            Self::ReduceDuplication => "reduce_duplication",
+            Self::RemoveBug => "remove_bug",
         }
     }
 }
@@ -39,18 +93,22 @@ impl ActionType {
 #[derive(Clone, Debug, PartialEq)]
 pub struct Action {
     pub action_type: ActionType,
-    pub target: String,
-    pub params: BTreeMap<String, String>,
+    pub target: Target,
+    pub params: HashMap<String, String>,
     pub confidence: f32,
 }
 
 impl Action {
     pub fn new(action_type: ActionType) -> Self {
+        Self::with_confidence(action_type, 0.5)
+    }
+
+    pub fn with_confidence(action_type: ActionType, confidence: f32) -> Self {
         Self {
             action_type,
-            target: "*".to_string(),
-            params: BTreeMap::new(),
-            confidence: 0.5,
+            target: Target::Unknown,
+            params: HashMap::new(),
+            confidence,
         }
     }
 }
@@ -58,6 +116,7 @@ impl Action {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum Constraint {
     NoBehaviorChange,
+    KeepPublicApi,
     ScopeLimited,
 }
 
@@ -65,6 +124,7 @@ impl Constraint {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::NoBehaviorChange => "no_behavior_change",
+            Self::KeepPublicApi => "keep_public_api",
             Self::ScopeLimited => "scope_limited",
         }
     }
@@ -94,9 +154,9 @@ pub struct CausalEdge {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CausalGraph {
     pub intent_id: String,
-    pub intent_type: Option<IntentType>,
-    pub causes: Vec<String>,
-    pub goals: Vec<String>,
+    pub intent_type: IntentType,
+    pub causes: Vec<Cause>,
+    pub goals: Vec<Goal>,
     pub constraints: Vec<Constraint>,
     pub actions: Vec<Action>,
     nodes: BTreeSet<u64>,
@@ -109,6 +169,28 @@ pub struct CausalValidation {
     pub issues: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScoredGraph {
+    pub graph: CausalGraph,
+    pub score: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+pub enum IrOp {
+    RefactorExtractFunction,
+    RefactorInline,
+    RefactorRename,
+    FixBug,
+    RemoveCode,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IrStep {
+    pub op: IrOp,
+    pub target: Target,
+    pub params: HashMap<String, String>,
+}
+
 impl CausalGraph {
     pub fn new() -> Self {
         Self::default()
@@ -118,9 +200,25 @@ impl CausalGraph {
         initial_causal_graphs_from_nl(input)
     }
 
+    pub fn expand(graphs: Vec<Self>) -> Vec<Self> {
+        expand_causal_graphs(graphs)
+    }
+
+    pub fn score(graphs: Vec<Self>) -> Vec<ScoredGraph> {
+        score_causal_graphs(graphs)
+    }
+
+    pub fn select(scored_graphs: Vec<ScoredGraph>) -> Self {
+        select_best_graph(scored_graphs)
+    }
+
+    pub fn to_ir(&self) -> Vec<IrStep> {
+        causal_graph_to_ir(self)
+    }
+
     pub fn is_ir_convertible_minimal(&self) -> bool {
         !self.intent_id.is_empty()
-            && self.intent_type.is_some()
+            && !self.causes.is_empty()
             && !self.goals.is_empty()
             && !self.actions.is_empty()
             && !self.constraints.is_empty()
@@ -168,6 +266,19 @@ impl CausalGraph {
 
     pub fn validate(&self) -> CausalValidation {
         let mut issues = Vec::new();
+
+        if self.causes.is_empty() {
+            issues.push("causes must not be empty".to_string());
+        }
+        if self.goals.is_empty() {
+            issues.push("goals must not be empty".to_string());
+        }
+        if self.actions.is_empty() {
+            issues.push("actions must not be empty".to_string());
+        }
+        if self.constraints.is_empty() {
+            issues.push("constraints must not be empty".to_string());
+        }
 
         for edge in &self.edges {
             if edge.from == edge.to {
@@ -224,10 +335,10 @@ pub fn initial_causal_graphs_from_nl(input: &str) -> Vec<CausalGraph> {
     let mut constraints = default_constraints();
 
     if causes.is_empty() {
-        causes.push("readability_low".to_string());
+        causes.push(Cause::ReadabilityLow);
     }
     if goals.is_empty() {
-        goals.push("improve_readability".to_string());
+        goals.push(Goal::ImproveReadability);
     }
     if actions.is_empty() {
         actions.push(Action::new(ActionType::ExtractFunction));
@@ -236,15 +347,153 @@ pub fn initial_causal_graphs_from_nl(input: &str) -> Vec<CausalGraph> {
         constraints = default_constraints();
     }
 
+    let index = 0;
     vec![CausalGraph {
-        intent_id: deterministic_intent_id(input, intent_type),
-        intent_type: Some(intent_type),
+        intent_id: deterministic_intent_id(input, index),
+        intent_type,
         causes,
         goals,
         constraints,
         actions,
         nodes: BTreeSet::new(),
         edges: Vec::new(),
+    }]
+}
+
+pub fn expand_causal_graphs(graphs: Vec<CausalGraph>) -> Vec<CausalGraph> {
+    let source_graphs = if graphs.is_empty() {
+        initial_causal_graphs_from_nl("")
+    } else {
+        graphs
+    };
+
+    let mut expanded = Vec::new();
+    for graph in &source_graphs {
+        let mut candidates = action_candidates_for_causes(&graph.causes);
+        if candidates.is_empty() {
+            candidates.push(action_for_expansion(ActionType::ExtractFunction));
+        }
+
+        for action in candidates {
+            let index = expanded.len();
+            let mut next = graph.clone();
+            next.intent_id = deterministic_intent_id(&graph.intent_id, index);
+            next.actions = vec![action];
+            if next.validate().valid {
+                expanded.push(next);
+            }
+            if expanded.len() >= MAX_GRAPHS {
+                break;
+            }
+        }
+
+        if expanded.len() >= MAX_GRAPHS {
+            break;
+        }
+    }
+
+    if expanded.is_empty() {
+        return source_graphs;
+    }
+
+    while expanded.len() < MIN_GRAPHS {
+        let Some(seed) = expanded.first().cloned() else {
+            break;
+        };
+        let mut duplicate = seed;
+        duplicate.intent_id = deterministic_intent_id(&duplicate.intent_id, expanded.len());
+        if duplicate.validate().valid {
+            expanded.push(duplicate);
+        } else {
+            break;
+        }
+    }
+
+    expanded.truncate(MAX_GRAPHS);
+    expanded
+}
+
+pub fn score_causal_graphs(graphs: Vec<CausalGraph>) -> Vec<ScoredGraph> {
+    let mut scored: Vec<ScoredGraph> = graphs
+        .into_iter()
+        .map(|graph| {
+            let score = score_graph(&graph);
+            ScoredGraph { graph, score }
+        })
+        .collect();
+
+    scored.sort_by(|lhs, rhs| {
+        rhs.score
+            .total_cmp(&lhs.score)
+            .then_with(|| primary_action_order(&lhs.graph).cmp(&primary_action_order(&rhs.graph)))
+    });
+    scored
+}
+
+pub fn select_best_graph(scored_graphs: Vec<ScoredGraph>) -> CausalGraph {
+    let mut valid_graphs: Vec<ScoredGraph> = scored_graphs
+        .into_iter()
+        .filter(|scored| scored.graph.validate().valid)
+        .collect();
+
+    valid_graphs.sort_by(|lhs, rhs| {
+        rhs.score.total_cmp(&lhs.score).then_with(|| {
+            selection_action_priority(&lhs.graph).cmp(&selection_action_priority(&rhs.graph))
+        })
+    });
+
+    valid_graphs
+        .into_iter()
+        .next()
+        .map(|scored| scored.graph)
+        .unwrap_or_else(fallback_causal_graph)
+}
+
+pub fn causal_graph_to_ir(graph: &CausalGraph) -> Vec<IrStep> {
+    if !graph.validate().valid {
+        return fallback_ir();
+    }
+
+    let mut steps = Vec::new();
+    for action in &graph.actions {
+        steps.push(IrStep {
+            op: action_type_to_ir_op(action.action_type),
+            target: action.target.clone(),
+            params: action.params.clone(),
+        });
+    }
+
+    if steps.is_empty() {
+        fallback_ir()
+    } else {
+        steps
+    }
+}
+
+pub fn score_graph(graph: &CausalGraph) -> f32 {
+    let score = 0.5 * safety_score(graph) + 0.3 * action_score(graph) + 0.2 * goal_score(graph);
+    if score.is_finite() {
+        score.clamp(0.0, 1.0)
+    } else {
+        0.0
+    }
+}
+
+fn action_type_to_ir_op(action_type: ActionType) -> IrOp {
+    match action_type {
+        ActionType::ExtractFunction => IrOp::RefactorExtractFunction,
+        ActionType::Inline => IrOp::RefactorInline,
+        ActionType::Rename => IrOp::RefactorRename,
+        ActionType::FixBug => IrOp::FixBug,
+        ActionType::RemoveCode => IrOp::RemoveCode,
+    }
+}
+
+fn fallback_ir() -> Vec<IrStep> {
+    vec![IrStep {
+        op: IrOp::RefactorExtractFunction,
+        target: Target::Unknown,
+        params: HashMap::new(),
     }]
 }
 
@@ -260,17 +509,159 @@ pub fn extract_intent(input: &str) -> IntentType {
     }
 }
 
-fn infer_causes(intent_type: IntentType) -> Vec<String> {
-    match intent_type {
-        IntentType::Refactor | IntentType::Rename => vec!["readability_low".to_string()],
-        IntentType::FixBug => vec!["bug_present".to_string()],
+fn safety_score(graph: &CausalGraph) -> f32 {
+    if graph
+        .actions
+        .iter()
+        .any(|action| action.action_type == ActionType::RemoveCode)
+        && graph.constraints.contains(&Constraint::NoBehaviorChange)
+    {
+        0.0
+    } else {
+        1.0
     }
 }
 
-fn generate_goals(intent_type: IntentType) -> Vec<String> {
+fn action_score(graph: &CausalGraph) -> f32 {
+    primary_action_type(graph)
+        .map(score_action_type)
+        .unwrap_or(0.0)
+}
+
+fn score_action_type(action_type: ActionType) -> f32 {
+    match action_type {
+        ActionType::ExtractFunction => 0.8,
+        ActionType::Rename => 0.7,
+        ActionType::Inline => 0.6,
+        ActionType::FixBug => 0.9,
+        ActionType::RemoveCode => 0.4,
+    }
+}
+
+fn goal_score(graph: &CausalGraph) -> f32 {
+    let Some(action_type) = primary_action_type(graph) else {
+        return 0.0;
+    };
+
+    if graph
+        .goals
+        .iter()
+        .any(|goal| goal_matches_action(*goal, action_type))
+    {
+        1.0
+    } else {
+        0.5
+    }
+}
+
+fn goal_matches_action(goal: Goal, action_type: ActionType) -> bool {
+    match goal {
+        Goal::ImproveReadability => matches!(
+            action_type,
+            ActionType::ExtractFunction | ActionType::Rename | ActionType::Inline
+        ),
+        Goal::ReduceDuplication => {
+            matches!(
+                action_type,
+                ActionType::ExtractFunction | ActionType::RemoveCode
+            )
+        }
+        Goal::RemoveBug => action_type == ActionType::FixBug,
+    }
+}
+
+fn primary_action_type(graph: &CausalGraph) -> Option<ActionType> {
+    graph.actions.first().map(|action| action.action_type)
+}
+
+fn primary_action_order(graph: &CausalGraph) -> usize {
+    primary_action_type(graph)
+        .map(action_type_order)
+        .unwrap_or(usize::MAX)
+}
+
+fn selection_action_priority(graph: &CausalGraph) -> usize {
+    primary_action_type(graph)
+        .map(selection_action_type_priority)
+        .unwrap_or(usize::MAX)
+}
+
+fn selection_action_type_priority(action_type: ActionType) -> usize {
+    match action_type {
+        ActionType::FixBug => 0,
+        ActionType::ExtractFunction => 1,
+        ActionType::Rename => 2,
+        ActionType::Inline => 3,
+        ActionType::RemoveCode => 4,
+    }
+}
+
+fn fallback_causal_graph() -> CausalGraph {
+    initial_causal_graphs_from_nl("")
+        .into_iter()
+        .next()
+        .expect("fallback graph must be generated")
+}
+
+fn action_candidates_for_causes(causes: &[Cause]) -> Vec<Action> {
+    let mut action_types = Vec::new();
+    for cause in causes {
+        match cause {
+            Cause::ReadabilityLow => {
+                action_types.push(ActionType::ExtractFunction);
+                action_types.push(ActionType::Inline);
+                action_types.push(ActionType::Rename);
+            }
+            Cause::DuplicationHigh => {
+                action_types.push(ActionType::ExtractFunction);
+                action_types.push(ActionType::RemoveCode);
+            }
+            Cause::BugPresent => {
+                action_types.push(ActionType::FixBug);
+            }
+        }
+    }
+
+    action_types.sort_by_key(|action_type| action_type_order(*action_type));
+    action_types.dedup();
+    action_types.into_iter().map(action_for_expansion).collect()
+}
+
+fn action_for_expansion(action_type: ActionType) -> Action {
+    Action::with_confidence(action_type, confidence_for_action(action_type))
+}
+
+fn confidence_for_action(action_type: ActionType) -> f32 {
+    match action_type {
+        ActionType::ExtractFunction => 0.7,
+        ActionType::Rename => 0.6,
+        ActionType::Inline => 0.5,
+        ActionType::FixBug => 0.9,
+        ActionType::RemoveCode => 0.6,
+    }
+}
+
+fn action_type_order(action_type: ActionType) -> usize {
+    match action_type {
+        ActionType::ExtractFunction => 0,
+        ActionType::Inline => 1,
+        ActionType::Rename => 2,
+        ActionType::FixBug => 3,
+        ActionType::RemoveCode => 4,
+    }
+}
+
+fn infer_causes(intent_type: IntentType) -> Vec<Cause> {
     match intent_type {
-        IntentType::Refactor | IntentType::Rename => vec!["improve_readability".to_string()],
-        IntentType::FixBug => vec!["remove_bug".to_string()],
+        IntentType::Refactor | IntentType::Rename => vec![Cause::ReadabilityLow],
+        IntentType::FixBug => vec![Cause::BugPresent],
+    }
+}
+
+fn generate_goals(intent_type: IntentType) -> Vec<Goal> {
+    match intent_type {
+        IntentType::Refactor | IntentType::Rename => vec![Goal::ImproveReadability],
+        IntentType::FixBug => vec![Goal::RemoveBug],
     }
 }
 
@@ -290,26 +681,11 @@ fn default_constraints() -> Vec<Constraint> {
     vec![Constraint::NoBehaviorChange, Constraint::ScopeLimited]
 }
 
-fn deterministic_intent_id(input: &str, intent_type: IntentType) -> String {
-    let mut hash = 0xcbf29ce484222325_u64;
-    for byte in input
-        .as_bytes()
-        .iter()
-        .chain(intent_type.as_str().as_bytes().iter())
-    {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
-    }
-    let high = hash;
-    let low = hash.rotate_left(17) ^ 0xa5a5a5a55a5a5a5a;
-    format!(
-        "{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
-        (high >> 32) as u32,
-        (high >> 16) as u16,
-        high as u16,
-        (low >> 48) as u16,
-        low & 0x0000_ffff_ffff_ffff
-    )
+fn deterministic_intent_id(input: &str, index: usize) -> String {
+    let mut hasher = DefaultHasher::new();
+    input.hash(&mut hasher);
+    index.hash(&mut hasher);
+    hasher.finish().to_string()
 }
 
 impl Default for CausalValidation {
@@ -331,13 +707,20 @@ mod tests {
 
         assert_eq!(graphs.len(), 1);
         let graph = &graphs[0];
-        assert_eq!(graph.intent_type, Some(IntentType::Refactor));
-        assert!(graph.goals.iter().any(|goal| goal == "improve_readability"));
+        assert_eq!(graph.intent_type, IntentType::Refactor);
+        assert!(graph.goals.contains(&Goal::ImproveReadability));
+        assert!(graph.causes.contains(&Cause::ReadabilityLow));
         assert!(
             graph
                 .actions
                 .iter()
                 .any(|action| action.action_type == ActionType::ExtractFunction)
+        );
+        assert!(
+            graph
+                .actions
+                .iter()
+                .all(|action| action.target == Target::Unknown)
         );
         assert!(graph.is_ir_convertible_minimal());
     }
@@ -347,8 +730,9 @@ mod tests {
         let graphs = CausalGraph::from_natural_language("バグを直して");
 
         let graph = &graphs[0];
-        assert_eq!(graph.intent_type, Some(IntentType::FixBug));
-        assert!(graph.goals.iter().any(|goal| goal == "remove_bug"));
+        assert_eq!(graph.intent_type, IntentType::FixBug);
+        assert!(graph.causes.contains(&Cause::BugPresent));
+        assert!(graph.goals.contains(&Goal::RemoveBug));
         assert!(
             graph
                 .actions
@@ -364,7 +748,7 @@ mod tests {
         let graphs = initial_causal_graphs_from_nl("何とかして");
 
         assert_eq!(graphs.len(), 1);
-        assert_eq!(graphs[0].intent_type, Some(IntentType::Refactor));
+        assert_eq!(graphs[0].intent_type, IntentType::Refactor);
         assert!(graphs[0].is_ir_convertible_minimal());
     }
 
@@ -376,6 +760,343 @@ mod tests {
         assert_eq!(lhs, rhs);
         assert_eq!(lhs.len(), 1);
         assert!(lhs[0].is_ir_convertible_minimal());
+    }
+
+    #[test]
+    fn phase1_step1_intent_id_uses_index_to_avoid_collisions() {
+        assert_eq!(
+            deterministic_intent_id("きれいにして", 0),
+            deterministic_intent_id("きれいにして", 0)
+        );
+        assert_ne!(
+            deterministic_intent_id("きれいにして", 0),
+            deterministic_intent_id("きれいにして", 1)
+        );
+    }
+
+    #[test]
+    fn phase1_step1_generated_graph_passes_structural_validation() {
+        let graph = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+
+        let validation = graph.validate();
+
+        assert!(validation.valid, "{:?}", validation.issues);
+    }
+
+    #[test]
+    fn phase1_step2_refactor_expands_by_readability_actions() {
+        let graphs = expand_causal_graphs(initial_causal_graphs_from_nl("きれいにして"));
+        let action_types: Vec<_> = graphs
+            .iter()
+            .map(|graph| graph.actions[0].action_type)
+            .collect();
+
+        assert_eq!(graphs.len(), 3);
+        assert_eq!(
+            action_types,
+            vec![
+                ActionType::ExtractFunction,
+                ActionType::Inline,
+                ActionType::Rename
+            ]
+        );
+        assert!(graphs.iter().all(|graph| graph.validate().valid));
+        assert!(graphs.iter().all(|graph| graph.actions.len() == 1));
+        assert!(
+            graphs
+                .iter()
+                .all(|graph| graph.actions[0].target == Target::Unknown)
+        );
+    }
+
+    #[test]
+    fn phase1_step2_fix_bug_expands_to_minimum_graph_count() {
+        let graphs = CausalGraph::expand(initial_causal_graphs_from_nl("バグを直して"));
+
+        assert_eq!(graphs.len(), MIN_GRAPHS);
+        assert!(
+            graphs
+                .iter()
+                .all(|graph| graph.actions[0].action_type == ActionType::FixBug)
+        );
+        assert!(
+            graphs
+                .iter()
+                .all(|graph| (graph.actions[0].confidence - 0.9).abs() < f32::EPSILON)
+        );
+        assert_ne!(graphs[0].intent_id, graphs[1].intent_id);
+        assert!(graphs.iter().all(|graph| graph.validate().valid));
+    }
+
+    #[test]
+    fn phase1_step2_multiple_causes_are_limited_to_max_graphs() {
+        let mut graph = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+        graph.causes = vec![
+            Cause::ReadabilityLow,
+            Cause::DuplicationHigh,
+            Cause::BugPresent,
+        ];
+
+        let graphs = expand_causal_graphs(vec![graph]);
+        let action_types: Vec<_> = graphs
+            .iter()
+            .map(|graph| graph.actions[0].action_type)
+            .collect();
+
+        assert!(graphs.len() <= MAX_GRAPHS);
+        assert_eq!(
+            action_types,
+            vec![
+                ActionType::ExtractFunction,
+                ActionType::Inline,
+                ActionType::Rename,
+                ActionType::FixBug,
+                ActionType::RemoveCode
+            ]
+        );
+        assert!(graphs.iter().all(|graph| graph.validate().valid));
+    }
+
+    #[test]
+    fn phase1_step2_expansion_is_deterministic() {
+        let input = initial_causal_graphs_from_nl("きれいにして");
+
+        let lhs = expand_causal_graphs(input.clone());
+        let rhs = expand_causal_graphs(input);
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn phase1_step3_refactor_scores_extract_over_rename_over_inline() {
+        let expanded = expand_causal_graphs(initial_causal_graphs_from_nl("きれいにして"));
+        let scored = score_causal_graphs(expanded);
+        let action_types: Vec<_> = scored
+            .iter()
+            .map(|scored| scored.graph.actions[0].action_type)
+            .collect();
+
+        assert_eq!(
+            action_types,
+            vec![
+                ActionType::ExtractFunction,
+                ActionType::Rename,
+                ActionType::Inline
+            ]
+        );
+        assert!(scored[0].score > scored[1].score);
+        assert!(scored[1].score > scored[2].score);
+    }
+
+    #[test]
+    fn phase1_step3_fix_bug_scores_fix_bug_highest() {
+        let mut graph = initial_causal_graphs_from_nl("バグを直して")
+            .into_iter()
+            .next()
+            .expect("graph");
+        graph.causes = vec![Cause::ReadabilityLow, Cause::BugPresent];
+        graph.goals = vec![Goal::ImproveReadability, Goal::RemoveBug];
+
+        let scored = CausalGraph::score(expand_causal_graphs(vec![graph]));
+
+        assert_eq!(scored[0].graph.actions[0].action_type, ActionType::FixBug);
+        assert!(scored[0].score >= scored[1].score);
+    }
+
+    #[test]
+    fn phase1_step3_remove_code_gets_low_score_for_safety_violation() {
+        let mut graph = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+        graph.causes = vec![Cause::DuplicationHigh];
+        graph.goals = vec![Goal::ReduceDuplication];
+
+        let scored = score_causal_graphs(expand_causal_graphs(vec![graph]));
+        let remove_code = scored
+            .iter()
+            .find(|scored| scored.graph.actions[0].action_type == ActionType::RemoveCode)
+            .expect("remove_code candidate");
+        let extract_function = scored
+            .iter()
+            .find(|scored| scored.graph.actions[0].action_type == ActionType::ExtractFunction)
+            .expect("extract_function candidate");
+
+        assert!(remove_code.score < extract_function.score);
+        assert!(remove_code.score < 0.5);
+    }
+
+    #[test]
+    fn phase1_step3_scoring_order_is_deterministic() {
+        let input = expand_causal_graphs(initial_causal_graphs_from_nl("きれいにして"));
+
+        let lhs = score_causal_graphs(input.clone());
+        let rhs = score_causal_graphs(input);
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn phase1_step4_selects_highest_score_graph() {
+        let scored = score_causal_graphs(expand_causal_graphs(initial_causal_graphs_from_nl(
+            "きれいにして",
+        )));
+
+        let selected = select_best_graph(scored);
+
+        assert_eq!(selected.actions[0].action_type, ActionType::ExtractFunction);
+        assert!(selected.validate().valid);
+    }
+
+    #[test]
+    fn phase1_step4_tie_breaks_by_selection_action_priority() {
+        let base = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+        let mut inline = base.clone();
+        inline.actions = vec![Action::new(ActionType::Inline)];
+        let mut fix_bug = base.clone();
+        fix_bug.actions = vec![Action::new(ActionType::FixBug)];
+        let mut rename = base;
+        rename.actions = vec![Action::new(ActionType::Rename)];
+
+        let selected = select_best_graph(vec![
+            ScoredGraph {
+                graph: inline,
+                score: 0.75,
+            },
+            ScoredGraph {
+                graph: rename,
+                score: 0.75,
+            },
+            ScoredGraph {
+                graph: fix_bug,
+                score: 0.75,
+            },
+        ]);
+
+        assert_eq!(selected.actions[0].action_type, ActionType::FixBug);
+    }
+
+    #[test]
+    fn phase1_step4_selection_is_deterministic() {
+        let scored = score_causal_graphs(expand_causal_graphs(initial_causal_graphs_from_nl(
+            "きれいにして",
+        )));
+
+        let lhs = CausalGraph::select(scored.clone());
+        let rhs = CausalGraph::select(scored);
+
+        assert_eq!(lhs, rhs);
+    }
+
+    #[test]
+    fn phase1_step4_remove_code_is_not_selected_when_safer_graph_exists() {
+        let mut graph = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+        graph.causes = vec![Cause::DuplicationHigh];
+        graph.goals = vec![Goal::ReduceDuplication];
+
+        let selected = select_best_graph(score_causal_graphs(expand_causal_graphs(vec![graph])));
+
+        assert_ne!(selected.actions[0].action_type, ActionType::RemoveCode);
+        assert_eq!(selected.actions[0].action_type, ActionType::ExtractFunction);
+    }
+
+    #[test]
+    fn phase1_step4_empty_input_falls_back_to_valid_graph() {
+        let selected = select_best_graph(Vec::new());
+
+        assert!(selected.validate().valid);
+        assert!(selected.is_ir_convertible_minimal());
+    }
+
+    #[test]
+    fn phase2_extract_function_maps_to_refactor_extract_function_ir() {
+        let graph = select_best_graph(score_causal_graphs(expand_causal_graphs(
+            initial_causal_graphs_from_nl("きれいにして"),
+        )));
+
+        let ir = causal_graph_to_ir(&graph);
+
+        assert_eq!(ir.len(), 1);
+        assert_eq!(ir[0].op, IrOp::RefactorExtractFunction);
+        assert_eq!(ir[0].target, Target::Unknown);
+    }
+
+    #[test]
+    fn phase2_fix_bug_maps_to_fix_bug_ir() {
+        let graph = select_best_graph(score_causal_graphs(expand_causal_graphs(
+            initial_causal_graphs_from_nl("バグを直して"),
+        )));
+
+        let ir = CausalGraph::to_ir(&graph);
+
+        assert_eq!(ir.len(), 1);
+        assert_eq!(ir[0].op, IrOp::FixBug);
+        assert_eq!(ir[0].target, Target::Unknown);
+    }
+
+    #[test]
+    fn phase2_remove_code_maps_to_remove_code_ir() {
+        let mut graph = initial_causal_graphs_from_nl("きれいにして")
+            .into_iter()
+            .next()
+            .expect("graph");
+        graph.causes = vec![Cause::DuplicationHigh];
+        graph.goals = vec![Goal::ReduceDuplication];
+        graph.actions = vec![Action::with_confidence(ActionType::RemoveCode, 0.6)];
+
+        let ir = causal_graph_to_ir(&graph);
+
+        assert_eq!(ir.len(), 1);
+        assert_eq!(ir[0].op, IrOp::RemoveCode);
+    }
+
+    #[test]
+    fn phase2_ir_conversion_is_deterministic_and_copies_target_and_params() {
+        let mut graph = initial_causal_graphs_from_nl("名前変更して")
+            .into_iter()
+            .next()
+            .expect("graph");
+        let mut action = Action::new(ActionType::Rename);
+        action.target = Target::Symbol("old_name".to_string());
+        action
+            .params
+            .insert("new_name".to_string(), "new_name".to_string());
+        graph.actions = vec![action];
+
+        let lhs = causal_graph_to_ir(&graph);
+        let rhs = causal_graph_to_ir(&graph);
+
+        assert_eq!(lhs, rhs);
+        assert_eq!(lhs[0].op, IrOp::RefactorRename);
+        assert_eq!(lhs[0].target, Target::Symbol("old_name".to_string()));
+        assert_eq!(
+            lhs[0].params.get("new_name").map(String::as_str),
+            Some("new_name")
+        );
+    }
+
+    #[test]
+    fn phase2_invalid_graph_falls_back_to_extract_function_ir() {
+        let graph = CausalGraph::new();
+
+        let ir = causal_graph_to_ir(&graph);
+
+        assert_eq!(ir.len(), 1);
+        assert_eq!(ir[0].op, IrOp::RefactorExtractFunction);
+        assert_eq!(ir[0].target, Target::Unknown);
+        assert!(ir[0].params.is_empty());
     }
 
     #[test]
