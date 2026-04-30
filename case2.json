@@ -1,0 +1,14 @@
+{
+  "version": "1.0",
+  "task": "Fix type error",
+  "context": {
+    "file": "src/main.rs",
+    "code": "fn main() { let x: i32 = \"hello\"; }",
+    "validation_error": "mismatched types: expected i32, found &str"
+  },
+  "pipeline": [
+    { "type": "generate_patch" },
+    { "type": "validate" },
+    { "type": "apply" }
+  ]
+}

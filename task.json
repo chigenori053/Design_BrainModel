@@ -1,0 +1,13 @@
+{
+  "version": "1.0",
+  "task": "Fix syntax error: missing semicolon in fn main()",
+  "context": {
+    "file": "src/main.rs",
+    "code": "fn main() { println!(\"Hello\") }"
+  },
+  "pipeline": [
+    { "type": "generate_patch" },
+    { "type": "validate" },
+    { "type": "apply" }
+  ]
+}
