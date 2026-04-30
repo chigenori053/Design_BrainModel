@@ -341,6 +341,21 @@ pub enum RunLogEntry {
         validation_error: String,
         strategy: String,
     },
+    ProtocolRetry {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        protocol_error_kind: String,
+        reason: String,
+    },
+    ProtocolFixAttempt {
+        run_id: String,
+        step_id: String,
+        request_id: RequestId,
+        attempt: u8,
+        required_fields: Vec<String>,
+    },
 }
 
 // ── RunLogger ─────────────────────────────────────────────────────────────────

@@ -164,6 +164,9 @@ fn run_dsl_missing_semicolon_retries_and_validates() {
     assert!(log.contains("\"type\":\"validation_error\""));
     assert!(log.contains("\"type\":\"retry_reason\""));
     assert!(log.contains("\"type\":\"fix_attempt\""));
+    assert!(log.contains("\"type\":\"protocol_retry\""));
+    assert!(log.contains("\"type\":\"protocol_fix_attempt\""));
+    assert!(log.contains("JsonParse"));
     assert!(log.contains("missing semicolon at end of statement"));
     assert!(log.contains("insert_missing_semicolon"));
 }

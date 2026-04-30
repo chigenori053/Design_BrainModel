@@ -57,6 +57,42 @@ struct PlanStep {
     step_type: RunDslStepType,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DslErrorKind {
+    JsonParse,
+    SchemaValidation,
+    Semantic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DslResponseError {
+    kind: DslErrorKind,
+    message: String,
+}
+
+impl DslResponseError {
+    fn new(kind: DslErrorKind, message: impl Into<String>) -> Self {
+        Self {
+            kind,
+            message: message.into(),
+        }
+    }
+}
+
+impl DslErrorKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::JsonParse => "JsonParse",
+            Self::SchemaValidation => "SchemaValidation",
+            Self::Semantic => "Semantic",
+        }
+    }
+
+    fn is_protocol(self) -> bool {
+        matches!(self, Self::JsonParse | Self::SchemaValidation)
+    }
+}
+
 pub fn handle_run_dsl(input: PathBuf) -> Result<(), String> {
     let canonical_input = input.canonicalize().map_err(|err| {
         format!(
@@ -322,14 +358,35 @@ fn run_agent_loop(
                         step_id: event.step_id.clone(),
                         request_id: event.request_id,
                         attempt: attempt as u8,
-                        error_kind: "validation_error".to_string(),
-                        error: err.clone(),
+                        error_kind: err.kind.as_str().to_string(),
+                        error: err.message.clone(),
                     })
                     .map_err(|err| err.to_string())?;
-                last_error = Some(err);
+                if err.kind.is_protocol() {
+                    logger
+                        .append(&RunLogEntry::ProtocolRetry {
+                            run_id: event.run_id.clone(),
+                            step_id: event.step_id.clone(),
+                            request_id: event.request_id,
+                            attempt: attempt as u8,
+                            protocol_error_kind: err.kind.as_str().to_string(),
+                            reason: err.message.clone(),
+                        })
+                        .map_err(|err| err.to_string())?;
+                    logger
+                        .append(&RunLogEntry::ProtocolFixAttempt {
+                            run_id: event.run_id.clone(),
+                            step_id: event.step_id.clone(),
+                            request_id: event.request_id,
+                            attempt: attempt.saturating_add(1) as u8,
+                            required_fields: required_protocol_fields(event),
+                        })
+                        .map_err(|err| err.to_string())?;
+                }
+                last_error = Some(err.message);
             }
             Err(err) => {
-                last_error = Some(err);
+                last_error = Some(err.message);
             }
         }
     }
@@ -511,54 +568,104 @@ fn fix_strategy(error: &str) -> &'static str {
     }
 }
 
-fn parse_agent_response(event: &ControlEvent, raw: &str) -> Result<ControlResponse, String> {
+fn parse_agent_response(
+    event: &ControlEvent,
+    raw: &str,
+) -> Result<ControlResponse, DslResponseError> {
     if !raw.trim_start().starts_with('{') {
-        return Err("agent output must be a JSON object".to_string());
+        return Err(DslResponseError::new(
+            DslErrorKind::JsonParse,
+            "agent output must be a JSON object",
+        ));
     }
-    let response: ControlResponse =
-        serde_json::from_str(raw).map_err(|err| format!("invalid agent response JSON: {err}"))?;
+    let response: ControlResponse = serde_json::from_str(raw).map_err(|err| {
+        DslResponseError::new(
+            DslErrorKind::SchemaValidation,
+            format!("schema validation failed: {err}"),
+        )
+    })?;
     if response.response_to != event.event {
-        return Err(format!(
-            "response_to mismatch: expected {}, got {}",
-            event.event.as_str(),
-            response.response_to.as_str()
+        return Err(DslResponseError::new(
+            DslErrorKind::SchemaValidation,
+            format!(
+                "response_to mismatch: expected {}, got {}",
+                event.event.as_str(),
+                response.response_to.as_str()
+            ),
         ));
     }
     if response.request_id != event.request_id {
-        return Err(format!(
-            "request_id mismatch: expected {}, got {}",
-            event.request_id, response.request_id
+        return Err(DslResponseError::new(
+            DslErrorKind::SchemaValidation,
+            format!(
+                "request_id mismatch: expected {}, got {}",
+                event.request_id, response.request_id
+            ),
         ));
     }
     if response.step_id != event.step_id {
-        return Err(format!(
-            "step_id mismatch: expected {}, got {}",
-            event.step_id, response.step_id
+        return Err(DslResponseError::new(
+            DslErrorKind::SchemaValidation,
+            format!(
+                "step_id mismatch: expected {}, got {}",
+                event.step_id, response.step_id
+            ),
+        ));
+    }
+    if response.run_id != event.run_id {
+        return Err(DslResponseError::new(
+            DslErrorKind::SchemaValidation,
+            format!(
+                "run_id mismatch: expected {}, got {}",
+                event.run_id, response.run_id
+            ),
         ));
     }
     match &event.payload {
         ControlPayload::Decision { options, .. } => {
-            let action = response
-                .action
-                .ok_or_else(|| "decision response requires action".to_string())?;
+            let action = response.action.ok_or_else(|| {
+                DslResponseError::new(
+                    DslErrorKind::SchemaValidation,
+                    "decision response requires action",
+                )
+            })?;
             if !options.contains(&action) {
-                return Err(format!("action {} is not allowed", action.as_str()));
+                return Err(DslResponseError::new(
+                    DslErrorKind::Semantic,
+                    format!("action {} is not allowed", action.as_str()),
+                ));
             }
         }
         ControlPayload::Approval { .. } => {
-            let action = response
-                .action
-                .ok_or_else(|| "approval response requires action".to_string())?;
+            let action = response.action.ok_or_else(|| {
+                DslResponseError::new(
+                    DslErrorKind::SchemaValidation,
+                    "approval response requires action",
+                )
+            })?;
             if !matches!(action, DecisionAction::Modify | DecisionAction::Abort) {
-                return Err(format!(
-                    "approval action {} is not allowed",
-                    action.as_str()
+                return Err(DslResponseError::new(
+                    DslErrorKind::Semantic,
+                    format!("approval action {} is not allowed", action.as_str()),
                 ));
             }
         }
         ControlPayload::Input { .. } => {}
     }
     Ok(response)
+}
+
+fn required_protocol_fields(event: &ControlEvent) -> Vec<String> {
+    let mut fields = vec![
+        "request_id".to_string(),
+        "run_id".to_string(),
+        "step_id".to_string(),
+        "response_to".to_string(),
+    ];
+    if !matches!(event.payload, ControlPayload::Input { .. }) {
+        fields.insert(0, "action".to_string());
+    }
+    fields
 }
 
 fn response_to_outcome(
