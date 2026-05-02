@@ -1,177 +1,823 @@
-use super::model::{HypothesisViewModel, MemoryCandidateViewModel, UiPayload};
+use std::collections::VecDeque;
+
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+use super::model::UiPayload;
+
+pub const CHAT_BUFFER_LIMIT: usize = 1000;
+pub const DESIGN_MAX_LINES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ActivePanel {
-    Trace,
-    Hypothesis,
-    Memory,
+pub enum Focus {
+    Input,
+    Chat,
+    Design,
 }
 
-impl ActivePanel {
+impl Focus {
     pub fn next(self) -> Self {
         match self {
-            Self::Trace => Self::Hypothesis,
-            Self::Hypothesis => Self::Memory,
-            Self::Memory => Self::Trace,
+            Self::Input => Self::Chat,
+            Self::Chat => Self::Design,
+            Self::Design => Self::Input,
+        }
+    }
+
+    pub fn previous(self) -> Self {
+        match self {
+            Self::Input => Self::Design,
+            Self::Chat => Self::Input,
+            Self::Design => Self::Chat,
         }
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiEvent {
+    Thinking(String),
+    Editing(String),
+    Plan(String),
+    Preview(String),
+    Result(String),
+    Pipeline(String),
+    Next(String),
+    Error(String),
+    Debug(String),
+}
+
+impl UiEvent {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Thinking(_) => "THINKING",
+            Self::Editing(_) => "EDITING",
+            Self::Plan(_) => "PLAN",
+            Self::Preview(_) => "PREVIEW",
+            Self::Result(_) => "RESULT",
+            Self::Pipeline(_) => "PIPELINE",
+            Self::Next(_) => "NEXT",
+            Self::Error(_) => "ERROR",
+            Self::Debug(_) => "DEBUG",
+        }
+    }
+
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Thinking(text)
+            | Self::Editing(text)
+            | Self::Plan(text)
+            | Self::Preview(text)
+            | Self::Result(text)
+            | Self::Pipeline(text)
+            | Self::Next(text)
+            | Self::Error(text)
+            | Self::Debug(text) => text,
+        }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        let prefix = format!("[{}] ", self.label());
+        if self.text().is_empty() {
+            return vec![prefix.trim_end().to_string()];
+        }
+        self.text()
+            .lines()
+            .enumerate()
+            .map(|(idx, line)| {
+                if idx == 0 {
+                    format!("{prefix}{line}")
+                } else {
+                    format!("{}{}", " ".repeat(prefix.len()), line)
+                }
+            })
+            .collect()
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EventQueue {
+    queue: VecDeque<UiEvent>,
+}
+
+impl EventQueue {
+    pub fn push(&mut self, event: UiEvent) {
+        self.queue.push_back(event);
+    }
+
+    pub fn drain(&mut self) -> impl Iterator<Item = UiEvent> + '_ {
+        self.queue.drain(..)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatScrollState {
+    pub is_following: bool,
+    pub offset: usize,
+}
+
+impl ChatScrollState {
+    pub fn user_scroll_up(&mut self, amount: usize) {
+        self.is_following = false;
+        self.offset = self.offset.saturating_add(amount);
+    }
+
+    pub fn user_scroll_down(&mut self, amount: usize) {
+        self.offset = self.offset.saturating_sub(amount);
+        if self.offset == 0 {
+            self.is_following = true;
+        }
+    }
+
+    pub fn scroll_to_bottom(&mut self) {
+        self.offset = 0;
+        self.is_following = true;
+    }
+
+    pub fn apply_append(&mut self) {
+        if self.is_following {
+            self.scroll_to_bottom();
+        }
+    }
+}
+
+impl Default for ChatScrollState {
+    fn default() -> Self {
+        Self {
+            is_following: true,
+            offset: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InputBuffer {
+    pub text: String,
+    pub cursor: usize,
+}
+
+impl InputBuffer {
+    pub fn insert_char(&mut self, ch: char) {
+        self.text.insert(self.cursor, ch);
+        self.cursor += ch.len_utf8();
+    }
+
+    pub fn insert_newline(&mut self) {
+        if self.line_count() < 3 {
+            self.insert_char('\n');
+        }
+    }
+
+    pub fn backspace(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        if let Some((idx, _)) = self.text[..self.cursor].char_indices().next_back() {
+            self.text.replace_range(idx..self.cursor, "");
+            self.cursor = idx;
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        let next = self.text[self.cursor..]
+            .char_indices()
+            .nth(1)
+            .map(|(offset, _)| self.cursor + offset)
+            .unwrap_or(self.text.len());
+        self.text.replace_range(self.cursor..next, "");
+    }
+
+    pub fn move_left(&mut self) {
+        if self.cursor == 0 {
+            return;
+        }
+        if let Some((idx, _)) = self.text[..self.cursor].char_indices().next_back() {
+            self.cursor = idx;
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.cursor >= self.text.len() {
+            return;
+        }
+        self.cursor = self.text[self.cursor..]
+            .char_indices()
+            .nth(1)
+            .map(|(offset, _)| self.cursor + offset)
+            .unwrap_or(self.text.len());
+    }
+
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
+    }
+
+    pub fn set_text(&mut self, text: String) {
+        self.cursor = text.len();
+        self.text = text;
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.text.lines().count().max(1)
+    }
+}
+
+impl Default for InputBuffer {
+    fn default() -> Self {
+        Self {
+            text: String::new(),
+            cursor: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasonUnit {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureTree {
+    pub module: String,
+    pub functions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constraint {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignDocument {
+    pub version: u64,
+    pub reason_units: Vec<ReasonUnit>,
+    pub structure: StructureTree,
+    pub constraints: Vec<Constraint>,
+    pub rendered: Vec<String>,
+}
+
+impl DesignDocument {
+    pub fn new(
+        version: u64,
+        reason_units: Vec<ReasonUnit>,
+        structure: StructureTree,
+        constraints: Vec<Constraint>,
+    ) -> Self {
+        let mut doc = Self {
+            version,
+            reason_units,
+            structure,
+            constraints,
+            rendered: Vec::new(),
+        };
+        doc.regenerate_rendered();
+        doc
+    }
+
+    pub fn regenerate_rendered(&mut self) {
+        let mut rendered = vec!["[DESIGN]".to_string(), String::new()];
+        rendered.push(format!("Module: {}", self.structure.module));
+        for function in &self.structure.functions {
+            rendered.push(format!("- {function}"));
+        }
+
+        if !self.reason_units.is_empty() {
+            rendered.push(String::new());
+            rendered.push("Reason Units:".to_string());
+            for unit in &self.reason_units {
+                rendered.push(format!("- {}: {}", unit.title, unit.summary));
+            }
+        }
+
+        if !self.constraints.is_empty() {
+            rendered.push(String::new());
+            rendered.push("Constraints:".to_string());
+            for constraint in &self.constraints {
+                rendered.push(format!("- {}", constraint.text));
+            }
+        }
+
+        rendered.truncate(DESIGN_MAX_LINES);
+        self.rendered = rendered;
+    }
+
+    fn semantic_eq(&self, other: &Self) -> bool {
+        self.reason_units == other.reason_units
+            && self.structure == other.structure
+            && self.constraints == other.constraints
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TuiState {
-    pub payload: UiPayload,
-    /// Index into `payload.trace.steps`.
-    pub selected_step: usize,
-    /// Id of the currently selected hypothesis.
-    pub selected_hypothesis: Option<usize>,
-    /// Index into `payload.memory` for Memory panel scroll.
-    pub memory_scroll: usize,
-    pub active_panel: ActivePanel,
+    pub chat_stream: Vec<UiEvent>,
+    pub design_doc: DesignDocument,
+    pub input: InputBuffer,
+    pub focus: Focus,
+    pub chat_scroll: ChatScrollState,
+    pub event_queue: EventQueue,
+    pub design_scroll: usize,
+    pub design_collapsed: bool,
+    pub design_updated: bool,
+    pub history: Vec<String>,
+    history_cursor: Option<usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TuiAction {
+    None,
+    Quit,
+    Submit(String),
 }
 
 impl TuiState {
     pub fn new(payload: UiPayload) -> Self {
-        let selected_hypothesis = payload.selected;
         Self {
-            payload,
-            selected_step: 0,
-            selected_hypothesis,
-            memory_scroll: 0,
-            active_panel: ActivePanel::Trace,
+            chat_stream: seed_chat_stream(&payload),
+            design_doc: seed_design_document(&payload),
+            input: InputBuffer::default(),
+            focus: Focus::Input,
+            chat_scroll: ChatScrollState::default(),
+            event_queue: EventQueue::default(),
+            design_scroll: 0,
+            design_collapsed: false,
+            design_updated: false,
+            history: Vec::new(),
+            history_cursor: None,
         }
     }
 
-    // ── Selection accessors ──────────────────────────────────────────────────
+    pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                return TuiAction::Quit;
+            }
+            KeyCode::Esc => {
+                if self.focus == Focus::Input && !self.input.text.is_empty() {
+                    self.input.clear();
+                    return TuiAction::None;
+                }
+                return TuiAction::Quit;
+            }
+            KeyCode::Tab => {
+                self.focus = self.focus.next();
+                return TuiAction::None;
+            }
+            KeyCode::BackTab => {
+                self.focus = self.focus.previous();
+                return TuiAction::None;
+            }
+            _ => {}
+        }
 
-    /// Depth of the currently selected trace step.
-    pub fn selected_depth(&self) -> Option<usize> {
-        self.payload
-            .trace
-            .steps
-            .get(self.selected_step)
-            .map(|s| s.depth)
+        match self.focus {
+            Focus::Input => self.handle_input_key(key),
+            Focus::Chat => self.handle_chat_key(key),
+            Focus::Design => self.handle_design_key(key),
+        }
     }
 
-    /// Ids of all hypotheses whose depth matches `depth`.
-    pub fn hypothesis_ids_at_depth(&self, depth: usize) -> Vec<usize> {
-        self.payload
-            .hypotheses
+    pub fn enqueue_event(&mut self, event: UiEvent) {
+        self.event_queue.push(event);
+    }
+
+    pub fn handle_ui_events(&mut self) {
+        let events: Vec<UiEvent> = self.event_queue.drain().collect();
+        for event in events {
+            self.append_chat(event);
+        }
+    }
+
+    pub fn append_chat(&mut self, event: UiEvent) {
+        self.chat_stream.push(event);
+        while self.chat_stream.len() > CHAT_BUFFER_LIMIT {
+            self.chat_stream.remove(0);
+        }
+        self.chat_scroll.apply_append();
+    }
+
+    pub fn update_design(&mut self, mut new_doc: DesignDocument) {
+        new_doc.regenerate_rendered();
+        if !self.design_doc.semantic_eq(&new_doc) {
+            if new_doc.version <= self.design_doc.version {
+                new_doc.version = self.design_doc.version.saturating_add(1);
+            }
+            self.design_doc = new_doc;
+            self.design_scroll = self
+                .design_scroll
+                .min(self.design_doc.rendered.len().saturating_sub(1));
+            self.design_updated = true;
+        } else {
+            self.design_updated = false;
+        }
+    }
+
+    pub fn flattened_chat_lines(&self) -> Vec<String> {
+        self.chat_stream
             .iter()
-            .filter(|h| h.depth == depth)
-            .map(|h| h.id)
+            .flat_map(|event| event.lines())
             .collect()
     }
 
-    /// Data for the currently selected hypothesis.
-    pub fn selected_hypothesis_data(&self) -> Option<&HypothesisViewModel> {
-        let id = self.selected_hypothesis?;
-        self.payload.hypotheses.iter().find(|h| h.id == id)
-    }
-
-    /// Memory candidates relevant to the selected hypothesis depth.
-    /// For now returns all candidates (future: filter by step origin).
-    pub fn visible_memory(&self) -> &[MemoryCandidateViewModel] {
-        &self.payload.memory
-    }
-
-    // ── Navigation ───────────────────────────────────────────────────────────
-
-    pub fn move_up(&mut self) {
-        match self.active_panel {
-            ActivePanel::Trace => {
-                if self.selected_step > 0 {
-                    self.selected_step -= 1;
-                    self.sync_hypothesis_to_step();
+    fn handle_input_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
+                self.input.insert_newline();
+                TuiAction::None
+            }
+            KeyCode::Enter => {
+                let submitted = self.input.text.trim().to_string();
+                if submitted.is_empty() {
+                    return TuiAction::None;
                 }
+                self.history.push(submitted.clone());
+                self.history_cursor = None;
+                self.input.clear();
+                self.enqueue_event(UiEvent::Next(submitted.clone()));
+                TuiAction::Submit(submitted)
             }
-            ActivePanel::Hypothesis => {
-                let ids = self.visible_hypothesis_ids();
-                if let Some(pos) = self.hypothesis_list_pos(&ids)
-                    && pos > 0
-                {
-                    self.selected_hypothesis = Some(ids[pos - 1]);
-                    self.sync_step_to_hypothesis();
+            KeyCode::Backspace => {
+                self.input.backspace();
+                TuiAction::None
+            }
+            KeyCode::Delete => {
+                self.input.delete();
+                TuiAction::None
+            }
+            KeyCode::Left => {
+                self.input.move_left();
+                TuiAction::None
+            }
+            KeyCode::Right => {
+                self.input.move_right();
+                TuiAction::None
+            }
+            KeyCode::Up => {
+                self.history_previous();
+                TuiAction::None
+            }
+            KeyCode::Down => {
+                self.history_next();
+                TuiAction::None
+            }
+            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+                if self.input.line_count() < 3 || ch != '\n' {
+                    self.input.insert_char(ch);
                 }
+                TuiAction::None
             }
-            ActivePanel::Memory => {
-                self.memory_scroll = self.memory_scroll.saturating_sub(1);
-            }
+            _ => TuiAction::None,
         }
     }
 
-    pub fn move_down(&mut self) {
-        match self.active_panel {
-            ActivePanel::Trace => {
-                if self.selected_step + 1 < self.payload.trace.steps.len() {
-                    self.selected_step += 1;
-                    self.sync_hypothesis_to_step();
-                }
+    fn handle_chat_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::PageUp | KeyCode::Up => {
+                self.chat_scroll.user_scroll_up(5);
             }
-            ActivePanel::Hypothesis => {
-                let ids = self.visible_hypothesis_ids();
-                if let Some(pos) = self.hypothesis_list_pos(&ids)
-                    && pos + 1 < ids.len()
-                {
-                    self.selected_hypothesis = Some(ids[pos + 1]);
-                    self.sync_step_to_hypothesis();
-                }
+            KeyCode::PageDown | KeyCode::Down => {
+                self.chat_scroll.user_scroll_down(5);
             }
-            ActivePanel::Memory => {
-                let max = self.payload.memory.len().saturating_sub(1);
-                if self.memory_scroll < max {
-                    self.memory_scroll += 1;
-                }
+            KeyCode::End => {
+                self.chat_scroll.scroll_to_bottom();
             }
+            _ => {}
+        }
+        TuiAction::None
+    }
+
+    fn handle_design_key(&mut self, key: KeyEvent) -> TuiAction {
+        match key.code {
+            KeyCode::PageUp | KeyCode::Up => {
+                self.design_scroll = self.design_scroll.saturating_sub(5);
+            }
+            KeyCode::PageDown | KeyCode::Down => {
+                let max = self.design_doc.rendered.len().saturating_sub(1);
+                self.design_scroll = (self.design_scroll + 5).min(max);
+            }
+            KeyCode::Home => {
+                self.design_scroll = 0;
+            }
+            KeyCode::End => {
+                self.design_scroll = self.design_doc.rendered.len().saturating_sub(1);
+            }
+            KeyCode::Char('d') | KeyCode::Char('D') => {
+                self.design_collapsed = !self.design_collapsed;
+            }
+            _ => {}
+        }
+        TuiAction::None
+    }
+
+    fn history_previous(&mut self) {
+        if self.history.is_empty() {
+            return;
+        }
+        let idx = self
+            .history_cursor
+            .map(|idx| idx.saturating_sub(1))
+            .unwrap_or_else(|| self.history.len().saturating_sub(1));
+        self.history_cursor = Some(idx);
+        self.input.set_text(self.history[idx].clone());
+    }
+
+    fn history_next(&mut self) {
+        let Some(idx) = self.history_cursor else {
+            return;
+        };
+        if idx + 1 >= self.history.len() {
+            self.history_cursor = None;
+            self.input.clear();
+        } else {
+            let next = idx + 1;
+            self.history_cursor = Some(next);
+            self.input.set_text(self.history[next].clone());
+        }
+    }
+}
+
+fn seed_chat_stream(payload: &UiPayload) -> Vec<UiEvent> {
+    let mut events = Vec::new();
+    events.push(UiEvent::Pipeline(format!(
+        "request_id={}",
+        payload.trace.request_id
+    )));
+
+    for step in &payload.trace.steps {
+        events.push(UiEvent::Thinking(format!(
+            "depth={} beam={} candidates={} pruned={} recall_hits={}",
+            step.depth, step.beam_width, step.candidates, step.pruned, step.recall_hits
+        )));
+    }
+
+    if let Some(selected) = payload.selected {
+        events.push(UiEvent::Result(format!("selected hypothesis H{selected}")));
+    }
+
+    if events.len() > CHAT_BUFFER_LIMIT {
+        events.drain(0..events.len() - CHAT_BUFFER_LIMIT);
+    }
+    events
+}
+
+fn seed_design_document(payload: &UiPayload) -> DesignDocument {
+    let reason_units = payload
+        .hypotheses
+        .iter()
+        .take(8)
+        .map(|hyp| ReasonUnit {
+            id: format!("H{}", hyp.id),
+            title: format!("H{}", hyp.id),
+            summary: format!("depth={} score={:.2}", hyp.depth, hyp.score),
+        })
+        .collect();
+
+    DesignDocument::new(
+        1,
+        reason_units,
+        StructureTree {
+            module: "runtime_design".to_string(),
+            functions: vec![
+                "design convergence view".to_string(),
+                "chat stream append".to_string(),
+                "input buffer".to_string(),
+            ],
+        },
+        vec![
+            Constraint {
+                text: "Core independent".to_string(),
+            },
+            Constraint {
+                text: "append-only chat buffer".to_string(),
+            },
+            Constraint {
+                text: "max design rows 20".to_string(),
+            },
+        ],
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    use super::*;
+    use crate::tui::model::{ScorePartsViewModel, TraceStatsViewModel, TraceViewModel, UiPayload};
+
+    fn empty_payload() -> UiPayload {
+        UiPayload {
+            trace: TraceViewModel {
+                request_id: "test".to_string(),
+                steps: vec![],
+                stats: TraceStatsViewModel {
+                    total_nodes: 0,
+                    max_depth: 0,
+                    recall_hit_rate: 0.0,
+                    avg_branching: 0.0,
+                },
+            },
+            hypotheses: vec![],
+            memory: vec![],
+            selected: None,
         }
     }
 
-    pub fn toggle_panel(&mut self) {
-        self.active_panel = self.active_panel.next();
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    // ── Sync ─────────────────────────────────────────────────────────────────
+    fn design_doc(module: &str) -> DesignDocument {
+        DesignDocument::new(
+            1,
+            vec![ReasonUnit {
+                id: "ru-1".to_string(),
+                title: "parser".to_string(),
+                summary: "parse input".to_string(),
+            }],
+            StructureTree {
+                module: module.to_string(),
+                functions: vec!["parse_input".to_string()],
+            },
+            vec![Constraint {
+                text: "no unsafe unwrap".to_string(),
+            }],
+        )
+    }
 
-    /// Trace step selected → pick first hypothesis at that depth.
-    fn sync_hypothesis_to_step(&mut self) {
-        if let Some(depth) = self.selected_depth() {
-            let ids = self.hypothesis_ids_at_depth(depth);
-            if !ids.is_empty() {
-                self.selected_hypothesis = Some(ids[0]);
-            }
+    #[test]
+    fn focus_cycles_forward_and_backward() {
+        let mut state = TuiState::new(empty_payload());
+        assert_eq!(state.focus, Focus::Input);
+
+        state.handle_key_event(key(KeyCode::Tab));
+        assert_eq!(state.focus, Focus::Chat);
+
+        state.handle_key_event(key(KeyCode::Tab));
+        assert_eq!(state.focus, Focus::Design);
+
+        state.handle_key_event(KeyEvent::new(KeyCode::BackTab, KeyModifiers::SHIFT));
+        assert_eq!(state.focus, Focus::Chat);
+    }
+
+    #[test]
+    fn input_submit_queues_next_event_and_history() {
+        let mut state = TuiState::new(empty_payload());
+        for ch in "fix parser bug".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
         }
-    }
 
-    /// Hypothesis selected → move trace step to matching depth.
-    fn sync_step_to_hypothesis(&mut self) {
-        if let Some(id) = self.selected_hypothesis
-            && let Some(h) = self.payload.hypotheses.iter().find(|h| h.id == id)
-        {
-            let depth = h.depth;
-            if let Some(pos) = self
-                .payload
-                .trace
-                .steps
+        let action = state.handle_key_event(key(KeyCode::Enter));
+
+        assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
+        assert_eq!(state.history, vec!["fix parser bug"]);
+        assert!(state.input.text.is_empty());
+        assert!(!state.event_queue.is_empty());
+
+        state.handle_ui_events();
+        assert!(
+            state
+                .flattened_chat_lines()
                 .iter()
-                .position(|s| s.depth == depth)
-            {
-                self.selected_step = pos;
-            }
+                .any(|line| line == "[NEXT] fix parser bug")
+        );
+    }
+
+    #[test]
+    fn chat_buffer_is_capped() {
+        let mut state = TuiState::new(empty_payload());
+        for idx in 0..(CHAT_BUFFER_LIMIT + 10) {
+            state.append_chat(UiEvent::Thinking(format!("event {idx}")));
         }
+
+        assert_eq!(state.chat_stream.len(), CHAT_BUFFER_LIMIT);
+        assert_eq!(
+            state.chat_stream.first().map(UiEvent::text),
+            Some("event 10")
+        );
     }
 
-    // ── Helpers ──────────────────────────────────────────────────────────────
+    #[test]
+    fn shift_enter_allows_up_to_three_input_lines() {
+        let mut state = TuiState::new(empty_payload());
+        state.handle_key_event(key(KeyCode::Char('a')));
+        for _ in 0..4 {
+            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+            state.handle_key_event(key(KeyCode::Char('b')));
+        }
 
-    pub fn visible_hypothesis_ids(&self) -> Vec<usize> {
-        self.payload.hypotheses.iter().map(|h| h.id).collect()
+        assert_eq!(state.input.line_count(), 3);
     }
 
-    fn hypothesis_list_pos(&self, ids: &[usize]) -> Option<usize> {
-        self.selected_hypothesis
-            .and_then(|id| ids.iter().position(|&v| v == id))
+    #[test]
+    fn design_document_update_uses_semantic_structure_and_rerenders() {
+        let mut state = TuiState::new(empty_payload());
+        let version = state.design_doc.version;
+
+        state.update_design(design_doc("parser"));
+
+        assert_eq!(state.design_doc.version, version + 1);
+        assert_eq!(state.design_doc.structure.module, "parser");
+        assert!(
+            state
+                .design_doc
+                .rendered
+                .iter()
+                .any(|line| line == "Module: parser")
+        );
+        assert!(state.design_updated);
     }
 
-    /// List-widget selection index for the hypothesis panel.
-    pub fn hypothesis_list_index(&self) -> Option<usize> {
-        let ids = self.visible_hypothesis_ids();
-        self.hypothesis_list_pos(&ids)
+    #[test]
+    fn design_document_unchanged_semantics_do_not_increment_version() {
+        let mut state = TuiState::new(empty_payload());
+        let doc = design_doc("parser");
+        state.update_design(doc.clone());
+        let version = state.design_doc.version;
+
+        state.update_design(doc);
+
+        assert_eq!(state.design_doc.version, version);
+        assert!(!state.design_updated);
+    }
+
+    #[test]
+    fn chat_scroll_state_transitions_are_stable() {
+        let mut scroll = ChatScrollState::default();
+        assert!(scroll.is_following);
+
+        scroll.user_scroll_up(5);
+        assert!(!scroll.is_following);
+        assert_eq!(scroll.offset, 5);
+
+        scroll.apply_append();
+        assert_eq!(scroll.offset, 5);
+        assert!(!scroll.is_following);
+
+        scroll.user_scroll_down(5);
+        assert_eq!(scroll.offset, 0);
+        assert!(scroll.is_following);
+    }
+
+    #[test]
+    fn queued_event_does_not_interfere_with_input_buffer() {
+        let mut state = TuiState::new(empty_payload());
+        for ch in "typing".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        state.enqueue_event(UiEvent::Thinking("async event".to_string()));
+        state.handle_ui_events();
+
+        assert_eq!(state.input.text, "typing");
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line == "[THINKING] async event")
+        );
+    }
+
+    #[test]
+    fn appending_while_scrolled_keeps_fixed_offset() {
+        let mut state = TuiState::new(empty_payload());
+        state.focus = Focus::Chat;
+        state.handle_key_event(key(KeyCode::PageUp));
+
+        state.enqueue_event(UiEvent::Thinking("async event".to_string()));
+        state.handle_ui_events();
+
+        assert_eq!(state.chat_scroll.offset, 5);
+        assert!(!state.chat_scroll.is_following);
+    }
+
+    #[test]
+    fn seed_design_document_limits_rows() {
+        let mut payload = empty_payload();
+        payload.hypotheses = (0..50)
+            .map(|id| crate::tui::model::HypothesisViewModel {
+                id,
+                parent: None,
+                depth: id,
+                score: 0.5,
+                score_parts: ScorePartsViewModel {
+                    relevance: 0.0,
+                    goal: 0.0,
+                    constraint: 0.0,
+                    memory: 0.0,
+                },
+                relations: vec![],
+            })
+            .collect();
+
+        let state = TuiState::new(payload);
+
+        assert!(state.design_doc.rendered.len() <= DESIGN_MAX_LINES);
     }
 }

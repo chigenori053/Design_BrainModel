@@ -11,14 +11,16 @@ use std::io;
 use std::time::Duration;
 
 use crossterm::{
-    event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
+    event::{self, DisableMouseCapture, EnableMouseCapture, Event},
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use self::model::UiPayload;
-use self::state::TuiState;
+use self::state::{TuiAction, TuiState};
+
+const FRAME_TIME: Duration = Duration::from_millis(16);
 
 /// Launch the interactive TUI. Blocks until the user quits.
 pub fn run_tui(payload: UiPayload) -> Result<(), String> {
@@ -50,19 +52,18 @@ fn run_event_loop(
     state: &mut TuiState,
 ) -> Result<(), String> {
     loop {
+        state.handle_ui_events();
+
         terminal
             .draw(|frame| render::render(frame, state))
             .map_err(|e| e.to_string())?;
 
-        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())?
+        if event::poll(FRAME_TIME).map_err(|e| e.to_string())?
             && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
         {
-            match key.code {
-                KeyCode::Char('q') | KeyCode::Esc => break,
-                KeyCode::Up | KeyCode::Char('k') => state.move_up(),
-                KeyCode::Down | KeyCode::Char('j') => state.move_down(),
-                KeyCode::Tab => state.toggle_panel(),
-                _ => {}
+            match state.handle_key_event(key) {
+                TuiAction::Quit => break,
+                TuiAction::Submit(_) | TuiAction::None => {}
             }
         }
     }
