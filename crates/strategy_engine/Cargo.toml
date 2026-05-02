@@ -1,8 +1,9 @@
 [package]
-name = "execution_stability_core"
+name = "strategy_engine"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
 execution_core = { workspace = true }
+execution_stability_core = { workspace = true }
 execution_hardening = { workspace = true }

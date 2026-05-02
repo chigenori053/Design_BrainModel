@@ -95,7 +95,9 @@ members = [
     "crates/core/world_model_core",
     "tests/contract",
     "tests/pipeline",
-    "crates/memory_persistence"
+    "crates/memory_persistence",
+    "crates/execution_hardening",
+    "crates/strategy_engine"
 ]
 resolver = "2"
 
@@ -185,6 +187,8 @@ ai_context = { path = "crates/ai_context" }
 code_generation_core = { path = "crates/code_generation_core" }
 execution_core = { path = "crates/execution_core" }
 execution_stability_core = { path = "crates/execution_stability_core" }
+execution_hardening = { path = "crates/execution_hardening" }
+strategy_engine = { path = "crates/strategy_engine" }
 replay_engine = { path = "crates/replay_engine" }
 test_generation_core = { path = "crates/test_generation_core" }
 tensor_ir = { path = "crates/tensor_ir" }

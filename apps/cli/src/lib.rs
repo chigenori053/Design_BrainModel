@@ -28,6 +28,7 @@ pub mod nl;
 pub mod nl_executor;
 pub mod ops;
 pub mod phase1_batch;
+pub mod pipeline;
 pub mod plan;
 pub mod planner;
 pub mod refactor;

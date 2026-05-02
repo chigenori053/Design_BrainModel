@@ -35,6 +35,7 @@ runtime_core = { workspace = true }
 viewer_core = { workspace = true }
 memory_space_phase14 = { workspace = true }
 semantic_dhm = { workspace = true }
+strategy_engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = "0.10"

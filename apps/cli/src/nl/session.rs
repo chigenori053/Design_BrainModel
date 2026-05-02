@@ -4,6 +4,7 @@ use crate::design_delta::{
     CodingPatchPlan, DesignDelta, MutationCandidate, MutationPlan, MutationSearchResult,
     RationalityScore, TradeoffExplanation,
 };
+use crate::pipeline::PipelineContext;
 use crate::service::dto::{ActionKind, IRActiveTransaction, IRState, SessionAppliedDiff};
 use uuid::Uuid;
 
@@ -35,6 +36,10 @@ pub struct ConversationState {
     pub mutation_search_depth: usize,
     pub last_mutation_search_result: Option<MutationSearchResult>,
     pub last_tradeoff_explanation: Option<TradeoffExplanation>,
+    /// UX pipeline state machine (Fix → Preview → Apply → GitAdd → Commit).
+    ///
+    /// DBM-UX-GIT-PIPELINE-SPEC v1.0 §5.1
+    pub pipeline: PipelineContext,
 }
 
 impl ConversationState {

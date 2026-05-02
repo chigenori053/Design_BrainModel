@@ -1,10 +1,14 @@
 use std::collections::VecDeque;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use strategy_engine::ExecutionPlanCandidate;
+
+use crate::pipeline::PipelineState;
 
 use super::model::UiPayload;
 
-pub const CHAT_BUFFER_LIMIT: usize = 1000;
+pub const MAX_CHAT_LINES: usize = 1000;
+pub const MAX_EVENTS: usize = 2000;
 pub const DESIGN_MAX_LINES: usize = 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -34,53 +38,86 @@ impl Focus {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiEvent {
-    Thinking(String),
-    Editing(String),
-    Plan(String),
-    Preview(String),
-    Result(String),
-    Pipeline(String),
-    Next(String),
-    Error(String),
-    Debug(String),
+    Thinking {
+        summary: String,
+    },
+    Editing {
+        target: String,
+        action: String,
+    },
+    Plan {
+        steps: Vec<String>,
+    },
+    Preview {
+        diff: Vec<String>,
+    },
+    Result {
+        message: String,
+    },
+    Pipeline {
+        state: String,
+    },
+    Next {
+        actions: Vec<String>,
+    },
+    Error {
+        message: String,
+    },
+    Debug {
+        message: String,
+    },
+    /// Structured execution proposal.  Spec DBM-EXECUTION-CANDIDATE-SPEC §9.
+    Proposal {
+        candidates: Vec<ExecutionPlanCandidate>,
+    },
 }
 
 impl UiEvent {
     pub fn label(&self) -> &'static str {
         match self {
-            Self::Thinking(_) => "THINKING",
-            Self::Editing(_) => "EDITING",
-            Self::Plan(_) => "PLAN",
-            Self::Preview(_) => "PREVIEW",
-            Self::Result(_) => "RESULT",
-            Self::Pipeline(_) => "PIPELINE",
-            Self::Next(_) => "NEXT",
-            Self::Error(_) => "ERROR",
-            Self::Debug(_) => "DEBUG",
+            Self::Thinking { .. } => "THINKING",
+            Self::Editing { .. } => "EDITING",
+            Self::Plan { .. } => "PLAN",
+            Self::Preview { .. } => "PREVIEW",
+            Self::Result { .. } => "RESULT",
+            Self::Pipeline { .. } => "PIPELINE",
+            Self::Next { .. } => "NEXT",
+            Self::Error { .. } => "ERROR",
+            Self::Debug { .. } => "DEBUG",
+            Self::Proposal { .. } => "PROPOSAL",
         }
     }
 
-    pub fn text(&self) -> &str {
+    pub fn text(&self) -> String {
         match self {
-            Self::Thinking(text)
-            | Self::Editing(text)
-            | Self::Plan(text)
-            | Self::Preview(text)
-            | Self::Result(text)
-            | Self::Pipeline(text)
-            | Self::Next(text)
-            | Self::Error(text)
-            | Self::Debug(text) => text,
+            Self::Thinking { summary } => summary.clone(),
+            Self::Editing { target, action } => format!("{target}: {action}"),
+            Self::Plan { steps } => steps.join("\n"),
+            Self::Preview { diff } => diff.join("\n"),
+            Self::Result { message } | Self::Error { message } | Self::Debug { message } => {
+                message.clone()
+            }
+            Self::Pipeline { state } => state.clone(),
+            Self::Next { actions } => actions.join("\n"),
+            Self::Proposal { candidates } => {
+                // Render top candidates per spec §9 表示例
+                let mut lines: Vec<String> = Vec::new();
+                for c in candidates {
+                    lines.extend(c.render_lines());
+                    lines.push(String::new());
+                }
+                lines.join("\n")
+            }
         }
     }
 
     pub fn lines(&self) -> Vec<String> {
         let prefix = format!("[{}] ", self.label());
-        if self.text().is_empty() {
+        let text = self.text();
+        if text.is_empty() {
             return vec![prefix.trim_end().to_string()];
         }
-        self.text()
-            .lines()
+        text.lines()
             .enumerate()
             .map(|(idx, line)| {
                 if idx == 0 {
@@ -101,14 +138,21 @@ pub struct EventQueue {
 impl EventQueue {
     pub fn push(&mut self, event: UiEvent) {
         self.queue.push_back(event);
+        while self.queue.len() > MAX_EVENTS {
+            self.queue.pop_front();
+        }
     }
 
-    pub fn drain(&mut self) -> impl Iterator<Item = UiEvent> + '_ {
-        self.queue.drain(..)
+    pub fn pop(&mut self) -> Option<UiEvent> {
+        self.queue.pop_front()
     }
 
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.queue.len()
     }
 }
 
@@ -307,27 +351,39 @@ impl DesignDocument {
         rendered.truncate(DESIGN_MAX_LINES);
         self.rendered = rendered;
     }
+}
 
-    fn semantic_eq(&self, other: &Self) -> bool {
-        self.reason_units == other.reason_units
-            && self.structure == other.structure
-            && self.constraints == other.constraints
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ChatState {
+    pub events: Vec<UiEvent>,
+}
+
+impl ChatState {
+    pub fn append_chat(&mut self, event: UiEvent) {
+        self.events.push(event);
+        while self.events.len() > MAX_CHAT_LINES {
+            self.events.remove(0);
+        }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct TuiState {
-    pub chat_stream: Vec<UiEvent>,
+    pub chat: ChatState,
     pub design_doc: DesignDocument,
     pub input: InputBuffer,
     pub focus: Focus,
     pub chat_scroll: ChatScrollState,
     pub event_queue: EventQueue,
+    pub pipeline_state: PipelineState,
     pub design_scroll: usize,
     pub design_collapsed: bool,
     pub design_updated: bool,
     pub history: Vec<String>,
     history_cursor: Option<usize>,
+    /// Active proposal candidates awaiting `select <n>`.  Phase 1C.5 §4.1.
+    /// Set when a `UiEvent::Proposal` arrives; cleared on successful select.
+    pub current_proposals: Option<Vec<ExecutionPlanCandidate>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -340,18 +396,23 @@ pub enum TuiAction {
 impl TuiState {
     pub fn new(payload: UiPayload) -> Self {
         Self {
-            chat_stream: seed_chat_stream(&payload),
+            chat: ChatState {
+                events: seed_chat_stream(&payload),
+            },
             design_doc: seed_design_document(&payload),
             input: InputBuffer::default(),
             focus: Focus::Input,
             chat_scroll: ChatScrollState::default(),
             event_queue: EventQueue::default(),
+            pipeline_state: PipelineState::default(),
             design_scroll: 0,
             design_collapsed: false,
             design_updated: false,
             history: Vec::new(),
             history_cursor: None,
+            current_proposals: None,
         }
+        .with_pseudo_stream()
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
@@ -389,26 +450,23 @@ impl TuiState {
     }
 
     pub fn handle_ui_events(&mut self) {
-        let events: Vec<UiEvent> = self.event_queue.drain().collect();
-        for event in events {
+        while let Some(event) = self.event_queue.pop() {
             self.append_chat(event);
         }
     }
 
     pub fn append_chat(&mut self, event: UiEvent) {
-        self.chat_stream.push(event);
-        while self.chat_stream.len() > CHAT_BUFFER_LIMIT {
-            self.chat_stream.remove(0);
+        // Capture proposal candidates for the select command.  Phase 1C.5 §4.1.
+        if let UiEvent::Proposal { ref candidates } = event {
+            self.current_proposals = Some(candidates.clone());
         }
+        self.chat.append_chat(event);
         self.chat_scroll.apply_append();
     }
 
     pub fn update_design(&mut self, mut new_doc: DesignDocument) {
-        new_doc.regenerate_rendered();
-        if !self.design_doc.semantic_eq(&new_doc) {
-            if new_doc.version <= self.design_doc.version {
-                new_doc.version = self.design_doc.version.saturating_add(1);
-            }
+        if new_doc.version != self.design_doc.version {
+            new_doc.regenerate_rendered();
             self.design_doc = new_doc;
             self.design_scroll = self
                 .design_scroll
@@ -420,7 +478,8 @@ impl TuiState {
     }
 
     pub fn flattened_chat_lines(&self) -> Vec<String> {
-        self.chat_stream
+        self.chat
+            .events
             .iter()
             .flat_map(|event| event.lines())
             .collect()
@@ -440,7 +499,9 @@ impl TuiState {
                 self.history.push(submitted.clone());
                 self.history_cursor = None;
                 self.input.clear();
-                self.enqueue_event(UiEvent::Next(submitted.clone()));
+                self.enqueue_event(UiEvent::Next {
+                    actions: vec![submitted.clone()],
+                });
                 TuiAction::Submit(submitted)
             }
             KeyCode::Backspace => {
@@ -541,30 +602,55 @@ impl TuiState {
             self.input.set_text(self.history[next].clone());
         }
     }
+
+    fn with_pseudo_stream(mut self) -> Self {
+        for event in pseudo_stream_events() {
+            self.enqueue_event(event);
+        }
+        self
+    }
 }
 
 fn seed_chat_stream(payload: &UiPayload) -> Vec<UiEvent> {
     let mut events = Vec::new();
-    events.push(UiEvent::Pipeline(format!(
-        "request_id={}",
-        payload.trace.request_id
-    )));
+    events.push(UiEvent::Pipeline {
+        state: format!("request_id={}", payload.trace.request_id),
+    });
 
     for step in &payload.trace.steps {
-        events.push(UiEvent::Thinking(format!(
-            "depth={} beam={} candidates={} pruned={} recall_hits={}",
-            step.depth, step.beam_width, step.candidates, step.pruned, step.recall_hits
-        )));
+        events.push(UiEvent::Thinking {
+            summary: format!(
+                "depth={} beam={} candidates={} pruned={} recall_hits={}",
+                step.depth, step.beam_width, step.candidates, step.pruned, step.recall_hits
+            ),
+        });
     }
 
     if let Some(selected) = payload.selected {
-        events.push(UiEvent::Result(format!("selected hypothesis H{selected}")));
+        events.push(UiEvent::Result {
+            message: format!("selected hypothesis H{selected}"),
+        });
     }
 
-    if events.len() > CHAT_BUFFER_LIMIT {
-        events.drain(0..events.len() - CHAT_BUFFER_LIMIT);
+    if events.len() > MAX_CHAT_LINES {
+        events.drain(0..events.len() - MAX_CHAT_LINES);
     }
     events
+}
+
+pub fn pseudo_stream_events() -> Vec<UiEvent> {
+    vec![
+        UiEvent::Thinking {
+            summary: "analyzing".to_string(),
+        },
+        UiEvent::Editing {
+            target: "parser".to_string(),
+            action: "replace block".to_string(),
+        },
+        UiEvent::Result {
+            message: "done".to_string(),
+        },
+    ]
 }
 
 fn seed_design_document(payload: &UiPayload) -> DesignDocument {
@@ -633,9 +719,9 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::NONE)
     }
 
-    fn design_doc(module: &str) -> DesignDocument {
+    fn design_doc(version: u64, module: &str) -> DesignDocument {
         DesignDocument::new(
-            1,
+            version,
             vec![ReasonUnit {
                 id: "ru-1".to_string(),
                 title: "parser".to_string(),
@@ -692,14 +778,16 @@ mod tests {
     #[test]
     fn chat_buffer_is_capped() {
         let mut state = TuiState::new(empty_payload());
-        for idx in 0..(CHAT_BUFFER_LIMIT + 10) {
-            state.append_chat(UiEvent::Thinking(format!("event {idx}")));
+        for idx in 0..(MAX_CHAT_LINES + 10) {
+            state.append_chat(UiEvent::Thinking {
+                summary: format!("event {idx}"),
+            });
         }
 
-        assert_eq!(state.chat_stream.len(), CHAT_BUFFER_LIMIT);
+        assert_eq!(state.chat.events.len(), MAX_CHAT_LINES);
         assert_eq!(
-            state.chat_stream.first().map(UiEvent::text),
-            Some("event 10")
+            state.chat.events.first().map(UiEvent::text),
+            Some("event 10".to_string())
         );
     }
 
@@ -720,7 +808,7 @@ mod tests {
         let mut state = TuiState::new(empty_payload());
         let version = state.design_doc.version;
 
-        state.update_design(design_doc("parser"));
+        state.update_design(design_doc(version + 1, "parser"));
 
         assert_eq!(state.design_doc.version, version + 1);
         assert_eq!(state.design_doc.structure.module, "parser");
@@ -735,16 +823,75 @@ mod tests {
     }
 
     #[test]
-    fn design_document_unchanged_semantics_do_not_increment_version() {
+    fn design_document_same_version_does_not_update() {
         let mut state = TuiState::new(empty_payload());
-        let doc = design_doc("parser");
-        state.update_design(doc.clone());
+        let version = state.design_doc.version;
+        state.update_design(design_doc(version, "parser"));
+
+        assert_eq!(state.design_doc.version, version);
+        assert_ne!(state.design_doc.structure.module, "parser");
+        assert!(!state.design_updated);
+    }
+
+    #[test]
+    fn design_document_version_change_rerenders_even_when_semantics_match() {
+        let mut state = TuiState::new(empty_payload());
+        let mut doc = state.design_doc.clone();
+        doc.version += 1;
+        doc.rendered = vec!["stale".to_string()];
         let version = state.design_doc.version;
 
         state.update_design(doc);
 
-        assert_eq!(state.design_doc.version, version);
-        assert!(!state.design_updated);
+        assert_eq!(state.design_doc.version, version + 1);
+        assert_ne!(state.design_doc.rendered, vec!["stale".to_string()]);
+        assert!(state.design_updated);
+    }
+
+    #[test]
+    fn event_queue_is_fifo_and_drops_oldest_over_limit() {
+        let mut queue = EventQueue::default();
+        for idx in 0..(MAX_EVENTS + 3) {
+            queue.push(UiEvent::Debug {
+                message: format!("event {idx}"),
+            });
+        }
+
+        assert_eq!(queue.len(), MAX_EVENTS);
+        assert_eq!(
+            queue.pop().map(|event| event.text()),
+            Some("event 3".to_string())
+        );
+        assert_eq!(
+            queue.pop().map(|event| event.text()),
+            Some("event 4".to_string())
+        );
+    }
+
+    #[test]
+    fn pseudo_stream_flows_through_queue_in_order() {
+        let mut state = TuiState::new(empty_payload());
+
+        state.handle_ui_events();
+
+        let lines = state.flattened_chat_lines();
+        let pseudo_lines: Vec<String> = lines
+            .iter()
+            .filter(|line| {
+                line == &&"[THINKING] analyzing".to_string()
+                    || line == &&"[EDITING] parser: replace block".to_string()
+                    || line == &&"[RESULT] done".to_string()
+            })
+            .cloned()
+            .collect();
+        assert_eq!(
+            pseudo_lines,
+            vec![
+                "[THINKING] analyzing".to_string(),
+                "[EDITING] parser: replace block".to_string(),
+                "[RESULT] done".to_string(),
+            ]
+        );
     }
 
     #[test]
@@ -772,7 +919,9 @@ mod tests {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        state.enqueue_event(UiEvent::Thinking("async event".to_string()));
+        state.enqueue_event(UiEvent::Thinking {
+            summary: "async event".to_string(),
+        });
         state.handle_ui_events();
 
         assert_eq!(state.input.text, "typing");
@@ -790,7 +939,9 @@ mod tests {
         state.focus = Focus::Chat;
         state.handle_key_event(key(KeyCode::PageUp));
 
-        state.enqueue_event(UiEvent::Thinking("async event".to_string()));
+        state.enqueue_event(UiEvent::Thinking {
+            summary: "async event".to_string(),
+        });
         state.handle_ui_events();
 
         assert_eq!(state.chat_scroll.offset, 5);

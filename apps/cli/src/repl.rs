@@ -22,6 +22,9 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+use strategy_engine::{
+    ExecutionContext, ExecutionOp, FIXED_GIT_COMMIT_MESSAGE, HardenedRunIntegrator, RunIntegrator,
+};
 
 use crate::command::{CommandRegistry, Output};
 use crate::commands::register_defaults;
@@ -369,6 +372,8 @@ fn try_shortcut<W: Write>(
         } else {
             emit_output(session, writer, "[PREVIEW]\nNo pending diff")?;
         }
+        // Spec §2.2: Planned → Previewed
+        conversation.pipeline.on_previewed();
         return Ok(Some(false));
     }
     if lower == "repair preview" {
@@ -380,11 +385,88 @@ fn try_shortcut<W: Write>(
         return Ok(Some(false));
     }
 
+    if let Some(op) = parse_git_repl_op(normalized)? {
+        // Spec §2.3 禁止遷移: git commit requires Staged state
+        if matches!(op, ExecutionOp::GitCommit { .. }) && !conversation.pipeline.state.can_commit()
+        {
+            emit_output(
+                session,
+                writer,
+                &format!(
+                    "[PIPELINE ERROR]\ngit commit rejected: no staged files\ncurrent state: {}\n\nStage files first: git add <file>",
+                    conversation.pipeline.state
+                ),
+            )?;
+            return Ok(Some(false));
+        }
+        // Spec §9.2 Add制約: git add requires Applied or Staged state
+        if matches!(op, ExecutionOp::GitAdd { .. }) && !conversation.pipeline.state.can_git_add() {
+            emit_output(
+                session,
+                writer,
+                &format!(
+                    "[PIPELINE ERROR]\ngit add rejected: apply changes first\ncurrent state: {}",
+                    conversation.pipeline.state
+                ),
+            )?;
+            return Ok(Some(false));
+        }
+
+        let context = ExecutionContext {
+            repo_root: session
+                .workspace_root
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(".")),
+            ..ExecutionContext::default()
+        };
+        let runner = HardenedRunIntegrator::default();
+        let result = runner.run_op(&op, &context);
+        if result.success {
+            match &op {
+                ExecutionOp::GitAdd { path } => {
+                    // Spec §3.4 GitAdd: Applied → Staged
+                    conversation.pipeline.on_staged(PathBuf::from(path));
+                    emit_output(session, writer, &format!("[RESULT]\nFile staged: {path}"))?;
+                    emit_pipeline_next(session, conversation, writer)?;
+                }
+                ExecutionOp::GitCommit { .. } => {
+                    // Spec §3.5 Commit: Staged → Committed
+                    let hash = parse_commit_hash(&result.stdout);
+                    let hash_display = hash.clone().unwrap_or_else(|| "unknown".to_string());
+                    conversation.pipeline.on_committed(hash);
+                    emit_output(
+                        session,
+                        writer,
+                        &format!("[RESULT]\nCommit created: {hash_display}"),
+                    )?;
+                    emit_output(session, writer, "")?;
+                    emit_output(session, writer, "[WARNING]")?;
+                    emit_output(session, writer, "Rollback is no longer available.")?;
+                }
+                _ => {
+                    emit_output(session, writer, &result.stdout)?;
+                }
+            }
+        } else {
+            emit_output(session, writer, &format!("[GIT ERROR]\n{}", result.stderr))?;
+        }
+        return Ok(Some(false));
+    }
+
     let operation = if lower == "apply" || lower == "適用" {
         Operation::Apply
     } else if lower == "validate" || lower == "検証" {
         Operation::Validate
     } else if lower == "rollback" || lower == "取り消し" {
+        // Spec §7.2: rollback is forbidden after Committed
+        if !conversation.pipeline.state.rollback_available() {
+            emit_output(
+                session,
+                writer,
+                "[PIPELINE ERROR]\nRollback is not available after commit.",
+            )?;
+            return Ok(Some(false));
+        }
         Operation::Rollback
     } else if lower == "reload" || lower == "再同期" {
         Operation::Reload
@@ -413,6 +495,12 @@ fn try_shortcut<W: Write>(
     if cfg!(test) {
         session.current_plan = Some(to_runtime_plan(&exec_plan));
         session.state = State::Completed;
+        if exec_plan.operation == Operation::Apply {
+            // Spec §3.3 Apply: → Applied (test path)
+            conversation.pipeline.on_applied(vec![]);
+            emit_output(session, writer, "[RESULT]\nChanges applied.")?;
+            emit_pipeline_next(session, conversation, writer)?;
+        }
         emit_output(session, writer, "[test] planner-only mode")?;
         return Ok(Some(false));
     }
@@ -425,7 +513,73 @@ fn try_shortcut<W: Write>(
     }
     session.state = State::Completed;
     session.current_plan = Some(to_runtime_plan(&exec_plan));
+    if exec_plan.operation == Operation::Apply {
+        // Spec §3.3 Apply: Previewed → Applied
+        let modified: Vec<PathBuf> = conversation
+            .ir_state
+            .active_transaction
+            .as_ref()
+            .and_then(|tx| tx.latest_diff_ref.as_ref())
+            .map(|diff| {
+                diff.files
+                    .iter()
+                    .map(|f| PathBuf::from(&f.file_path))
+                    .collect()
+            })
+            .unwrap_or_default();
+        conversation.pipeline.on_applied(modified);
+        emit_output(session, writer, "\n[RESULT]\nChanges applied successfully.")?;
+        emit_pipeline_next(session, conversation, writer)?;
+    }
     Ok(Some(false))
+}
+
+fn parse_git_repl_op(input: &str) -> Result<Option<ExecutionOp>, String> {
+    let trimmed = input.trim();
+    let lower = trimmed.to_ascii_lowercase();
+    match lower.as_str() {
+        "git status" | "check current changes" => return Ok(Some(ExecutionOp::GitStatus)),
+        "git diff" | "show current diff" => return Ok(Some(ExecutionOp::GitDiff)),
+        "git commit" | "commit changes" => {
+            return Ok(Some(ExecutionOp::GitCommit {
+                message: FIXED_GIT_COMMIT_MESSAGE.to_string(),
+            }));
+        }
+        "git push" => return Err("git push is rejected by the typed Git UX policy".to_string()),
+        _ => {}
+    }
+
+    if lower == "git add ." {
+        return Err("git add . is rejected; stage one explicit file".to_string());
+    }
+    if let Some(path) = trimmed.strip_prefix("git add ") {
+        let path = parse_single_git_path(path)?;
+        return Ok(Some(ExecutionOp::GitAdd { path }));
+    }
+    if let Some(path) = trimmed.strip_prefix("stage ") {
+        let path = parse_single_git_path(path)?;
+        return Ok(Some(ExecutionOp::GitAdd { path }));
+    }
+    if let Some(path) = trimmed.strip_prefix("stage this file ") {
+        let path = parse_single_git_path(path)?;
+        return Ok(Some(ExecutionOp::GitAdd { path }));
+    }
+
+    if lower.starts_with("git ") {
+        return Err(
+            "unsupported git operation; allowed: status, diff, add <file>, commit".to_string(),
+        );
+    }
+
+    Ok(None)
+}
+
+fn parse_single_git_path(raw: &str) -> Result<String, String> {
+    let parts = raw.split_whitespace().collect::<Vec<_>>();
+    if parts.len() != 1 {
+        return Err("git add requires exactly one file path".to_string());
+    }
+    Ok(parts[0].to_string())
 }
 
 fn render_repl_state(conversation: &ConversationState) -> String {
@@ -443,7 +597,41 @@ fn render_repl_state(conversation: &ConversationState) -> String {
             )
         })
         .unwrap_or_else(|| "transaction: none".to_string());
-    format!("[STATE]\ntarget: {target}\n{tx_state}")
+    let pipeline = conversation.pipeline.render();
+    format!("[STATE]\ntarget: {target}\n{tx_state}\n\n[PIPELINE]\n{pipeline}")
+}
+
+/// Emit `[NEXT]` suggestions from the current pipeline state.
+///
+/// DBM-UX-GIT-PIPELINE-SPEC v1.0 §4.1 自動候補提示
+fn emit_pipeline_next<W: Write>(
+    session: &mut AgentSession,
+    conversation: &ConversationState,
+    writer: &mut W,
+) -> Result<(), String> {
+    let hints = conversation.pipeline.next_hints();
+    if !hints.is_empty() {
+        emit_output(session, writer, "")?;
+        emit_output(session, writer, "[NEXT]")?;
+        for hint in hints {
+            emit_output(session, writer, &format!("- {hint}"))?;
+        }
+    }
+    Ok(())
+}
+
+/// Extract the short commit hash from `git commit` stdout.
+///
+/// Git output format: `[branch-name a1b2c3d] commit message`
+fn parse_commit_hash(stdout: &str) -> Option<String> {
+    let line = stdout.lines().next()?;
+    let bracket_start = line.find('[')? + 1;
+    let bracket_end = line.find(']')?;
+    if bracket_end <= bracket_start {
+        return None;
+    }
+    let content = &line[bracket_start..bracket_end]; // "branch-name a1b2c3d"
+    content.split_whitespace().last().map(|s| s.to_string())
 }
 
 fn trace_execution_plan(plan: &ExecutionPlan) {
@@ -1330,6 +1518,8 @@ fn handle_agent<W: Write>(
     session.state = State::Planning;
 
     if let Some(goal) = detect_goal(input) {
+        // Spec §3.1 Fix: goal detected → Planned
+        conversation.pipeline.on_planned();
         conversation.autonomous_label = Some(format!("autonomous:{}", goal_label(goal)));
         emit_output(
             session,
@@ -1366,6 +1556,8 @@ fn handle_agent<W: Write>(
     let (command_plan, planner_label) = plan_agent_input(input, session, conversation);
 
     if let Some(command_plan) = command_plan {
+        // Spec §3.1 Fix: Idle → Planned
+        conversation.pipeline.on_planned();
         let planner_summary = render_plan_summary_with_label(&command_plan, planner_label);
         emit_output(session, writer, &planner_summary)?;
         let plan_id =
@@ -1802,6 +1994,38 @@ mod tests {
         let mut writer = Vec::new();
         let result = run_repl(workspace_root.to_path_buf(), &mut reader, &mut writer);
         (String::from_utf8_lossy(&writer).to_string(), result)
+    }
+
+    #[test]
+    fn git_repl_parser_maps_allowed_ops_to_typed_execution_ops() {
+        assert_eq!(
+            parse_git_repl_op("git status").expect("parse"),
+            Some(ExecutionOp::GitStatus)
+        );
+        assert_eq!(
+            parse_git_repl_op("git diff").expect("parse"),
+            Some(ExecutionOp::GitDiff)
+        );
+        assert_eq!(
+            parse_git_repl_op("git add src/main.rs").expect("parse"),
+            Some(ExecutionOp::GitAdd {
+                path: "src/main.rs".to_string()
+            })
+        );
+        assert_eq!(
+            parse_git_repl_op("git commit").expect("parse"),
+            Some(ExecutionOp::GitCommit {
+                message: FIXED_GIT_COMMIT_MESSAGE.to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn git_repl_parser_rejects_disallowed_git_ops() {
+        assert!(parse_git_repl_op("git push").is_err());
+        assert!(parse_git_repl_op("git reset --hard").is_err());
+        assert!(parse_git_repl_op("git add .").is_err());
+        assert!(parse_git_repl_op("git add src/lib.rs src/main.rs").is_err());
     }
 
     /// dispatch を直接呼んでsessionを検査するヘルパー
@@ -2881,5 +3105,157 @@ mod tests {
             .collect();
         // The mode line from /planner (no arg) shows the current mode
         assert!(mode_lines.iter().any(|l| l.contains("dbm")));
+    }
+
+    // ── Pipeline state machine tests (DBM-UX-GIT-PIPELINE-SPEC v1.0) ─────────
+
+    /// Spec §11: AddなしCommit拒否 — git commit without staged files must be
+    /// rejected at the REPL level (state != Staged).
+    #[test]
+    fn git_commit_rejected_without_staged_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let (output, _, _, _) = run_with_session_in(temp.path(), "git commit\n");
+        assert!(
+            output.contains("[PIPELINE ERROR]"),
+            "expected PIPELINE ERROR, got: {output}"
+        );
+        assert!(
+            output.contains("no staged files"),
+            "expected 'no staged files' hint, got: {output}"
+        );
+    }
+
+    /// Spec §11: Apply失敗時commit不可 — git commit blocked unless Staged.
+    /// After just a plan (Planned state, no Apply), commit must be rejected.
+    #[test]
+    fn git_commit_rejected_after_plan_without_apply() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        // Generate a plan (→ Planned), then try to commit immediately
+        let (output, _, _, _) = run_with_session_in(temp.path(), "design the api\ngit commit\n");
+        assert!(
+            output.contains("[PIPELINE ERROR]"),
+            "commit after plan-only must be rejected: {output}"
+        );
+    }
+
+    /// Spec §11: rollbackがcommit後不可 — after Committed, rollback is blocked.
+    #[test]
+    fn rollback_rejected_after_committed_state() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let mut writer = Vec::new();
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState::default();
+        hydrate_ir_state(temp.path(), &mut conversation).expect("hydrate ir");
+        // Manually advance to Committed
+        conversation
+            .pipeline
+            .on_committed(Some("abc1234".to_string()));
+        let registry = {
+            let mut r = CommandRegistry::new();
+            register_defaults(&mut r);
+            r
+        };
+        let mut planner_mode = PlannerMode::default();
+        let _ = dispatch(
+            "rollback",
+            &mut session,
+            &mut conversation,
+            &registry,
+            &mut planner_mode,
+            &mut writer,
+        );
+        let output = String::from_utf8_lossy(&writer);
+        assert!(
+            output.contains("[PIPELINE ERROR]"),
+            "rollback after commit must be rejected: {output}"
+        );
+        assert!(
+            output.contains("not available after commit"),
+            "got: {output}"
+        );
+    }
+
+    /// Spec §11: git add blocked before Apply.
+    #[test]
+    fn git_add_rejected_before_apply() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let (output, _, _, _) = run_with_session_in(temp.path(), "git add src/main.rs\n");
+        assert!(
+            output.contains("[PIPELINE ERROR]"),
+            "git add before apply must be rejected: {output}"
+        );
+        assert!(output.contains("apply changes first"), "got: {output}");
+    }
+
+    /// Spec §4.1: Apply後にNEXT提示が表示される (test-mode apply path).
+    #[test]
+    fn apply_shortcut_shows_next_hints() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let (output, _, conversation, _) = run_with_session_in(temp.path(), "apply\n");
+        assert!(
+            output.contains("[NEXT]"),
+            "apply should emit [NEXT] hints: {output}"
+        );
+        assert!(
+            output.contains("git add"),
+            "NEXT should mention git add: {output}"
+        );
+        // Pipeline must be in Applied state
+        assert_eq!(
+            conversation.pipeline.state,
+            crate::pipeline::PipelineState::Applied,
+            "pipeline state must be Applied after apply shortcut"
+        );
+    }
+
+    /// Spec §5.2: status shortcut shows [PIPELINE] block.
+    #[test]
+    fn status_shows_pipeline_block() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_minimal_workspace(temp.path());
+        let (output, _, _, _) = run_with_session_in(temp.path(), "status\n");
+        assert!(
+            output.contains("[PIPELINE]"),
+            "status must show [PIPELINE] block: {output}"
+        );
+        assert!(
+            output.contains("state: Idle"),
+            "initial pipeline state must be Idle: {output}"
+        );
+    }
+
+    /// Spec §3.1: on_planned() advances pipeline state correctly.
+    /// State machine transitions are unit-tested in pipeline::tests;
+    /// this verifies the PipelineContext default starts at Idle.
+    #[test]
+    fn pipeline_initial_state_is_idle() {
+        let conversation = ConversationState::default();
+        assert_eq!(
+            conversation.pipeline.state,
+            crate::pipeline::PipelineState::Idle,
+            "fresh ConversationState must have pipeline at Idle"
+        );
+    }
+
+    /// Spec §6.2 UX display: Commit後に[WARNING]が表示される (parse_commit_hash).
+    #[test]
+    fn parse_commit_hash_extracts_short_hash() {
+        let stdout = "[main a1b2c3d] auto fix\n 1 file changed\n";
+        assert_eq!(
+            parse_commit_hash(stdout).as_deref(),
+            Some("a1b2c3d"),
+            "should extract 'a1b2c3d' from git commit output"
+        );
+    }
+
+    #[test]
+    fn parse_commit_hash_returns_none_for_unexpected_format() {
+        assert!(parse_commit_hash("").is_none());
+        assert!(parse_commit_hash("no brackets here").is_none());
     }
 }
