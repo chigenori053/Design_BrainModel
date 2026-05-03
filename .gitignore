@@ -18,3 +18,5 @@ rust_ui_poc/client.log
 rust_ui_poc/rust_ui_poc/logs/
 
 .dbm/
+.claire/
+.claude/
