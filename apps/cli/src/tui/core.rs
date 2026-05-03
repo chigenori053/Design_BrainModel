@@ -303,7 +303,12 @@ impl CoreExecutor for RuntimeCoreBridge {
             },
         ];
         let intent = Intent::new(request.input.clone());
-        if requires_clarification(&intent) {
+        let ambiguous = requires_clarification(&intent);
+        println!(
+            "[IR-TRACE][CLARIFICATION] action={:?}, file={:?}, symbol={:?}, ambiguous={}",
+            intent.action, intent.file, intent.symbol, ambiguous
+        );
+        if ambiguous {
             let candidates = generate_candidates_from_intent(&intent);
             println!("[IR-TRACE][PROPOSAL_GENERATED] {}", candidates.len());
             events.push(CoreEvent::Proposal { candidates });

@@ -23,14 +23,44 @@ pub type CodeIrProgram = ExecutionPlan;
 pub struct Intent {
     /// Human-readable description of the goal.
     pub description: String,
+    /// Parsed action used for clarification gating.
+    pub action: Action,
+    /// Module-level target such as `parser`, `auth`, or `db`.
+    pub target: Option<String>,
+    /// Explicit file path, for example `parser.rs`.
+    pub file: Option<String>,
+    /// Explicit symbol, for example `parse_input function`.
+    pub symbol: Option<String>,
     /// Hard constraints the result must satisfy.
     pub constraints: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Action {
+    Fix,
+    Improve,
+    Optimize,
+    RefactorGeneric,
+    Build,
+    Run,
+    Test,
+    Other(String),
+}
+
 impl Intent {
     pub fn new(description: impl Into<String>) -> Self {
+        let description = description.into();
+        let action = parse_action(&description);
+        let file = extract_file(&description);
+        let symbol = extract_symbol(&description, file.as_deref());
+        let target =
+            extract_module_target(&description, &action, file.as_deref(), symbol.as_deref());
         Self {
-            description: description.into(),
+            description,
+            action,
+            target,
+            file,
+            symbol,
             constraints: Vec::new(),
         }
     }
@@ -39,6 +69,133 @@ impl Intent {
         self.constraints.push(constraint.into());
         self
     }
+}
+
+fn parse_action(description: &str) -> Action {
+    let lower = description.to_ascii_lowercase();
+    if has_word(&lower, "fix") {
+        Action::Fix
+    } else if has_word(&lower, "improve") {
+        Action::Improve
+    } else if has_word(&lower, "optimize") {
+        Action::Optimize
+    } else if has_word(&lower, "refactor") {
+        Action::RefactorGeneric
+    } else if has_word(&lower, "build") {
+        Action::Build
+    } else if has_word(&lower, "run") {
+        Action::Run
+    } else if has_word(&lower, "test") {
+        Action::Test
+    } else {
+        Action::Other(description.trim().to_string())
+    }
+}
+
+fn extract_file(description: &str) -> Option<String> {
+    description.split_whitespace().find_map(|token| {
+        let trimmed = trim_intent_token(token);
+        let lower = trimmed.to_ascii_lowercase();
+        let is_file = [
+            ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".kt", ".swift", ".c",
+            ".cc", ".cpp", ".h", ".hpp", ".toml", ".json", ".yaml", ".yml", ".md",
+        ]
+        .iter()
+        .any(|extension| lower.ends_with(extension));
+        if is_file {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
+}
+
+fn extract_symbol(description: &str, file: Option<&str>) -> Option<String> {
+    let tokens = normalized_tokens(description);
+    for (index, token) in tokens.iter().enumerate() {
+        if matches!(
+            token.as_str(),
+            "function" | "fn" | "struct" | "method" | "symbol"
+        ) && index > 0
+        {
+            let candidate = &tokens[index - 1];
+            if !is_noise_token(candidate) && Some(candidate.as_str()) != file {
+                return Some(candidate.clone());
+            }
+        }
+    }
+
+    tokens
+        .into_iter()
+        .find(|token| token.contains('_') && !is_noise_token(token) && Some(token.as_str()) != file)
+}
+
+fn extract_module_target(
+    description: &str,
+    action: &Action,
+    file: Option<&str>,
+    symbol: Option<&str>,
+) -> Option<String> {
+    if !matches!(
+        action,
+        Action::Fix | Action::Improve | Action::Optimize | Action::RefactorGeneric
+    ) {
+        return None;
+    }
+
+    normalized_tokens(description).into_iter().find(|token| {
+        !is_noise_token(token) && Some(token.as_str()) != file && Some(token.as_str()) != symbol
+    })
+}
+
+fn normalized_tokens(description: &str) -> Vec<String> {
+    description
+        .split_whitespace()
+        .map(trim_intent_token)
+        .filter(|token| !token.is_empty())
+        .map(|token| token.to_ascii_lowercase())
+        .collect()
+}
+
+fn trim_intent_token(token: &str) -> &str {
+    token.trim_matches(|c: char| {
+        !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-' && c != '/'
+    })
+}
+
+fn has_word(description: &str, word: &str) -> bool {
+    description
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|token| token == word)
+}
+
+fn is_noise_token(token: &str) -> bool {
+    matches!(
+        token,
+        "fix"
+            | "improve"
+            | "optimize"
+            | "refactor"
+            | "build"
+            | "run"
+            | "test"
+            | "bug"
+            | "issue"
+            | "problem"
+            | "code"
+            | "please"
+            | "the"
+            | "a"
+            | "an"
+            | "in"
+            | "on"
+            | "for"
+            | "function"
+            | "fn"
+            | "struct"
+            | "method"
+            | "symbol"
+    )
 }
 
 // ── ExecutionContext ──────────────────────────────────────────────────────────

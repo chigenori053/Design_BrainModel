@@ -13,7 +13,7 @@
 //! - Content-hash deduplication via `ExecutionPlanCandidate::hash()` (§8).
 
 use crate::convergence::ExecutionOp;
-use crate::types::{CodeIrProgram, ExecutionMode, Intent};
+use crate::types::{Action, CodeIrProgram, ExecutionMode, Intent};
 use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
@@ -562,22 +562,30 @@ pub fn generate_candidates(
 
 /// Return true when the intent is too underspecified for direct execution.
 ///
-/// Phase 1 keeps the check intentionally shallow:
-/// - no target-like noun
-/// - no file path
-/// - abstract operations (`fix`, `improve`, `optimize`)
+/// Ambiguity is based on executability: module-level targets and abstract
+/// actions without file/symbol scope are routed to Proposal instead of Planner.
 pub fn requires_clarification(intent: &Intent) -> bool {
-    let description = intent.description.trim();
-    if description.is_empty() {
+    if intent.description.trim().is_empty() {
         return true;
     }
 
-    let abstract_operation = has_abstract_operation(description);
-    let file_scoped_operation = has_file_scoped_operation(description);
+    let has_file = intent.file.is_some();
+    let has_symbol = intent.symbol.is_some();
+    let is_abstract_action = matches!(
+        intent.action,
+        Action::Fix | Action::Improve | Action::Optimize | Action::RefactorGeneric
+    );
+    let is_module_level_target = intent.target.is_some() && intent.symbol.is_none();
 
-    !has_target_hint(description)
-        || abstract_operation
-        || (file_scoped_operation && extract_file_hint(description).is_none())
+    if is_abstract_action && !has_file && !has_symbol {
+        return true;
+    }
+
+    if is_module_level_target {
+        return true;
+    }
+
+    false
 }
 
 /// Generate proposal candidates directly from an intent.
@@ -591,9 +599,12 @@ pub fn generate_candidates_from_intent(intent: &Intent) -> Vec<ExecutionPlanCand
         return Vec::new();
     }
 
-    let target = extract_file_hint(description).map(|file| ResolvedTarget { file, symbol: None });
+    let target = intent.file.as_ref().map(|file| ResolvedTarget {
+        file: file.clone(),
+        symbol: intent.symbol.clone(),
+    });
     let subject = intent_subject(description, target.as_ref());
-    let action = intent_action(description);
+    let action = intent_action(intent);
 
     let mut raw = vec![
         ExecutionPlanCandidate::from_ops(
@@ -633,93 +644,24 @@ pub fn generate_candidates_from_intent(intent: &Intent) -> Vec<ExecutionPlanCand
     raw
 }
 
-fn has_abstract_operation(description: &str) -> bool {
-    description
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|token| {
-            matches!(
-                token.to_ascii_lowercase().as_str(),
-                "fix" | "improve" | "optimize"
-            )
-        })
-}
-
-fn has_file_scoped_operation(description: &str) -> bool {
-    description
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .any(|token| {
-            matches!(
-                token.to_ascii_lowercase().as_str(),
-                "fix" | "improve" | "optimize" | "refactor"
-            )
-        })
-}
-
-fn has_target_hint(description: &str) -> bool {
-    description
-        .split_whitespace()
-        .map(|token| {
-            token.trim_matches(|c: char| {
-                !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-' && c != '/'
-            })
-        })
-        .any(|token| {
-            let lower = token.to_ascii_lowercase();
-            !lower.is_empty()
-                && !matches!(
-                    lower.as_str(),
-                    "fix"
-                        | "improve"
-                        | "optimize"
-                        | "refactor"
-                        | "bug"
-                        | "issue"
-                        | "problem"
-                        | "code"
-                        | "please"
-                        | "the"
-                        | "a"
-                        | "an"
-                )
-        })
-}
-
-fn extract_file_hint(description: &str) -> Option<String> {
-    description.split_whitespace().find_map(|token| {
-        let trimmed = token.trim_matches(|c: char| {
-            !c.is_ascii_alphanumeric() && c != '.' && c != '_' && c != '-' && c != '/'
-        });
-        let lower = trimmed.to_ascii_lowercase();
-        let has_known_extension = [
-            ".rs", ".ts", ".tsx", ".js", ".jsx", ".py", ".go", ".java", ".kt", ".swift", ".c",
-            ".cc", ".cpp", ".h", ".hpp", ".toml", ".json", ".yaml", ".yml", ".md",
-        ]
-        .iter()
-        .any(|extension| lower.ends_with(extension));
-        if has_known_extension {
-            Some(trimmed.to_string())
-        } else {
-            None
-        }
-    })
-}
-
-fn intent_action(description: &str) -> &'static str {
-    let lower = description.to_ascii_lowercase();
-    if lower.contains("optimize") {
-        "optimize"
-    } else if lower.contains("improve") {
-        "improve"
-    } else if lower.contains("refactor") {
-        "refactor"
-    } else {
-        "fix"
+fn intent_action(intent: &Intent) -> &'static str {
+    match intent.action {
+        Action::Optimize => "optimize",
+        Action::Improve => "improve",
+        Action::RefactorGeneric => "refactor",
+        _ => "fix",
     }
 }
 
 fn intent_subject(description: &str, target: Option<&ResolvedTarget>) -> String {
     if let Some(target) = target {
         return target.file.clone();
+    }
+    if let Some(symbol) = &Intent::new(description).symbol {
+        return symbol.clone();
+    }
+    if let Some(module) = &Intent::new(description).target {
+        return module.clone();
     }
 
     description
@@ -1083,6 +1025,13 @@ mod tests {
     fn requires_clarification_matches_phase1_examples() {
         assert!(requires_clarification(&Intent::new("fix parser bug")));
         assert!(!requires_clarification(&Intent::new("refactor parser.rs")));
+        assert!(!requires_clarification(&Intent::new(
+            "fix parse_input in parser.rs"
+        )));
+        assert!(!requires_clarification(&Intent::new(
+            "fix parse_input function"
+        )));
+        assert!(requires_clarification(&Intent::new("fix parser")));
     }
 
     #[test]

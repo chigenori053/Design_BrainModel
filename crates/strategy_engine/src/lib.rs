@@ -77,7 +77,7 @@ pub use proposal::{
 pub use selector::StrategySelector;
 pub use trace::{StrategyAttempt, StrategyOutcome, StrategyTrace};
 pub use types::{
-    CodeIrProgram, DryRunIntegrator, ExecutionContext, ExecutionMode, FIXED_GIT_COMMIT_MESSAGE,
-    FailThenSucceedIntegrator, HardenedRunIntegrator, Intent, RunIntegrator, RunResult,
-    StrategyInput, StrategyOutput,
+    Action, CodeIrProgram, DryRunIntegrator, ExecutionContext, ExecutionMode,
+    FIXED_GIT_COMMIT_MESSAGE, FailThenSucceedIntegrator, HardenedRunIntegrator, Intent,
+    RunIntegrator, RunResult, StrategyInput, StrategyOutput,
 };
