@@ -10,6 +10,7 @@ pub mod commands;
 pub mod consistency_engine;
 pub mod control_event;
 pub mod control_executor;
+pub mod core;
 pub mod dbm;
 pub mod design_delta;
 pub mod design_main;

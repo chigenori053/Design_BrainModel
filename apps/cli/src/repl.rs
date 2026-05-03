@@ -6,11 +6,11 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
+use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge, to_ui_event};
 use crate::pipeline::PipelineState;
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
-use crate::tui::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge, to_ui_event};
 use crate::tui::state::DesignDocument;
 
 #[derive(Debug, Clone, Default)]
