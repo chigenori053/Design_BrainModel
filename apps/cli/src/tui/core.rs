@@ -1,9 +1,35 @@
 use std::path::PathBuf;
 
-pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge, to_ui_event};
+pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge};
 use crate::pipeline::PipelineState;
 
-use super::state::{EventQueue, TuiState};
+use super::state::{EventQueue, TuiState, UiEvent};
+
+pub fn to_ui_event(event: CoreEvent) -> UiEvent {
+    match event {
+        CoreEvent::Thinking { summary } => UiEvent::Thinking { summary },
+        CoreEvent::Editing {
+            target,
+            action,
+            reason,
+        } => UiEvent::Editing {
+            target,
+            action: match reason {
+                Some(reason) if !reason.is_empty() => format!("{action} ({reason})"),
+                _ => action,
+            },
+        },
+        CoreEvent::Plan { steps } => UiEvent::Plan { steps },
+        CoreEvent::Execution { step } => UiEvent::Execution { step },
+        CoreEvent::Preview { diff } => UiEvent::Preview { diff },
+        CoreEvent::Result { message } => UiEvent::Result { message },
+        CoreEvent::Pipeline { state } => UiEvent::Pipeline { state },
+        CoreEvent::Next { actions } => UiEvent::Next { actions },
+        CoreEvent::Error { message } => UiEvent::Error { message },
+        CoreEvent::Debug { message } => UiEvent::Debug { message },
+        CoreEvent::Proposal { candidates } => UiEvent::Proposal { candidates },
+    }
+}
 
 pub fn handle_submit(
     state: &mut TuiState,
@@ -21,10 +47,7 @@ pub fn handle_submit(
         state.current_proposals.clone(),
     );
     let response = core.execute(request);
-    let success = !response
-        .events
-        .iter()
-        .any(|event| matches!(event, CoreEvent::Error { .. }));
+    let success = response.status != crate::core::ExecutionStatus::Failed;
 
     apply_core_response(
         &mut state.event_queue,
@@ -76,7 +99,7 @@ fn pipeline_state_from_label(label: &str) -> Option<PipelineState> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::CoreResponse;
+    use crate::core::{CoreResponse, ExecutionStatus};
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
 
     #[derive(Default)]
@@ -90,6 +113,7 @@ mod tests {
                 events: vec![CoreEvent::Result {
                     message: "done".to_string(),
                 }],
+                status: ExecutionStatus::Executed,
                 design: None,
             })
         }
@@ -108,6 +132,7 @@ mod tests {
                         state: "Proposed".to_string(),
                     },
                 ],
+                status: ExecutionStatus::Proposed,
                 design: None,
             }),
         };

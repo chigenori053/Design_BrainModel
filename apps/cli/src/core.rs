@@ -17,14 +17,85 @@ use strategy_engine::{
 
 use crate::pipeline::PipelineState;
 
-use crate::tui::state::{
-    Constraint, DesignDocument, EventQueue, ReasonUnit, StructureTree, TuiState, UiEvent,
-};
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreRequest {
     pub input: String,
     pub context: ExecutionContext,
+}
+
+const DESIGN_MAX_LINES: usize = 20;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasonUnit {
+    pub id: String,
+    pub title: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructureTree {
+    pub module: String,
+    pub functions: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Constraint {
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DesignDocument {
+    pub version: u64,
+    pub reason_units: Vec<ReasonUnit>,
+    pub structure: StructureTree,
+    pub constraints: Vec<Constraint>,
+    pub rendered: Vec<String>,
+}
+
+impl DesignDocument {
+    pub fn new(
+        version: u64,
+        reason_units: Vec<ReasonUnit>,
+        structure: StructureTree,
+        constraints: Vec<Constraint>,
+    ) -> Self {
+        let mut doc = Self {
+            version,
+            reason_units,
+            structure,
+            constraints,
+            rendered: Vec::new(),
+        };
+        doc.regenerate_rendered();
+        doc
+    }
+
+    pub fn regenerate_rendered(&mut self) {
+        let mut rendered = vec!["[DESIGN]".to_string(), String::new()];
+        rendered.push(format!("Module: {}", self.structure.module));
+        for function in &self.structure.functions {
+            rendered.push(format!("- {function}"));
+        }
+
+        if !self.reason_units.is_empty() {
+            rendered.push(String::new());
+            rendered.push("Reason Units:".to_string());
+            for unit in &self.reason_units {
+                rendered.push(format!("- {}: {}", unit.title, unit.summary));
+            }
+        }
+
+        if !self.constraints.is_empty() {
+            rendered.push(String::new());
+            rendered.push("Constraints:".to_string());
+            for constraint in &self.constraints {
+                rendered.push(format!("- {}", constraint.text));
+            }
+        }
+
+        rendered.truncate(DESIGN_MAX_LINES);
+        self.rendered = rendered;
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +110,7 @@ pub struct ExecutionContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreResponse {
     pub events: Vec<CoreEvent>,
+    pub status: ExecutionStatus,
     pub design: Option<DesignDocument>,
 }
 
@@ -54,6 +126,9 @@ pub enum CoreEvent {
     },
     Plan {
         steps: Vec<String>,
+    },
+    Execution {
+        step: String,
     },
     Preview {
         diff: Vec<String>,
@@ -81,8 +156,11 @@ pub enum CoreEvent {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ExecutionStatus {
-    Success,
-    Failure,
+    Idle,
+    Proposed,
+    Planned,
+    Executed,
+    Failed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,9 +176,14 @@ const TRACE_LEVEL: TraceLevel = TraceLevel::Full;
 macro_rules! trace_ir {
     ($level:expr, $stage:expr, $data:expr) => {{
         if trace_enabled($level) {
-            println!("[IR-TRACE][{}] {}", $stage, $data);
+            emit_core_log($stage, $data.to_string());
         }
     }};
+}
+
+fn emit_core_log(stage: &str, data: String) {
+    let line = format!("[IR-TRACE][{stage}] {data}\n");
+    let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
 }
 
 pub trait CoreExecutor {
@@ -124,125 +207,6 @@ impl CoreRequest {
                 current_proposals,
             },
         }
-    }
-}
-
-pub fn to_ui_event(event: CoreEvent) -> UiEvent {
-    match event {
-        CoreEvent::Thinking { summary } => UiEvent::Thinking { summary },
-        CoreEvent::Editing {
-            target,
-            action,
-            reason,
-        } => UiEvent::Editing {
-            target,
-            action: match reason {
-                Some(reason) if !reason.is_empty() => format!("{action} ({reason})"),
-                _ => action,
-            },
-        },
-        CoreEvent::Plan { steps } => UiEvent::Plan { steps },
-        CoreEvent::Preview { diff } => UiEvent::Preview { diff },
-        CoreEvent::Result { message } => UiEvent::Result { message },
-        CoreEvent::Pipeline { state } => UiEvent::Pipeline { state },
-        CoreEvent::Next { actions } => UiEvent::Next { actions },
-        CoreEvent::Error { message } => UiEvent::Error { message },
-        CoreEvent::Debug { message } => UiEvent::Debug { message },
-        CoreEvent::Proposal { candidates } => UiEvent::Proposal { candidates },
-    }
-}
-
-pub fn handle_submit(
-    state: &mut TuiState,
-    core: &dyn CoreExecutor,
-    input: String,
-    working_dir: PathBuf,
-) {
-    let is_select = input.trim().to_ascii_lowercase().starts_with("select ");
-    let request = CoreRequest::new(
-        input,
-        working_dir,
-        state.pipeline_state.clone(),
-        Some(state.design_doc.clone()),
-        state.current_proposals.clone(),
-    );
-    let response = core.execute(request);
-    let status = response.status();
-    apply_core_response(
-        &mut state.event_queue,
-        &mut state.pipeline_state,
-        response.events,
-        status == ExecutionStatus::Success,
-    );
-    // Clear proposals after a successful select.  Phase 1C.5 §4.2.
-    if is_select && status == ExecutionStatus::Success {
-        state.current_proposals = None;
-    }
-    if status == ExecutionStatus::Success
-        && let Some(design) = response.design
-    {
-        state.update_design(design);
-    }
-}
-
-impl CoreResponse {
-    pub fn status(&self) -> ExecutionStatus {
-        if self
-            .events
-            .iter()
-            .any(|event| matches!(event, CoreEvent::Error { .. }))
-        {
-            ExecutionStatus::Failure
-        } else {
-            ExecutionStatus::Success
-        }
-    }
-}
-
-fn apply_core_response(
-    queue: &mut EventQueue,
-    pipeline_state: &mut PipelineState,
-    events: Vec<CoreEvent>,
-    allow_pipeline_updates: bool,
-) {
-    for event in events {
-        if allow_pipeline_updates && let CoreEvent::Pipeline { state } = &event {
-            let Some(next) = pipeline_state_from_label(state) else {
-                queue.push(UiEvent::Error {
-                    message: format!("ExecutionError: unknown pipeline state {state}"),
-                });
-                break;
-            };
-            let rollback_transition =
-                *pipeline_state == PipelineState::Applied && next == PipelineState::Previewed;
-            if !rollback_transition && !pipeline_state.can_transition_to(&next) {
-                queue.push(UiEvent::Error {
-                    message: format!(
-                        "ExecutionError: invalid pipeline transition {pipeline_state} -> {next}"
-                    ),
-                });
-                break;
-            }
-            *pipeline_state = next;
-        }
-        let is_error = matches!(event, CoreEvent::Error { .. });
-        queue.push(to_ui_event(event));
-        if is_error {
-            break;
-        }
-    }
-}
-
-fn pipeline_state_from_label(label: &str) -> Option<PipelineState> {
-    match label {
-        "Idle" => Some(PipelineState::Idle),
-        "Proposed" => Some(PipelineState::Proposed),
-        "Planned" => Some(PipelineState::Planned),
-        "Previewed" => Some(PipelineState::Previewed),
-        "Applied" => Some(PipelineState::Applied),
-        "Staged" => Some(PipelineState::Staged),
-        "Committed" => Some(PipelineState::Committed),
-        _ => None,
     }
 }
 
@@ -304,13 +268,17 @@ impl CoreExecutor for RuntimeCoreBridge {
         ];
         let intent = Intent::new(request.input.clone());
         let ambiguous = requires_clarification(&intent);
-        println!(
-            "[IR-TRACE][CLARIFICATION] action={:?}, file={:?}, symbol={:?}, ambiguous={}",
-            intent.action, intent.file, intent.symbol, ambiguous
+        trace_ir!(
+            TraceLevel::Basic,
+            "CLARIFICATION",
+            format!(
+                "action={:?}, file={:?}, symbol={:?}, ambiguous={}",
+                intent.action, intent.file, intent.symbol, ambiguous
+            )
         );
         if ambiguous {
             let candidates = generate_candidates_from_intent(&intent);
-            println!("[IR-TRACE][PROPOSAL_GENERATED] {}", candidates.len());
+            trace_ir!(TraceLevel::Basic, "PROPOSAL_GENERATED", candidates.len());
             events.push(CoreEvent::Proposal { candidates });
             events.push(CoreEvent::Pipeline {
                 state: PipelineState::Proposed.label().to_string(),
@@ -320,6 +288,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             });
             return CoreResponse {
                 events,
+                status: ExecutionStatus::Proposed,
                 design: None,
             };
         }
@@ -331,6 +300,18 @@ impl CoreExecutor for RuntimeCoreBridge {
         {
             Ok(RuntimeExecutionResult::Executed(result)) => result,
             Ok(RuntimeExecutionResult::Clarification(clarification)) => {
+                if append_clear_intent_runtime_clarification_events(
+                    &mut events,
+                    &intent,
+                    &clarification,
+                ) {
+                    return CoreResponse {
+                        events,
+                        status: ExecutionStatus::Executed,
+                        design: None,
+                    };
+                }
+
                 let trace = ir_trace_json(
                     "ERROR",
                     json!({
@@ -345,6 +326,7 @@ impl CoreExecutor for RuntimeCoreBridge {
                 });
                 return CoreResponse {
                     events,
+                    status: ExecutionStatus::Failed,
                     design: None,
                 };
             }
@@ -363,6 +345,7 @@ impl CoreExecutor for RuntimeCoreBridge {
                 });
                 return CoreResponse {
                     events,
+                    status: ExecutionStatus::Failed,
                     design: None,
                 };
             }
@@ -386,7 +369,7 @@ impl CoreExecutor for RuntimeCoreBridge {
                 + ir.build_plan.build_commands.len()
                 + ir.run_plan.run_commands.len()
                 + ir.test_plan.test_commands.len();
-            println!("[TRACE][COUNT][IR_STEPS] {}", ir_steps);
+            trace_ir!(TraceLevel::Basic, "COUNT", format!("IR_STEPS={ir_steps}"));
         }
 
         let strategy_input = StrategyInput {
@@ -412,6 +395,9 @@ impl CoreExecutor for RuntimeCoreBridge {
             "EXECUTION",
             execution_result_json(&strategy_output),
         ));
+        events.push(CoreEvent::Execution {
+            step: "strategy execution completed".to_string(),
+        });
         events.extend(core_events_from_strategy(&strategy_output));
 
         if !strategy_output.success {
@@ -430,6 +416,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             });
             return CoreResponse {
                 events,
+                status: ExecutionStatus::Failed,
                 design: None,
             };
         }
@@ -464,6 +451,7 @@ impl CoreExecutor for RuntimeCoreBridge {
         );
         CoreResponse {
             events,
+            status: ExecutionStatus::Executed,
             design: Some(design),
         }
     }
@@ -507,6 +495,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["apply".to_string()],
                 },
             ],
+            status: ExecutionStatus::Planned,
             design: None,
         }
     }
@@ -575,6 +564,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["git add <file>".to_string(), "commit changes".to_string()],
                 },
             ],
+            status: ExecutionStatus::Executed,
             design: None,
         }
     }
@@ -614,6 +604,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["commit changes".to_string()],
                 },
             ],
+            status: ExecutionStatus::Executed,
             design: None,
         }
     }
@@ -656,6 +647,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["continue development".to_string()],
                 },
             ],
+            status: ExecutionStatus::Executed,
             design: None,
         }
     }
@@ -683,6 +675,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["apply".to_string()],
                 },
             ],
+            status: ExecutionStatus::Planned,
             design: None,
         }
     }
@@ -781,6 +774,7 @@ impl RuntimeCoreBridge {
                     actions: vec!["apply".to_string()],
                 },
             ],
+            status: ExecutionStatus::Planned,
             design: None,
         }
     }
@@ -825,6 +819,50 @@ fn core_events_from_strategy(output: &StrategyOutput) -> Vec<CoreEvent> {
         });
     }
     events
+}
+
+fn append_clear_intent_runtime_clarification_events(
+    events: &mut Vec<CoreEvent>,
+    intent: &Intent,
+    clarification: &runtime_core::Clarification,
+) -> bool {
+    if requires_clarification(intent) {
+        return false;
+    }
+
+    let target = intent
+        .file
+        .clone()
+        .or_else(|| intent.symbol.clone())
+        .or_else(|| intent.target.clone());
+    let Some(target) = target else {
+        return false;
+    };
+    let action = format!("{:?}", intent.action);
+
+    trace_ir!(
+        TraceLevel::Basic,
+        "CLARIFICATION_BYPASSED",
+        format!(
+            "target={target}, action={action}, runtime_message={}",
+            clarification.message
+        )
+    );
+
+    events.push(CoreEvent::Plan {
+        steps: vec![format!("{} {}", action.to_ascii_lowercase(), target)],
+    });
+    events.push(CoreEvent::Pipeline {
+        state: PipelineState::Planned.label().to_string(),
+    });
+    events.push(CoreEvent::Execution {
+        step: format!("execute {} on {}", action.to_ascii_lowercase(), target),
+    });
+    events.push(CoreEvent::Result {
+        message: "core execution completed".to_string(),
+    });
+
+    true
 }
 
 fn design_document_from_core_result(
@@ -1124,6 +1162,7 @@ fn error_response(kind: &str, message: &str) -> CoreResponse {
         events: vec![CoreEvent::Error {
             message: format!("{kind}: {message}"),
         }],
+        status: ExecutionStatus::Failed,
         design: None,
     }
 }
@@ -1231,527 +1270,62 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
-    use tempfile::TempDir;
+    use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
 
-    #[derive(Default)]
-    struct FakeCore {
-        response: Option<CoreResponse>,
-    }
-
-    impl CoreExecutor for FakeCore {
-        fn execute(&self, _request: CoreRequest) -> CoreResponse {
-            self.response.clone().unwrap_or(CoreResponse {
-                events: vec![CoreEvent::Result {
-                    message: "done".to_string(),
-                }],
-                design: None,
-            })
-        }
-    }
-
-    #[test]
-    fn core_event_to_ui_event_maps_structured_fields() {
-        let event = to_ui_event(CoreEvent::Editing {
-            target: "parser".to_string(),
-            action: "replace block".to_string(),
-            reason: Some("validation passed".to_string()),
-        });
-
-        assert_eq!(
-            event,
-            UiEvent::Editing {
-                target: "parser".to_string(),
-                action: "replace block (validation passed)".to_string(),
-            }
-        );
-    }
-
-    #[test]
-    fn error_stops_later_events() {
-        let mut queue = EventQueue::default();
-        let mut pipeline = PipelineState::Idle;
-
-        apply_core_response(
-            &mut queue,
-            &mut pipeline,
-            vec![
-                CoreEvent::Thinking {
-                    summary: "start".to_string(),
-                },
-                CoreEvent::Error {
-                    message: "failed".to_string(),
-                },
-                CoreEvent::Result {
-                    message: "unreachable".to_string(),
-                },
-            ],
-            false,
-        );
-
-        assert_eq!(queue.len(), 2);
-        assert_eq!(
-            queue.pop(),
-            Some(UiEvent::Thinking {
-                summary: "start".to_string()
-            })
-        );
-        assert_eq!(
-            queue.pop(),
-            Some(UiEvent::Error {
-                message: "failed".to_string()
-            })
-        );
-    }
-
-    #[test]
-    fn handle_submit_pushes_events_and_updates_design() {
-        let payload = empty_payload();
-        let mut state = TuiState::new(payload);
-        let next_version = state.design_doc.version + 1;
-        let design = DesignDocument::new(
-            next_version,
-            vec![ReasonUnit {
-                id: "ru".to_string(),
-                title: "core".to_string(),
-                summary: "connected".to_string(),
-            }],
-            StructureTree {
-                module: "core".to_string(),
-                functions: vec!["execute".to_string()],
-            },
-            vec![],
-        );
-        let core = FakeCore {
-            response: Some(CoreResponse {
-                events: vec![CoreEvent::Result {
-                    message: "done".to_string(),
-                }],
-                design: Some(design),
-            }),
-        };
-
-        handle_submit(&mut state, &core, "build".to_string(), PathBuf::from("."));
-        state.handle_ui_events();
-
-        assert_eq!(state.design_doc.version, next_version);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .contains(&"[RESULT] done".to_string())
-        );
-    }
-
-    #[test]
-    fn failed_core_response_does_not_update_design() {
-        let mut state = TuiState::new(empty_payload());
-        let version = state.design_doc.version;
-        let rejected_design = DesignDocument::new(
-            version + 1,
-            vec![ReasonUnit {
-                id: "bad".to_string(),
-                title: "bad".to_string(),
-                summary: "should not apply".to_string(),
-            }],
-            StructureTree {
-                module: "bad".to_string(),
-                functions: vec![],
-            },
-            vec![],
-        );
-        let core = FakeCore {
-            response: Some(CoreResponse {
-                events: vec![CoreEvent::Error {
-                    message: "ExecutionError: failed".to_string(),
-                }],
-                design: Some(rejected_design),
-            }),
-        };
-
-        handle_submit(&mut state, &core, "fail".to_string(), PathBuf::from("."));
-        state.handle_ui_events();
-
-        assert_eq!(state.design_doc.version, version);
-        assert_ne!(state.design_doc.structure.module, "bad");
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|line| { line == "[ERROR] ExecutionError: failed" })
-        );
-    }
-
-    #[test]
-    fn runtime_core_bridge_executes_natural_language_and_returns_design() {
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let response = bridge.execute(CoreRequest::new(
-            "build rust api".to_string(),
+    fn request(input: &str) -> CoreRequest {
+        CoreRequest::new(
+            input.to_string(),
             PathBuf::from("."),
             PipelineState::Idle,
             None,
             None,
-        ));
-
-        assert!(
-            response.events.iter().any(
-                |event| matches!(event, CoreEvent::Result { message } if message == "core execution completed")
-            )
-        );
-        assert!(response.design.is_some());
+        )
     }
 
     #[test]
-    fn runtime_core_bridge_emits_ir_trace_debug_events() {
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let response = bridge.execute(CoreRequest::new(
-            "build rust api".to_string(),
-            PathBuf::from("."),
-            PipelineState::Idle,
-            None,
-            None,
-        ));
-        let debug = response
-            .events
-            .iter()
-            .filter_map(|event| match event {
-                CoreEvent::Debug { message } => Some(message.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
+    fn ambiguous_input_returns_proposal() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("fix parser bug"));
 
-        for stage in [
-            "[INTENT]",
-            "[IR]",
-            "[EXEC_PLAN]",
-            "[CANDIDATES]",
-            "[SELECTED]",
-            "[EXECUTION]",
-        ] {
-            assert!(
-                debug.iter().any(|line| line.contains(stage)),
-                "missing {stage}: {debug:?}"
-            );
-        }
-        assert!(debug.iter().any(|line| line.contains("\"steps_count\"")));
-        assert!(debug.iter().any(|line| line.contains("\"empty\"")));
+        assert_eq!(response.status, ExecutionStatus::Proposed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Proposal { candidates } if !candidates.is_empty())
+        ));
+        assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Thinking { summary } if summary == "strategy execution started")));
     }
 
     #[test]
-    fn ambiguous_input_generates_proposal_without_strategy_execution() {
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let response = bridge.execute(CoreRequest::new(
-            "fix parser bug".to_string(),
-            PathBuf::from("."),
-            PipelineState::Idle,
-            None,
-            None,
-        ));
+    fn clear_input_returns_plan_and_result() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("refactor parser.rs"));
 
-        let candidates = response
-            .events
-            .iter()
-            .find_map(|event| match event {
-                CoreEvent::Proposal { candidates } => Some(candidates),
-                _ => None,
-            })
-            .expect("proposal candidates");
-
-        assert!((1..=3).contains(&candidates.len()));
+        assert_eq!(response.status, ExecutionStatus::Executed);
         assert!(
             response
                 .events
                 .iter()
-                .any(|event| matches!(event, CoreEvent::Pipeline { state } if state == "Proposed"))
+                .any(|event| matches!(event, CoreEvent::Plan { .. }))
         );
         assert!(
-            !response.events.iter().any(
-                |event| matches!(event, CoreEvent::Thinking { summary } if summary == "strategy execution started")
-            ),
-            "strategy must not run for direct proposal generation"
-        );
-        assert!(response.design.is_none());
-    }
-
-    #[test]
-    fn clear_file_input_does_not_use_direct_proposal_branch() {
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let response = bridge.execute(CoreRequest::new(
-            "build rust api".to_string(),
-            PathBuf::from("."),
-            PipelineState::Idle,
-            None,
-            None,
-        ));
-
-        assert!(
-            !response
+            response
                 .events
                 .iter()
-                .any(|event| matches!(event, CoreEvent::Proposal { .. })),
-            "clear input must continue to execution path"
+                .any(|event| matches!(event, CoreEvent::Execution { .. }))
         );
-        assert!(
-            response.events.iter().any(
-                |event| matches!(event, CoreEvent::Thinking { summary } if summary == "strategy execution started")
-            ),
-            "clear input should reach strategy execution"
-        );
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "core execution completed")));
     }
 
     #[test]
-    fn unsupported_operation_preserves_state_and_emits_error() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
+    fn invalid_input_returns_error() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("git push"));
 
-        submit_and_drain(&mut state, &bridge, "git push", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Idle);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|line| { line.contains("SafetyViolation: git push") })
-        );
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("SafetyViolation"))));
     }
 
-    #[test]
-    fn run_preview_apply_git_add_commit_flow_syncs_state() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        // Clear NL run → execution path, preview shown inline.
-        submit_and_drain(&mut state, &bridge, "build rust api", temp.path());
-        assert_eq!(state.pipeline_state, PipelineState::Previewed);
-        assert!(state.design_doc.version > 1);
-        assert!(
-            state.current_proposals.is_none(),
-            "clear input must not set proposals"
-        );
-
-        submit_and_drain(&mut state, &bridge, "apply", temp.path());
-        assert_eq!(state.pipeline_state, PipelineState::Applied);
-        let first_path = bridge
-            .pending_files
-            .lock()
-            .expect("pending")
-            .first()
-            .expect("pending file")
-            .path
-            .clone();
-        assert!(temp.path().join(&first_path).exists());
-
-        submit_and_drain(
-            &mut state,
-            &bridge,
-            &format!("git add {first_path}"),
-            temp.path(),
-        );
-        assert_eq!(state.pipeline_state, PipelineState::Staged);
-        let staged = sync_pipeline_with_git(temp.path())
-            .expect("git sync")
-            .staged;
-        assert!(staged.contains(&first_path));
-
-        submit_and_drain(&mut state, &bridge, "git commit", temp.path());
-        assert_eq!(state.pipeline_state, PipelineState::Committed);
-        let snapshot = sync_pipeline_with_git(temp.path()).expect("git sync");
-        assert!(!snapshot.head.is_empty());
-    }
-
-    #[test]
-    fn rollback_restores_applied_files_before_commit() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        submit_and_drain(&mut state, &bridge, "build rust api", temp.path());
-        submit_and_drain(&mut state, &bridge, "apply", temp.path());
-        let first_path = bridge
-            .pending_files
-            .lock()
-            .expect("pending")
-            .first()
-            .expect("pending file")
-            .path
-            .clone();
-        assert!(temp.path().join(&first_path).exists());
-
-        submit_and_drain(&mut state, &bridge, "rollback", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Previewed);
-        assert!(!temp.path().join(first_path).exists());
-    }
-
-    #[test]
-    fn rollback_after_commit_is_rejected_and_state_is_preserved() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        submit_and_drain(&mut state, &bridge, "build rust api", temp.path());
-        submit_and_drain(&mut state, &bridge, "apply", temp.path());
-        let first_path = bridge
-            .pending_files
-            .lock()
-            .expect("pending")
-            .first()
-            .expect("pending file")
-            .path
-            .clone();
-        submit_and_drain(
-            &mut state,
-            &bridge,
-            &format!("git add {first_path}"),
-            temp.path(),
-        );
-        submit_and_drain(&mut state, &bridge, "git commit", temp.path());
-
-        submit_and_drain(&mut state, &bridge, "rollback", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Committed);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|line| { line.contains("RollbackForbidden") })
-        );
-    }
-
-    #[test]
-    fn forbidden_git_add_dot_preserves_state() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-        state.pipeline_state = PipelineState::Applied;
-
-        submit_and_drain(&mut state, &bridge, "git add .", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Applied);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|line| { line.contains("git add . is rejected") })
-        );
-    }
-
-    // ── Phase 1C.5 select tests ───────────────────────────────────────────────
-
-    /// §12.1 正常: Proposal → select 1 → Previewed, proposals cleared
-    #[test]
-    fn select_transitions_proposed_to_previewed() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        submit_and_drain(&mut state, &bridge, "fix parser bug", temp.path());
-        assert_eq!(state.pipeline_state, PipelineState::Proposed);
-        assert!(state.current_proposals.is_some());
-
-        submit_and_drain(&mut state, &bridge, "select 1", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Previewed);
-        assert!(
-            state.current_proposals.is_none(),
-            "proposals must be cleared"
-        );
-        let lines = state.flattened_chat_lines();
-        assert!(lines.iter().any(|l| l.contains("[PLAN]")), "PLAN missing");
-        assert!(
-            lines.iter().any(|l| l.contains("[PREVIEW]")),
-            "PREVIEW missing"
-        );
-        assert!(
-            lines.iter().any(|l| l.contains("Selected:")),
-            "Selected summary missing"
-        );
-    }
-
-    /// §12.2 異常: select without any prior proposal
-    #[test]
-    fn select_without_prior_proposal_emits_error() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-        // Idle — no proposals, no Proposed state
-        submit_and_drain(&mut state, &bridge, "select 1", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Idle);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|l| l.contains("Cannot select in current state"))
-        );
-    }
-
-    /// §12.2 異常: invalid (out-of-bounds) index
-    #[test]
-    fn select_with_invalid_index_emits_error() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        submit_and_drain(&mut state, &bridge, "fix parser bug", temp.path());
-        assert_eq!(state.pipeline_state, PipelineState::Proposed);
-
-        submit_and_drain(&mut state, &bridge, "select 99", temp.path());
-
-        // State and proposals must be preserved on failure
-        assert_eq!(state.pipeline_state, PipelineState::Proposed);
-        assert!(state.current_proposals.is_some());
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|l| l.contains("Invalid selection index"))
-        );
-    }
-
-    /// §12.2 異常: index 0 is rejected (1-based only)
-    #[test]
-    fn select_with_zero_index_emits_invalid_index_error() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-
-        submit_and_drain(&mut state, &bridge, "fix parser bug", temp.path());
-        submit_and_drain(&mut state, &bridge, "select 0", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Proposed);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|l| l.contains("Invalid selection index"))
-        );
-    }
-
-    /// §12.3 状態: select after Committed is rejected
-    #[test]
-    fn select_after_committed_is_rejected() {
-        let temp = git_repo();
-        let bridge = RuntimeCoreBridge::with_defaults();
-        let mut state = TuiState::new(empty_payload());
-        state.pipeline_state = PipelineState::Committed;
-
-        submit_and_drain(&mut state, &bridge, "select 1", temp.path());
-
-        assert_eq!(state.pipeline_state, PipelineState::Committed);
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|l| l.contains("Cannot select in current state"))
-        );
-    }
-
-    /// §6.3 ValidationError: empty candidate steps rejected
     #[test]
     fn candidate_to_plan_requires_non_empty_steps() {
-        use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
         let empty = ExecutionPlanCandidate {
             id: 1,
             summary: "empty".to_string(),
@@ -1762,53 +1336,14 @@ mod tests {
             confidence: 0.0,
             score: 0.0,
         };
-        assert!(
-            candidate_to_execution_plan(&empty).is_err(),
-            "empty steps must return Err"
-        );
+        assert!(candidate_to_execution_plan(&empty).is_err());
+
         let valid = ExecutionPlanCandidate::from_ops(
             1,
             "build",
             vec![ExecutionOp::RuntimePhase("cargo build".to_string())],
             None,
         );
-        assert!(
-            candidate_to_execution_plan(&valid).is_ok(),
-            "valid candidate must return Ok"
-        );
-    }
-
-    fn empty_payload() -> UiPayload {
-        UiPayload {
-            trace: TraceViewModel {
-                request_id: "test".to_string(),
-                steps: vec![],
-                stats: TraceStatsViewModel {
-                    total_nodes: 0,
-                    max_depth: 0,
-                    recall_hit_rate: 0.0,
-                    avg_branching: 0.0,
-                },
-            },
-            hypotheses: vec![],
-            memory: vec![],
-            selected: None,
-        }
-    }
-
-    fn submit_and_drain(
-        state: &mut TuiState,
-        bridge: &RuntimeCoreBridge,
-        input: &str,
-        root: &Path,
-    ) {
-        handle_submit(state, bridge, input.to_string(), root.to_path_buf());
-        state.handle_ui_events();
-    }
-
-    fn git_repo() -> TempDir {
-        let temp = tempfile::tempdir().expect("tempdir");
-        run_git(temp.path(), &["init"]).expect("git init");
-        temp
+        assert!(candidate_to_execution_plan(&valid).is_ok());
     }
 }

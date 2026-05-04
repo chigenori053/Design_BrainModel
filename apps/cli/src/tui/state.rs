@@ -3,6 +3,7 @@ use std::collections::VecDeque;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use strategy_engine::ExecutionPlanCandidate;
 
+pub use crate::core::{Constraint, DesignDocument, ReasonUnit, StructureTree};
 use crate::pipeline::PipelineState;
 
 use super::model::UiPayload;
@@ -48,6 +49,9 @@ pub enum UiEvent {
     Plan {
         steps: Vec<String>,
     },
+    Execution {
+        step: String,
+    },
     Preview {
         diff: Vec<String>,
     },
@@ -78,6 +82,7 @@ impl UiEvent {
             Self::Thinking { .. } => "THINKING",
             Self::Editing { .. } => "EDITING",
             Self::Plan { .. } => "PLAN",
+            Self::Execution { .. } => "EXECUTION",
             Self::Preview { .. } => "PREVIEW",
             Self::Result { .. } => "RESULT",
             Self::Pipeline { .. } => "PIPELINE",
@@ -93,6 +98,7 @@ impl UiEvent {
             Self::Thinking { summary } => summary.clone(),
             Self::Editing { target, action } => format!("{target}: {action}"),
             Self::Plan { steps } => steps.join("\n"),
+            Self::Execution { step } => step.clone(),
             Self::Preview { diff } => diff.join("\n"),
             Self::Result { message } | Self::Error { message } | Self::Debug { message } => {
                 message.clone()
@@ -277,79 +283,6 @@ impl Default for InputBuffer {
             text: String::new(),
             cursor: 0,
         }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ReasonUnit {
-    pub id: String,
-    pub title: String,
-    pub summary: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StructureTree {
-    pub module: String,
-    pub functions: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Constraint {
-    pub text: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DesignDocument {
-    pub version: u64,
-    pub reason_units: Vec<ReasonUnit>,
-    pub structure: StructureTree,
-    pub constraints: Vec<Constraint>,
-    pub rendered: Vec<String>,
-}
-
-impl DesignDocument {
-    pub fn new(
-        version: u64,
-        reason_units: Vec<ReasonUnit>,
-        structure: StructureTree,
-        constraints: Vec<Constraint>,
-    ) -> Self {
-        let mut doc = Self {
-            version,
-            reason_units,
-            structure,
-            constraints,
-            rendered: Vec::new(),
-        };
-        doc.regenerate_rendered();
-        doc
-    }
-
-    pub fn regenerate_rendered(&mut self) {
-        let mut rendered = vec!["[DESIGN]".to_string(), String::new()];
-        rendered.push(format!("Module: {}", self.structure.module));
-        for function in &self.structure.functions {
-            rendered.push(format!("- {function}"));
-        }
-
-        if !self.reason_units.is_empty() {
-            rendered.push(String::new());
-            rendered.push("Reason Units:".to_string());
-            for unit in &self.reason_units {
-                rendered.push(format!("- {}: {}", unit.title, unit.summary));
-            }
-        }
-
-        if !self.constraints.is_empty() {
-            rendered.push(String::new());
-            rendered.push("Constraints:".to_string());
-            for constraint in &self.constraints {
-                rendered.push(format!("- {}", constraint.text));
-            }
-        }
-
-        rendered.truncate(DESIGN_MAX_LINES);
-        self.rendered = rendered;
     }
 }
 

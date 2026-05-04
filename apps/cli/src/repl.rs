@@ -6,12 +6,12 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge, to_ui_event};
+use crate::core::{CoreEvent, CoreExecutor, CoreRequest, DesignDocument, RuntimeCoreBridge};
 use crate::pipeline::PipelineState;
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
-use crate::tui::state::DesignDocument;
+use crate::tui::core::to_ui_event;
 
 #[derive(Debug, Clone, Default)]
 struct ReplUiState {
@@ -118,10 +118,7 @@ fn handle_submit<W: Write>(
         ui.current_proposals.clone(),
     );
     let response = core.execute(request);
-    let success = !response
-        .events
-        .iter()
-        .any(|event| matches!(event, CoreEvent::Error { .. }));
+    let success = response.status != crate::core::ExecutionStatus::Failed;
 
     for event in response.events {
         apply_core_event(ui, &event);
