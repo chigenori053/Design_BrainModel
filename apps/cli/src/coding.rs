@@ -833,6 +833,183 @@ mod json_boundary_tests {
         assert!(!result.checked);
         assert_eq!(result.reason.as_deref(), Some("No changes detected"));
     }
+
+    #[test]
+    fn already_applied_change_returns_noop_without_apply() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src")).expect("src");
+        fs::write(
+            temp.path().join("src/coding.rs"),
+            "// generated\nfn main() {}\n",
+        )
+        .expect("target");
+        let change_set = CodeChangeSet {
+            patches: Vec::new(),
+            changes: vec![CodeChange {
+                file_path: "src/coding.rs".to_string(),
+                change_type: ChangeType::ModifyFile,
+                hunks: vec![DiffHunk {
+                    start_line: 1,
+                    end_line: 0,
+                    replacement: "// generated\n".to_string(),
+                }],
+            }],
+            summary: ChangeSummary {
+                total_changes: 1,
+                create_files: 0,
+                modify_files: 1,
+                move_files: 0,
+            },
+            canonical_target: Some(PathBuf::from("src/coding.rs")),
+        };
+        let options = CodingOptions {
+            apply: true,
+            check: true,
+            no_build: true,
+            backup: true,
+            format: false,
+            safe_mode: true,
+            auto_commit: false,
+            confirm_commit: false,
+            prompt_commit: false,
+            auto_push: false,
+            confirm_push: false,
+            auto_pr: false,
+            confirm_pr: false,
+            pr_base: "main".to_string(),
+            patch_scope: PatchScope::ExplicitTargetOnly,
+            explicit_target: Some(PathBuf::from("src/coding.rs")),
+        };
+
+        let result =
+            execute_code_change_set(temp.path(), &change_set, &options, None).expect("execute");
+
+        assert_eq!(result.status, "noop");
+        assert!(!result.applied);
+        assert_eq!(result.files_changed, 0);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/coding.rs")).expect("read"),
+            "// generated\nfn main() {}\n"
+        );
+    }
+
+    #[test]
+    fn explicit_target_rejects_unrelated_file_before_apply() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src")).expect("src");
+        fs::write(temp.path().join("src/coding.rs"), "fn coding() {}\n").expect("target");
+        fs::write(temp.path().join("src/app.rs"), "fn app() {}\n").expect("app");
+        let change_set = CodeChangeSet {
+            patches: Vec::new(),
+            changes: vec![CodeChange {
+                file_path: "src/app.rs".to_string(),
+                change_type: ChangeType::ModifyFile,
+                hunks: vec![DiffHunk {
+                    start_line: 1,
+                    end_line: 1,
+                    replacement: "fn app() { let _ = 1; }\n".to_string(),
+                }],
+            }],
+            summary: ChangeSummary {
+                total_changes: 1,
+                create_files: 0,
+                modify_files: 1,
+                move_files: 0,
+            },
+            canonical_target: Some(PathBuf::from("src/coding.rs")),
+        };
+        let options = CodingOptions {
+            apply: true,
+            check: true,
+            no_build: true,
+            backup: true,
+            format: false,
+            safe_mode: true,
+            auto_commit: false,
+            confirm_commit: false,
+            prompt_commit: false,
+            auto_push: false,
+            confirm_push: false,
+            auto_pr: false,
+            confirm_pr: false,
+            pr_base: "main".to_string(),
+            patch_scope: PatchScope::ExplicitTargetOnly,
+            explicit_target: Some(PathBuf::from("src/coding.rs")),
+        };
+
+        let result =
+            execute_code_change_set(temp.path(), &change_set, &options, None).expect("execute");
+
+        assert_eq!(result.status, "failed");
+        assert!(!result.applied);
+        assert_eq!(result.files_changed, 0);
+        assert!(
+            result
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("TargetViolation")
+        );
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/app.rs")).expect("read app"),
+            "fn app() {}\n"
+        );
+    }
+
+    #[test]
+    fn explicit_target_allows_matching_file_change() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir_all(temp.path().join("src")).expect("src");
+        fs::write(temp.path().join("src/coding.rs"), "fn coding() {}\n").expect("target");
+        let change_set = CodeChangeSet {
+            patches: Vec::new(),
+            changes: vec![CodeChange {
+                file_path: "src/coding.rs".to_string(),
+                change_type: ChangeType::ModifyFile,
+                hunks: vec![DiffHunk {
+                    start_line: 1,
+                    end_line: 1,
+                    replacement: "fn coding() { let _ = 1; }\n".to_string(),
+                }],
+            }],
+            summary: ChangeSummary {
+                total_changes: 1,
+                create_files: 0,
+                modify_files: 1,
+                move_files: 0,
+            },
+            canonical_target: Some(PathBuf::from("src/coding.rs")),
+        };
+        let options = CodingOptions {
+            apply: true,
+            check: true,
+            no_build: true,
+            backup: true,
+            format: false,
+            safe_mode: true,
+            auto_commit: false,
+            confirm_commit: false,
+            prompt_commit: false,
+            auto_push: false,
+            confirm_push: false,
+            auto_pr: false,
+            confirm_pr: false,
+            pr_base: "main".to_string(),
+            patch_scope: PatchScope::ExplicitTargetOnly,
+            explicit_target: Some(PathBuf::from("src/coding.rs")),
+        };
+
+        let result =
+            execute_code_change_set(temp.path(), &change_set, &options, None).expect("execute");
+
+        assert_eq!(result.status, "applied");
+        assert!(result.applied);
+        assert_eq!(result.files_changed, 1);
+        assert_eq!(
+            fs::read_to_string(temp.path().join("src/coding.rs")).expect("read target"),
+            "fn coding() { let _ = 1; }\n"
+        );
+    }
 }
 
 pub fn load_patches_from_design_snapshot(
@@ -3032,6 +3209,23 @@ pub fn execute_code_change_set(
             .map(|path| normalize_target_scope_path(root, path))
             .transpose()?,
     };
+    eprintln!(
+        "[CODING] target={}",
+        fence
+            .explicit_target
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "<workspace>".to_string())
+    );
+    eprintln!(
+        "[CODING] files={:?}",
+        change_set
+            .changes
+            .iter()
+            .map(|change| change.file_path.clone())
+            .collect::<Vec<_>>()
+    );
+    eprintln!("[CODING] changes={}", change_set.summary.total_changes);
     if let Err(reason) = enforce_patch_scope(&change_set.changes, &fence) {
         return Ok(CodingExecutionResult {
             status: "failed".to_string(),
@@ -3058,6 +3252,38 @@ pub fn execute_code_change_set(
             stale_artifact_detected: false,
         });
     }
+    if let Err(reason) = enforce_strict_target_constraint(&change_set.changes, &fence) {
+        eprintln!("[ERROR] TargetViolation");
+        return Ok(CodingExecutionResult {
+            status: "failed".to_string(),
+            applied: false,
+            checked: options.check || options.apply,
+            build_fixed: false,
+            build_ok: false,
+            rolled_back: true,
+            backed_up: options.apply || options.backup,
+            reason: Some(reason),
+            sandbox_root: None,
+            files_changed: 0,
+            diff: DiffReport::default(),
+            committed: false,
+            commit_id: None,
+            branch: None,
+            transactional_apply: None,
+            git_commit: None,
+            git_push: None,
+            pull_request: None,
+            canonical_target_path: fence
+                .explicit_target
+                .as_ref()
+                .map(|path| path.display().to_string()),
+            resolution_pipeline_hits: 0,
+            degraded_resolution_hits: 0,
+            stale_artifact_detected: false,
+        });
+    }
+    let effective_change_set = filter_noop_changes(root, change_set)?;
+    let change_set = &effective_change_set;
     let diff = compute_diff_report(root, change_set)?;
     let representative_target = representative_target_file(
         root,
@@ -3067,6 +3293,7 @@ pub fn execute_code_change_set(
     )
     .map(|path| path.display().to_string());
     if diff.diffs.is_empty() {
+        eprintln!("[CODING] stage=apply status=NoOp changes=0");
         return Ok(CodingExecutionResult {
             status: "noop".to_string(),
             applied: false,
@@ -4772,9 +4999,16 @@ fn duplicate_pull_request(root: &Path, branch_name: &str) -> Result<PullRequestI
         return Ok(None);
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    let value = parse_json_with_boundary(&stdout, JsonRoot::Object, None)
+    let value = parse_json_with_boundary(&stdout, JsonRoot::ObjectOrArray, None)
         .map_err(|err| format!("DuplicatePullRequest: {err}"))?;
-    let Some(first) = value.as_object() else {
+    let first = if let Some(object) = value.as_object() {
+        object
+    } else if let Some(array) = value.as_array() {
+        let Some(first) = array.first().and_then(|value| value.as_object()) else {
+            return Ok(None);
+        };
+        first
+    } else {
         return Ok(None);
     };
     let number = first.get("number").and_then(|value| value.as_u64());
@@ -7706,6 +7940,36 @@ fn patch_fence_for_target(target_override: Option<&Path>, root: &Path) -> PatchF
     }
 }
 
+fn enforce_strict_target_constraint(
+    changes: &[CodeChange],
+    fence: &PatchFence,
+) -> Result<(), String> {
+    if fence.scope != PatchScope::ExplicitTargetOnly {
+        return Ok(());
+    }
+    let Some(explicit_target) = fence.explicit_target.as_ref() else {
+        return Err("TargetViolation: missing explicit target".to_string());
+    };
+    let expected = normalize_path_for_scope(explicit_target);
+    let actual_files = changes
+        .iter()
+        .map(|change| normalize_path_for_scope(Path::new(&change.file_path)))
+        .collect::<Vec<_>>();
+    for actual in &actual_files {
+        if *actual != expected {
+            return Err(format!(
+                "TargetViolation: target={} actual_files={:?}",
+                expected.display(),
+                actual_files
+                    .iter()
+                    .map(|path| path.display().to_string())
+                    .collect::<Vec<_>>()
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn guard_change_target(target_path: &Path, fence: &PatchFence) -> Result<(), String> {
     if fence.scope != PatchScope::ExplicitTargetOnly {
         return Ok(());
@@ -7734,6 +7998,65 @@ fn enforce_patch_scope(changes: &[CodeChange], fence: &PatchFence) -> Result<(),
         guard_change_target(Path::new(&change.file_path), fence)?;
     }
     Ok(())
+}
+
+fn filter_noop_changes(root: &Path, change_set: &CodeChangeSet) -> Result<CodeChangeSet, String> {
+    let mut changes = Vec::new();
+    for change in &change_set.changes {
+        if !change_already_applied(root, change)? {
+            changes.push(change.clone());
+        }
+    }
+    let summary = summarize_changes(&changes);
+    Ok(CodeChangeSet {
+        patches: change_set.patches.clone(),
+        changes,
+        summary,
+        canonical_target: change_set.canonical_target.clone(),
+    })
+}
+
+fn change_already_applied(root: &Path, change: &CodeChange) -> Result<bool, String> {
+    let path = root.join(&change.file_path);
+    let original = if path.exists() {
+        fs::read_to_string(&path)
+            .map_err(|err| format!("failed to read {}: {err}", path.display()))?
+    } else {
+        String::new()
+    };
+    let replacement = render_change_replacement(change, &original)?;
+    if replacement == original {
+        return Ok(true);
+    }
+    if matches!(change.change_type, ChangeType::ModifyFile)
+        && !change.hunks.is_empty()
+        && change
+            .hunks
+            .iter()
+            .all(|hunk| hunk_replacement_already_present(&original, hunk))
+    {
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn hunk_replacement_already_present(content: &str, hunk: &DiffHunk) -> bool {
+    let replacement = hunk.replacement.trim();
+    hunk.start_line > hunk.end_line && !replacement.is_empty() && content.contains(replacement)
+}
+
+fn summarize_changes(changes: &[CodeChange]) -> ChangeSummary {
+    changes
+        .iter()
+        .fold(ChangeSummary::default(), |mut summary, change| {
+            summary.total_changes += 1;
+            match change.change_type {
+                ChangeType::CreateFile => summary.create_files += 1,
+                ChangeType::ModifyFile => summary.modify_files += 1,
+                ChangeType::MoveFile => summary.move_files += 1,
+            }
+            summary
+        })
 }
 
 fn normalize_path_for_scope(path: &Path) -> PathBuf {
@@ -8938,23 +9261,14 @@ mod tests {
         )
         .expect("execute");
 
-        assert_eq!(result.status, "checked");
+        assert_eq!(result.status, "noop");
         assert!(result.build_ok);
         assert_eq!(
             result.canonical_target_path.as_deref(),
             Some("apps/cli/src/app.rs")
         );
         assert_ne!(result.canonical_target_path.as_deref(), Some("."));
-        assert!(result.git_commit.is_some());
-        assert_eq!(
-            result
-                .git_commit
-                .as_ref()
-                .expect("commit preview")
-                .diff_preview
-                .len(),
-            0
-        );
+        assert!(result.git_commit.is_none());
         assert_eq!(
             resolve_root_module_file_relative_for_change_set(&root, &change_set, None)
                 .expect("root module"),
@@ -10057,14 +10371,15 @@ error: expected identifier, found keyword `use`\n\
             None,
         )
         .expect("execution");
-        assert!(execution.build_ok, "{:?}", execution.reason);
         assert!(
             execution
                 .reason
                 .as_deref()
-                .map(|reason| !reason.contains("E0432"))
-                .unwrap_or(true)
+                .unwrap_or_default()
+                .contains("TargetViolation")
         );
+        assert!(!execution.applied);
+        assert_eq!(execution.files_changed, 0);
     }
 
     #[test]
@@ -10209,14 +10524,15 @@ error: expected identifier, found keyword `use`\n\
         assert_eq!(service_resolution.resolution_strategy, "target_override");
         assert!(!json.contains("\"module\": \"*\""), "{json}");
         assert!(!json.contains("// TODO: define required methods"), "{json}");
-        assert!(execution.build_ok, "{:?}", execution.reason);
         assert!(
             execution
                 .reason
                 .as_deref()
-                .map(|reason| !reason.contains("E0432"))
-                .unwrap_or(true)
+                .unwrap_or_default()
+                .contains("TargetViolation")
         );
+        assert!(!execution.applied);
+        assert_eq!(execution.files_changed, 0);
     }
 
     #[test]
@@ -10453,7 +10769,14 @@ error: expected identifier, found keyword `use`\n\
             .collect::<Vec<_>>()
             .join("\n");
 
-        assert!(report.execution.build_ok, "{:?}", report.execution.reason);
+        assert!(
+            report
+                .execution
+                .reason
+                .as_deref()
+                .unwrap_or_default()
+                .contains("TargetViolation")
+        );
         assert_eq!(report.telemetry.normalization_issue_count, 0);
         assert!(
             report
