@@ -54,6 +54,7 @@ pub mod convergence;
 pub mod engine;
 pub mod failure;
 pub mod history;
+pub mod limits;
 pub mod planner;
 pub mod policy;
 pub mod proposal;
@@ -67,11 +68,13 @@ pub use convergence::{ConvergenceGuard, ExecutionOp, FailureSignature, StrategyS
 pub use engine::StrategyEngine;
 pub use failure::{FailureContext, FailureKind, StepId, StrategyFailureAnalyzer};
 pub use history::ExecutionHistory;
+pub use limits::Limits;
 pub use planner::AdaptivePlanner;
 pub use policy::StrategyPolicy;
 pub use proposal::{
     EffectKind, ExecutionPlanCandidate, ExpectedEffect, ImpactLevel, MAX_CANDIDATES,
     ResolvedTarget, Risk, RiskLevel, generate_candidates, generate_candidates_from_intent,
+    generate_candidates_from_intent_with_limits, generate_candidates_with_limits,
     requires_clarification,
 };
 pub use selector::StrategySelector;

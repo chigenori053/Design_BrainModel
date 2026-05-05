@@ -7,3 +7,4 @@ edition = "2024"
 anyhow = "1"
 serde = { workspace = true }
 serde_json = { workspace = true }
+strategy_engine = { workspace = true }

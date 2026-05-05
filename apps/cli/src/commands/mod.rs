@@ -11,6 +11,8 @@ pub mod rules;
 pub mod system;
 pub mod validate;
 
+pub mod legacy;
+
 use crate::command::CommandRegistry;
 
 /// デフォルトPluginをすべて Registry に登録する
@@ -27,6 +29,7 @@ pub fn register_defaults(registry: &mut CommandRegistry) {
     rules::RulesPlugin.register(registry);
     memory::MemoryPlugin.register(registry);
     design::DesignPlugin.register(registry);
+    legacy::LegacyPlugin.register(registry);
 }
 
 use crate::command::CommandPlugin;

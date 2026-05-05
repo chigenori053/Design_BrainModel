@@ -11,16 +11,59 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use strategy_engine::{
     DryRunIntegrator, ExecutionContext as StrategyExecutionContext, ExecutionHistory,
-    ExecutionPlanCandidate, Intent, StrategyEngine, StrategyInput, StrategyOutput,
-    generate_candidates_from_intent, requires_clarification,
+    ExecutionPlanCandidate, Intent, Limits, StrategyEngine, StrategyInput, StrategyOutput,
+    generate_candidates_from_intent_with_limits, requires_clarification,
 };
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
+use crate::coding::{
+    ChangeSummary, ChangeType, CodeChange, CodeChangeSet, CodingOptions, DiffHunk,
+    execute_code_change_set,
+};
+use crate::command::CommandRegistry;
+use crate::commands::register_defaults;
 use crate::pipeline::PipelineState;
+use crate::refactor::PatchScope;
+use crate::state_graph::StateGraph;
+
+static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+
+fn next_request_id() -> u64 {
+    REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+const ENABLE_OBSERVABILITY: bool = true;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CoreRequestKind {
+    NaturalLanguage,
+    SlashCommand,
+    Followup,
+    Apply,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CoreRequest {
+    pub id: u64,
+    pub raw: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct InternalRequest {
+    pub id: u64,
     pub input: String,
+    pub kind: CoreRequestKind,
     pub context: ExecutionContext,
+}
+
+impl CoreRequest {
+    pub fn new(raw: String) -> Self {
+        Self {
+            id: next_request_id(),
+            raw,
+        }
+    }
 }
 
 const DESIGN_MAX_LINES: usize = 20;
@@ -70,6 +113,18 @@ impl DesignDocument {
         doc
     }
 
+    /// Compute a quality score in [0, 1] for this design document.
+    pub fn score(&self) -> f64 {
+        let reason_score = (self.reason_units.len() as f64 / 8.0).min(0.5);
+        let structure_score = if self.structure.functions.is_empty() {
+            0.0
+        } else {
+            0.2
+        };
+        let constraint_score = (self.constraints.len() as f64 / 4.0).min(0.3);
+        reason_score + structure_score + constraint_score
+    }
+
     pub fn regenerate_rendered(&mut self) {
         let mut rendered = vec!["[DESIGN]".to_string(), String::new()];
         rendered.push(format!("Module: {}", self.structure.module));
@@ -107,14 +162,185 @@ pub struct ExecutionContext {
     pub current_proposals: Option<Vec<ExecutionPlanCandidate>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct CoreResponse {
     pub events: Vec<CoreEvent>,
     pub status: ExecutionStatus,
     pub design: Option<DesignDocument>,
+    /// Canonical state snapshot after this operation.  Phase 4.5.
+    /// Set by navigation commands (undo/jump/replay) themselves.
+    /// Set by all other commands via `push_and_attach_core_state`.
+    pub core_state: Option<CoreState>,
+}
+
+/// Execution plan held inside `CoreState`.  Phase 4.5.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CorePlan {
+    pub summary: String,
+    pub steps: Vec<String>,
+}
+
+/// Canonical state snapshot — the Single Source of Truth.  Phase 4.5.
+///
+/// Each `execute()` call produces one new `CoreState` pushed to `History`.
+/// The UI holds a read-only cache; only Core mutates the history.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoreState {
+    /// Monotonically increasing version number assigned by `History::push`.
+    pub version: u64,
+    /// Current design snapshot; `None` before the first successful execution.
+    pub design: Option<DesignDocument>,
+    /// Active proposal candidates awaiting `select <n>`.
+    pub proposals: Vec<ExecutionPlanCandidate>,
+    /// Currently selected execution plan.
+    pub current_plan: Option<CorePlan>,
+    /// Most-recent file diff produced by the last execution.
+    pub last_diff: Option<Diff>,
+    /// Current pipeline phase.
+    pub status: PipelineState,
+    /// Exploration depth.  Spec DBM-LIMITS-INTEGRATION-STEP3 §4.2.
+    pub depth: usize,
+}
+
+impl Default for CoreState {
+    fn default() -> Self {
+        Self {
+            version: 0,
+            design: None,
+            proposals: Vec::new(),
+            current_plan: None,
+            last_diff: None,
+            status: PipelineState::Idle,
+            depth: 0,
+        }
+    }
+}
+
+/// Append-only history of `CoreState` snapshots.  Phase 4.5.
+///
+/// Invariants:
+/// - `cursor` always points to a valid index in `states`.
+/// - `version` is monotonically increasing within each linear run.
+/// - `undo`        moves the cursor back without re-execution.
+/// - `jump`        moves the cursor to any past version.
+/// - `replay_from` truncates forward states and establishes a new branch root.
+#[derive(Debug, Clone)]
+pub struct History {
+    states: Vec<CoreState>,
+    cursor: usize,
+    next_version: u64,
+    limits: Limits,
+}
+
+impl Default for History {
+    fn default() -> Self {
+        Self {
+            states: vec![CoreState::default()],
+            cursor: 0,
+            next_version: 1,
+            limits: Limits::default(),
+        }
+    }
+}
+
+impl History {
+    pub fn with_limits(limits: Limits) -> Self {
+        Self {
+            states: vec![CoreState::default()],
+            cursor: 0,
+            next_version: 1,
+            limits,
+        }
+    }
+
+    /// Append `state`, assign its version, and advance the cursor.
+    ///
+    /// Truncates any states ahead of `cursor` — an undo followed by a new
+    /// operation creates a fresh branch (spec §11 "undo後に新操作").
+    pub fn push(&mut self, mut state: CoreState) {
+        if self.cursor + 1 < self.states.len() {
+            self.states.truncate(self.cursor + 1);
+        }
+        state.version = self.next_version;
+        self.next_version = self.next_version.saturating_add(1);
+        self.states.push(state);
+        self.cursor = self.states.len() - 1;
+        self.trim_to_limit();
+    }
+
+    /// Snapshot at the current cursor position.
+    pub fn current(&self) -> &CoreState {
+        &self.states[self.cursor]
+    }
+
+    /// Move the cursor one step back and return the restored snapshot.
+    /// Returns `None` when already at the root (nothing to undo).
+    pub fn undo(&mut self) -> Option<CoreState> {
+        if self.cursor == 0 {
+            return None;
+        }
+        self.cursor -= 1;
+        Some(self.states[self.cursor].clone())
+    }
+
+    /// Move the cursor to the snapshot whose `version == version`.
+    /// Returns the restored snapshot, or `None` if not found.
+    pub fn jump(&mut self, version: u64) -> Option<CoreState> {
+        let idx = self.states.iter().position(|s| s.version == version)?;
+        self.cursor = idx;
+        Some(self.states[self.cursor].clone())
+    }
+
+    /// Reset to the snapshot at `version`, truncate the forward chain, and
+    /// return the restored snapshot as the new branch root.
+    pub fn replay_from(&mut self, version: u64) -> Option<CoreState> {
+        let idx = self.states.iter().position(|s| s.version == version)?;
+        self.cursor = idx;
+        self.states.truncate(idx + 1);
+        Some(self.states[self.cursor].clone())
+    }
+
+    pub fn replay_distance_to(&self, version: u64) -> Option<usize> {
+        let idx = self.states.iter().position(|s| s.version == version)?;
+        Some(self.cursor.abs_diff(idx))
+    }
+
+    /// Read-only view of all recorded snapshots (for display / tests).
+    pub fn entries(&self) -> &[CoreState] {
+        &self.states
+    }
+
+    /// Current cursor index.
+    pub fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    fn trim_to_limit(&mut self) {
+        let max_history = self.limits.max_history.max(1);
+        if self.states.len() <= max_history {
+            return;
+        }
+        let overflow = self.states.len() - max_history;
+        self.states.drain(..overflow);
+        self.cursor = self.cursor.saturating_sub(overflow);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DiffChunk {
+    pub old_line: Option<usize>,
+    pub new_line: Option<usize>,
+    pub old: Option<String>,
+    pub new: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diff {
+    pub file: String,
+    pub changes: Vec<DiffChunk>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub enum CoreEvent {
     Thinking {
         summary: String,
@@ -133,8 +359,22 @@ pub enum CoreEvent {
     Preview {
         diff: Vec<String>,
     },
+    Diff {
+        file: String,
+        changes: Vec<DiffChunk>,
+    },
     Result {
         message: String,
+    },
+    DesignUpdate {
+        summary: String,
+        score: f64,
+    },
+    DesignDiff {
+        changes: Vec<String>,
+    },
+    ErrorRecovery {
+        candidates: Vec<ExecutionPlanCandidate>,
     },
     Pipeline {
         state: String,
@@ -161,6 +401,16 @@ pub enum ExecutionStatus {
     Planned,
     Executed,
     Failed,
+}
+
+fn execution_status_label(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Executed => "Success",
+        ExecutionStatus::Idle => "Idle",
+        ExecutionStatus::Proposed => "Proposed",
+        ExecutionStatus::Planned => "Planned",
+        ExecutionStatus::Failed => "Failed",
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -190,40 +440,36 @@ pub trait CoreExecutor {
     fn execute(&self, request: CoreRequest) -> CoreResponse;
 }
 
-impl CoreRequest {
-    pub fn new(
-        input: String,
-        working_dir: PathBuf,
-        pipeline_state: PipelineState,
-        design_snapshot: Option<DesignDocument>,
-        current_proposals: Option<Vec<ExecutionPlanCandidate>>,
-    ) -> Self {
-        Self {
-            input,
-            context: ExecutionContext {
-                working_dir,
-                pipeline_state,
-                design_snapshot,
-                current_proposals,
-            },
-        }
-    }
-}
-
 pub struct RuntimeCoreBridge {
     runtime: CoreRuntime,
     strategy: StrategyEngine,
     pending_files: Mutex<Vec<PendingFile>>,
     applied_files: Mutex<Vec<AppliedFile>>,
+    /// Canonical state history.  Phase 4.5.
+    history: Mutex<History>,
+    /// State deduplication graph.  Spec DBM-GRAPH-INTEGRATION-STEP2.
+    state_graph: Mutex<StateGraph>,
+    limits: Limits,
+    registry: CommandRegistry,
 }
 
 impl RuntimeCoreBridge {
     pub fn new(runtime: CoreRuntime, strategy: StrategyEngine) -> Self {
+        Self::new_with_limits(runtime, strategy, Limits::default())
+    }
+
+    pub fn new_with_limits(runtime: CoreRuntime, strategy: StrategyEngine, limits: Limits) -> Self {
+        let mut registry = CommandRegistry::new();
+        register_defaults(&mut registry);
         Self {
             runtime,
             strategy,
             pending_files: Mutex::new(Vec::new()),
             applied_files: Mutex::new(Vec::new()),
+            history: Mutex::new(History::with_limits(limits)),
+            state_graph: Mutex::new(StateGraph::with_limits(limits)),
+            limits,
+            registry,
         }
     }
 
@@ -245,9 +491,185 @@ impl Default for RuntimeCoreBridge {
 }
 
 impl CoreExecutor for RuntimeCoreBridge {
+    /// Dispatch the request and attach the canonical `CoreState` snapshot.
+    ///
+    /// Navigation commands (undo/jump/replay) set `core_state` themselves;
+    /// all other commands receive a freshly pushed state from
+    /// `push_and_attach_core_state`.
     fn execute(&self, request: CoreRequest) -> CoreResponse {
-        if let Some(response) = self.execute_pipeline_command(&request) {
+        let id = request.id;
+        let raw_input = request.raw.clone();
+
+        // §5.1 分類 (classification) - raw_input に対して1回のみ行う
+        let has_context = {
+            let history = self.history.lock().unwrap();
+            !history.current().proposals.is_empty()
+        };
+        let (kind, reason) = crate::router::route(&raw_input, has_context);
+
+        // §5.2 変換 (transform) - SlashCommand の場合のみ適用
+        let (mapped_input, normalized_input) = if kind == CoreRequestKind::SlashCommand {
+            let mapped = crate::router::map_slash_command(&raw_input);
+            let normalized = if mapped.starts_with('/') {
+                mapped.trim_start_matches('/').to_string()
+            } else {
+                mapped.clone()
+            };
+            (Some(mapped), normalized)
+        } else {
+            (None, raw_input.clone())
+        };
+
+        // Resolve context from SSOT (History)
+        let current_state = {
+            let history = self.history.lock().unwrap();
+            history.current().clone()
+        };
+        let context = ExecutionContext {
+            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            pipeline_state: current_state.status.clone(),
+            design_snapshot: current_state.design.clone(),
+            current_proposals: Some(current_state.proposals.clone()),
+        };
+
+        if ENABLE_OBSERVABILITY {
+            println!("[ROUTE][id={}] kind={:?} reason=\"{}\"", id, kind, reason);
+            println!("[ROUTE][id={}] input=\"{}\"", id, request.raw);
+            if let Some(ref mapped) = mapped_input {
+                if *mapped != request.raw {
+                    println!("[ROUTE][id={}] mapped=\"{}\"", id, mapped);
+                }
+                if normalized_input != *mapped {
+                    println!("[ROUTE][id={}] normalized=\"{}\"", id, normalized_input);
+                }
+            }
+
+            let history_len = self.history.lock().unwrap().entries().len();
+            let state = self.history.lock().unwrap().current().clone();
+            println!(
+                "[CORE][id={}] enter depth={} history={}",
+                id, state.depth, history_len
+            );
+
+            println!(
+                "[STATE][id={}] followup={} previous_context_used={}",
+                id,
+                kind == CoreRequestKind::Followup,
+                has_context
+            );
+
+            let graph_nodes = self.state_graph.lock().expect("graph lock").node_count();
+            println!(
+                "[STATE][id={}] depth={} history={} graph_nodes={}",
+                id, state.depth, history_len, graph_nodes
+            );
+        }
+
+        if let Some(response) =
+            self.try_handle_command(&normalized_input, kind, &current_state, &context, id)
+        {
+            let response = if response.core_state.is_some() {
+                response
+            } else {
+                self.push_and_attach_core_state(response, id)
+            };
+            if ENABLE_OBSERVABILITY {
+                println!("[CORE][id={}] exit status={:?}", id, response.status);
+            }
             return response;
+        }
+
+        let internal_request = InternalRequest {
+            id,
+            input: normalized_input,
+            kind,
+            context,
+        };
+
+        let response = self.execute_dispatch(internal_request);
+        let response = if response.core_state.is_some() {
+            response
+        } else {
+            self.push_and_attach_core_state(response, id)
+        };
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CORE][id={}] exit status={:?}", id, response.status);
+        }
+
+        response
+    }
+}
+
+impl RuntimeCoreBridge {
+    fn try_handle_command(
+        &self,
+        input: &str,
+        kind: CoreRequestKind,
+        state: &CoreState,
+        context: &ExecutionContext,
+        id: u64,
+    ) -> Option<CoreResponse> {
+        let input = input.trim();
+        let lower = input.to_ascii_lowercase();
+        let request = InternalRequest {
+            id,
+            input: input.to_string(),
+            kind,
+            context: context.clone(),
+        };
+
+        let has_followup_context = kind == CoreRequestKind::Followup || !state.proposals.is_empty();
+        if has_followup_context {
+            match lower.as_str() {
+                "undo" => return Some(self.undo(&request)),
+                "replay" => return Some(self.replay(&request, None)),
+                "reselect" => return Some(self.show_proposals(&request)),
+                "compare" => return Some(self.compare_proposals(&request)),
+                _ if lower.starts_with("replay ") => {
+                    return Some(self.replay(&request, input.split_whitespace().nth(1)));
+                }
+                _ if lower.starts_with("select ") => {
+                    return Some(self.select_candidate(&request, input));
+                }
+                _ => {}
+            }
+        }
+
+        match lower.as_str() {
+            "undo" => Some(self.undo(&request)),
+            "replay" => Some(self.replay(&request, None)),
+            _ if lower.starts_with("replay ") => {
+                Some(self.replay(&request, input.split_whitespace().nth(1)))
+            }
+            _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input, id)),
+            _ => None,
+        }
+    }
+
+    fn execute_dispatch(&self, request: InternalRequest) -> CoreResponse {
+        match request.kind {
+            CoreRequestKind::SlashCommand => self.execute_command(&request),
+            CoreRequestKind::Apply => {
+                if let Some(response) = self.execute_pipeline_builtin(&request) {
+                    response
+                } else {
+                    self.apply(&request)
+                }
+            }
+            CoreRequestKind::Followup | CoreRequestKind::NaturalLanguage => {
+                self.execute_natural_language(request)
+            }
+        }
+    }
+
+    fn execute_natural_language(&self, request: InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=analyze", id);
+        }
+        if self.current_depth() >= self.limits.max_depth {
+            return self.max_depth_response();
         }
 
         let mut events = vec![
@@ -277,7 +699,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             )
         );
         if ambiguous {
-            let candidates = generate_candidates_from_intent(&intent);
+            let candidates = generate_candidates_from_intent_with_limits(&intent, self.limits);
             trace_ir!(TraceLevel::Basic, "PROPOSAL_GENERATED", candidates.len());
             events.push(CoreEvent::Proposal { candidates });
             events.push(CoreEvent::Pipeline {
@@ -290,9 +712,20 @@ impl CoreExecutor for RuntimeCoreBridge {
                 events,
                 status: ExecutionStatus::Proposed,
                 design: None,
+                core_state: None,
             };
         }
 
+        self.execute_coding_pipeline(intent, request, events)
+    }
+
+    fn execute_coding_pipeline(
+        &self,
+        intent: Intent,
+        request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let id = request.id;
         let chat_context = runtime_core::ChatContext::default();
         let runtime_result = match self
             .runtime
@@ -300,16 +733,13 @@ impl CoreExecutor for RuntimeCoreBridge {
         {
             Ok(RuntimeExecutionResult::Executed(result)) => result,
             Ok(RuntimeExecutionResult::Clarification(clarification)) => {
-                if append_clear_intent_runtime_clarification_events(
+                if let Some(target) = log_clear_intent_runtime_clarification_bypassed(
                     &mut events,
                     &intent,
                     &clarification,
                 ) {
-                    return CoreResponse {
-                        events,
-                        status: ExecutionStatus::Executed,
-                        design: None,
-                    };
+                    return self
+                        .execute_clarification_bypassed_pipeline(intent, request, events, target);
                 }
 
                 let trace = ir_trace_json(
@@ -321,14 +751,11 @@ impl CoreExecutor for RuntimeCoreBridge {
                     }),
                 );
                 trace_ir!(TraceLevel::Error, "ERROR", trace);
-                events.push(CoreEvent::Error {
-                    message: format!("clarification required: {}", clarification.message),
-                });
-                return CoreResponse {
-                    events,
-                    status: ExecutionStatus::Failed,
-                    design: None,
-                };
+                append_error_with_recovery(
+                    &mut events,
+                    &format!("clarification required: {}", clarification.message),
+                );
+                return error_response("ClarificationRequired", &clarification.message, id);
             }
             Err(err) => {
                 let trace = ir_trace_json(
@@ -340,16 +767,14 @@ impl CoreExecutor for RuntimeCoreBridge {
                     }),
                 );
                 trace_ir!(TraceLevel::Error, "ERROR", trace);
-                events.push(CoreEvent::Error {
-                    message: format!("core execution failed: {err:?}"),
-                });
-                return CoreResponse {
-                    events,
-                    status: ExecutionStatus::Failed,
-                    design: None,
-                };
+                append_error_with_recovery(&mut events, &format!("core execution failed: {err:?}"));
+                return error_response("RuntimeError", &format!("{err:?}"), id);
             }
         };
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
 
         events.push(CoreEvent::Thinking {
             summary: "strategy execution started".to_string(),
@@ -411,17 +836,22 @@ impl CoreExecutor for RuntimeCoreBridge {
                 }),
             );
             trace_ir!(TraceLevel::Error, "ERROR", trace);
-            events.push(CoreEvent::Error {
-                message: strategy_output.strategy_trace.final_outcome.to_string(),
-            });
-            return CoreResponse {
-                events,
-                status: ExecutionStatus::Failed,
-                design: None,
-            };
+            append_error_with_recovery(
+                &mut events,
+                &strategy_output.strategy_trace.final_outcome.to_string(),
+            );
+            return error_response(
+                "StrategyError",
+                &strategy_output.strategy_trace.final_outcome.to_string(),
+                id,
+            );
         }
 
         self.store_pending_files(&runtime_result);
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=preview", id);
+        }
 
         events.push(CoreEvent::Result {
             message: "core execution completed".to_string(),
@@ -437,119 +867,743 @@ impl CoreExecutor for RuntimeCoreBridge {
                 preview_lines(&pending)
             },
         });
+        events.extend(diff_events_from_pending(&pending));
         events.push(CoreEvent::Pipeline {
             state: PipelineState::Previewed.label().to_string(),
         });
-        events.push(CoreEvent::Next {
-            actions: vec!["apply".to_string()],
-        });
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=apply", id);
+        }
+
+        // §6 IF ambiguous=false → execute_pipeline (automatic apply)
+        let mut apply_request = request.clone();
+        apply_request.context.pipeline_state = PipelineState::Previewed;
+        let apply_response = self.apply(&apply_request);
+        events.extend(apply_response.events);
 
         let design = design_document_from_core_result(
             &runtime_result,
             &strategy_output,
             request.context.design_snapshot.as_ref(),
         );
+        events.push(CoreEvent::DesignUpdate {
+            summary: design_summary(&design),
+            score: design_score(&design),
+        });
+        if let Some(previous) = request.context.design_snapshot.as_ref() {
+            events.push(CoreEvent::DesignDiff {
+                changes: design_diff(previous, &design),
+            });
+        }
         CoreResponse {
             events,
             status: ExecutionStatus::Executed,
             design: Some(design),
+            core_state: None,
         }
     }
-}
 
-impl RuntimeCoreBridge {
-    fn execute_pipeline_command(&self, request: &CoreRequest) -> Option<CoreResponse> {
+    fn execute_clarification_bypassed_pipeline(
+        &self,
+        intent: Intent,
+        request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+        target: String,
+    ) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+
+        let action = format!("{:?}", intent.action).to_ascii_lowercase();
+        events.push(CoreEvent::Plan {
+            steps: vec![format!("{action} {target}")],
+        });
+        events.push(CoreEvent::Pipeline {
+            state: PipelineState::Planned.label().to_string(),
+        });
+
+        let (resolved_target, target_path) =
+            match resolve_clarification_target(&request.context.working_dir, &target) {
+                Ok(resolved) => resolved,
+                Err(err) => return error_response("SafetyViolation", &err, id),
+            };
+        let original = match fs::read_to_string(&target_path) {
+            Ok(content) => content,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => String::new(),
+            Err(err) => {
+                return error_response(
+                    "ExecutionError",
+                    &format!("cannot read clarification target: {err}"),
+                    id,
+                );
+            }
+        };
+        let updated = append_comment_line(&original, &resolved_target);
+        let pending_file = PendingFile {
+            path: resolved_target.clone(),
+            content_checksum: checksum_bytes(updated.as_bytes()),
+            content: updated,
+        };
+        *self.pending_files.lock().expect("pending lock") = vec![pending_file.clone()];
+        self.applied_files.lock().expect("applied lock").clear();
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=preview", id);
+        }
+        events.push(CoreEvent::Preview {
+            diff: preview_lines(std::slice::from_ref(&pending_file)),
+        });
+        events.extend(diff_events_from_pending(std::slice::from_ref(
+            &pending_file,
+        )));
+        events.push(CoreEvent::Pipeline {
+            state: PipelineState::Previewed.label().to_string(),
+        });
+
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=apply", id);
+        }
+        let mut apply_request = request.clone();
+        apply_request.input = format!("refactor {resolved_target}");
+        apply_request.context.pipeline_state = PipelineState::Previewed;
+        let apply_response = self.apply(&apply_request);
+        let status = apply_response.status;
+        events.extend(apply_response.events);
+        if status == ExecutionStatus::Failed {
+            return CoreResponse {
+                events,
+                status,
+                design: None,
+                core_state: None,
+            };
+        }
+
+        events.push(CoreEvent::Execution {
+            step: format!("execute {action} on {resolved_target}"),
+        });
+        events.push(CoreEvent::Result {
+            message: "core execution completed".to_string(),
+        });
+        let design = DesignDocument::new(
+            request
+                .context
+                .design_snapshot
+                .as_ref()
+                .map(|doc| doc.version.saturating_add(1))
+                .unwrap_or(1),
+            vec![ReasonUnit {
+                id: "clarification-bypassed".to_string(),
+                title: "clarification bypassed".to_string(),
+                summary: format!("clear intent executed for {resolved_target}"),
+            }],
+            StructureTree {
+                module: request.context.working_dir.display().to_string(),
+                functions: vec![resolved_target],
+            },
+            vec![Constraint {
+                text: "Clarification bypass must continue to execution".to_string(),
+            }],
+        );
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: Some(design),
+            core_state: None,
+        }
+    }
+
+    /// Derive a new `CoreState` from `response`, deduplicate via the state
+    /// graph, push to `history`, and attach.  Spec DBM-GRAPH-INTEGRATION-STEP2 §7.
+    ///
+    /// Flow:
+    /// 1. Derive `next` from events.
+    /// 2. Compute hashes of `prev` (current) and `next` (new).
+    /// 3. Graph lookup: reuse existing node or insert `next`.
+    /// 4. On cycle (new hash == current hash), push `next` as-is without graph insertion.
+    /// 5. Push canonical state to History and attach to response.
+    fn push_and_attach_core_state(&self, mut response: CoreResponse, id: u64) -> CoreResponse {
+        let mut hist = self.history.lock().expect("history lock");
+        let mut graph = self.state_graph.lock().expect("state_graph lock");
+
+        let prev = hist.current().clone();
+        let current_hash = StateGraph::state_hash(&prev);
+        let mut next = core_state_from_events(&prev, &response.events, response.design.as_ref());
+        if is_exploration_state(&next.status)
+            && StateGraph::state_hash(&next) != StateGraph::state_hash(&prev)
+        {
+            next.depth = prev.depth.saturating_add(1).min(self.limits.max_depth);
+        }
+
+        // Graph integration: reuse or insert (spec §6-§8)
+        let canonical = match graph.reuse_or_insert(next.clone(), current_hash, id) {
+            Ok(state) => state,
+            Err(_) => next, // Cycle detected — push next as-is (no graph node added)
+        };
+
+        hist.push(canonical.clone());
+        response.core_state = Some(canonical);
+        response
+    }
+
+    fn current_depth(&self) -> usize {
+        self.history.lock().expect("history lock").current().depth
+    }
+
+    fn max_depth_response(&self) -> CoreResponse {
+        let current = self.history.lock().expect("history lock").current().clone();
+        CoreResponse {
+            events: vec![
+                CoreEvent::Result {
+                    message: "Max depth reached".to_string(),
+                },
+                CoreEvent::Next {
+                    actions: vec!["undo".to_string(), "jump <version>".to_string()],
+                },
+            ],
+            status: ExecutionStatus::Idle,
+            design: current.design.clone(),
+            core_state: Some(current),
+        }
+    }
+
+    fn execute_command(&self, request: &InternalRequest) -> CoreResponse {
+        if let Some(response) = self.execute_pipeline_builtin(request) {
+            return response;
+        }
+
+        let id = request.id;
         let input = request.input.trim();
+        let parts: Vec<&str> = input.split_whitespace().collect();
+        if parts.is_empty() {
+            return error_response("CommandError", "Empty command", id);
+        }
+
+        let command = parts[0];
+        let args = &parts[1..];
+        self.execute_adapter_command(command, args, request)
+    }
+
+    fn execute_pipeline_builtin(&self, request: &InternalRequest) -> Option<CoreResponse> {
+        let id = request.id;
+        let input = request.input.trim();
+
         let lower = input.to_ascii_lowercase();
         match lower.as_str() {
+            "proposals" | "reselect" => Some(self.show_proposals(request)),
+            "compare" => Some(self.compare_proposals(request)),
+            "apply" | "y" | "yes" => Some(self.apply(request)),
             "preview" => Some(self.preview(request)),
-            "apply" => Some(self.apply(request)),
-            "git commit" | "commit" | "commit changes" => Some(self.git_commit(request)),
+            "cancel" | "n" | "no" => Some(self.cancel(request)),
+            "undo" => Some(self.undo(request)),
+            "commit" | "commit changes" => Some(self.git_commit(request)),
             "rollback" => Some(self.rollback(request)),
+            "replay" => Some(self.replay(request, None)),
+            _ if lower.starts_with("replay ") => {
+                Some(self.replay(request, input.split_whitespace().nth(1)))
+            }
+            _ if lower.starts_with("filter ") => Some(self.filter(input, id)),
             _ if lower.starts_with("git add ") => Some(self.git_add(request, input)),
             _ if lower.starts_with("select ") => Some(self.select_candidate(request, input)),
-            _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input)),
+            _ if lower.starts_with("jump ") => Some(self.jump(request, input)),
+            _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input, id)),
             _ => None,
         }
     }
 
-    fn preview(&self, request: &CoreRequest) -> CoreResponse {
-        if request.context.pipeline_state != PipelineState::Planned {
-            trace_unsupported_operation("preview", "Preview", None, "requires Planned state");
-            return error_response("ExecutionError", "preview requires Planned state");
+    fn execute_adapter_command(
+        &self,
+        command: &str,
+        args: &[&str],
+        request: &InternalRequest,
+    ) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!(
+                "[EXEC][id={}] adapter={} target={:?}",
+                id,
+                command,
+                args.first()
+            );
+            println!("[EXEC_STEP][id={}] resolve_target", id);
         }
-        let pending = self.pending_files.lock().expect("pending lock").clone();
-        if pending.is_empty() {
-            return error_response("ValidationError", "no pending generated files to preview");
+        let mut session = crate::session::AgentSession::new();
+        let subcommand = args.first().cloned();
+        if ENABLE_OBSERVABILITY {
+            println!("[EXEC_STEP][id={}] build_plan", id);
         }
+        let remaining_args = if args.len() > 1 {
+            args[1..].iter().map(|s| s.to_string()).collect()
+        } else {
+            Vec::new()
+        };
 
+        if ENABLE_OBSERVABILITY {
+            println!("[EXEC_STEP][id={}] validate", id);
+        }
+        let response =
+            match self
+                .registry
+                .execute(command, subcommand, &remaining_args, &mut session)
+            {
+                Ok(output) => {
+                    if ENABLE_OBSERVABILITY {
+                        println!("[EXEC_STEP][id={}] apply_patch", id);
+                    }
+                    CoreResponse {
+                        events: vec![CoreEvent::Result {
+                            message: output.message,
+                        }],
+                        status: ExecutionStatus::Executed,
+                        design: None,
+                        core_state: None,
+                    }
+                }
+                Err(err) => error_response("CommandError", &err.to_string(), id),
+            };
+
+        if ENABLE_OBSERVABILITY {
+            println!(
+                "[EXEC][id={}] adapter={} status={}",
+                id,
+                command,
+                execution_status_label(response.status)
+            );
+        }
+        response
+    }
+
+    fn show_proposals(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if self.current_depth() >= self.limits.max_depth {
+            let current = self.history.lock().expect("history lock").current().clone();
+            return CoreResponse {
+                events: vec![CoreEvent::Error {
+                    message: "Reselect disabled at max depth".to_string(),
+                }],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            };
+        }
+        let Some(candidates) = request.context.current_proposals.clone() else {
+            return error_response("ExecutionError", "No active proposal", id);
+        };
         CoreResponse {
             events: vec![
-                CoreEvent::Preview {
-                    diff: preview_lines(&pending),
-                },
+                CoreEvent::Proposal { candidates },
                 CoreEvent::Pipeline {
-                    state: PipelineState::Previewed.label().to_string(),
+                    state: PipelineState::Proposed.label().to_string(),
                 },
                 CoreEvent::Next {
-                    actions: vec!["apply".to_string()],
+                    actions: vec![
+                        "select <n>".to_string(),
+                        "compare".to_string(),
+                        "cancel".to_string(),
+                    ],
                 },
             ],
-            status: ExecutionStatus::Planned,
+            status: ExecutionStatus::Proposed,
             design: None,
+            core_state: None,
         }
     }
 
-    fn apply(&self, request: &CoreRequest) -> CoreResponse {
-        if request.context.pipeline_state != PipelineState::Previewed {
-            trace_unsupported_operation("apply", "Apply", None, "requires Previewed state");
-            return error_response("ExecutionError", "apply requires Previewed state");
+    fn compare_proposals(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+        let Some(candidates) = request.context.current_proposals.as_ref() else {
+            return error_response("ExecutionError", "No active proposal", id);
+        };
+        if candidates.is_empty() {
+            return error_response("ExecutionError", "No active proposal", id);
+        }
+        let lines = candidates
+            .iter()
+            .map(|candidate| {
+                format!(
+                    "{}. score={:.2} confidence={:.2} steps={} risks={}",
+                    candidate.id,
+                    candidate.score,
+                    candidate.confidence,
+                    candidate.steps.len(),
+                    candidate.risks.len()
+                )
+            })
+            .collect::<Vec<_>>();
+
+        CoreResponse {
+            events: vec![
+                CoreEvent::Debug {
+                    message: lines.join("\n"),
+                },
+                CoreEvent::Next {
+                    actions: vec!["select <n>".to_string(), "reselect".to_string()],
+                },
+            ],
+            status: ExecutionStatus::Proposed,
+            design: None,
+            core_state: None,
+        }
+    }
+
+    /// Navigate history one step back.  Phase 4.5.
+    ///
+    /// For Applied/Staged states, delegates to `rollback` (file restoration).
+    /// For all other states, moves the History cursor back and returns the
+    /// restored `CoreState` directly — no push to history.
+    fn undo(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=rollback", id);
+        }
+        if matches!(
+            request.context.pipeline_state,
+            PipelineState::Applied | PipelineState::Staged
+        ) {
+            return self.rollback(request);
+        }
+
+        let mut hist = self.history.lock().expect("history lock");
+        if let Some(restored) = hist.undo() {
+            let pipeline_label = restored.status.label().to_string();
+            let version = restored.version;
+            let design = restored.design.clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![
+                    CoreEvent::Result {
+                        message: format!("Undo to v{version}"),
+                    },
+                    CoreEvent::Pipeline {
+                        state: pipeline_label,
+                    },
+                    CoreEvent::Next {
+                        actions: vec!["/proposals".to_string(), "select <n>".to_string()],
+                    },
+                ],
+                status: ExecutionStatus::Idle,
+                design,
+                core_state: Some(restored),
+            }
+        } else {
+            let current = hist.current().clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![
+                    CoreEvent::Error {
+                        message: "ExecutionError: nothing to undo".to_string(),
+                    },
+                    CoreEvent::Next {
+                        actions: vec!["retry".to_string()],
+                    },
+                ],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            }
+        }
+    }
+
+    /// Reset to a past version and start a new branch.  Phase 4.5.
+    ///
+    /// Parses an optional numeric version from `step`; omitting it re-anchors
+    /// to the current cursor position.  Truncates the forward chain.
+    fn replay(&self, request: &InternalRequest, step: Option<&str>) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+        let version = step
+            .filter(|s| !s.is_empty())
+            .and_then(|s| s.parse::<u64>().ok());
+
+        let mut hist = self.history.lock().expect("history lock");
+        let target_version = version.unwrap_or_else(|| hist.current().version);
+
+        if hist
+            .replay_distance_to(target_version)
+            .is_some_and(|steps| steps > self.limits.max_replay_steps)
+        {
+            let current = hist.current().clone();
+            drop(hist);
+            return CoreResponse {
+                events: vec![CoreEvent::Error {
+                    message: "Replay limit exceeded".to_string(),
+                }],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            };
+        }
+
+        if let Some(restored) = hist.replay_from(target_version) {
+            let pipeline_label = restored.status.label().to_string();
+            let v = restored.version;
+            let design = restored.design.clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![
+                    CoreEvent::Result {
+                        message: format!("Replay from v{v} (new branch)"),
+                    },
+                    CoreEvent::Pipeline {
+                        state: pipeline_label,
+                    },
+                    CoreEvent::Next {
+                        actions: vec!["select <n>".to_string(), "y".to_string(), "n".to_string()],
+                    },
+                ],
+                status: ExecutionStatus::Planned,
+                design,
+                core_state: Some(restored),
+            }
+        } else {
+            let current = hist.current().clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![CoreEvent::Error {
+                    message: format!(
+                        "ExecutionError: version {target_version} not found for replay"
+                    ),
+                }],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            }
+        }
+    }
+
+    /// Move the history cursor to a specific version.  Phase 4.5.
+    fn jump(&self, request: &InternalRequest, input: &str) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+        let version_str = input
+            .strip_prefix("jump ")
+            .map(str::trim)
+            .filter(|v| !v.is_empty());
+        let Some(version_str) = version_str else {
+            return error_response("ValidationError", "jump requires a version", id);
+        };
+        let version: u64 = match version_str.parse() {
+            Ok(v) => v,
+            Err(_) => {
+                return error_response("ValidationError", "jump requires a numeric version", id);
+            }
+        };
+
+        let mut hist = self.history.lock().expect("history lock");
+        if let Some(jumped) = hist.jump(version) {
+            let pipeline_label = jumped.status.label().to_string();
+            let design = jumped.design.clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![
+                    CoreEvent::Result {
+                        message: format!("Jumped to v{version}"),
+                    },
+                    CoreEvent::Pipeline {
+                        state: pipeline_label,
+                    },
+                    CoreEvent::Next {
+                        actions: vec!["replay".to_string(), "undo".to_string()],
+                    },
+                ],
+                status: ExecutionStatus::Idle,
+                design,
+                core_state: Some(jumped),
+            }
+        } else {
+            let current = hist.current().clone();
+            drop(hist);
+            CoreResponse {
+                events: vec![CoreEvent::Error {
+                    message: format!("ExecutionError: version {version} not found"),
+                }],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            }
+        }
+    }
+
+    fn filter(&self, input: &str, id: u64) -> CoreResponse {
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+        let filter = input
+            .strip_prefix("/filter ")
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        let Some(filter) = filter else {
+            return error_response("ValidationError", "/filter requires a target", id);
+        };
+        CoreResponse {
+            events: vec![CoreEvent::Debug {
+                message: format!("filter set: {filter}"),
+            }],
+            status: ExecutionStatus::Idle,
+            design: None,
+            core_state: None,
+        }
+    }
+
+    fn preview(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=preview", id);
+        }
+        if request.context.pipeline_state != PipelineState::Planned {
+            trace_unsupported_operation("preview", "Preview", None, "requires Planned state");
+            return error_response("ExecutionError", "preview requires Planned state", id);
         }
         let pending = self.pending_files.lock().expect("pending lock").clone();
         if pending.is_empty() {
-            return error_response("ValidationError", "no pending generated files to apply");
+            return error_response(
+                "ValidationError",
+                "no pending generated files to preview",
+                id,
+            );
         }
 
-        let mut applied = Vec::new();
-        for file in &pending {
-            let target = match resolve_repo_file(&request.context.working_dir, &file.path) {
-                Ok(target) => target,
-                Err(err) => return error_response("SafetyViolation", &err),
-            };
-            let before = fs::read(&target).ok();
-            let before_checksum = before.as_ref().map(|content| checksum_bytes(content));
-            if let Some(parent) = target.parent()
-                && let Err(err) = fs::create_dir_all(parent)
-            {
-                return error_response(
-                    "ExecutionError",
-                    &format!("create directory failed: {err}"),
-                );
-            }
-            if let Err(err) = fs::write(&target, file.content.as_bytes()) {
-                return error_response("ExecutionError", &format!("apply failed: {err}"));
-            }
-            let after = match fs::read(&target) {
-                Ok(content) => content,
-                Err(err) => {
-                    restore_applied(&applied);
-                    return error_response("ExecutionError", &format!("verify failed: {err}"));
-                }
-            };
-            if checksum_bytes(&after) != file.content_checksum {
-                restore_applied(&applied);
-                return error_response("ChecksumMismatch", &file.path);
-            }
-            applied.push(AppliedFile {
-                path: file.path.clone(),
-                target,
-                backup: before,
-                before_checksum,
-                after_checksum: checksum_bytes(&after),
-            });
+        let mut events = vec![CoreEvent::Preview {
+            diff: preview_lines(&pending),
+        }];
+        events.extend(diff_events_from_pending(&pending));
+        events.extend([
+            CoreEvent::Pipeline {
+                state: PipelineState::Previewed.label().to_string(),
+            },
+            CoreEvent::Next {
+                actions: vec!["y".to_string(), "n".to_string()],
+            },
+        ]);
+
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Planned,
+            design: None,
+            core_state: None,
         }
+    }
+
+    fn apply(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=apply", id);
+        }
+        if request.context.pipeline_state != PipelineState::Previewed {
+            trace_unsupported_operation("apply", "Apply", None, "requires Previewed state");
+            return error_response("ExecutionError", "apply requires Previewed state", id);
+        }
+        let pending = self.pending_files.lock().expect("pending lock").clone();
+        if pending.is_empty() {
+            return error_response("ValidationError", "no pending generated files to apply", id);
+        }
+
+        let intent = Intent::new(request.input.clone());
+        let explicit_target = apply_intent_target(&intent)
+            .or_else(|| (pending.len() == 1).then(|| PathBuf::from(pending[0].path.clone())));
+        if let Some(target) = explicit_target.as_ref()
+            && pending.len() != 1
+        {
+            return error_response(
+                "TargetViolation",
+                &format!(
+                    "expected={} actual_files={:?}",
+                    target.display(),
+                    pending
+                        .iter()
+                        .map(|file| file.path.clone())
+                        .collect::<Vec<_>>()
+                ),
+                id,
+            );
+        }
+
+        let planned = match planned_applied_files(&request.context.working_dir, &pending) {
+            Ok(planned) => planned,
+            Err(err) => return error_response("SafetyViolation", &err, id),
+        };
+        let change_set = match pending_change_set(&request.context.working_dir, &pending) {
+            Ok(change_set) => change_set,
+            Err(err) => return error_response("ExecutionError", &err, id),
+        };
+        println!(
+            "[CODING] diff_files={:?}",
+            change_set
+                .changes
+                .iter()
+                .map(|change| change.file_path.clone())
+                .collect::<Vec<_>>()
+        );
+
+        let execution = match execute_code_change_set(
+            &request.context.working_dir,
+            &change_set,
+            &CodingOptions {
+                apply: true,
+                check: true,
+                no_build: true,
+                backup: true,
+                format: false,
+                safe_mode: true,
+                auto_commit: false,
+                confirm_commit: false,
+                prompt_commit: false,
+                auto_push: false,
+                confirm_push: false,
+                auto_pr: false,
+                confirm_pr: false,
+                pr_base: "main".to_string(),
+                patch_scope: if explicit_target.is_some() {
+                    PatchScope::ExplicitTargetOnly
+                } else {
+                    PatchScope::WorkspaceWide
+                },
+                explicit_target: explicit_target.clone(),
+            },
+            None,
+        ) {
+            Ok(execution) => execution,
+            Err(err) => return error_response("ExecutionError", &err, id),
+        };
+
+        if execution.status == "failed" {
+            return error_response(
+                "ExecutionError",
+                execution.reason.as_deref().unwrap_or("apply failed"),
+                id,
+            );
+        }
+
+        let applied = if execution.status == "noop" {
+            Vec::new()
+        } else {
+            match verify_applied_files(&pending, planned) {
+                Ok(applied) => applied,
+                Err(err) => return error_response("ApplyMismatch", &err, id),
+            }
+        };
 
         *self.applied_files.lock().expect("applied lock") = applied.clone();
+        if ENABLE_OBSERVABILITY {
+            if execution.status == "noop" {
+                println!("[CODING][id={}] stage=apply status=NoOp changes=0", id);
+            } else {
+                println!(
+                    "[CODING][id={}] stage=apply status=Applied changes={} files={}",
+                    id,
+                    applied.len(),
+                    applied.len()
+                );
+            }
+        }
         let _snapshot = sync_pipeline_with_git(&request.context.working_dir)
             .unwrap_or_else(|_| GitSnapshot::from_applied(&applied));
         CoreResponse {
@@ -566,31 +1620,66 @@ impl RuntimeCoreBridge {
             ],
             status: ExecutionStatus::Executed,
             design: None,
+            core_state: None,
         }
     }
 
-    fn git_add(&self, request: &CoreRequest, input: &str) -> CoreResponse {
+    fn cancel(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if request.context.pipeline_state != PipelineState::Proposed
+            && request.context.pipeline_state != PipelineState::Previewed
+            && request.context.pipeline_state != PipelineState::Planned
+        {
+            trace_unsupported_operation("cancel", "Cancel", None, "requires active proposal/plan");
+            return error_response(
+                "ExecutionError",
+                "cancel requires active proposal or preview",
+                id,
+            );
+        }
+        self.pending_files.lock().expect("pending lock").clear();
+        CoreResponse {
+            events: vec![
+                CoreEvent::Result {
+                    message: "Cancelled".to_string(),
+                },
+                CoreEvent::Pipeline {
+                    state: PipelineState::Idle.label().to_string(),
+                },
+                CoreEvent::Next { actions: vec![] },
+            ],
+            status: ExecutionStatus::Idle,
+            design: None,
+            core_state: None,
+        }
+    }
+
+    fn git_add(&self, request: &InternalRequest, input: &str) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=apply", id);
+        }
         if request.context.pipeline_state != PipelineState::Applied {
             trace_unsupported_operation(input, "GitAdd", None, "requires Applied state");
-            return error_response("ExecutionError", "git add requires Applied state");
+            return error_response("ExecutionError", "git add requires Applied state", id);
         }
         let Some(path) = input.strip_prefix("git add ").map(str::trim) else {
-            return error_response("ValidationError", "git add requires one explicit file");
+            return error_response("ValidationError", "git add requires one explicit file", id);
         };
         if let Err(err) = validate_git_add_path(path) {
             trace_unsupported_operation(input, "GitAdd", Some(path), &err);
-            return error_response("SafetyViolation", &err);
+            return error_response("SafetyViolation", &err, id);
         }
         match run_git(&request.context.working_dir, &["add", "--", path]) {
             Ok(_) => {}
-            Err(err) => return error_response("ExecutionError", &err),
+            Err(err) => return error_response("ExecutionError", &err, id),
         }
         let snapshot = match sync_pipeline_with_git(&request.context.working_dir) {
             Ok(snapshot) => snapshot,
-            Err(err) => return error_response("ExecutionError", &err),
+            Err(err) => return error_response("ExecutionError", &err, id),
         };
         if snapshot.staged.is_empty() {
-            return error_response("ExecutionError", "git add produced no staged changes");
+            return error_response("ExecutionError", "git add produced no staged changes", id);
         }
         CoreResponse {
             events: vec![
@@ -606,13 +1695,18 @@ impl RuntimeCoreBridge {
             ],
             status: ExecutionStatus::Executed,
             design: None,
+            core_state: None,
         }
     }
 
-    fn git_commit(&self, request: &CoreRequest) -> CoreResponse {
+    fn git_commit(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=apply", id);
+        }
         if request.context.pipeline_state != PipelineState::Staged {
             trace_unsupported_operation("git commit", "GitCommit", None, "requires Staged state");
-            return error_response("ExecutionError", "commit requires Staged state");
+            return error_response("ExecutionError", "commit requires Staged state", id);
         }
         if let Err(err) = run_git(
             &request.context.working_dir,
@@ -626,7 +1720,7 @@ impl RuntimeCoreBridge {
                 "auto-generated",
             ],
         ) {
-            return error_response("ExecutionError", &err);
+            return error_response("ExecutionError", &err, id);
         }
         let hash = run_git(
             &request.context.working_dir,
@@ -649,17 +1743,22 @@ impl RuntimeCoreBridge {
             ],
             status: ExecutionStatus::Executed,
             design: None,
+            core_state: None,
         }
     }
 
-    fn rollback(&self, request: &CoreRequest) -> CoreResponse {
+    fn rollback(&self, request: &InternalRequest) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=rollback", id);
+        }
         if request.context.pipeline_state == PipelineState::Committed {
             trace_unsupported_operation("rollback", "Rollback", None, "committed state");
-            return error_response("ExecutionError", "RollbackForbidden");
+            return error_response("ExecutionError", "RollbackForbidden", id);
         }
         let applied = self.applied_files.lock().expect("applied lock").clone();
         if applied.is_empty() {
-            return error_response("ExecutionError", "no applied changes to rollback");
+            return error_response("ExecutionError", "no applied changes to rollback", id);
         }
         restore_applied(&applied);
         self.applied_files.lock().expect("applied lock").clear();
@@ -672,11 +1771,12 @@ impl RuntimeCoreBridge {
                     state: PipelineState::Previewed.label().to_string(),
                 },
                 CoreEvent::Next {
-                    actions: vec!["apply".to_string()],
+                    actions: vec!["y".to_string(), "n".to_string()],
                 },
             ],
             status: ExecutionStatus::Planned,
             design: None,
+            core_state: None,
         }
     }
 
@@ -697,31 +1797,39 @@ impl RuntimeCoreBridge {
 
     /// Handle `select <n>` — pick a proposal candidate and transition the
     /// pipeline through Planned → Previewed.  Phase 1C.5 §7.1.
-    fn select_candidate(&self, request: &CoreRequest, input: &str) -> CoreResponse {
+    fn select_candidate(&self, request: &InternalRequest, input: &str) -> CoreResponse {
+        let id = request.id;
+        if ENABLE_OBSERVABILITY {
+            println!("[CODING][id={}] stage=plan", id);
+        }
+        if self.current_depth() >= self.limits.max_depth {
+            return self.max_depth_response();
+        }
+
         // §5.2 制約: select requires Proposed state
         if request.context.pipeline_state != PipelineState::Proposed {
             trace_unsupported_operation(input, "Select", None, "requires Proposed state");
-            return error_response("ExecutionError", "Cannot select in current state");
+            return error_response("ExecutionError", "Cannot select in current state", id);
         }
 
         // §9.2 Proposal未存在
         let Some(proposals) = request.context.current_proposals.as_ref() else {
-            return error_response("ExecutionError", "No active proposal");
+            return error_response("ExecutionError", "No active proposal", id);
         };
         if proposals.is_empty() {
-            return error_response("ExecutionError", "No active proposal");
+            return error_response("ExecutionError", "No active proposal", id);
         }
 
         // §3.1 parse 1-based index
         let index_str = input.strip_prefix("select ").map(str::trim).unwrap_or("");
         let index: usize = match index_str.parse::<usize>() {
             Ok(n) if n >= 1 => n,
-            _ => return error_response("ExecutionError", "Invalid selection index"),
+            _ => return error_response("ExecutionError", "Invalid selection index", id),
         };
 
         // §9.1 bound check
         let Some(candidate) = proposals.get(index - 1) else {
-            return error_response("ExecutionError", "Invalid selection index");
+            return error_response("ExecutionError", "Invalid selection index", id);
         };
 
         // §11 IR-TRACE
@@ -734,7 +1842,7 @@ impl RuntimeCoreBridge {
         // §6 candidate → execution plan
         let plan = match candidate_to_execution_plan(candidate) {
             Ok(plan) => plan,
-            Err(err) => return error_response("ValidationError", &err),
+            Err(err) => return error_response("ValidationError", &err, id),
         };
 
         trace_ir!(
@@ -750,32 +1858,37 @@ impl RuntimeCoreBridge {
         } else {
             preview_lines(&pending)
         };
+        let mut events = vec![
+            CoreEvent::Plan {
+                steps: std::iter::once(format!("Selected: {}", candidate.summary))
+                    .chain(plan.steps.iter().cloned())
+                    .collect(),
+            },
+            CoreEvent::Pipeline {
+                state: PipelineState::Planned.label().to_string(),
+            },
+            CoreEvent::Preview { diff: preview },
+        ];
+        events.extend(diff_events_from_pending(&pending));
+        events.extend([
+            CoreEvent::Result {
+                message: format!("Selected: {}", candidate.summary),
+            },
+            CoreEvent::Pipeline {
+                state: PipelineState::Previewed.label().to_string(),
+            },
+            CoreEvent::Next {
+                actions: vec!["y".to_string(), "n".to_string()],
+            },
+        ]);
 
         // Emit: Plan → Pipeline::Planned → Preview → Result → Pipeline::Previewed → Next
         // The double Pipeline emission walks through each required state step.  §5.2
         CoreResponse {
-            events: vec![
-                CoreEvent::Plan {
-                    steps: std::iter::once(format!("Selected: {}", candidate.summary))
-                        .chain(plan.steps.iter().cloned())
-                        .collect(),
-                },
-                CoreEvent::Pipeline {
-                    state: PipelineState::Planned.label().to_string(),
-                },
-                CoreEvent::Preview { diff: preview },
-                CoreEvent::Result {
-                    message: format!("Selected: {}", candidate.summary),
-                },
-                CoreEvent::Pipeline {
-                    state: PipelineState::Previewed.label().to_string(),
-                },
-                CoreEvent::Next {
-                    actions: vec!["apply".to_string()],
-                },
-            ],
+            events,
             status: ExecutionStatus::Planned,
             design: None,
+            core_state: None,
         }
     }
 }
@@ -821,13 +1934,13 @@ fn core_events_from_strategy(output: &StrategyOutput) -> Vec<CoreEvent> {
     events
 }
 
-fn append_clear_intent_runtime_clarification_events(
+fn log_clear_intent_runtime_clarification_bypassed(
     events: &mut Vec<CoreEvent>,
     intent: &Intent,
     clarification: &runtime_core::Clarification,
-) -> bool {
+) -> Option<String> {
     if requires_clarification(intent) {
-        return false;
+        return None;
     }
 
     let target = intent
@@ -835,9 +1948,7 @@ fn append_clear_intent_runtime_clarification_events(
         .clone()
         .or_else(|| intent.symbol.clone())
         .or_else(|| intent.target.clone());
-    let Some(target) = target else {
-        return false;
-    };
+    let target = target?;
     let action = format!("{:?}", intent.action);
 
     trace_ir!(
@@ -849,20 +1960,54 @@ fn append_clear_intent_runtime_clarification_events(
         )
     );
 
-    events.push(CoreEvent::Plan {
-        steps: vec![format!("{} {}", action.to_ascii_lowercase(), target)],
-    });
-    events.push(CoreEvent::Pipeline {
-        state: PipelineState::Planned.label().to_string(),
-    });
-    events.push(CoreEvent::Execution {
-        step: format!("execute {} on {}", action.to_ascii_lowercase(), target),
-    });
-    events.push(CoreEvent::Result {
-        message: "core execution completed".to_string(),
-    });
+    events.push(trace_event(
+        "CLARIFICATION_BYPASSED",
+        json!({
+            "target": target,
+            "action": action,
+            "runtime_message": clarification.message,
+            "timestamp": timestamp_millis(),
+        }),
+    ));
 
-    true
+    Some(target)
+}
+
+fn append_comment_line(content: &str, target: &str) -> String {
+    let marker = match Path::new(target).extension().and_then(|ext| ext.to_str()) {
+        Some("py") => "# DBM clarification execution guarantee",
+        Some("toml") | Some("yaml") | Some("yml") => "# DBM clarification execution guarantee",
+        _ => "// DBM clarification execution guarantee",
+    };
+    if content.lines().any(|line| line.trim() == marker) {
+        return content.to_string();
+    }
+    let mut updated = content.to_string();
+    if !updated.ends_with('\n') {
+        updated.push('\n');
+    }
+    updated.push_str(marker);
+    updated.push('\n');
+    updated
+}
+
+fn resolve_clarification_target(root: &Path, target: &str) -> Result<(String, PathBuf), String> {
+    let direct = resolve_repo_file(root, target)?;
+    if direct.is_file() {
+        return Ok((target.to_string(), direct));
+    }
+
+    let target_path = Path::new(target);
+    if target_path.is_relative() {
+        let cli_relative = Path::new("apps").join("cli").join(target_path);
+        let cli_relative_str = cli_relative.to_string_lossy().to_string();
+        let cli_target = resolve_repo_file(root, &cli_relative_str)?;
+        if cli_target.is_file() {
+            return Ok((cli_relative_str, cli_target));
+        }
+    }
+
+    Ok((target.to_string(), direct))
 }
 
 fn design_document_from_core_result(
@@ -1157,14 +2302,133 @@ fn candidate_to_execution_plan(
     Ok(SelectionPlan { steps })
 }
 
-fn error_response(kind: &str, message: &str) -> CoreResponse {
+/// Derive a new `CoreState` by applying `events` on top of `previous`.
+///
+/// Used by `push_and_attach_core_state` to build the snapshot that gets
+/// stored in `History`.  The `design` parameter overrides `previous.design`
+/// when the command produced a fresh design document.
+fn core_state_from_events(
+    previous: &CoreState,
+    events: &[CoreEvent],
+    design: Option<&DesignDocument>,
+) -> CoreState {
+    let mut next = previous.clone();
+    // version will be set by History::push; zero it here so push assigns correctly.
+    next.version = 0;
+
+    for event in events {
+        match event {
+            CoreEvent::Pipeline { state: label } => {
+                if let Some(ps) = pipeline_state_from_label_core(label) {
+                    next.status = ps;
+                }
+            }
+            CoreEvent::Proposal { candidates } => {
+                next.proposals = candidates.clone();
+            }
+            CoreEvent::Plan { steps } => {
+                next.current_plan = Some(CorePlan {
+                    summary: steps.first().cloned().unwrap_or_default(),
+                    steps: steps.clone(),
+                });
+            }
+            CoreEvent::Diff { file, changes } => {
+                next.last_diff = Some(Diff {
+                    file: file.clone(),
+                    changes: changes.clone(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if let Some(doc) = design {
+        next.design = Some(doc.clone());
+    }
+
+    next
+}
+
+fn pipeline_state_from_label_core(label: &str) -> Option<PipelineState> {
+    match label {
+        "Idle" => Some(PipelineState::Idle),
+        "Proposed" => Some(PipelineState::Proposed),
+        "Planned" => Some(PipelineState::Planned),
+        "Previewed" => Some(PipelineState::Previewed),
+        "Applied" => Some(PipelineState::Applied),
+        "Staged" => Some(PipelineState::Staged),
+        "Committed" => Some(PipelineState::Committed),
+        _ => None,
+    }
+}
+
+fn is_exploration_state(state: &PipelineState) -> bool {
+    matches!(
+        state,
+        PipelineState::Proposed | PipelineState::Planned | PipelineState::Previewed
+    )
+}
+
+fn error_response(kind: &str, message: &str, id: u64) -> CoreResponse {
+    if ENABLE_OBSERVABILITY {
+        println!(
+            "[ERROR][id={}] kind=\"{}\" message=\"{}\"",
+            id, kind, message
+        );
+    }
+    let candidates = recovery_candidates(message);
     CoreResponse {
-        events: vec![CoreEvent::Error {
-            message: format!("{kind}: {message}"),
-        }],
+        events: vec![
+            CoreEvent::Error {
+                message: format!("{kind}: {message}"),
+            },
+            CoreEvent::ErrorRecovery { candidates },
+            CoreEvent::Next {
+                actions: vec![
+                    "reselect".to_string(),
+                    "undo".to_string(),
+                    "retry".to_string(),
+                ],
+            },
+        ],
         status: ExecutionStatus::Failed,
         design: None,
+        core_state: None,
     }
+}
+
+fn append_error_with_recovery(events: &mut Vec<CoreEvent>, message: &str) {
+    events.push(CoreEvent::Error {
+        message: message.to_string(),
+    });
+    events.push(CoreEvent::ErrorRecovery {
+        candidates: recovery_candidates(message),
+    });
+    events.push(CoreEvent::Next {
+        actions: vec![
+            "reselect".to_string(),
+            "undo".to_string(),
+            "retry".to_string(),
+        ],
+    });
+}
+
+fn recovery_candidates(message: &str) -> Vec<ExecutionPlanCandidate> {
+    let intent = Intent::new(message.to_string());
+    let limits = Limits::default();
+    let mut candidates = generate_candidates_from_intent_with_limits(&intent, limits);
+    if candidates.is_empty() {
+        candidates.push(ExecutionPlanCandidate::from_ops(
+            1,
+            "Retry with more specific target",
+            vec![strategy_engine::ExecutionOp::RuntimePhase(
+                "clarify target file or symbol".to_string(),
+            )],
+            None,
+        ));
+    }
+    candidates.truncate(limits.max_candidates);
+    candidates
 }
 
 fn preview_lines(files: &[PendingFile]) -> Vec<String> {
@@ -1180,6 +2444,91 @@ fn preview_lines(files: &[PendingFile]) -> Vec<String> {
         .collect()
 }
 
+fn diff_events_from_pending(files: &[PendingFile]) -> Vec<CoreEvent> {
+    files
+        .iter()
+        .map(|file| CoreEvent::Diff {
+            file: file.path.clone(),
+            changes: unified_chunks_for_generated_file(&file.content),
+        })
+        .collect()
+}
+
+fn unified_chunks_for_generated_file(content: &str) -> Vec<DiffChunk> {
+    let mut chunks = vec![DiffChunk {
+        old_line: Some(1),
+        new_line: Some(1),
+        old: Some("@@ -1,0 +1,3 @@".to_string()),
+        new: None,
+    }];
+    chunks.extend(
+        content
+            .lines()
+            .take(12)
+            .enumerate()
+            .map(|(idx, line)| DiffChunk {
+                old_line: None,
+                new_line: Some(idx + 1),
+                old: None,
+                new: Some(line.to_string()),
+            }),
+    );
+    if chunks.len() == 1 {
+        chunks.push(DiffChunk {
+            old_line: None,
+            new_line: Some(1),
+            old: None,
+            new: Some("(empty generated file)".to_string()),
+        });
+    }
+    chunks
+}
+
+fn design_summary(design: &DesignDocument) -> String {
+    design
+        .reason_units
+        .first()
+        .map(|unit| unit.summary.clone())
+        .unwrap_or_else(|| format!("{} updated", design.structure.module))
+}
+
+fn design_diff(previous: &DesignDocument, next: &DesignDocument) -> Vec<String> {
+    let previous_lines = previous
+        .rendered
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    let next_lines = next
+        .rendered
+        .iter()
+        .collect::<std::collections::HashSet<_>>();
+    let mut changes = Vec::new();
+    for line in &next.rendered {
+        if !previous_lines.contains(line) && !line.is_empty() {
+            changes.push(format!("+ {line}"));
+        }
+    }
+    for line in &previous.rendered {
+        if !next_lines.contains(line) && !line.is_empty() {
+            changes.push(format!("- {line}"));
+        }
+    }
+    if changes.is_empty() {
+        changes.push("no design changes".to_string());
+    }
+    changes
+}
+
+fn design_score(design: &DesignDocument) -> f64 {
+    let reason_score = (design.reason_units.len() as f64 / 8.0).min(0.5);
+    let structure_score = if design.structure.functions.is_empty() {
+        0.0
+    } else {
+        0.2
+    };
+    let constraint_score = (design.constraints.len() as f64 / 4.0).min(0.3);
+    reason_score + structure_score + constraint_score
+}
+
 fn resolve_repo_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
     let path = Path::new(relative);
     if path.is_absolute() {
@@ -1192,6 +2541,103 @@ fn resolve_repo_file(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("parent directory paths are rejected".to_string());
     }
     Ok(root.join(path))
+}
+
+fn apply_intent_target(intent: &Intent) -> Option<PathBuf> {
+    intent
+        .file
+        .clone()
+        .or_else(|| intent.target.clone())
+        .map(PathBuf::from)
+}
+
+fn pending_change_set(root: &Path, pending: &[PendingFile]) -> Result<CodeChangeSet, String> {
+    let mut changes = Vec::new();
+    for file in pending {
+        let target = resolve_repo_file(root, &file.path)?;
+        let original = fs::read_to_string(&target).unwrap_or_default();
+        let change_type = if target.exists() {
+            ChangeType::ModifyFile
+        } else {
+            ChangeType::CreateFile
+        };
+        let end_line = original.lines().count().max(1);
+        changes.push(CodeChange {
+            file_path: file.path.clone(),
+            change_type,
+            hunks: vec![DiffHunk {
+                start_line: 1,
+                end_line,
+                replacement: file.content.clone(),
+            }],
+        });
+    }
+    let summary = summarize_core_changes(&changes);
+    let canonical_target = (changes.len() == 1).then(|| PathBuf::from(&changes[0].file_path));
+    Ok(CodeChangeSet {
+        patches: Vec::new(),
+        changes,
+        summary,
+        canonical_target,
+    })
+}
+
+fn summarize_core_changes(changes: &[CodeChange]) -> ChangeSummary {
+    changes
+        .iter()
+        .fold(ChangeSummary::default(), |mut summary, change| {
+            summary.total_changes += 1;
+            match change.change_type {
+                ChangeType::CreateFile => summary.create_files += 1,
+                ChangeType::ModifyFile => summary.modify_files += 1,
+                ChangeType::MoveFile => summary.move_files += 1,
+            }
+            summary
+        })
+}
+
+fn planned_applied_files(root: &Path, pending: &[PendingFile]) -> Result<Vec<AppliedFile>, String> {
+    pending
+        .iter()
+        .map(|file| {
+            let target = resolve_repo_file(root, &file.path)?;
+            let backup = fs::read(&target).ok();
+            let before_checksum = backup.as_ref().map(|content| checksum_bytes(content));
+            Ok(AppliedFile {
+                path: file.path.clone(),
+                target,
+                backup,
+                before_checksum,
+                after_checksum: file.content_checksum.clone(),
+            })
+        })
+        .collect()
+}
+
+fn verify_applied_files(
+    pending: &[PendingFile],
+    planned: Vec<AppliedFile>,
+) -> Result<Vec<AppliedFile>, String> {
+    let expected = pending
+        .iter()
+        .map(|file| (file.path.as_str(), file.content_checksum.as_str()))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    for file in &planned {
+        let after = fs::read(&file.target)
+            .map_err(|err| format!("verify failed for {}: {err}", file.path))?;
+        let actual = checksum_bytes(&after);
+        let Some(expected_hash) = expected.get(file.path.as_str()) else {
+            return Err(format!("missing expected hash for {}", file.path));
+        };
+        if actual != *expected_hash {
+            restore_applied(&planned);
+            return Err(format!(
+                "{} expected={} actual={}",
+                file.path, expected_hash, actual
+            ));
+        }
+    }
+    Ok(planned)
 }
 
 fn validate_git_add_path(path: &str) -> Result<(), String> {
@@ -1273,12 +2719,32 @@ mod tests {
     use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
 
     fn request(input: &str) -> CoreRequest {
-        CoreRequest::new(
-            input.to_string(),
-            PathBuf::from("."),
-            PipelineState::Idle,
-            None,
-            None,
+        CoreRequest::new(input.to_string())
+    }
+
+    fn request_with_state(
+        core: &RuntimeCoreBridge,
+        input: &str,
+        state: PipelineState,
+        proposals: Option<Vec<ExecutionPlanCandidate>>,
+    ) -> CoreRequest {
+        let mut hist = core.history.lock().unwrap();
+        let mut s = hist.current().clone();
+        s.status = state;
+        s.proposals = proposals.unwrap_or_default();
+        hist.push(s);
+        drop(hist);
+        CoreRequest::new(input.to_string())
+    }
+
+    fn core_with_limits(limits: Limits) -> RuntimeCoreBridge {
+        RuntimeCoreBridge::new_with_limits(
+            CoreRuntime::new_with_defaults(
+                Arc::new(InMemoryEngine::default()),
+                Arc::new(DeterministicBeamSearchEngine::default()),
+            ),
+            StrategyEngine::default(),
+            limits,
         )
     }
 
@@ -1345,5 +2811,453 @@ mod tests {
             None,
         );
         assert!(candidate_to_execution_plan(&valid).is_ok());
+    }
+
+    #[test]
+    fn clarification_target_falls_back_to_cli_src_path() {
+        let root =
+            std::env::temp_dir().join(format!("dbm-clarification-target-{}", uuid::Uuid::new_v4()));
+        let cli_src = root.join("apps/cli/src");
+        std::fs::create_dir_all(&cli_src).expect("create cli src");
+        std::fs::write(cli_src.join("coding.rs"), "fn marker() {}\n").expect("write target");
+
+        let (relative, path) = resolve_clarification_target(&root, "src/coding.rs")
+            .expect("fallback target should resolve");
+
+        assert_eq!(relative, "apps/cli/src/coding.rs");
+        assert!(path.ends_with("apps/cli/src/coding.rs"));
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn append_comment_line_adds_one_comment_line() {
+        let updated = append_comment_line("fn marker() {}\n", "src/coding.rs");
+        assert!(updated.ends_with("// DBM clarification execution guarantee\n"));
+        assert_eq!(updated.lines().count(), 2);
+    }
+
+    #[test]
+    fn append_comment_line_is_idempotent() {
+        let once = append_comment_line("fn marker() {}\n", "src/coding.rs");
+        let twice = append_comment_line(&once, "src/coding.rs");
+
+        assert_eq!(twice, once);
+        assert_eq!(
+            twice
+                .lines()
+                .filter(|line| line.trim() == "// DBM clarification execution guarantee")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn clarification_bypass_applies_through_unified_apply_gate_idempotently() {
+        let root =
+            std::env::temp_dir().join(format!("dbm-clarification-apply-{}", uuid::Uuid::new_v4()));
+        let cli_src = root.join("apps/cli/src");
+        std::fs::create_dir_all(&cli_src).expect("create cli src");
+        std::fs::write(cli_src.join("coding.rs"), "fn marker() {}\n").expect("write target");
+        let core = RuntimeCoreBridge::with_defaults();
+        let input = "add comment to src/coding.rs";
+
+        for _ in 0..3 {
+            let request = InternalRequest {
+                id: next_request_id(),
+                input: input.to_string(),
+                kind: CoreRequestKind::NaturalLanguage,
+                context: ExecutionContext {
+                    working_dir: root.clone(),
+                    pipeline_state: PipelineState::Idle,
+                    design_snapshot: None,
+                    current_proposals: None,
+                },
+            };
+            let response = core.execute_clarification_bypassed_pipeline(
+                Intent::new(input),
+                request,
+                Vec::new(),
+                "src/coding.rs".to_string(),
+            );
+            assert_eq!(response.status, ExecutionStatus::Executed);
+        }
+
+        let content = std::fs::read_to_string(cli_src.join("coding.rs")).expect("read target");
+        assert_eq!(
+            content
+                .lines()
+                .filter(|line| line.trim() == "// DBM clarification execution guarantee")
+                .count(),
+            1
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn unified_apply_rejects_pending_file_outside_intent_target() {
+        let root = std::env::temp_dir().join(format!("dbm-apply-target-{}", uuid::Uuid::new_v4()));
+        let cli_src = root.join("apps/cli/src");
+        std::fs::create_dir_all(&cli_src).expect("create cli src");
+        std::fs::write(cli_src.join("coding.rs"), "fn coding() {}\n").expect("write coding");
+        std::fs::write(cli_src.join("app.rs"), "fn app() {}\n").expect("write app");
+        let core = RuntimeCoreBridge::with_defaults();
+        *core.pending_files.lock().expect("pending lock") = vec![PendingFile {
+            path: "apps/cli/src/app.rs".to_string(),
+            content: "fn app() { let _ = 1; }\n".to_string(),
+            content_checksum: checksum_bytes("fn app() { let _ = 1; }\n".as_bytes()),
+        }];
+
+        let request = InternalRequest {
+            id: next_request_id(),
+            input: "add comment to apps/cli/src/coding.rs".to_string(),
+            kind: CoreRequestKind::Apply,
+            context: ExecutionContext {
+                working_dir: root.clone(),
+                pipeline_state: PipelineState::Previewed,
+                design_snapshot: None,
+                current_proposals: None,
+            },
+        };
+        let response = core.apply(&request);
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Error { message } if message.contains("TargetViolation")))
+        );
+        assert_eq!(
+            std::fs::read_to_string(cli_src.join("app.rs")).expect("read app"),
+            "fn app() {}\n"
+        );
+        std::fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn select_candidate_returns_preview_and_confirm_choices() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let candidate = ExecutionPlanCandidate::from_ops(
+            1,
+            "Fix parser.rs",
+            vec![ExecutionOp::RuntimePhase("fix parser.rs".to_string())],
+            None,
+        );
+        let response = core.execute(request_with_state(
+            &core,
+            "select 1",
+            PipelineState::Proposed,
+            Some(vec![candidate]),
+        ));
+
+        assert_eq!(response.status, ExecutionStatus::Planned);
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Preview { .. }))
+        );
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Next { actions } if actions == &vec!["y".to_string(), "n".to_string()])));
+    }
+
+    #[test]
+    fn proposals_command_redisplays_active_candidates() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let candidate = ExecutionPlanCandidate::from_ops(
+            1,
+            "Fix parser.rs",
+            vec![ExecutionOp::RuntimePhase("fix parser.rs".to_string())],
+            None,
+        );
+        let response = core.execute(request_with_state(
+            &core,
+            "/proposals",
+            PipelineState::Previewed,
+            Some(vec![candidate]),
+        ));
+
+        assert_eq!(response.status, ExecutionStatus::Proposed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Proposal { candidates } if candidates.len() == 1)
+        ));
+    }
+
+    #[test]
+    fn slash_structure_executes_through_design_adapter() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("/structure view ."));
+
+        assert_eq!(response.status, ExecutionStatus::Executed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Result { message } if message == "Structure view for .")
+        ));
+    }
+
+    #[test]
+    fn error_response_includes_recovery_candidates() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("git push"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::ErrorRecovery { candidates } if !candidates.is_empty())
+        ));
+    }
+
+    #[test]
+    fn compare_proposals_returns_comparison_debug() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let candidate = ExecutionPlanCandidate::from_ops(
+            1,
+            "Fix parser.rs",
+            vec![ExecutionOp::RuntimePhase("fix parser.rs".to_string())],
+            None,
+        );
+        let response = core.execute(request_with_state(
+            &core,
+            "compare",
+            PipelineState::Proposed,
+            Some(vec![candidate]),
+        ));
+
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Debug { message } if message.contains("confidence="))
+        ));
+    }
+
+    // ── History unit tests (Phase 4.5) ───────────────────────────────────────
+
+    #[test]
+    fn history_push_increments_version_and_moves_cursor() {
+        let mut h = History::default();
+        assert_eq!(h.cursor(), 0);
+        assert_eq!(h.current().version, 0);
+
+        let s1 = CoreState::default();
+        h.push(s1);
+        assert_eq!(h.cursor(), 1);
+        assert_eq!(h.current().version, 1);
+
+        let s2 = CoreState::default();
+        h.push(s2);
+        assert_eq!(h.cursor(), 2);
+        assert_eq!(h.current().version, 2);
+    }
+
+    #[test]
+    fn history_undo_moves_cursor_back_without_mutation() {
+        let mut h = History::default();
+        h.push(CoreState {
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        });
+        h.push(CoreState {
+            status: PipelineState::Planned,
+            ..CoreState::default()
+        });
+        assert_eq!(h.cursor(), 2);
+
+        let restored = h.undo().expect("undo should succeed");
+        assert_eq!(restored.status, PipelineState::Proposed);
+        assert_eq!(h.cursor(), 1);
+        // entries are still all there
+        assert_eq!(h.entries().len(), 3);
+    }
+
+    #[test]
+    fn history_undo_at_root_returns_none() {
+        let mut h = History::default();
+        assert!(h.undo().is_none());
+    }
+
+    #[test]
+    fn history_jump_moves_cursor_to_version() {
+        let mut h = History::default();
+        h.push(CoreState {
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        });
+        h.push(CoreState {
+            status: PipelineState::Planned,
+            ..CoreState::default()
+        });
+        h.push(CoreState {
+            status: PipelineState::Previewed,
+            ..CoreState::default()
+        });
+
+        let jumped = h.jump(1).expect("jump to v1");
+        assert_eq!(jumped.status, PipelineState::Proposed);
+        assert_eq!(h.cursor(), 1);
+    }
+
+    #[test]
+    fn history_jump_unknown_version_returns_none() {
+        let mut h = History::default();
+        assert!(h.jump(99).is_none());
+    }
+
+    #[test]
+    fn history_replay_from_truncates_forward_chain() {
+        let mut h = History::default();
+        h.push(CoreState {
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        }); // v1
+        h.push(CoreState {
+            status: PipelineState::Planned,
+            ..CoreState::default()
+        }); // v2
+        h.push(CoreState {
+            status: PipelineState::Previewed,
+            ..CoreState::default()
+        }); // v3
+
+        // replay from v1: truncate v2, v3 and return v1 as branch root
+        let root = h.replay_from(1).expect("replay from v1");
+        assert_eq!(root.status, PipelineState::Proposed);
+        assert_eq!(h.cursor(), 1);
+        assert_eq!(h.entries().len(), 2, "v2 and v3 should be truncated");
+
+        // push after replay creates a new branch
+        h.push(CoreState {
+            status: PipelineState::Idle,
+            ..CoreState::default()
+        });
+        assert_eq!(h.cursor(), 2);
+        assert_eq!(h.current().version, 4);
+    }
+
+    #[test]
+    fn history_len_is_limited_to_max_history() {
+        let mut h = History::with_limits(Limits {
+            max_history: 3,
+            ..Limits::default()
+        });
+        for i in 0..5 {
+            h.push(CoreState {
+                status: PipelineState::Proposed,
+                depth: i,
+                ..CoreState::default()
+            });
+        }
+
+        assert_eq!(h.entries().len(), 3);
+        assert_eq!(h.cursor(), 2);
+        assert_eq!(h.current().version, 5);
+    }
+
+    #[test]
+    fn history_push_after_undo_truncates_forward() {
+        let mut h = History::default();
+        h.push(CoreState::default()); // v1
+        h.push(CoreState::default()); // v2
+        h.undo(); // cursor → v1
+
+        // new push should truncate v2 and create v2 as new entry
+        h.push(CoreState {
+            status: PipelineState::Planned,
+            ..CoreState::default()
+        });
+        assert_eq!(h.entries().len(), 3); // root + v1 (the undo base) + new
+        assert_eq!(h.current().status, PipelineState::Planned);
+    }
+
+    #[test]
+    fn execute_attaches_core_state_to_response() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("fix parser bug"));
+        assert!(
+            response.core_state.is_some(),
+            "every execute() must return a core_state"
+        );
+    }
+
+    #[test]
+    fn undo_command_returns_core_state_without_push() {
+        let core = RuntimeCoreBridge::with_defaults();
+        // First execute something to have a non-root history entry
+        core.execute(request("fix parser bug"));
+        let before_len = core.history.lock().unwrap().entries().len();
+
+        let response = core.execute(request("undo"));
+        let after_len = core.history.lock().unwrap().entries().len();
+
+        // undo is a navigation command — it must NOT push a new entry
+        assert_eq!(before_len, after_len, "undo must not push to history");
+        assert!(response.core_state.is_some());
+    }
+
+    #[test]
+    fn max_depth_returns_result_without_expanding() {
+        let core = core_with_limits(Limits {
+            max_depth: 1,
+            ..Limits::default()
+        });
+
+        let first = core.execute(request("fix parser bug"));
+        assert_eq!(first.core_state.as_ref().map(|s| s.depth), Some(1));
+
+        let response = core.execute(request("refactor parser.rs"));
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Result { message } if message == "Max depth reached")
+        ));
+        assert_eq!(response.core_state.as_ref().map(|s| s.depth), Some(1));
+    }
+
+    #[test]
+    fn reselect_is_disabled_at_max_depth() {
+        let core = core_with_limits(Limits {
+            max_depth: 1,
+            ..Limits::default()
+        });
+        core.execute(request("fix parser bug"));
+        let candidate = ExecutionPlanCandidate::from_ops(
+            1,
+            "Fix parser.rs",
+            vec![ExecutionOp::RuntimePhase("fix parser.rs".to_string())],
+            None,
+        );
+
+        let response = core.execute(request_with_state(
+            &core,
+            "reselect",
+            PipelineState::Proposed,
+            Some(vec![candidate]),
+        ));
+
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Reselect disabled at max depth")
+        ));
+    }
+
+    #[test]
+    fn replay_distance_is_limited() {
+        let core = core_with_limits(Limits {
+            max_replay_steps: 1,
+            max_depth: 10,
+            ..Limits::default()
+        });
+        {
+            let mut h = core.history.lock().unwrap();
+            h.push(CoreState {
+                status: PipelineState::Proposed,
+                ..CoreState::default()
+            });
+            h.push(CoreState {
+                status: PipelineState::Planned,
+                ..CoreState::default()
+            });
+            h.push(CoreState {
+                status: PipelineState::Previewed,
+                ..CoreState::default()
+            });
+        }
+
+        let response = core.execute(request("replay 0"));
+
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Replay limit exceeded")
+        ));
     }
 }

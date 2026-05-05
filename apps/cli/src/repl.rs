@@ -6,18 +6,19 @@
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
 
-use crate::core::{CoreEvent, CoreExecutor, CoreRequest, DesignDocument, RuntimeCoreBridge};
-use crate::pipeline::PipelineState;
+use crate::core::{
+    CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
+};
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
 use crate::tui::core::to_ui_event;
 
+/// Thin UI cache for the REPL.  Phase 4.5: all pipeline/design/proposal state
+/// lives in `core_snapshot`; this struct is just a read-only cache.
 #[derive(Debug, Clone, Default)]
 struct ReplUiState {
-    pipeline_state: PipelineState,
-    design_snapshot: Option<DesignDocument>,
-    current_proposals: Option<Vec<strategy_engine::ExecutionPlanCandidate>>,
+    core_snapshot: CoreState,
 }
 
 /// REPLを起動して入力ループを実行する。
@@ -41,6 +42,15 @@ where
         }
         if is_exit(trimmed) {
             break;
+        }
+        if trimmed == "/save design" {
+            save_design(
+                workspace_root.as_path(),
+                ui.core_snapshot.design.as_ref(),
+                writer,
+            )?;
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
         }
 
         eprintln!("[UI] Input received");
@@ -83,6 +93,14 @@ pub fn dispatch_repl_input<W: Write>(
         .unwrap_or_else(|| PathBuf::from("."));
     let core = RuntimeCoreBridge::with_defaults();
     let mut ui = ReplUiState::default();
+    if trimmed == "/save design" {
+        save_design(
+            workspace_root.as_path(),
+            ui.core_snapshot.design.as_ref(),
+            writer,
+        )?;
+        return Ok(false);
+    }
 
     eprintln!("[UI] Input received");
     handle_submit(
@@ -104,50 +122,29 @@ pub fn reset_review_session(view: &mut ComposerViewState, session: &mut AgentSes
 
 fn handle_submit<W: Write>(
     input: String,
-    working_dir: &Path,
+    _working_dir: &Path,
     core: &dyn CoreExecutor,
     ui: &mut ReplUiState,
     writer: &mut W,
 ) -> Result<(), String> {
-    let is_select = input.trim().to_ascii_lowercase().starts_with("select ");
-    let request = CoreRequest::new(
-        input,
-        working_dir.to_path_buf(),
-        ui.pipeline_state.clone(),
-        ui.design_snapshot.clone(),
-        ui.current_proposals.clone(),
-    );
+    // Phase 4.5: build CoreRequest (pass-through).
+    let request = CoreRequest::new(input);
     let response = core.execute(request);
     let success = response.status != crate::core::ExecutionStatus::Failed;
 
+    // Phase 4.5: sync core_snapshot from response before rendering events.
+    if let Some(snapshot) = response.core_state {
+        ui.core_snapshot = snapshot;
+    } else if success && let Some(design) = response.design.as_ref() {
+        ui.core_snapshot.design = Some(design.clone());
+    }
+
     for event in response.events {
-        apply_core_event(ui, &event);
         eprintln!("[UI] Rendering event");
         render_core_event(writer, event)?;
     }
 
-    if success && is_select {
-        ui.current_proposals = None;
-    }
-    if success {
-        ui.design_snapshot = response.design;
-    }
-
     Ok(())
-}
-
-fn apply_core_event(ui: &mut ReplUiState, event: &CoreEvent) {
-    match event {
-        CoreEvent::Pipeline { state } => {
-            if let Some(next) = pipeline_state_from_label(state) {
-                ui.pipeline_state = next;
-            }
-        }
-        CoreEvent::Proposal { candidates } => {
-            ui.current_proposals = Some(candidates.clone());
-        }
-        _ => {}
-    }
 }
 
 fn render_core_event<W: Write>(writer: &mut W, event: CoreEvent) -> Result<(), String> {
@@ -158,26 +155,30 @@ fn render_core_event<W: Write>(writer: &mut W, event: CoreEvent) -> Result<(), S
     Ok(())
 }
 
-fn pipeline_state_from_label(label: &str) -> Option<PipelineState> {
-    match label {
-        "Idle" => Some(PipelineState::Idle),
-        "Proposed" => Some(PipelineState::Proposed),
-        "Planned" => Some(PipelineState::Planned),
-        "Previewed" => Some(PipelineState::Previewed),
-        "Applied" => Some(PipelineState::Applied),
-        "Staged" => Some(PipelineState::Staged),
-        "Committed" => Some(PipelineState::Committed),
-        _ => None,
-    }
-}
-
 fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
     writeln!(writer, "DBM_CLI REPL").map_err(|err| err.to_string())?;
-    writeln!(writer, "Type /exit to quit.").map_err(|err| err.to_string())
+    writeln!(
+        writer,
+        "Type /exit to quit. Use select <n>, y/n, cancel, /save design."
+    )
+    .map_err(|err| err.to_string())
 }
 
 fn is_exit(input: &str) -> bool {
     matches!(input, "/exit" | "/quit" | "exit" | "quit")
+}
+
+fn save_design<W: Write>(
+    workspace_root: &Path,
+    design: Option<&DesignDocument>,
+    writer: &mut W,
+) -> Result<(), String> {
+    let path = workspace_root.join("dbm_design.md");
+    let content = design
+        .map(|doc| doc.rendered.join("\n"))
+        .unwrap_or_else(|| "[DESIGN]\nNo design snapshot available.".to_string());
+    std::fs::write(&path, content).map_err(|err| err.to_string())?;
+    writeln!(writer, "[RESULT] Design saved: {}", path.display()).map_err(|err| err.to_string())
 }
 
 #[cfg(test)]

@@ -1,5 +1,6 @@
 use crate::candidate::{StrategyCandidate, StrategyKind};
 use crate::history::ExecutionHistory;
+use crate::limits::Limits;
 
 /// Selects the best strategy candidate from a set of options.
 ///
@@ -113,7 +114,7 @@ impl StrategySelector {
                 .unwrap_or(std::cmp::Ordering::Equal)
                 .then_with(|| kind_priority(&a.strategy_kind).cmp(&kind_priority(&b.strategy_kind)))
         });
-        candidates.truncate(crate::proposal::MAX_CANDIDATES);
+        candidates.truncate(Limits::default().max_candidates);
         candidates
     }
 

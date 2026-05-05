@@ -18,6 +18,14 @@ use std::collections::HashSet;
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::limits::Limits;
+
+// ── Evaluation weights (DBM-EVALUATION-FUNCTION-STEP1 §6) ────────────────────
+
+const W_EFFECT: f64 = 1.0;
+const W_RISK: f64 = 0.8;
+const W_COST: f64 = 0.5;
+
 /// Hard upper bound on proposal candidate count.  Spec §4.1.
 pub const MAX_CANDIDATES: usize = 3;
 
@@ -143,8 +151,8 @@ pub struct ExecutionPlanCandidate {
     pub risks: Vec<Risk>,
     /// Confidence that executing this candidate will succeed (0.0–1.0).  Spec §6.
     pub confidence: f32,
-    /// Selection score: `expected_gain - risk - cost`.  Spec §9.3.
-    pub score: f32,
+    /// Selection score: `gain - risk - cost`.  Spec DBM-EVALUATION-FUNCTION-STEP1 §4.
+    pub score: f64,
 }
 
 impl PartialEq for ExecutionPlanCandidate {
@@ -155,7 +163,7 @@ impl PartialEq for ExecutionPlanCandidate {
             && self.expected_effects == other.expected_effects
             && self.risks == other.risks
             && (self.confidence - other.confidence).abs() < f32::EPSILON
-            && (self.score - other.score).abs() < f32::EPSILON
+            && (self.score - other.score).abs() < f64::EPSILON
     }
 }
 
@@ -327,37 +335,6 @@ fn compute_confidence(steps: &[ExecutionOp], risks: &[Risk]) -> f32 {
     (base - risk_penalty - change_size_penalty).clamp(0.0, 1.0)
 }
 
-// ── Score calculation ─────────────────────────────────────────────────────────
-
-/// Compute candidate score.  Spec §9.3: `score = expected_gain - risk - cost`.
-fn compute_score(effects: &[ExpectedEffect], risks: &[Risk], steps: &[ExecutionOp]) -> f32 {
-    let n_effects = effects.len().max(1) as f32;
-    let expected_gain: f32 = effects
-        .iter()
-        .map(|e| match e.impact {
-            ImpactLevel::Low => 0.2,
-            ImpactLevel::Medium => 0.5,
-            ImpactLevel::High => 0.8,
-        })
-        .sum::<f32>()
-        / n_effects;
-
-    let n_risks = risks.len().max(1) as f32;
-    let risk: f32 = risks
-        .iter()
-        .map(|r| match r.level {
-            RiskLevel::Low => 0.1,
-            RiskLevel::Medium => 0.3,
-            RiskLevel::High => 0.5,
-        })
-        .sum::<f32>()
-        / n_risks;
-
-    let cost: f32 = (steps.len() as f32 * 0.05).min(0.3);
-
-    (expected_gain - risk - cost).clamp(0.0, 1.0)
-}
-
 // ── Public API ────────────────────────────────────────────────────────────────
 
 impl ExecutionPlanCandidate {
@@ -378,9 +355,8 @@ impl ExecutionPlanCandidate {
         let expected_effects = target_amplified_effects(raw_effects, target.as_ref());
         let risks = estimate_risks(&steps);
         let confidence = compute_confidence(&steps, &risks);
-        let score = compute_score(&expected_effects, &risks, &steps);
 
-        Self {
+        let mut candidate = Self {
             id,
             summary: summary.into(),
             steps,
@@ -388,8 +364,30 @@ impl ExecutionPlanCandidate {
             expected_effects,
             risks,
             confidence,
-            score,
-        }
+            score: 0.0,
+        };
+        candidate.score = candidate.compute_score();
+        candidate
+    }
+
+    /// Compute selection score.  Spec DBM-EVALUATION-FUNCTION-STEP1 §7.
+    ///
+    /// `score = gain - risk - cost`
+    /// - `gain = W_EFFECT * expected_effects.len()`
+    /// - `risk  = W_RISK  * risks.len()`
+    /// - `cost  = W_COST  * steps.len()`
+    ///
+    /// Deterministic, no external dependencies, no randomness.
+    pub fn compute_score(&self) -> f64 {
+        let gain = self.expected_effects.len() as f64 * W_EFFECT;
+        let risk = self.risks.len() as f64 * W_RISK;
+        let cost = self.steps.len() as f64 * W_COST;
+        let score = gain - risk - cost;
+        println!(
+            "[IR-TRACE][SCORE] candidate_id={} gain={} risk={} cost={} score={}",
+            self.id, gain, risk, cost, score
+        );
+        score
     }
 
     /// Compute a content-hash for deduplication.  Spec §8.2.
@@ -467,6 +465,14 @@ impl ExecutionPlanCandidate {
 pub fn generate_candidates(
     plan: &CodeIrProgram,
     _mode: ExecutionMode,
+) -> Vec<ExecutionPlanCandidate> {
+    generate_candidates_with_limits(plan, _mode, Limits::default())
+}
+
+pub fn generate_candidates_with_limits(
+    plan: &CodeIrProgram,
+    _mode: ExecutionMode,
+    limits: Limits,
 ) -> Vec<ExecutionPlanCandidate> {
     let build_ops: Vec<ExecutionOp> = plan
         .build_plan
@@ -547,7 +553,7 @@ pub fn generate_candidates(
             .partial_cmp(&a.score)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    raw.truncate(MAX_CANDIDATES);
+    raw.truncate(limits.max_candidates);
 
     // ── Spec §9: Log post-strategy count. ────────────────────────────────────
     println!("[TRACE][COUNT][AFTER_STRATEGY] {}", raw.len());
@@ -594,6 +600,13 @@ pub fn requires_clarification(intent: &Intent) -> bool {
 /// non-recursive, uses `ExecutionPlanCandidate::from_ops()`, deduplicates by
 /// candidate content hash, and caps the result at `MAX_CANDIDATES`.
 pub fn generate_candidates_from_intent(intent: &Intent) -> Vec<ExecutionPlanCandidate> {
+    generate_candidates_from_intent_with_limits(intent, Limits::default())
+}
+
+pub fn generate_candidates_from_intent_with_limits(
+    intent: &Intent,
+    limits: Limits,
+) -> Vec<ExecutionPlanCandidate> {
     let description = intent.description.trim();
     if description.is_empty() {
         return Vec::new();
@@ -635,7 +648,12 @@ pub fn generate_candidates_from_intent(intent: &Intent) -> Vec<ExecutionPlanCand
 
     let mut seen: HashSet<u64> = HashSet::new();
     raw.retain(|candidate| seen.insert(candidate.hash()));
-    raw.truncate(MAX_CANDIDATES);
+    raw.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    raw.truncate(limits.max_candidates);
 
     for (index, candidate) in raw.iter_mut().enumerate() {
         candidate.id = index + 1;
@@ -840,7 +858,138 @@ mod tests {
             (0.0..=1.0).contains(&c.confidence),
             "confidence out of [0,1]"
         );
-        assert!((0.0..=1.0).contains(&c.score), "score out of [0,1]");
+        // score is gain - risk - cost (unbounded); verify it's finite and matches compute_score
+        assert!(c.score.is_finite(), "score must be finite");
+        assert!(
+            (c.score - c.compute_score()).abs() < f64::EPSILON,
+            "score field must equal compute_score()"
+        );
+    }
+
+    // ── DBM-EVALUATION-FUNCTION-STEP1 tests ───────────────────────────────────
+
+    /// §7 / §12: formula produces correct values and B > A for spec test cases.
+    ///
+    /// Note: the spec doc lists "A > B" but the formula yields B > A when
+    /// B has the same gain with zero risk/cost overhead.  The implementation
+    /// faithfully applies the formula; the test reflects the actual output.
+    #[test]
+    fn compute_score_formula_values() {
+        // Case A: effect=3, risk=1, steps=2  →  3*1.0 - 1*0.8 - 2*0.5 = 1.2
+        let a = ExecutionPlanCandidate {
+            id: 1,
+            summary: "A".into(),
+            steps: vec![
+                ExecutionOp::RuntimePhase("x".into()),
+                ExecutionOp::RuntimePhase("y".into()),
+            ],
+            target: None,
+            expected_effects: vec![
+                ExpectedEffect {
+                    kind: EffectKind::BugFix,
+                    description: "e1".into(),
+                    impact: ImpactLevel::High,
+                },
+                ExpectedEffect {
+                    kind: EffectKind::Refactor,
+                    description: "e2".into(),
+                    impact: ImpactLevel::Medium,
+                },
+                ExpectedEffect {
+                    kind: EffectKind::Performance,
+                    description: "e3".into(),
+                    impact: ImpactLevel::Low,
+                },
+            ],
+            risks: vec![Risk {
+                level: RiskLevel::Low,
+                description: "r1".into(),
+            }],
+            confidence: 0.8,
+            score: 0.0,
+        };
+
+        // Case B: effect=2, risk=0, steps=1  →  2*1.0 - 0*0.8 - 1*0.5 = 1.5
+        let b = ExecutionPlanCandidate {
+            id: 2,
+            summary: "B".into(),
+            steps: vec![ExecutionOp::RuntimePhase("z".into())],
+            target: None,
+            expected_effects: vec![
+                ExpectedEffect {
+                    kind: EffectKind::BugFix,
+                    description: "e1".into(),
+                    impact: ImpactLevel::High,
+                },
+                ExpectedEffect {
+                    kind: EffectKind::Refactor,
+                    description: "e2".into(),
+                    impact: ImpactLevel::Medium,
+                },
+            ],
+            risks: vec![],
+            confidence: 0.8,
+            score: 0.0,
+        };
+
+        let score_a = a.compute_score();
+        let score_b = b.compute_score();
+
+        assert!(
+            (score_a - 1.2).abs() < 1e-9,
+            "A score should be 1.2, got {score_a}"
+        );
+        assert!(
+            (score_b - 1.5).abs() < 1e-9,
+            "B score should be 1.5, got {score_b}"
+        );
+        // B has higher score (fewer risks and steps relative to gain)
+        assert!(
+            score_b > score_a,
+            "B ({score_b}) should outscore A ({score_a})"
+        );
+    }
+
+    /// §12: same input always produces the same score (deterministic).
+    #[test]
+    fn compute_score_is_deterministic() {
+        let c1 = ExecutionPlanCandidate::from_ops(1, "same", apply_ops(), None);
+        let c2 = ExecutionPlanCandidate::from_ops(1, "same", apply_ops(), None);
+        assert_eq!(c1.score, c2.score, "same input must yield same score");
+    }
+
+    /// §8 sort: candidates are ordered descending by score after generate_candidates.
+    #[test]
+    fn score_sort_is_descending() {
+        use execution_core::engine::execution_plan::*;
+        use std::path::PathBuf;
+
+        let plan = ExecutionPlan {
+            language: TargetLanguage::Rust,
+            framework: None,
+            project_root: PathBuf::from("/tmp"),
+            dependency_plan: DependencyPlan {
+                manifest_file: "Cargo.toml".into(),
+                dependencies: vec![],
+                install_commands: vec![],
+            },
+            build_plan: BuildPlan {
+                build_commands: vec!["cargo build".into()],
+            },
+            run_plan: RunPlan {
+                run_commands: vec![],
+            },
+            test_plan: TestPlan {
+                test_files: vec![],
+                test_commands: vec!["cargo test".into()],
+            },
+        };
+
+        let candidates = generate_candidates(&plan, ExecutionMode::Proposal);
+        assert!(
+            candidates.windows(2).all(|w| w[0].score >= w[1].score),
+            "candidates must be sorted descending by score"
+        );
     }
 
     #[test]
@@ -1047,5 +1196,22 @@ mod tests {
             );
             assert!(!candidate.steps.is_empty());
         }
+    }
+
+    #[test]
+    fn generate_candidates_from_intent_respects_custom_limit() {
+        let candidates = generate_candidates_from_intent_with_limits(
+            &Intent::new("fix parser bug"),
+            Limits {
+                max_candidates: 2,
+                ..Limits::default()
+            },
+        );
+
+        assert!(candidates.len() <= 2);
+        assert!(
+            candidates.windows(2).all(|w| w[0].score >= w[1].score),
+            "limited candidates must remain sorted by score"
+        );
     }
 }

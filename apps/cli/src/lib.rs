@@ -46,6 +46,7 @@ pub mod service_coding_interface;
 pub mod session;
 pub mod source_index;
 pub mod state;
+pub mod state_graph;
 pub mod test_support;
 pub mod tui;
 pub mod ui;

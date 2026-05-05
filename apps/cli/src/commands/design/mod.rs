@@ -9,7 +9,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use crate::command::{CommandHandler, CommandPlugin, CommandRegistry};
+use crate::command::{
+    CommandError, CommandHandler, CommandPlugin, CommandRegistry, Output as CommandResult,
+    SubCommandHandler,
+};
+use crate::session::AgentSession;
 use unified_design_ir::{
     ContextSpec, DesignDocument, DesignHistory, DesignVersion, ExecutionSpec, FunctionSpec,
     IssueInput, IssueResult, Metadata, Stage, VersionId, VersionStatus, compute_hash,
@@ -27,8 +31,32 @@ impl CommandPlugin for DesignPlugin {
         cmd.register_subcommand(analyze::handler());
         cmd.register_subcommand(diff::handler());
         cmd.register_subcommand(suggest::handler());
+        cmd.register_subcommand(SubCommandHandler::new("structure", structure_handler));
         registry.register(cmd);
     }
+}
+
+fn structure_handler(
+    args: &[String],
+    session: &mut AgentSession,
+) -> Result<CommandResult, CommandError> {
+    match args.get(0).map(|s| s.as_str()) {
+        Some("view") => structure_view(args, session),
+        _ => Err(CommandError::ExecutionError(
+            "unknown structure subcommand".to_string(),
+        )),
+    }
+}
+
+fn structure_view(
+    args: &[String],
+    _session: &mut AgentSession,
+) -> Result<CommandResult, CommandError> {
+    let target = args.get(1).cloned().unwrap_or_else(|| ".".to_string());
+    Ok(CommandResult::text(format!(
+        "Structure view for {}",
+        target
+    )))
 }
 
 // ── File paths ──────────────────────────────────────────────────────────────

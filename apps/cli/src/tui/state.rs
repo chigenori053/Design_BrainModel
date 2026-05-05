@@ -3,7 +3,9 @@ use std::collections::VecDeque;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use strategy_engine::ExecutionPlanCandidate;
 
-pub use crate::core::{Constraint, DesignDocument, ReasonUnit, StructureTree};
+pub use crate::core::{
+    Constraint, CoreState, DesignDocument, Diff, DiffChunk, ReasonUnit, StructureTree,
+};
 use crate::pipeline::PipelineState;
 
 use super::model::UiPayload;
@@ -37,7 +39,7 @@ impl Focus {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
     Thinking {
         summary: String,
@@ -55,8 +57,19 @@ pub enum UiEvent {
     Preview {
         diff: Vec<String>,
     },
+    Diff {
+        file: String,
+        changes: Vec<DiffChunk>,
+    },
     Result {
         message: String,
+    },
+    DesignUpdate {
+        summary: String,
+        score: f64,
+    },
+    DesignDiff {
+        changes: Vec<String>,
     },
     Pipeline {
         state: String,
@@ -66,6 +79,9 @@ pub enum UiEvent {
     },
     Error {
         message: String,
+    },
+    ErrorRecovery {
+        candidates: Vec<ExecutionPlanCandidate>,
     },
     Debug {
         message: String,
@@ -84,10 +100,14 @@ impl UiEvent {
             Self::Plan { .. } => "PLAN",
             Self::Execution { .. } => "EXECUTION",
             Self::Preview { .. } => "PREVIEW",
+            Self::Diff { .. } => "DIFF",
             Self::Result { .. } => "RESULT",
+            Self::DesignUpdate { .. } => "DESIGN",
+            Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
             Self::Next { .. } => "NEXT",
             Self::Error { .. } => "ERROR",
+            Self::ErrorRecovery { .. } => "RECOVERY",
             Self::Debug { .. } => "DEBUG",
             Self::Proposal { .. } => "PROPOSAL",
         }
@@ -100,11 +120,22 @@ impl UiEvent {
             Self::Plan { steps } => steps.join("\n"),
             Self::Execution { step } => step.clone(),
             Self::Preview { diff } => diff.join("\n"),
+            Self::Diff { file, changes } => render_diff(file, changes),
             Self::Result { message } | Self::Error { message } | Self::Debug { message } => {
                 message.clone()
             }
+            Self::DesignUpdate { summary, score } => format!("Score: {score:.2}\n- {summary}"),
+            Self::DesignDiff { changes } => changes.join("\n"),
             Self::Pipeline { state } => state.clone(),
             Self::Next { actions } => actions.join("\n"),
+            Self::ErrorRecovery { candidates } => {
+                let mut lines = vec!["Retry candidates:".to_string()];
+                for candidate in candidates {
+                    lines.extend(candidate.render_lines());
+                    lines.push(String::new());
+                }
+                lines.join("\n")
+            }
             Self::Proposal { candidates } => {
                 // Render top candidates per spec §9 表示例
                 let mut lines: Vec<String> = Vec::new();
@@ -136,7 +167,7 @@ impl UiEvent {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct EventQueue {
     queue: VecDeque<UiEvent>,
 }
@@ -286,9 +317,19 @@ impl Default for InputBuffer {
     }
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatState {
     pub events: Vec<UiEvent>,
+}
+
+/// UI-only session state.  Phase 4.5: all pipeline/design/proposal state has
+/// moved to `CoreState`; only pure-UI fields remain here.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SessionState {
+    /// Accumulated file diffs displayed in the chat stream.
+    pub diffs: Vec<Diff>,
+    /// Active chat-filter token (e.g. `"DIFF"` shows only `[DIFF]` lines).
+    pub filter: Option<String>,
 }
 
 impl ChatState {
@@ -300,6 +341,27 @@ impl ChatState {
     }
 }
 
+fn render_diff(file: &str, changes: &[DiffChunk]) -> String {
+    let mut lines = vec![file.to_string()];
+    for chunk in changes {
+        if let Some(old) = &chunk.old {
+            let prefix = chunk
+                .old_line
+                .map(|line| format!("-{:>4} ", line))
+                .unwrap_or_else(|| "-     ".to_string());
+            lines.push(format!("{prefix}{old}"));
+        }
+        if let Some(new) = &chunk.new {
+            let prefix = chunk
+                .new_line
+                .map(|line| format!("+{:>4} ", line))
+                .unwrap_or_else(|| "+     ".to_string());
+            lines.push(format!("{prefix}{new}"));
+        }
+    }
+    lines.join("\n")
+}
+
 #[derive(Debug, Clone)]
 pub struct TuiState {
     pub chat: ChatState,
@@ -309,14 +371,15 @@ pub struct TuiState {
     pub chat_scroll: ChatScrollState,
     pub event_queue: EventQueue,
     pub pipeline_state: PipelineState,
+    pub session: SessionState,
     pub design_scroll: usize,
     pub design_collapsed: bool,
     pub design_updated: bool,
     pub history: Vec<String>,
     history_cursor: Option<usize>,
-    /// Active proposal candidates awaiting `select <n>`.  Phase 1C.5 §4.1.
-    /// Set when a `UiEvent::Proposal` arrives; cleared on successful select.
-    pub current_proposals: Option<Vec<ExecutionPlanCandidate>>,
+    /// Read-only cache of the last `CoreState` returned by Core.  Phase 4.5.
+    /// This is the Single Source of Truth snapshot; the UI never mutates it.
+    pub core_snapshot: CoreState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -324,26 +387,29 @@ pub enum TuiAction {
     None,
     Quit,
     Submit(String),
+    SaveDesign,
 }
 
 impl TuiState {
     pub fn new(payload: UiPayload) -> Self {
+        let design_doc = seed_design_document(&payload);
         Self {
             chat: ChatState {
                 events: seed_chat_stream(&payload),
             },
-            design_doc: seed_design_document(&payload),
+            design_doc,
             input: InputBuffer::default(),
             focus: Focus::Input,
             chat_scroll: ChatScrollState::default(),
             event_queue: EventQueue::default(),
             pipeline_state: PipelineState::default(),
+            session: SessionState::default(),
             design_scroll: 0,
             design_collapsed: false,
             design_updated: false,
             history: Vec::new(),
             history_cursor: None,
-            current_proposals: None,
+            core_snapshot: CoreState::default(),
         }
         .with_pseudo_stream()
     }
@@ -389,10 +455,9 @@ impl TuiState {
     }
 
     pub fn append_chat(&mut self, event: UiEvent) {
-        // Capture proposal candidates for the select command.  Phase 1C.5 §4.1.
-        if let UiEvent::Proposal { ref candidates } = event {
-            self.current_proposals = Some(candidates.clone());
-        }
+        // Phase 4.5: proposal capture and history tracking removed — state lives
+        // in Core.  Only UI-side effects (diffs, filter) are applied here.
+        self.apply_event_to_session(&event);
         self.chat.append_chat(event);
         self.chat_scroll.apply_append();
     }
@@ -410,12 +475,82 @@ impl TuiState {
         }
     }
 
+    /// Apply UI-only side-effects of an event.  Phase 4.5.
+    ///
+    /// Only touches `session.diffs` and `session.filter`; all pipeline/proposal
+    /// state is owned by Core and cached in `core_snapshot`.
+    fn apply_event_to_session(&mut self, event: &UiEvent) {
+        match event {
+            UiEvent::Preview { diff } => {
+                let d = Diff {
+                    file: "preview".to_string(),
+                    changes: diff
+                        .iter()
+                        .map(|line| DiffChunk {
+                            old_line: None,
+                            new_line: None,
+                            old: None,
+                            new: Some(line.clone()),
+                        })
+                        .collect(),
+                };
+                self.session.diffs.push(d);
+            }
+            UiEvent::Diff { file, changes } => {
+                self.session.diffs.push(Diff {
+                    file: file.clone(),
+                    changes: changes.clone(),
+                });
+            }
+            UiEvent::Debug { message } if message.starts_with("filter set: ") => {
+                self.session.filter = message.strip_prefix("filter set: ").map(ToOwned::to_owned);
+            }
+            _ => {}
+        }
+    }
+
     pub fn flattened_chat_lines(&self) -> Vec<String> {
-        self.chat
+        let lines = self
+            .chat
             .events
             .iter()
             .flat_map(|event| event.lines())
+            .collect::<Vec<_>>();
+        let Some(filter) = self.session.filter.as_ref() else {
+            return lines;
+        };
+        let token = format!("[{}]", filter.to_ascii_uppercase());
+        lines
+            .into_iter()
+            .filter(|line| line.starts_with(&token))
             .collect()
+    }
+
+    /// Lines shown in the design panel.  Phase 4.5: reads from `core_snapshot`.
+    pub fn design_panel_lines(&self) -> Vec<String> {
+        let design = self.core_snapshot.design.as_ref();
+        let version = design.map_or(self.design_doc.version, |d| d.version);
+        let score = design.map_or(0.0, |d| d.score());
+        let mut lines = vec![
+            format!("[DESIGN v{version}]"),
+            format!("Score: {score:.2}"),
+            format!("[STATE] {}", self.core_snapshot.status.label()),
+            String::new(),
+        ];
+        let summaries: Vec<String> = design
+            .map(|d| {
+                d.reason_units
+                    .iter()
+                    .take(5)
+                    .map(|u| format!("- {}", u.summary))
+                    .collect()
+            })
+            .unwrap_or_default();
+        lines.extend(summaries);
+        if lines.len() <= 3 {
+            lines.extend(self.design_doc.rendered.iter().cloned());
+        }
+        lines
     }
 
     fn handle_input_key(&mut self, key: KeyEvent) -> TuiAction {
@@ -428,6 +563,16 @@ impl TuiState {
                 let submitted = self.input.text.trim().to_string();
                 if submitted.is_empty() {
                     return TuiAction::None;
+                }
+                if matches!(submitted.as_str(), "/exit" | "/quit") {
+                    self.input.clear();
+                    return TuiAction::Quit;
+                }
+                if submitted == "/save design" {
+                    self.history.push(submitted);
+                    self.history_cursor = None;
+                    self.input.clear();
+                    return TuiAction::SaveDesign;
                 }
                 self.history.push(submitted.clone());
                 self.history_cursor = None;
@@ -706,6 +851,121 @@ mod tests {
                 .iter()
                 .any(|line| line == "[NEXT] fix parser bug")
         );
+    }
+
+    #[test]
+    fn save_design_command_is_ui_action() {
+        let mut state = TuiState::new(empty_payload());
+        for ch in "/save design".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(key(KeyCode::Enter));
+
+        assert_eq!(action, TuiAction::SaveDesign);
+        assert_eq!(state.history, vec!["/save design"]);
+    }
+
+    /// Phase 4.5: session only tracks diffs; pipeline/proposal state is in
+    /// `core_snapshot`.  Verify that diffs accumulate correctly via `append_chat`.
+    #[test]
+    fn session_accumulates_diffs_via_append_chat() {
+        let mut state = TuiState::new(empty_payload());
+
+        // Proposal, Plan, DesignUpdate do NOT touch session anymore.
+        state.append_chat(UiEvent::Proposal { candidates: vec![] });
+        state.append_chat(UiEvent::Plan {
+            steps: vec!["Fix parser.rs".to_string()],
+        });
+        state.append_chat(UiEvent::DesignUpdate {
+            summary: "Parser modularized".to_string(),
+            score: 0.82,
+        });
+        // Session remains empty — only diffs accumulate.
+        assert!(state.session.diffs.is_empty());
+
+        state.append_chat(UiEvent::Diff {
+            file: "parser.rs".to_string(),
+            changes: vec![DiffChunk {
+                old_line: Some(1),
+                new_line: Some(1),
+                old: Some("fn parse()".to_string()),
+                new: Some("fn parse(input: &str)".to_string()),
+            }],
+        });
+        assert_eq!(state.session.diffs.len(), 1);
+        assert_eq!(state.session.diffs[0].file, "parser.rs");
+    }
+
+    /// Phase 4.5: `core_snapshot` is the SSOT; UI can assign it directly to
+    /// simulate Core returning a restored state (e.g. after undo).
+    #[test]
+    fn core_snapshot_reflects_core_state_after_assignment() {
+        use crate::core::{CorePlan, CoreState};
+
+        let mut state = TuiState::new(empty_payload());
+        assert_eq!(state.core_snapshot.status, PipelineState::Idle);
+
+        // Simulate Core returning a Proposed snapshot (e.g. after proposal).
+        state.core_snapshot = CoreState {
+            version: 1,
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        };
+        assert_eq!(state.core_snapshot.status, PipelineState::Proposed);
+
+        // Simulate Core returning a Planned snapshot (e.g. after select).
+        state.core_snapshot = CoreState {
+            version: 2,
+            status: PipelineState::Planned,
+            current_plan: Some(CorePlan {
+                summary: "Fix parser.rs".to_string(),
+                steps: vec!["fix parser.rs".to_string()],
+            }),
+            ..CoreState::default()
+        };
+        assert_eq!(state.core_snapshot.status, PipelineState::Planned);
+        assert_eq!(
+            state
+                .core_snapshot
+                .current_plan
+                .as_ref()
+                .map(|p| p.summary.as_str()),
+            Some("Fix parser.rs")
+        );
+
+        // Undo: Core returns a restored snapshot — UI just sets core_snapshot.
+        state.core_snapshot = CoreState {
+            version: 1,
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        };
+        assert_eq!(state.core_snapshot.status, PipelineState::Proposed);
+        assert_eq!(state.core_snapshot.version, 1);
+    }
+
+    #[test]
+    fn filter_event_limits_flattened_chat_lines() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Execution {
+            step: "run".to_string(),
+        });
+        state.append_chat(UiEvent::Diff {
+            file: "parser.rs".to_string(),
+            changes: vec![DiffChunk {
+                old_line: Some(1),
+                new_line: Some(1),
+                old: Some("fn parse()".to_string()),
+                new: Some("fn parse(input: &str)".to_string()),
+            }],
+        });
+        state.append_chat(UiEvent::Debug {
+            message: "filter set: diff".to_string(),
+        });
+
+        let lines = state.flattened_chat_lines();
+        assert!(!lines.is_empty());
+        assert!(lines.iter().all(|line| line.starts_with("[DIFF]")));
     }
 
     #[test]

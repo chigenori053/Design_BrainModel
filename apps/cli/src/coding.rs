@@ -3225,6 +3225,14 @@ pub fn execute_code_change_set(
             .map(|change| change.file_path.clone())
             .collect::<Vec<_>>()
     );
+    eprintln!(
+        "[CODING] diff_files={:?}",
+        change_set
+            .changes
+            .iter()
+            .map(|change| change.file_path.clone())
+            .collect::<Vec<_>>()
+    );
     eprintln!("[CODING] changes={}", change_set.summary.total_changes);
     if let Err(reason) = enforce_patch_scope(&change_set.changes, &fence) {
         return Ok(CodingExecutionResult {
@@ -11257,3 +11265,5 @@ error: expected identifier, found keyword `use`\n\
         assert!(json.contains("fn handle_grammar_engine(&self);"), "{json}");
     }
 }
+// DBM clarification execution guarantee
+// DBM clarification execution guarantee

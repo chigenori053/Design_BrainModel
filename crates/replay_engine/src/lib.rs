@@ -3,6 +3,7 @@ use std::collections::BTreeMap;
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
+use strategy_engine::Limits;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScenarioInput {
@@ -151,6 +152,14 @@ pub fn capture(input: &ScenarioInput) -> Result<ExecutionTrace> {
 }
 
 pub fn replay(trace: &ExecutionTrace) -> Result<ExecutionTrace> {
+    replay_with_limits(trace, Limits::default())
+}
+
+pub fn replay_with_limits(trace: &ExecutionTrace, limits: Limits) -> Result<ExecutionTrace> {
+    let steps = trace.search.len() + trace.patch.len();
+    if steps > limits.max_replay_steps {
+        bail!("Replay limit exceeded");
+    }
     let scenario: ScenarioInput = serde_json::from_value(trace.input.clone())?;
     capture(&scenario)
 }
@@ -209,5 +218,26 @@ fn classify_cause(layer: &str) -> &'static str {
         "ir" => "IrInstability",
         "input" => "InputMismatch",
         _ => "TraceMismatch",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_rejects_trace_over_step_limit() {
+        let scenario = load_scenario("microservice").unwrap();
+        let trace = capture(&scenario).unwrap();
+        let err = replay_with_limits(
+            &trace,
+            Limits {
+                max_replay_steps: 1,
+                ..Limits::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().contains("Replay limit exceeded"));
     }
 }

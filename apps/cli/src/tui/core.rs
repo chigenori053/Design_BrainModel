@@ -22,10 +22,14 @@ pub fn to_ui_event(event: CoreEvent) -> UiEvent {
         CoreEvent::Plan { steps } => UiEvent::Plan { steps },
         CoreEvent::Execution { step } => UiEvent::Execution { step },
         CoreEvent::Preview { diff } => UiEvent::Preview { diff },
+        CoreEvent::Diff { file, changes } => UiEvent::Diff { file, changes },
         CoreEvent::Result { message } => UiEvent::Result { message },
+        CoreEvent::DesignUpdate { summary, score } => UiEvent::DesignUpdate { summary, score },
+        CoreEvent::DesignDiff { changes } => UiEvent::DesignDiff { changes },
         CoreEvent::Pipeline { state } => UiEvent::Pipeline { state },
         CoreEvent::Next { actions } => UiEvent::Next { actions },
         CoreEvent::Error { message } => UiEvent::Error { message },
+        CoreEvent::ErrorRecovery { candidates } => UiEvent::ErrorRecovery { candidates },
         CoreEvent::Debug { message } => UiEvent::Debug { message },
         CoreEvent::Proposal { candidates } => UiEvent::Proposal { candidates },
     }
@@ -35,19 +39,19 @@ pub fn handle_submit(
     state: &mut TuiState,
     core: &dyn CoreExecutor,
     input: String,
-    working_dir: PathBuf,
+    _working_dir: PathBuf,
 ) {
     eprintln!("[UI] Input received");
-    let is_select = input.trim().to_ascii_lowercase().starts_with("select ");
-    let request = CoreRequest::new(
-        input,
-        working_dir,
-        state.pipeline_state.clone(),
-        Some(state.design_doc.clone()),
-        state.current_proposals.clone(),
-    );
+    // Phase 4.5: build CoreRequest (pass-through).
+    let request = CoreRequest::new(input);
     let response = core.execute(request);
     let success = response.status != crate::core::ExecutionStatus::Failed;
+
+    // Phase 4.5: sync core_snapshot first so downstream render reads correct state.
+    if let Some(snapshot) = response.core_state {
+        state.core_snapshot = snapshot.clone();
+        state.pipeline_state = snapshot.status.clone();
+    }
 
     apply_core_response(
         &mut state.event_queue,
@@ -55,9 +59,6 @@ pub fn handle_submit(
         response.events,
     );
 
-    if success && is_select {
-        state.current_proposals = None;
-    }
     if success && let Some(design) = response.design {
         state.update_design(design);
     }
@@ -74,12 +75,8 @@ fn apply_core_response(
         {
             *pipeline_state = next;
         }
-        let is_error = matches!(event, CoreEvent::Error { .. });
         eprintln!("[UI] Rendering event");
         queue.push(to_ui_event(event));
-        if is_error {
-            break;
-        }
     }
 }
 
@@ -115,6 +112,7 @@ mod tests {
                 }],
                 status: ExecutionStatus::Executed,
                 design: None,
+                core_state: None,
             })
         }
     }
@@ -134,6 +132,7 @@ mod tests {
                 ],
                 status: ExecutionStatus::Proposed,
                 design: None,
+                core_state: None,
             }),
         };
 

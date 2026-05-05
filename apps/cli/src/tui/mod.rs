@@ -67,6 +67,19 @@ fn run_event_loop(
                     let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
                     self::core::handle_submit(state, core, input, working_dir);
                 }
+                TuiAction::SaveDesign => {
+                    let path = std::env::current_dir()
+                        .unwrap_or_else(|_| ".".into())
+                        .join("dbm_design.md");
+                    match std::fs::write(&path, state.design_doc.rendered.join("\n")) {
+                        Ok(_) => state.enqueue_event(self::state::UiEvent::Result {
+                            message: format!("Design saved: {}", path.display()),
+                        }),
+                        Err(err) => state.enqueue_event(self::state::UiEvent::Error {
+                            message: format!("save design failed: {err}"),
+                        }),
+                    }
+                }
                 TuiAction::None => {}
             }
         }

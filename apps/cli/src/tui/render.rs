@@ -39,10 +39,17 @@ fn render_design(frame: &mut Frame, state: &TuiState, area: Rect) {
             state.design_doc.version
         )
     } else {
+        let version = state
+            .core_snapshot
+            .design
+            .as_ref()
+            .map_or(state.design_doc.version, |d| d.version);
         let marker = if state.design_updated { " updated" } else { "" };
         format!(
-            " Design Convergence View v{}{} ",
-            state.design_doc.version, marker
+            " Design Panel v{}{} | {} ",
+            version,
+            marker,
+            state.core_snapshot.status.label()
         )
     };
     let block = Block::default()
@@ -60,9 +67,8 @@ fn render_design(frame: &mut Frame, state: &TuiState, area: Rect) {
 
     let height = block.inner(area).height as usize;
     let max_rows = height.min(DESIGN_MAX_LINES);
-    let lines: Vec<Line> = state
-        .design_doc
-        .rendered
+    let panel_lines = state.design_panel_lines();
+    let lines: Vec<Line> = panel_lines
         .iter()
         .skip(state.design_scroll)
         .take(max_rows)
@@ -119,7 +125,10 @@ fn render_chat(frame: &mut Frame, state: &TuiState, area: Rect) {
 fn render_input(frame: &mut Frame, state: &TuiState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Input ")
+        .title(format!(
+            " Command / Input [{}] ",
+            state.pipeline_state.label()
+        ))
         .border_style(active_border(state.focus == Focus::Input));
 
     let display_text = if state.input.text.is_empty() {
@@ -156,7 +165,7 @@ fn render_help_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
         Focus::Design => "Design",
     };
     let text = format!(
-        " focus:{focus}   Tab/Shift+Tab focus   Enter send   Shift+Enter newline   PageUp/PageDown scroll   d collapse   Ctrl+q quit "
+        " focus:{focus}   Enter send   Shift+Enter newline   select <n>   y/n confirm   cancel   /save design   Ctrl+q quit "
     );
     frame.render_widget(
         Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
@@ -196,6 +205,16 @@ fn chat_line_style(line: &str) -> Style {
         kind_style(Color::Blue)
     } else if line.starts_with("[PREVIEW]") {
         kind_style(Color::Magenta)
+    } else if line.starts_with("[EXECUTION]") {
+        kind_style(Color::Yellow)
+    } else if line.starts_with("[DIFF]") {
+        kind_style(Color::Magenta)
+    } else if line.starts_with("[DESIGN]") {
+        kind_style(Color::Cyan)
+    } else if line.starts_with("[DESIGN DIFF]") {
+        kind_style(Color::Cyan)
+    } else if line.starts_with("[RECOVERY]") {
+        kind_style(Color::LightRed)
     } else if line.starts_with("[RESULT]") {
         kind_style(Color::Green)
     } else if line.starts_with("[PIPELINE]") {

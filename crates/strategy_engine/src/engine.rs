@@ -2,6 +2,7 @@ use crate::candidate::StrategyKind;
 use crate::convergence::{ConvergenceGuard, FailureSignature};
 use crate::failure::StrategyFailureAnalyzer;
 use crate::history::{ExecutionHistory, plan_checksum};
+use crate::limits::Limits;
 use crate::planner::AdaptivePlanner;
 use crate::policy::StrategyPolicy;
 use crate::selector::StrategySelector;
@@ -50,6 +51,7 @@ pub struct StrategyEngine {
     pub analyzer: StrategyFailureAnalyzer,
     pub planner: AdaptivePlanner,
     pub selector: StrategySelector,
+    pub limits: Limits,
 }
 
 impl StrategyEngine {
@@ -60,6 +62,7 @@ impl StrategyEngine {
             selector: StrategySelector::new(deterministic),
             policy,
             analyzer: StrategyFailureAnalyzer::new(),
+            limits: Limits::default(),
         }
     }
 
@@ -189,7 +192,13 @@ impl StrategyEngine {
             println!("[TRACE][COUNT][CANDIDATES_RAW] {}", candidates.len());
 
             // Spec §11: candidates = filter_unvisited(candidates)
-            let candidates = guard.filter_unvisited(candidates);
+            let mut candidates = guard.filter_unvisited(candidates);
+            candidates.sort_by(|a, b| {
+                b.score()
+                    .partial_cmp(&a.score())
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
+            candidates.truncate(self.limits.max_candidates);
             println!("[TRACE][COUNT][AFTER_STRATEGY] {}", candidates.len());
 
             // Spec §11: if candidates.is_empty() { break; }

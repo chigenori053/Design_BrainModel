@@ -3,7 +3,7 @@ use std::path::Path;
 use crate::command::{
     CommandError, CommandHandler, CommandPlugin, CommandRegistry, Output, SubCommandHandler,
 };
-use crate::execution_foundation::{ExecAction, format_exec_report};
+use crate::execution_foundation::{ExecAction, ExecutionFoundation, format_exec_report};
 use crate::session::AgentSession;
 
 const DEFAULT_TIMEOUT_MS: u64 = 60_000;
@@ -55,7 +55,7 @@ fn execute_action(
     session.context.set_last_path(&path);
     session.context.last_command = Some(format!("exec {}", action.as_str()));
 
-    crate::app::execute_exec_command(Path::new(&path), action, DEFAULT_TIMEOUT_MS)
+    ExecutionFoundation::execute(Path::new(&path), action, DEFAULT_TIMEOUT_MS)
         .map(|report| Output::text(format_exec_report(&report)))
         .map_err(CommandError::ExecutionError)
 }
