@@ -6,11 +6,19 @@ pub fn runtime_panel_lines(state: &TuiState) -> Vec<String> {
         format!("State: {}", state.runtime_state.label()),
         format!(
             "Target: {}",
-            state.active_target.as_deref().unwrap_or("(none)")
+            state
+                .active_transaction
+                .as_ref()
+                .map(|tx| tx.target_path.as_str())
+                .unwrap_or("(none)")
         ),
         format!(
             "Transaction: {}",
-            state.active_transaction_id.as_deref().unwrap_or("(none)")
+            state
+                .active_transaction
+                .as_ref()
+                .map(|tx| tx.tx_id.as_str())
+                .unwrap_or("(none)")
         ),
         format!("Dirty tree: {}", state.dirty_tree_state),
         format!("Language: {}", language_label(state.language_mode)),

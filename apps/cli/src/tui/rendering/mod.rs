@@ -100,7 +100,7 @@ impl RuntimeProjection {
         let target_label = resolved_target_label(state);
         let diff_projection = DiffProjection::from_state(state, target_label.clone());
         Self {
-            state_label: projection_state_label(state.runtime_state).to_string(),
+            state_label: projection_state_label_from_runtime(state),
             target_label,
             transaction_label: resolved_transaction_label(state),
             diff_projection,
@@ -133,13 +133,14 @@ impl RuntimeProjection {
 
 impl DiffProjection {
     pub fn from_state(state: &TuiState, target_label: Option<String>) -> Self {
-        let Some(diff) = state.session.diffs.last() else {
+        let Some(transaction) = state.active_transaction.as_ref() else {
             return Self {
                 target_label,
                 lines: vec!["No preview available.".to_string()],
             };
         };
-        let target_label = target_label.or_else(|| semantic_label(&diff.file));
+        let diff = &transaction.diff;
+        let target_label = target_label.or_else(|| semantic_label(&transaction.target_path));
         let mut lines = Vec::new();
         if let Some(target) = target_label.as_deref() {
             lines.push(format!("Target: {target}"));
@@ -198,24 +199,33 @@ fn projection_state_label(state: RuntimeShellState) -> &'static str {
     }
 }
 
+fn projection_state_label_from_runtime(state: &TuiState) -> String {
+    if state.runtime_state == RuntimeShellState::Failed {
+        if state
+            .active_transaction
+            .as_ref()
+            .is_some_and(|tx| tx.failed_recoverable && !tx.tx_id.is_empty())
+        {
+            return "FAILED_RECOVERABLE".to_string();
+        }
+        return "IDLE".to_string();
+    }
+    projection_state_label(state.runtime_state).to_string()
+}
+
 fn resolved_target_label(state: &TuiState) -> Option<String> {
     state
-        .active_target
-        .as_deref()
+        .active_transaction
+        .as_ref()
+        .map(|tx| tx.target_path.as_str())
         .and_then(semantic_label)
-        .or_else(|| {
-            state
-                .session
-                .diffs
-                .last()
-                .and_then(|diff| semantic_label(&diff.file))
-        })
 }
 
 fn resolved_transaction_label(state: &TuiState) -> Option<String> {
     state
-        .active_transaction_id
-        .as_deref()
+        .active_transaction
+        .as_ref()
+        .map(|tx| tx.tx_id.as_str())
         .and_then(semantic_label)
 }
 
@@ -348,7 +358,7 @@ mod tests {
         state.append_chat(UiEvent::Debug {
             message: "[IR-TRACE] leaked".to_string(),
         });
-        state.session.diffs.push(crate::tui::state::Diff {
+        state.append_chat(UiEvent::Diff {
             file: "target.rs".to_string(),
             changes: vec![DiffChunk {
                 old: None,
@@ -394,7 +404,7 @@ mod tests {
     fn projection_never_displays_runtime_reference() {
         let mut state = TuiState::new(empty_payload());
         state.active_target = Some("runtime.active_preview".to_string());
-        state.session.diffs.push(crate::tui::state::Diff {
+        state.append_chat(UiEvent::Diff {
             file: "runtime.active_preview".to_string(),
             changes: vec![DiffChunk {
                 old: None,
@@ -416,14 +426,8 @@ mod tests {
     fn target_projection_uses_resolved_path() {
         let mut state = TuiState::new(empty_payload());
         state.active_target = Some("apps/cli/src/core.rs".to_string());
-        state.session.diffs.push(crate::tui::state::Diff {
-            file: "runtime.active_preview".to_string(),
-            changes: vec![DiffChunk {
-                old: None,
-                new: Some("fn semantic() {}".to_string()),
-                old_line: None,
-                new_line: Some(1),
-            }],
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn semantic() {}".to_string()],
         });
 
         let projection = RuntimeProjection::from_state(&state);
@@ -461,6 +465,10 @@ mod tests {
         state.runtime_state = RuntimeShellState::AwaitConfirmation;
         state.active_target = Some("apps/cli/src/core.rs".to_string());
         state.active_transaction_id = Some("tx-42".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn semantic() {}".to_string()],
+        });
+        state.runtime_state = RuntimeShellState::AwaitConfirmation;
 
         let snapshot = RenderSnapshot::from(&state);
 
@@ -480,8 +488,7 @@ mod tests {
     fn debug_string_not_rendered() {
         let mut state = TuiState::new(empty_payload());
         state.active_target = Some("RuntimeState { active_preview: Some(..) }".to_string());
-        state.active_transaction_id = Some("ActivePreview { transaction_id: \"tx\" }".to_string());
-        state.session.diffs.push(crate::tui::state::Diff {
+        state.append_chat(UiEvent::Diff {
             file: "apps/cli/src/core.rs".to_string(),
             changes: vec![DiffChunk {
                 old: None,
@@ -505,6 +512,10 @@ mod tests {
         state.runtime_state = RuntimeShellState::Apply;
         state.active_target = Some("apps/cli/src/core.rs".to_string());
         state.active_transaction_id = Some("tx-apply".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn semantic() {}".to_string()],
+        });
+        state.runtime_state = RuntimeShellState::Apply;
 
         let first = RuntimeProjection::from_state(&state);
         let second = RuntimeProjection::from_state(&state);
@@ -512,6 +523,81 @@ mod tests {
         assert_eq!(first, second);
         assert_eq!(first.state_label, "APPLYING");
         assert_eq!(first.transaction_label.as_deref(), Some("tx-apply"));
+    }
+
+    #[test]
+    fn tx_none_projection_is_destroyed() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Diff {
+            file: "apps/cli/src/core.rs".to_string(),
+            changes: vec![DiffChunk {
+                old: None,
+                new: Some("fn semantic() {}".to_string()),
+                old_line: None,
+                new_line: Some(1),
+            }],
+        });
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
+
+        let projection = RuntimeProjection::from_state(&state);
+
+        assert_eq!(projection.state_label, "IDLE");
+        assert_eq!(projection.transaction_label, None);
+        assert_eq!(
+            projection.diff_projection.lines,
+            vec!["No preview available.".to_string()]
+        );
+    }
+
+    #[test]
+    fn failed_recoverable_retains_projection_only_with_tx() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Diff {
+            file: "apps/cli/src/core.rs".to_string(),
+            changes: vec![DiffChunk {
+                old: None,
+                new: Some("fn semantic() {}".to_string()),
+                old_line: None,
+                new_line: Some(1),
+            }],
+        });
+        state.append_chat(UiEvent::Error {
+            message: "recoverable".to_string(),
+        });
+
+        let projection = RuntimeProjection::from_state(&state);
+
+        assert_eq!(projection.state_label, "FAILED_RECOVERABLE");
+        assert!(
+            projection
+                .transaction_label
+                .as_deref()
+                .is_some_and(|tx| tx.starts_with("tx-"))
+        );
+        assert!(
+            projection
+                .diff_projection
+                .lines
+                .iter()
+                .any(|line| line == "Target: apps/cli/src/core.rs")
+        );
+    }
+
+    #[test]
+    fn failed_without_tx_cannot_retain_diff() {
+        let mut state = TuiState::new(empty_payload());
+        state.runtime_state = RuntimeShellState::Failed;
+
+        let projection = RuntimeProjection::from_state(&state);
+
+        assert_eq!(projection.state_label, "IDLE");
+        assert_eq!(projection.transaction_label, None);
+        assert_eq!(
+            projection.diff_projection.lines,
+            vec!["No preview available.".to_string()]
+        );
     }
 
     fn projection_surface(snapshot: &RenderSnapshot) -> String {

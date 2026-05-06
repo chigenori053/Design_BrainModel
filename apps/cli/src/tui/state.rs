@@ -332,10 +332,16 @@ pub struct ChatState {
 /// moved to `CoreState`; only pure-UI fields remain here.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct SessionState {
-    /// Accumulated file diffs displayed in the chat stream.
-    pub diffs: Vec<Diff>,
     /// Active chat-filter token (e.g. `"DIFF"` shows only `[DIFF]` lines).
     pub filter: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeTransaction {
+    pub tx_id: String,
+    pub target_path: String,
+    pub diff: Diff,
+    pub failed_recoverable: bool,
 }
 
 impl ChatState {
@@ -387,6 +393,7 @@ pub struct TuiState {
     pub runtime_state: RuntimeShellState,
     pub active_target: Option<String>,
     pub active_transaction_id: Option<String>,
+    pub active_transaction: Option<RuntimeTransaction>,
     pub dirty_tree_state: String,
     pub language_mode: SupportedLanguage,
     pub debug_events: Vec<DebugEvent>,
@@ -426,6 +433,7 @@ impl TuiState {
             runtime_state: RuntimeShellState::Idle,
             active_target: None,
             active_transaction_id: None,
+            active_transaction: None,
             dirty_tree_state: "clean".to_string(),
             language_mode: SupportedLanguage::Unknown,
             debug_events: Vec::new(),
@@ -444,9 +452,16 @@ impl TuiState {
         format!(
             "state={} tx={} dirty={} target={} lang={}",
             self.runtime_state.label(),
-            self.active_transaction_id.as_deref().unwrap_or("(none)"),
+            self.active_transaction
+                .as_ref()
+                .map(|tx| tx.tx_id.as_str())
+                .unwrap_or("(none)"),
             self.dirty_tree_state,
-            self.active_target.as_deref().unwrap_or("(none)"),
+            self.active_transaction
+                .as_ref()
+                .map(|tx| tx.target_path.as_str())
+                .or(self.active_target.as_deref())
+                .unwrap_or("(none)"),
             crate::nl::language::language_label(self.language_mode)
         )
     }
@@ -518,16 +533,18 @@ impl TuiState {
         }
     }
 
-    /// Apply UI-only side-effects of an event.  Phase 4.5.
-    ///
-    /// Only touches `session.diffs` and `session.filter`; all pipeline/proposal
-    /// state is owned by Core and cached in `core_snapshot`.
+    /// Apply UI-side effects of an event. Projection ownership is bound to
+    /// `active_transaction`; render code must not read cached panel state.
     fn apply_event_to_session(&mut self, event: &UiEvent) {
         match event {
             UiEvent::Preview { diff } => {
                 self.runtime_state = RuntimeShellState::Ready;
-                let d = Diff {
-                    file: "preview".to_string(),
+                let target = self
+                    .active_target
+                    .clone()
+                    .unwrap_or_else(|| "preview".to_string());
+                let preview = Diff {
+                    file: target.clone(),
                     changes: diff
                         .iter()
                         .map(|line| DiffChunk {
@@ -538,20 +555,27 @@ impl TuiState {
                         })
                         .collect(),
                 };
-                self.session.diffs.push(d);
+                self.install_runtime_transaction(target, preview);
             }
             UiEvent::Diff { file, changes } => {
                 self.active_target = Some(file.clone());
-                self.session.diffs.push(Diff {
+                let diff = Diff {
                     file: file.clone(),
                     changes: changes.clone(),
-                });
+                };
+                self.install_runtime_transaction(file.clone(), diff);
             }
             UiEvent::Debug { message } if message.starts_with("filter set: ") => {
                 self.session.filter = message.strip_prefix("filter set: ").map(ToOwned::to_owned);
             }
             UiEvent::Debug { message } if message.contains("\"transaction\"") => {
                 self.active_transaction_id = extract_json_string(message, "transaction_id");
+                if let (Some(tx), Some(id)) = (
+                    self.active_transaction.as_mut(),
+                    self.active_transaction_id.clone(),
+                ) {
+                    tx.tx_id = id;
+                }
                 self.retain_debug_event("core", message);
             }
             UiEvent::Debug { message } => {
@@ -559,11 +583,55 @@ impl TuiState {
             }
             UiEvent::Pipeline { state } => {
                 self.runtime_state = runtime_state_from_pipeline_label(state);
+                if matches!(self.runtime_state, RuntimeShellState::Idle) {
+                    self.clear_runtime_transaction();
+                }
             }
             UiEvent::Error { .. } => {
-                self.runtime_state = RuntimeShellState::Failed;
+                if let Some(tx) = self.active_transaction.as_mut() {
+                    tx.failed_recoverable = true;
+                    self.runtime_state = RuntimeShellState::Failed;
+                } else {
+                    self.runtime_state = RuntimeShellState::Idle;
+                    self.clear_runtime_transaction();
+                }
             }
             _ => {}
+        }
+    }
+
+    fn install_runtime_transaction(&mut self, target_path: String, diff: Diff) {
+        let tx_id = self
+            .active_transaction_id
+            .clone()
+            .unwrap_or_else(|| self.next_transaction_id(&target_path));
+        self.active_target = Some(target_path.clone());
+        self.active_transaction_id = Some(tx_id.clone());
+        self.active_transaction = Some(RuntimeTransaction {
+            tx_id,
+            target_path,
+            diff,
+            failed_recoverable: false,
+        });
+    }
+
+    fn clear_runtime_transaction(&mut self) {
+        self.active_transaction = None;
+        self.active_transaction_id = None;
+        self.active_target = None;
+    }
+
+    fn next_transaction_id(&self, target_path: &str) -> String {
+        let normalized = target_path
+            .chars()
+            .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+            .collect::<String>()
+            .trim_matches('-')
+            .to_ascii_lowercase();
+        if normalized.is_empty() || normalized == "preview" {
+            "tx-preview".to_string()
+        } else {
+            format!("tx-{normalized}")
         }
     }
 
@@ -1021,13 +1089,12 @@ mod tests {
         assert_eq!(state.history, vec!["/save design"]);
     }
 
-    /// Phase 4.5: session only tracks diffs; pipeline/proposal state is in
-    /// `core_snapshot`.  Verify that diffs accumulate correctly via `append_chat`.
+    /// Projection diffs are owned by the active runtime transaction, not by
+    /// panel/session cache.
     #[test]
-    fn session_accumulates_diffs_via_append_chat() {
+    fn runtime_transaction_owns_projection_diff() {
         let mut state = TuiState::new(empty_payload());
 
-        // Proposal, Plan, DesignUpdate do NOT touch session anymore.
         state.append_chat(UiEvent::Proposal { candidates: vec![] });
         state.append_chat(UiEvent::Plan {
             steps: vec!["Fix parser.rs".to_string()],
@@ -1036,8 +1103,7 @@ mod tests {
             summary: "Parser modularized".to_string(),
             score: 0.82,
         });
-        // Session remains empty — only diffs accumulate.
-        assert!(state.session.diffs.is_empty());
+        assert!(state.active_transaction.is_none());
 
         state.append_chat(UiEvent::Diff {
             file: "parser.rs".to_string(),
@@ -1048,8 +1114,70 @@ mod tests {
                 new: Some("fn parse(input: &str)".to_string()),
             }],
         });
-        assert_eq!(state.session.diffs.len(), 1);
-        assert_eq!(state.session.diffs[0].file, "parser.rs");
+        let tx = state
+            .active_transaction
+            .as_ref()
+            .expect("active transaction");
+        assert_eq!(tx.target_path, "parser.rs");
+        assert_eq!(tx.diff.file, "parser.rs");
+    }
+
+    #[test]
+    fn tx_clear_destroys_projection_atomically() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Diff {
+            file: "parser.rs".to_string(),
+            changes: vec![DiffChunk {
+                old_line: None,
+                new_line: Some(1),
+                old: None,
+                new: Some("fn parse() {}".to_string()),
+            }],
+        });
+        assert!(state.active_transaction.is_some());
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
+
+        assert!(state.active_transaction.is_none());
+        assert!(state.active_transaction_id.is_none());
+        assert!(state.active_target.is_none());
+    }
+
+    #[test]
+    fn failed_without_transaction_clears_projection() {
+        let mut state = TuiState::new(empty_payload());
+
+        state.append_chat(UiEvent::Error {
+            message: "failed before preview".to_string(),
+        });
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert!(state.active_transaction.is_none());
+    }
+
+    #[test]
+    fn failed_recoverable_requires_transaction() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Diff {
+            file: "parser.rs".to_string(),
+            changes: vec![DiffChunk {
+                old_line: None,
+                new_line: Some(1),
+                old: None,
+                new: Some("fn parse() {}".to_string()),
+            }],
+        });
+
+        state.append_chat(UiEvent::Error {
+            message: "apply failed".to_string(),
+        });
+
+        let tx = state.active_transaction.as_ref().expect("recoverable tx");
+        assert!(tx.failed_recoverable);
+        assert!(tx.tx_id.starts_with("tx-"));
+        assert_eq!(state.runtime_state, RuntimeShellState::Failed);
     }
 
     /// Phase 4.5: `core_snapshot` is the SSOT; UI can assign it directly to

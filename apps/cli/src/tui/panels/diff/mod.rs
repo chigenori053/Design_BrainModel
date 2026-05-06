@@ -1,10 +1,10 @@
 use crate::tui::state::{Diff, TuiState};
 
 pub fn diff_panel_lines(state: &TuiState) -> Vec<String> {
-    let Some(diff) = state.session.diffs.last() else {
+    let Some(transaction) = state.active_transaction.as_ref() else {
         return vec!["No preview available.".to_string()];
     };
-    render_diff(diff)
+    render_diff(&transaction.diff)
 }
 
 fn render_diff(diff: &Diff) -> Vec<String> {

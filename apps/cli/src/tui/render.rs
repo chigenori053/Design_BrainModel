@@ -144,7 +144,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
-    use crate::tui::state::{Diff, DiffChunk, TuiState};
+    use crate::tui::state::{DiffChunk, TuiState, UiEvent};
 
     fn empty_payload() -> UiPayload {
         UiPayload {
@@ -197,7 +197,7 @@ mod tests {
     #[test]
     fn full_redraw_removes_previous_frame_cells() {
         let mut state = TuiState::new(empty_payload());
-        state.session.diffs.push(Diff {
+        state.append_chat(UiEvent::Diff {
             file: "old.rs".to_string(),
             changes: vec![DiffChunk {
                 old_line: None,
@@ -212,7 +212,9 @@ mod tests {
         full_repaint(&mut terminal, &state);
         assert!(buffer_text(terminal.backend().buffer()).contains("PREVIOUS_FRAME_RESIDUE"));
 
-        state.session.diffs.clear();
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
         full_repaint(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
@@ -223,7 +225,7 @@ mod tests {
     #[test]
     fn resize_full_redraw_is_deterministic_and_clean() {
         let mut state = TuiState::new(empty_payload());
-        state.session.diffs.push(Diff {
+        state.append_chat(UiEvent::Diff {
             file: "wide.rs".to_string(),
             changes: vec![DiffChunk {
                 old_line: None,
@@ -238,7 +240,9 @@ mod tests {
         full_repaint(&mut terminal, &state);
         assert!(buffer_text(terminal.backend().buffer()).contains("WIDE_FRAME_ONLY_TEXT"));
 
-        state.session.diffs.clear();
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
         terminal.resize(Rect::new(0, 0, 50, 16)).expect("resize");
         full_repaint(&mut terminal, &state);
         let first = terminal.backend().buffer().clone();
@@ -252,7 +256,7 @@ mod tests {
     #[test]
     fn telemetry_tokens_never_project_to_surface() {
         let mut state = TuiState::new(empty_payload());
-        state.session.diffs.push(Diff {
+        state.append_chat(UiEvent::Diff {
             file: "trace.rs".to_string(),
             changes: vec![
                 DiffChunk {
