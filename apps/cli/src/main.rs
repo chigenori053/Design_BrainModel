@@ -121,3 +121,4 @@ Start the deterministic runtime host loop.
 Options:
   --json    Reserved for structured runtime output.
 ";
+// DBM clarification execution guarantee
