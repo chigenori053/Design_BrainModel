@@ -1351,6 +1351,10 @@ mod tests {
         let second = crate::tui::rendering::render_runtime_text(&state);
 
         assert_eq!(first, second);
-        assert!(first.iter().any(|line| line.contains("state=READY")));
+        assert!(
+            first
+                .iter()
+                .any(|line| line.contains("state=READY_TO_APPLY"))
+        );
     }
 }

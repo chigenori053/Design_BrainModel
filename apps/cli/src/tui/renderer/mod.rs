@@ -12,7 +12,7 @@ use crossterm::{
 use ratatui::{Terminal, backend::CrosstermBackend};
 
 use crate::runtime::event_queue::RuntimeEventQueue;
-use crate::tui::{render, state::TuiState};
+use crate::tui::{render, rendering::RenderSnapshot};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderScheduler {
@@ -78,10 +78,10 @@ impl TerminalRenderer {
         })
     }
 
-    pub fn full_repaint(&mut self, state: &TuiState) -> Result<(), String> {
+    pub fn full_repaint(&mut self, snapshot: &RenderSnapshot) -> Result<(), String> {
         self.terminal.clear().map_err(|err| err.to_string())?;
         self.terminal
-            .draw(|frame| render::render(frame, state))
+            .draw(|frame| render::render(frame, snapshot))
             .map_err(|err| err.to_string())?;
         Ok(())
     }

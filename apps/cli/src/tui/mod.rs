@@ -22,6 +22,7 @@ use crate::runtime::logging::isolate_tui_logging;
 use self::core::RuntimeCoreBridge;
 use self::model::UiPayload;
 use self::renderer::{RenderScheduler, TerminalRenderer};
+use self::rendering::RenderSnapshot;
 use self::state::{TuiAction, TuiState};
 
 const FRAME_TIME: Duration = Duration::from_millis(16);
@@ -49,7 +50,8 @@ fn run_event_loop(
     let mut scheduler = RenderScheduler::default();
     scheduler.request_full_repaint();
     if scheduler.take_pending() {
-        renderer.full_repaint(state)?;
+        let snapshot = RenderSnapshot::from(&*state);
+        renderer.full_repaint(&snapshot)?;
     }
 
     loop {
@@ -86,7 +88,8 @@ fn run_event_loop(
         }
 
         if scheduler.take_pending() {
-            renderer.full_repaint(state)?;
+            let snapshot = RenderSnapshot::from(&*state);
+            renderer.full_repaint(&snapshot)?;
         }
     }
     Ok(())

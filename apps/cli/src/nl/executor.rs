@@ -650,3 +650,4 @@ mod tests {
         assert_eq!(r1, r2, "noop output must be deterministic");
     }
 }
+// DBM clarification execution guarantee

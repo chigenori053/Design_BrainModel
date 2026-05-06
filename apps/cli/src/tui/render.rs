@@ -6,12 +6,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
 };
 
-use super::state::{Focus, TuiState};
+use super::state::Focus;
 use crate::tui::rendering::{
     FrameComposer, FullSurfaceProjection, ImmutableFrame, LayoutMetadata, RenderSnapshot,
 };
 
-pub fn render(frame: &mut Frame, state: &TuiState) {
+pub fn render(frame: &mut Frame, snapshot: &RenderSnapshot) {
     let area = frame.area();
     let rows = layout_rows(area);
     let middle = Layout::default()
@@ -26,8 +26,7 @@ pub fn render(frame: &mut Frame, state: &TuiState) {
         diff: middle[1],
         status: rows[2],
     };
-    let snapshot = RenderSnapshot::from(state);
-    let immutable = FrameComposer::compose(snapshot, layout);
+    let immutable = FrameComposer::compose(snapshot.clone(), layout);
     let projection = FullSurfaceProjection { frame: immutable };
     SurfaceProjector::project(frame, &projection);
 }
@@ -68,9 +67,7 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
         .border_style(active_border(snapshot.focus == Focus::Chat));
     let lines = snapshot
         .runtime
-        .lines
-        .iter()
-        .cloned()
+        .runtime_panel_lines()
         .into_iter()
         .map(Line::from)
         .collect::<Vec<_>>();
@@ -85,7 +82,8 @@ fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
         .title(" Diff / Preview ")
         .border_style(active_border(snapshot.focus == Focus::Design));
     let lines = snapshot
-        .diff
+        .runtime
+        .diff_projection
         .lines
         .iter()
         .cloned()
@@ -146,7 +144,7 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
-    use crate::tui::state::{Diff, DiffChunk};
+    use crate::tui::state::{Diff, DiffChunk, TuiState};
 
     fn empty_payload() -> UiPayload {
         UiPayload {
@@ -175,8 +173,11 @@ mod tests {
     }
 
     fn full_repaint(terminal: &mut Terminal<TestBackend>, state: &TuiState) {
+        let snapshot = RenderSnapshot::from(state);
         terminal.clear().expect("clear");
-        terminal.draw(|frame| render(frame, state)).expect("draw");
+        terminal
+            .draw(|frame| render(frame, &snapshot))
+            .expect("draw");
     }
 
     #[test]
