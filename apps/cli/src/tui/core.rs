@@ -1,7 +1,10 @@
 use std::path::PathBuf;
 
 pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge};
+use crate::nl::normalization::normalize_runtime_input;
 use crate::pipeline::PipelineState;
+use crate::runtime::logging::{emit_debug, tui_logging_isolated};
+use crate::runtime::runtime_events::DebugLevel;
 
 use super::state::{EventQueue, TuiState, UiEvent};
 
@@ -41,9 +44,12 @@ pub fn handle_submit(
     input: String,
     _working_dir: PathBuf,
 ) {
-    eprintln!("[UI] Input received");
+    let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
     // Phase 4.5: build CoreRequest (pass-through).
-    let request = CoreRequest::new(input);
+    let runtime_input = normalize_runtime_input(&input)
+        .map(|normalized| normalized.command.to_runtime_input())
+        .unwrap_or(input);
+    let request = CoreRequest::new(runtime_input);
     let response = core.execute(request);
     let success = response.status != crate::core::ExecutionStatus::Failed;
 
@@ -75,7 +81,9 @@ fn apply_core_response(
         {
             *pipeline_state = next;
         }
-        eprintln!("[UI] Rendering event");
+        if !tui_logging_isolated() {
+            let _event = emit_debug("UI", "Rendering event", DebugLevel::Trace);
+        }
         queue.push(to_ui_event(event));
     }
 }
@@ -102,10 +110,12 @@ mod tests {
     #[derive(Default)]
     struct FakeCore {
         response: Option<CoreResponse>,
+        seen_input: std::sync::Mutex<Option<String>>,
     }
 
     impl CoreExecutor for FakeCore {
-        fn execute(&self, _request: CoreRequest) -> CoreResponse {
+        fn execute(&self, request: CoreRequest) -> CoreResponse {
+            *self.seen_input.lock().expect("seen input") = Some(request.raw.clone());
             self.response.clone().unwrap_or(CoreResponse {
                 events: vec![CoreEvent::Result {
                     message: "done".to_string(),
@@ -115,6 +125,24 @@ mod tests {
                 core_state: None,
             })
         }
+    }
+
+    #[test]
+    fn submit_normalizes_japanese_runtime_intent_before_core() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+
+        handle_submit(
+            &mut state,
+            &core,
+            "parser.rs を preview".to_string(),
+            ".".into(),
+        );
+
+        assert_eq!(
+            core.seen_input.lock().expect("seen").as_deref(),
+            Some("preview parser.rs")
+        );
     }
 
     #[test]
@@ -134,6 +162,7 @@ mod tests {
                 design: None,
                 core_state: None,
             }),
+            seen_input: std::sync::Mutex::new(None),
         };
 
         handle_submit(&mut state, &core, "fix parser bug".to_string(), ".".into());

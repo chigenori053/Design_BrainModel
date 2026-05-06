@@ -442,8 +442,15 @@ macro_rules! trace_ir {
 }
 
 fn emit_core_log(stage: &str, data: String) {
+    if crate::runtime::logging::tui_logging_isolated() {
+        return;
+    }
     let line = format!("[IR-TRACE][{stage}] {data}\n");
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
+}
+
+fn observability_enabled() -> bool {
+    ENABLE_OBSERVABILITY && !crate::runtime::logging::tui_logging_isolated()
 }
 
 pub trait CoreExecutor {
@@ -542,7 +549,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             current_proposals: Some(current_state.proposals.clone()),
         };
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[ROUTE][id={}] kind={:?} reason=\"{}\"", id, kind, reason);
             println!("[ROUTE][id={}] input=\"{}\"", id, request.raw);
             if let Some(ref mapped) = mapped_input {
@@ -583,7 +590,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             } else {
                 self.push_and_attach_core_state(response, id)
             };
-            if ENABLE_OBSERVABILITY {
+            if observability_enabled() {
                 println!("[CORE][id={}] exit status={:?}", id, response.status);
             }
             return response;
@@ -603,7 +610,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             self.push_and_attach_core_state(response, id)
         };
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CORE][id={}] exit status={:?}", id, response.status);
         }
 
@@ -682,7 +689,7 @@ impl RuntimeCoreBridge {
 
     fn execute_natural_language(&self, request: InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=analyze", id);
         }
         if self.current_depth() >= self.limits.max_depth {
@@ -789,7 +796,7 @@ impl RuntimeCoreBridge {
             }
         };
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
 
@@ -866,7 +873,7 @@ impl RuntimeCoreBridge {
 
         self.store_pending_files(&runtime_result);
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=preview", id);
         }
 
@@ -889,7 +896,7 @@ impl RuntimeCoreBridge {
             state: PipelineState::Previewed.label().to_string(),
         });
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=apply", id);
         }
 
@@ -929,7 +936,7 @@ impl RuntimeCoreBridge {
         target: String,
     ) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
 
@@ -966,7 +973,7 @@ impl RuntimeCoreBridge {
         *self.pending_files.lock().expect("pending lock") = vec![pending_file.clone()];
         self.applied_files.lock().expect("applied lock").clear();
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=preview", id);
         }
         events.push(CoreEvent::Preview {
@@ -979,7 +986,7 @@ impl RuntimeCoreBridge {
             state: PipelineState::Previewed.label().to_string(),
         });
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=apply", id);
         }
         let mut apply_request = request.clone();
@@ -1211,7 +1218,7 @@ impl RuntimeCoreBridge {
         request: &InternalRequest,
     ) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!(
                 "[EXEC][id={}] adapter={} target={:?}",
                 id,
@@ -1222,7 +1229,7 @@ impl RuntimeCoreBridge {
         }
         let mut session = crate::session::AgentSession::new();
         let subcommand = args.first().cloned();
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[EXEC_STEP][id={}] build_plan", id);
         }
         let remaining_args = if args.len() > 1 {
@@ -1231,7 +1238,7 @@ impl RuntimeCoreBridge {
             Vec::new()
         };
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[EXEC_STEP][id={}] validate", id);
         }
         let response =
@@ -1240,7 +1247,7 @@ impl RuntimeCoreBridge {
                 .execute(command, subcommand, &remaining_args, &mut session)
             {
                 Ok(output) => {
-                    if ENABLE_OBSERVABILITY {
+                    if observability_enabled() {
                         println!("[EXEC_STEP][id={}] apply_patch", id);
                     }
                     CoreResponse {
@@ -1255,7 +1262,7 @@ impl RuntimeCoreBridge {
                 Err(err) => error_response("CommandError", &err.to_string(), id),
             };
 
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!(
                 "[EXEC][id={}] adapter={} status={}",
                 id,
@@ -1304,7 +1311,7 @@ impl RuntimeCoreBridge {
 
     fn compare_proposals(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
         let Some(candidates) = request.context.current_proposals.as_ref() else {
@@ -1349,7 +1356,7 @@ impl RuntimeCoreBridge {
     /// restored `CoreState` directly — no push to history.
     fn undo(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=rollback", id);
         }
         if matches!(
@@ -1406,7 +1413,7 @@ impl RuntimeCoreBridge {
     /// to the current cursor position.  Truncates the forward chain.
     fn replay(&self, request: &InternalRequest, step: Option<&str>) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
         let version = step
@@ -1472,7 +1479,7 @@ impl RuntimeCoreBridge {
     /// Move the history cursor to a specific version.  Phase 4.5.
     fn jump(&self, request: &InternalRequest, input: &str) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
         let version_str = input
@@ -1525,7 +1532,7 @@ impl RuntimeCoreBridge {
     }
 
     fn filter(&self, input: &str, id: u64) -> CoreResponse {
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
         let filter = input
@@ -1547,7 +1554,7 @@ impl RuntimeCoreBridge {
 
     fn preview(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=preview", id);
         }
         if request.context.pipeline_state != PipelineState::Planned {
@@ -1586,7 +1593,7 @@ impl RuntimeCoreBridge {
 
     fn apply(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=apply", id);
         }
         if request.context.pipeline_state != PipelineState::Previewed {
@@ -1626,14 +1633,16 @@ impl RuntimeCoreBridge {
             Ok(change_set) => change_set,
             Err(err) => return error_response("ExecutionError", &err, id),
         };
-        println!(
-            "[CODING] diff_files={:?}",
-            change_set
-                .changes
-                .iter()
-                .map(|change| change.file_path.clone())
-                .collect::<Vec<_>>()
-        );
+        if observability_enabled() {
+            println!(
+                "[CODING] diff_files={:?}",
+                change_set
+                    .changes
+                    .iter()
+                    .map(|change| change.file_path.clone())
+                    .collect::<Vec<_>>()
+            );
+        }
 
         let execution = match execute_code_change_set(
             &request.context.working_dir,
@@ -1684,7 +1693,7 @@ impl RuntimeCoreBridge {
         };
 
         *self.applied_files.lock().expect("applied lock") = applied.clone();
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             if execution.status == "noop" {
                 println!("[CODING][id={}] stage=apply status=NoOp changes=0", id);
             } else {
@@ -1748,7 +1757,7 @@ impl RuntimeCoreBridge {
 
     fn git_add(&self, request: &InternalRequest, input: &str) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=apply", id);
         }
         if request.context.pipeline_state != PipelineState::Applied {
@@ -1835,7 +1844,7 @@ impl RuntimeCoreBridge {
 
     fn git_commit(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=apply", id);
         }
         if request.context.pipeline_state != PipelineState::Staged {
@@ -1919,7 +1928,7 @@ impl RuntimeCoreBridge {
 
     fn rollback(&self, request: &InternalRequest) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=rollback", id);
         }
         if request.context.pipeline_state == PipelineState::Committed {
@@ -1969,7 +1978,7 @@ impl RuntimeCoreBridge {
     /// pipeline through Planned → Previewed.  Phase 1C.5 §7.1.
     fn select_candidate(&self, request: &InternalRequest, input: &str) -> CoreResponse {
         let id = request.id;
-        if ENABLE_OBSERVABILITY {
+        if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
         if self.current_depth() >= self.limits.max_depth {
@@ -2540,7 +2549,7 @@ fn is_exploration_state(state: &PipelineState) -> bool {
 }
 
 fn error_response(kind: &str, message: &str, id: u64) -> CoreResponse {
-    if ENABLE_OBSERVABILITY {
+    if observability_enabled() {
         println!(
             "[ERROR][id={}] kind=\"{}\" message=\"{}\"",
             id, kind, message
@@ -3586,3 +3595,4 @@ mod tests {
         ));
     }
 }
+// DBM clarification execution guarantee

@@ -2,118 +2,59 @@ use ratatui::{
     Frame,
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
-    text::{Line, Span},
+    text::Line,
     widgets::{Block, Borders, Paragraph, Wrap},
 };
 
-use super::state::{DESIGN_MAX_LINES, Focus, TuiState};
+use super::panels::{diff::diff_panel_lines, runtime::runtime_panel_lines};
+use super::state::{Focus, TuiState};
 
 pub fn render(frame: &mut Frame, state: &mut TuiState) {
     let area = frame.area();
-    let rows = layout_rows(area, state.design_collapsed);
+    let rows = layout_rows(area);
+    let middle = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(rows[1]);
 
-    render_design(frame, state, rows[0]);
-    render_chat(frame, state, rows[1]);
-    render_input(frame, state, rows[2]);
-    render_help_bar(frame, state, area);
+    render_input(frame, state, rows[0]);
+    render_runtime_state(frame, state, middle[0]);
+    render_diff_preview(frame, state, middle[1]);
+    render_status_line(frame, state, rows[2]);
 }
 
-fn layout_rows(area: Rect, design_collapsed: bool) -> std::rc::Rc<[Rect]> {
-    let input_rows = 5_u16.min(area.height.saturating_sub(2)).max(3);
-    let design = if design_collapsed {
-        Constraint::Length(3)
-    } else {
-        Constraint::Percentage(25)
-    };
-
+fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
     Layout::default()
         .direction(Direction::Vertical)
-        .constraints([design, Constraint::Min(6), Constraint::Length(input_rows)])
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(8),
+            Constraint::Length(1),
+        ])
         .split(area)
 }
 
-fn render_design(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let title = if state.design_collapsed {
-        format!(
-            " Design Convergence View v{} [+] ",
-            state.design_doc.version
-        )
-    } else {
-        let version = state
-            .core_snapshot
-            .design
-            .as_ref()
-            .map_or(state.design_doc.version, |d| d.version);
-        let marker = if state.design_updated { " updated" } else { "" };
-        format!(
-            " Design Panel v{}{} | {} ",
-            version,
-            marker,
-            state.core_snapshot.status.label()
-        )
-    };
+fn render_runtime_state(frame: &mut Frame, state: &TuiState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(title)
-        .border_style(active_border(state.focus == Focus::Design));
-
-    if state.design_collapsed {
-        frame.render_widget(
-            Paragraph::new(" [DESIGN] collapsed - focus and press d to expand").block(block),
-            area,
-        );
-        return;
-    }
-
-    let height = block.inner(area).height as usize;
-    let max_rows = height.min(DESIGN_MAX_LINES);
-    let panel_lines = state.design_panel_lines();
-    let lines: Vec<Line> = panel_lines
-        .iter()
-        .skip(state.design_scroll)
-        .take(max_rows)
-        .map(|line| {
-            if state.design_updated && !line.is_empty() {
-                Line::from(Span::styled(
-                    line.as_str(),
-                    Style::default().fg(Color::Yellow),
-                ))
-            } else {
-                Line::from(line.as_str())
-            }
-        })
-        .collect();
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
+        .title(" Runtime State ")
+        .border_style(active_border(state.focus == Focus::Chat));
+    let lines = runtime_panel_lines(state)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
-fn render_chat(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let follow = if state.chat_scroll.is_following {
-        "follow"
-    } else {
-        "paused"
-    };
+fn render_diff_preview(frame: &mut Frame, state: &TuiState, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(format!(" Chat Stream ({follow}) "))
-        .border_style(active_border(state.focus == Focus::Chat));
-
-    let inner_height = block.inner(area).height as usize;
-    let all_lines = state.flattened_chat_lines();
-    let visible = visible_tail_window(&all_lines, inner_height, state.chat_scroll.offset);
-    let lines: Vec<Line> = visible
-        .iter()
-        .map(|line| {
-            let style = chat_line_style(line);
-            Line::from(Span::styled(line.as_str(), style))
-        })
-        .collect();
-
+        .title(" Diff / Preview ")
+        .border_style(active_border(state.focus == Focus::Design));
+    let lines = diff_panel_lines(state)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -152,34 +93,11 @@ fn render_input(frame: &mut Frame, state: &TuiState, area: Rect) {
     }
 }
 
-fn render_help_bar(frame: &mut Frame, state: &TuiState, area: Rect) {
-    let help_area = Rect {
-        x: area.x,
-        y: area.y + area.height.saturating_sub(1),
-        width: area.width,
-        height: 1,
-    };
-    let focus = match state.focus {
-        Focus::Input => "Input",
-        Focus::Chat => "Chat",
-        Focus::Design => "Design",
-    };
-    let text = format!(
-        " focus:{focus}   Enter send   Shift+Enter newline   select <n>   y/n confirm   cancel   /save design   Ctrl+q quit "
-    );
+fn render_status_line(frame: &mut Frame, state: &TuiState, area: Rect) {
     frame.render_widget(
-        Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-        help_area,
+        Paragraph::new(state.status_line()).style(Style::default().fg(Color::DarkGray)),
+        area,
     );
-}
-
-fn visible_tail_window(lines: &[String], height: usize, scroll_from_tail: usize) -> &[String] {
-    if height == 0 || lines.is_empty() {
-        return &[];
-    }
-    let end = lines.len().saturating_sub(scroll_from_tail);
-    let start = end.saturating_sub(height);
-    &lines[start..end]
 }
 
 fn input_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
@@ -194,44 +112,6 @@ fn input_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
         }
     }
     (row, col)
-}
-
-fn chat_line_style(line: &str) -> Style {
-    if line.starts_with("[THINKING]") {
-        kind_style(Color::Cyan)
-    } else if line.starts_with("[EDITING]") {
-        kind_style(Color::Yellow)
-    } else if line.starts_with("[PLAN]") {
-        kind_style(Color::Blue)
-    } else if line.starts_with("[PREVIEW]") {
-        kind_style(Color::Magenta)
-    } else if line.starts_with("[EXECUTION]") {
-        kind_style(Color::Yellow)
-    } else if line.starts_with("[DIFF]") {
-        kind_style(Color::Magenta)
-    } else if line.starts_with("[DESIGN]") {
-        kind_style(Color::Cyan)
-    } else if line.starts_with("[DESIGN DIFF]") {
-        kind_style(Color::Cyan)
-    } else if line.starts_with("[RECOVERY]") {
-        kind_style(Color::LightRed)
-    } else if line.starts_with("[RESULT]") {
-        kind_style(Color::Green)
-    } else if line.starts_with("[PIPELINE]") {
-        kind_style(Color::Gray)
-    } else if line.starts_with("[NEXT]") {
-        kind_style(Color::White)
-    } else if line.starts_with("[ERROR]") {
-        kind_style(Color::Red)
-    } else if line.starts_with("[DEBUG]") {
-        kind_style(Color::DarkGray)
-    } else {
-        Style::default()
-    }
-}
-
-fn kind_style(color: Color) -> Style {
-    Style::default().fg(color).add_modifier(Modifier::BOLD)
 }
 
 fn active_border(active: bool) -> Style {

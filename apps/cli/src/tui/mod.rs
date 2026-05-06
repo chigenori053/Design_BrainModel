@@ -2,14 +2,19 @@ pub mod composer;
 pub mod confidence_rank;
 pub mod core;
 pub mod edit_block;
+pub mod input;
 pub mod model;
+pub mod panels;
 pub mod proc_strip;
 pub mod render;
+pub mod renderer;
+pub mod rendering;
 pub mod review_batch;
+pub mod runtime;
 pub mod state;
 
 use std::io;
-use std::{thread, time::Duration};
+use std::time::Duration;
 
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event},
@@ -17,6 +22,8 @@ use crossterm::{
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
 use ratatui::{Terminal, backend::CrosstermBackend};
+
+use crate::runtime::logging::isolate_tui_logging;
 
 use self::core::RuntimeCoreBridge;
 use self::model::UiPayload;
@@ -26,6 +33,7 @@ const FRAME_TIME: Duration = Duration::from_millis(16);
 
 /// Launch the interactive TUI. Blocks until the user quits.
 pub fn run_tui(payload: UiPayload) -> Result<(), String> {
+    let _logging_guard = isolate_tui_logging();
     enable_raw_mode().map_err(|e| e.to_string())?;
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture).map_err(|e| e.to_string())?;
@@ -34,6 +42,9 @@ pub fn run_tui(payload: UiPayload) -> Result<(), String> {
     let mut terminal = Terminal::new(backend).map_err(|e| e.to_string())?;
 
     let mut state = TuiState::new(payload);
+    if let Ok(root) = std::env::current_dir() {
+        state.enable_persistent_history(root.join(".dbm/cli_history"));
+    }
     let core = RuntimeCoreBridge::with_defaults();
     let result = run_event_loop(&mut terminal, &mut state, &core);
 
@@ -55,12 +66,21 @@ fn run_event_loop(
     state: &mut TuiState,
     core: &RuntimeCoreBridge,
 ) -> Result<(), String> {
+    terminal
+        .draw(|frame| render::render(frame, state))
+        .map_err(|e| e.to_string())?;
+
     loop {
+        let mut needs_redraw = false;
+        if !state.event_queue.is_empty() {
+            needs_redraw = true;
+        }
         state.handle_ui_events();
 
-        if event::poll(Duration::ZERO).map_err(|e| e.to_string())?
+        if event::poll(FRAME_TIME).map_err(|e| e.to_string())?
             && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
         {
+            needs_redraw = true;
             match state.handle_key_event(key) {
                 TuiAction::Quit => break,
                 TuiAction::Submit(input) => {
@@ -84,11 +104,11 @@ fn run_event_loop(
             }
         }
 
-        terminal
-            .draw(|frame| render::render(frame, state))
-            .map_err(|e| e.to_string())?;
-
-        thread::sleep(FRAME_TIME);
+        if needs_redraw {
+            terminal
+                .draw(|frame| render::render(frame, state))
+                .map_err(|e| e.to_string())?;
+        }
     }
     Ok(())
 }

@@ -6,7 +6,13 @@ use strategy_engine::ExecutionPlanCandidate;
 pub use crate::core::{
     Constraint, CoreState, DesignDocument, Diff, DiffChunk, ReasonUnit, StructureTree,
 };
+use crate::nl::language::detect_runtime_language;
+use crate::nl::normalization::normalize_runtime_input;
+use crate::nl::types::SupportedLanguage;
 use crate::pipeline::PipelineState;
+use crate::runtime::runtime_events::DebugEvent;
+use crate::tui::input::{PersistentInputHistory, complete_command};
+use crate::tui::runtime::RuntimeShellState;
 
 use super::model::UiPayload;
 
@@ -377,6 +383,13 @@ pub struct TuiState {
     pub design_updated: bool,
     pub history: Vec<String>,
     history_cursor: Option<usize>,
+    pub persistent_history: Option<PersistentInputHistory>,
+    pub runtime_state: RuntimeShellState,
+    pub active_target: Option<String>,
+    pub active_transaction_id: Option<String>,
+    pub dirty_tree_state: String,
+    pub language_mode: SupportedLanguage,
+    pub debug_events: Vec<DebugEvent>,
     /// Read-only cache of the last `CoreState` returned by Core.  Phase 4.5.
     /// This is the Single Source of Truth snapshot; the UI never mutates it.
     pub core_snapshot: CoreState,
@@ -409,9 +422,33 @@ impl TuiState {
             design_updated: false,
             history: Vec::new(),
             history_cursor: None,
+            persistent_history: None,
+            runtime_state: RuntimeShellState::Idle,
+            active_target: None,
+            active_transaction_id: None,
+            dirty_tree_state: "clean".to_string(),
+            language_mode: SupportedLanguage::Unknown,
+            debug_events: Vec::new(),
             core_snapshot: CoreState::default(),
         }
         .with_pseudo_stream()
+    }
+
+    pub fn enable_persistent_history(&mut self, path: std::path::PathBuf) {
+        let store = PersistentInputHistory::new(path);
+        self.history = store.load();
+        self.persistent_history = Some(store);
+    }
+
+    pub fn status_line(&self) -> String {
+        format!(
+            "state={} tx={} dirty={} target={} lang={}",
+            self.runtime_state.label(),
+            self.active_transaction_id.as_deref().unwrap_or("(none)"),
+            self.dirty_tree_state,
+            self.active_target.as_deref().unwrap_or("(none)"),
+            crate::nl::language::language_label(self.language_mode)
+        )
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
@@ -427,6 +464,12 @@ impl TuiState {
                 return TuiAction::Quit;
             }
             KeyCode::Tab => {
+                if self.focus == Focus::Input
+                    && let Some(completed) = complete_command(&self.input.text)
+                {
+                    self.input.set_text(completed);
+                    return TuiAction::None;
+                }
                 self.focus = self.focus.next();
                 return TuiAction::None;
             }
@@ -482,6 +525,7 @@ impl TuiState {
     fn apply_event_to_session(&mut self, event: &UiEvent) {
         match event {
             UiEvent::Preview { diff } => {
+                self.runtime_state = RuntimeShellState::Ready;
                 let d = Diff {
                     file: "preview".to_string(),
                     changes: diff
@@ -497,6 +541,7 @@ impl TuiState {
                 self.session.diffs.push(d);
             }
             UiEvent::Diff { file, changes } => {
+                self.active_target = Some(file.clone());
                 self.session.diffs.push(Diff {
                     file: file.clone(),
                     changes: changes.clone(),
@@ -504,6 +549,19 @@ impl TuiState {
             }
             UiEvent::Debug { message } if message.starts_with("filter set: ") => {
                 self.session.filter = message.strip_prefix("filter set: ").map(ToOwned::to_owned);
+            }
+            UiEvent::Debug { message } if message.contains("\"transaction\"") => {
+                self.active_transaction_id = extract_json_string(message, "transaction_id");
+                self.retain_debug_event("core", message);
+            }
+            UiEvent::Debug { message } => {
+                self.retain_debug_event("core", message);
+            }
+            UiEvent::Pipeline { state } => {
+                self.runtime_state = runtime_state_from_pipeline_label(state);
+            }
+            UiEvent::Error { .. } => {
+                self.runtime_state = RuntimeShellState::Failed;
             }
             _ => {}
         }
@@ -574,9 +632,10 @@ impl TuiState {
                     self.input.clear();
                     return TuiAction::SaveDesign;
                 }
-                self.history.push(submitted.clone());
+                self.record_history(submitted.clone());
                 self.history_cursor = None;
                 self.input.clear();
+                self.update_runtime_intent_state(&submitted);
                 self.enqueue_event(UiEvent::Next {
                     actions: vec![submitted.clone()],
                 });
@@ -681,6 +740,49 @@ impl TuiState {
         }
     }
 
+    fn record_history(&mut self, submitted: String) {
+        self.history.push(submitted.clone());
+        if let Some(store) = self.persistent_history.as_ref() {
+            let _ = store.append(&submitted);
+        }
+    }
+
+    fn update_runtime_intent_state(&mut self, submitted: &str) {
+        self.language_mode = detect_runtime_language(submitted);
+        if let Some(normalized) = normalize_runtime_input(submitted) {
+            self.language_mode = normalized.language;
+            self.active_target = normalized
+                .command
+                .target
+                .as_ref()
+                .map(|path| path.display().to_string())
+                .or_else(|| self.active_target.clone());
+            self.runtime_state = match normalized.command.intent {
+                crate::nl::runtime_intent::RuntimeIntent::Analyze => RuntimeShellState::Analyze,
+                crate::nl::runtime_intent::RuntimeIntent::Preview => RuntimeShellState::Analyze,
+                crate::nl::runtime_intent::RuntimeIntent::Apply => RuntimeShellState::Apply,
+                crate::nl::runtime_intent::RuntimeIntent::Rollback => RuntimeShellState::Idle,
+                crate::nl::runtime_intent::RuntimeIntent::Replay => RuntimeShellState::Replay,
+                crate::nl::runtime_intent::RuntimeIntent::GitStatus
+                | crate::nl::runtime_intent::RuntimeIntent::GitDiff => RuntimeShellState::Git,
+            };
+        }
+    }
+
+    fn retain_debug_event(&mut self, source: &str, message: &str) {
+        self.debug_events.push(DebugEvent {
+            timestamp: 0,
+            source: source.to_string(),
+            message: message.to_string(),
+            level: crate::runtime::runtime_events::DebugLevel::Debug,
+        });
+        const MAX_DEBUG_EVENTS: usize = 200;
+        if self.debug_events.len() > MAX_DEBUG_EVENTS {
+            let overflow = self.debug_events.len() - MAX_DEBUG_EVENTS;
+            self.debug_events.drain(..overflow);
+        }
+    }
+
     fn with_pseudo_stream(mut self) -> Self {
         for event in pseudo_stream_events() {
             self.enqueue_event(event);
@@ -768,6 +870,26 @@ fn seed_design_document(payload: &UiPayload) -> DesignDocument {
     )
 }
 
+fn runtime_state_from_pipeline_label(label: &str) -> RuntimeShellState {
+    match label {
+        "Proposed" => RuntimeShellState::Plan,
+        "Planned" => RuntimeShellState::Validate,
+        "Previewed" => RuntimeShellState::AwaitConfirmation,
+        "Applied" => RuntimeShellState::Apply,
+        "Staged" | "Committed" => RuntimeShellState::Git,
+        "Idle" => RuntimeShellState::Idle,
+        _ => RuntimeShellState::Idle,
+    }
+}
+
+fn extract_json_string(input: &str, key: &str) -> Option<String> {
+    let needle = format!("\"{key}\":\"");
+    let start = input.find(&needle)? + needle.len();
+    let rest = &input[start..];
+    let end = rest.find('"')?;
+    Some(rest[..end].to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
@@ -850,6 +972,39 @@ mod tests {
                 .flattened_chat_lines()
                 .iter()
                 .any(|line| line == "[NEXT] fix parser bug")
+        );
+    }
+
+    #[test]
+    fn input_tab_completes_runtime_command_when_prefix_exists() {
+        let mut state = TuiState::new(empty_payload());
+        for ch in "git s".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(key(KeyCode::Tab));
+
+        assert_eq!(action, TuiAction::None);
+        assert_eq!(state.input.text, "git status");
+        assert_eq!(state.focus, Focus::Input);
+    }
+
+    #[test]
+    fn persistent_history_loads_and_appends() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let path = temp.path().join(".dbm/cli_history");
+        let mut state = TuiState::new(empty_payload());
+        state.enable_persistent_history(path.clone());
+        for ch in "preview parser.rs".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(key(KeyCode::Enter));
+
+        assert_eq!(action, TuiAction::Submit("preview parser.rs".to_string()));
+        assert_eq!(
+            std::fs::read_to_string(path).expect("history"),
+            "preview parser.rs\n"
         );
     }
 
@@ -966,6 +1121,24 @@ mod tests {
         let lines = state.flattened_chat_lines();
         assert!(!lines.is_empty());
         assert!(lines.iter().all(|line| line.starts_with("[DIFF]")));
+    }
+
+    #[test]
+    fn runtime_status_tracks_target_language_and_state() {
+        let mut state = TuiState::new(empty_payload());
+        for ch in "parser.rs を preview".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(key(KeyCode::Enter));
+
+        assert_eq!(
+            action,
+            TuiAction::Submit("parser.rs を preview".to_string())
+        );
+        assert_eq!(state.active_target.as_deref(), Some("parser.rs"));
+        assert_eq!(state.language_mode, SupportedLanguage::Japanese);
+        assert_eq!(state.runtime_state, RuntimeShellState::Analyze);
     }
 
     #[test]
@@ -1163,5 +1336,21 @@ mod tests {
         let state = TuiState::new(payload);
 
         assert!(state.design_doc.rendered.len() <= DESIGN_MAX_LINES);
+    }
+
+    #[test]
+    fn deterministic_runtime_text_rendering_is_stable() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("parser.rs".to_string());
+        state.runtime_state = RuntimeShellState::Ready;
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn parse() {}".to_string()],
+        });
+
+        let first = crate::tui::rendering::render_runtime_text(&state);
+        let second = crate::tui::rendering::render_runtime_text(&state);
+
+        assert_eq!(first, second);
+        assert!(first.iter().any(|line| line.contains("state=READY")));
     }
 }

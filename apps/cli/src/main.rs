@@ -1,5 +1,6 @@
 use clap::Parser;
 use design_cli::core::{CoreExecutor, CoreRequest, RuntimeCoreBridge};
+use design_cli::runtime::bootstrap::start_runtime_tui;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -36,6 +37,19 @@ fn main() {
         return;
     }
 
+    if let Some(help) = subcommand_help(&cli.input) {
+        println!("{help}");
+        return;
+    }
+
+    if raw_input == "repl" {
+        if let Err(err) = start_runtime_tui() {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     // §5.2 Core connection
     let core = RuntimeCoreBridge::with_defaults();
 
@@ -68,4 +82,42 @@ Examples:
   design_cli \"このプロジェクトを解析して\"
 
 Use /help to see all available slash commands.
+";
+
+fn subcommand_help(input: &[String]) -> Option<&'static str> {
+    let [command, flag] = input else {
+        return None;
+    };
+    if flag != "--help" && flag != "-h" {
+        return None;
+    }
+    match command.as_str() {
+        "coding" => Some(CODING_HELP),
+        "structure" => Some(STRUCTURE_HELP),
+        "repl" => Some(REPL_HELP),
+        _ => None,
+    }
+}
+
+const CODING_HELP: &str = "\
+Usage: design_cli coding [--check] [--apply]
+
+Options:
+  --check   Validate generated coding changes.
+";
+
+const STRUCTURE_HELP: &str = "\
+Usage: design_cli structure <view|edit|diff>
+
+Commands:
+  view      Render structure view.
+";
+
+const REPL_HELP: &str = "\
+Usage: design_cli repl [--json]
+
+Start the deterministic runtime host loop.
+
+Options:
+  --json    Reserved for structured runtime output.
 ";
