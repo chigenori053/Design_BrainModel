@@ -23,6 +23,16 @@ use crate::coding::{
 };
 use crate::command::CommandRegistry;
 use crate::commands::register_defaults;
+use crate::git::commands::GitCommand;
+use crate::git::dirty_tree::{
+    DirtyTreePolicy, reject_dirty_worktree_except, reject_unstaged_worktree,
+};
+use crate::git::executor::{
+    add_file as git_add_file, commit_fixed as git_commit_fixed, execute_read as git_execute_read,
+};
+use crate::git::policy::{CommandPolicy, classify as git_command_policy};
+use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_record_json};
+use crate::git::transaction::{ExecutionTransaction, GitPhase};
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
 use crate::state_graph::StateGraph;
@@ -636,6 +646,13 @@ impl RuntimeCoreBridge {
             }
         }
 
+        if let Some(git_route) = crate::routing::git_router::route_git_command(input) {
+            return Some(match git_route {
+                Ok(command) => self.execute_git_command(command, id, &context.working_dir),
+                Err(err) => error_response("ExecutionRejected", &err, id),
+            });
+        }
+
         match lower.as_str() {
             "undo" => Some(self.undo(&request)),
             "replay" => Some(self.replay(&request, None)),
@@ -1110,6 +1127,81 @@ impl RuntimeCoreBridge {
             _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input, id)),
             _ => None,
         }
+    }
+
+    fn execute_git_command(
+        &self,
+        command: GitCommand,
+        id: u64,
+        working_dir: &Path,
+    ) -> CoreResponse {
+        let policy = git_command_policy(&command);
+        if policy == CommandPolicy::Dangerous {
+            return error_response("ExecutionRejected", &command.canonical(), id);
+        }
+
+        let result = match &command {
+            GitCommand::Status | GitCommand::Diff | GitCommand::Log => {
+                git_execute_read(working_dir, &command)
+            }
+            GitCommand::AddFile(path) => self.execute_scoped_git_add(working_dir, path),
+            GitCommand::Commit { .. } => self.execute_fixed_git_commit(working_dir),
+        };
+
+        let (status, message, result_label) = match result {
+            Ok(output) => (
+                ExecutionStatus::Executed,
+                normalize_git_output(&output),
+                "success".to_string(),
+            ),
+            Err(err) => (
+                ExecutionStatus::Failed,
+                err.clone(),
+                format!("failed:{err}"),
+            ),
+        };
+        let record = GitExecutionRecord {
+            command: command.canonical(),
+            targets: command.targets(),
+            result: result_label,
+            timestamp: timestamp_millis() as u64,
+        };
+        let telemetry = git_record_json(&record);
+
+        CoreResponse {
+            events: vec![
+                CoreEvent::Execution {
+                    step: command.canonical(),
+                },
+                CoreEvent::Debug { message: telemetry },
+                if status == ExecutionStatus::Executed {
+                    CoreEvent::Result { message }
+                } else {
+                    CoreEvent::Error {
+                        message: format!("ExecutionError: {message}"),
+                    }
+                },
+            ],
+            status,
+            design: None,
+            core_state: None,
+        }
+    }
+
+    fn execute_scoped_git_add(&self, working_dir: &Path, path: &Path) -> Result<String, String> {
+        validate_git_add_path(&path.to_string_lossy())?;
+        reject_dirty_worktree_except(working_dir, &DirtyTreePolicy::default(), Some(path))?;
+        git_add_file(working_dir, path)?;
+        Ok(format!("Staged: {}", path.display()))
+    }
+
+    fn execute_fixed_git_commit(&self, working_dir: &Path) -> Result<String, String> {
+        reject_unstaged_worktree(working_dir, &DirtyTreePolicy::default())?;
+        if git_lines(working_dir, &["diff", "--cached", "--name-only"])?.is_empty() {
+            return Err("git commit requires staged changes".to_string());
+        }
+        let hash = git_commit_fixed(working_dir)?;
+        Ok(format!("Committed: {hash}"))
     }
 
     fn execute_adapter_command(
@@ -1670,9 +1762,47 @@ impl RuntimeCoreBridge {
             trace_unsupported_operation(input, "GitAdd", Some(path), &err);
             return error_response("SafetyViolation", &err, id);
         }
-        match run_git(&request.context.working_dir, &["add", "--", path]) {
+        let mut transaction =
+            ExecutionTransaction::new(format!("tx-{id}"), timestamp_millis() as u64);
+        transaction.mark_applied();
+        if let Err(err) = reject_dirty_worktree_except(
+            &request.context.working_dir,
+            &DirtyTreePolicy::default(),
+            Some(Path::new(path)),
+        ) {
+            transaction.mark_git_failed(GitPhase::Add, err.clone());
+            return CoreResponse {
+                events: vec![
+                    CoreEvent::Debug {
+                        message: transaction_record_json(&transaction),
+                    },
+                    CoreEvent::Error {
+                        message: format!("ExecutionError: {err}"),
+                    },
+                ],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: None,
+            };
+        }
+        match git_add_file(&request.context.working_dir, Path::new(path)) {
             Ok(_) => {}
-            Err(err) => return error_response("ExecutionError", &err, id),
+            Err(err) => {
+                transaction.mark_git_failed(GitPhase::Add, err.clone());
+                return CoreResponse {
+                    events: vec![
+                        CoreEvent::Debug {
+                            message: transaction_record_json(&transaction),
+                        },
+                        CoreEvent::Error {
+                            message: format!("ExecutionError: {err}"),
+                        },
+                    ],
+                    status: ExecutionStatus::Failed,
+                    design: None,
+                    core_state: None,
+                };
+            }
         }
         let snapshot = match sync_pipeline_with_git(&request.context.working_dir) {
             Ok(snapshot) => snapshot,
@@ -1681,8 +1811,12 @@ impl RuntimeCoreBridge {
         if snapshot.staged.is_empty() {
             return error_response("ExecutionError", "git add produced no staged changes", id);
         }
+        transaction.mark_staged(snapshot.staged.iter().map(PathBuf::from).collect());
         CoreResponse {
             events: vec![
+                CoreEvent::Debug {
+                    message: transaction_record_json(&transaction),
+                },
                 CoreEvent::Pipeline {
                     state: PipelineState::Staged.label().to_string(),
                 },
@@ -1708,29 +1842,65 @@ impl RuntimeCoreBridge {
             trace_unsupported_operation("git commit", "GitCommit", None, "requires Staged state");
             return error_response("ExecutionError", "commit requires Staged state", id);
         }
-        if let Err(err) = run_git(
+        let mut transaction =
+            ExecutionTransaction::new(format!("tx-{id}"), timestamp_millis() as u64);
+        transaction.mark_applied();
+        let staged = match git_lines(
             &request.context.working_dir,
-            &[
-                "-c",
-                "user.name=DEM CLI",
-                "-c",
-                "user.email=dem-cli@example.invalid",
-                "commit",
-                "-m",
-                "auto-generated",
-            ],
+            &["diff", "--cached", "--name-only"],
         ) {
-            return error_response("ExecutionError", &err, id);
+            Ok(files) if !files.is_empty() => files,
+            Ok(_) => {
+                return error_response("ExecutionError", "git commit requires staged changes", id);
+            }
+            Err(err) => return error_response("ExecutionError", &err, id),
+        };
+        transaction.mark_staged(staged.iter().map(PathBuf::from).collect());
+        if let Err(err) =
+            reject_unstaged_worktree(&request.context.working_dir, &DirtyTreePolicy::default())
+        {
+            transaction.mark_git_failed(GitPhase::Commit, err.clone());
+            return CoreResponse {
+                events: vec![
+                    CoreEvent::Debug {
+                        message: transaction_record_json(&transaction),
+                    },
+                    CoreEvent::Error {
+                        message: format!("ExecutionError: {err}"),
+                    },
+                ],
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: None,
+            };
         }
-        let hash = run_git(
-            &request.context.working_dir,
-            &["rev-parse", "--short", "HEAD"],
-        )
-        .map(|out| out.trim().to_string())
-        .unwrap_or_else(|_| "unknown".to_string());
+        let hash = match git_commit_fixed(&request.context.working_dir) {
+            Ok(hash) => hash,
+            Err(err) => {
+                transaction.mark_git_failed(GitPhase::Commit, err.clone());
+                return CoreResponse {
+                    events: vec![
+                        CoreEvent::Debug {
+                            message: transaction_record_json(&transaction),
+                        },
+                        CoreEvent::Error {
+                            message: format!("ExecutionError: {err}"),
+                        },
+                    ],
+                    status: ExecutionStatus::Failed,
+                    design: None,
+                    core_state: None,
+                };
+            }
+        };
+        transaction.mark_committed(hash.clone());
+        transaction.finalize(timestamp_millis() as u64);
         let _snapshot = sync_pipeline_with_git(&request.context.working_dir).unwrap_or_default();
         CoreResponse {
             events: vec![
+                CoreEvent::Debug {
+                    message: transaction_record_json(&transaction),
+                },
                 CoreEvent::Result {
                     message: format!("Committed: {hash}"),
                 },
@@ -2641,19 +2811,17 @@ fn verify_applied_files(
 }
 
 fn validate_git_add_path(path: &str) -> Result<(), String> {
-    if path.is_empty() {
-        return Err("git add requires one explicit file path".to_string());
-    }
-    if path == "." {
-        return Err("git add . is rejected".to_string());
-    }
-    if path.split_whitespace().count() != 1 {
-        return Err("git add requires exactly one file path".to_string());
-    }
-    if path.contains('*') || path.contains('?') || path.contains('[') {
-        return Err("git add rejects glob patterns".to_string());
-    }
+    crate::git::commands::validate_scoped_add_path(path)?;
     resolve_repo_file(Path::new("."), path).map(|_| ())
+}
+
+fn normalize_git_output(output: &str) -> String {
+    let trimmed = output.trim();
+    if trimmed.is_empty() {
+        "(no output)".to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn is_forbidden_command(lower: &str) -> bool {
@@ -2661,6 +2829,8 @@ fn is_forbidden_command(lower: &str) -> bool {
         || lower.starts_with("git push ")
         || lower == "git reset"
         || lower.starts_with("git reset ")
+        || lower == "git clean"
+        || lower.starts_with("git clean ")
         || lower == "rm -rf"
         || lower.starts_with("rm -rf ")
 }
@@ -2716,10 +2886,54 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, OnceLock};
     use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
 
     fn request(input: &str) -> CoreRequest {
         CoreRequest::new(input.to_string())
+    }
+
+    fn current_dir_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    fn init_git_repo(root: &Path) {
+        std::process::Command::new("git")
+            .args(["init", "-b", "feature/test"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "dbm@example.com"])
+            .current_dir(root)
+            .output()
+            .expect("git email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "DBM"])
+            .current_dir(root)
+            .output()
+            .expect("git name");
+        std::fs::write(root.join("tracked.txt"), "initial\n").expect("tracked");
+        std::process::Command::new("git")
+            .args(["add", "tracked.txt"])
+            .current_dir(root)
+            .output()
+            .expect("git add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("git commit");
+    }
+
+    fn with_current_dir<T>(root: &Path, run: impl FnOnce() -> T) -> T {
+        let _guard = current_dir_lock().lock().expect("cwd lock");
+        let previous = std::env::current_dir().expect("cwd");
+        std::env::set_current_dir(root).expect("set cwd");
+        let result = run();
+        std::env::set_current_dir(previous).expect("restore cwd");
+        result
     }
 
     fn request_with_state(
@@ -2787,7 +3001,118 @@ mod tests {
         let response = core.execute(request("git push"));
 
         assert_eq!(response.status, ExecutionStatus::Failed);
-        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("SafetyViolation"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ExecutionRejected"))));
+    }
+
+    #[test]
+    fn git_status_bypasses_natural_language_pipeline() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(temp.path());
+        let response = with_current_dir(temp.path(), || {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("git status"))
+        });
+
+        assert_eq!(response.status, ExecutionStatus::Executed);
+        assert!(!response.events.iter().any(
+            |event| matches!(event, CoreEvent::Thinking { summary } if summary == "refining natural language intent")
+        ));
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Debug { message } if message.contains("git_execution"))
+        ));
+    }
+
+    #[test]
+    fn git_add_dot_is_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("git add ."));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message.contains("git add . is rejected"))
+        ));
+    }
+
+    #[test]
+    fn dirty_tree_guard_rejects_unrelated_dirty_files_for_scoped_add() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        init_git_repo(temp.path());
+        std::fs::write(temp.path().join("tracked.txt"), "target change\n").expect("target");
+        std::fs::write(temp.path().join("other.txt"), "other\n").expect("other");
+        std::process::Command::new("git")
+            .args(["add", "other.txt"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git add other");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "other"])
+            .current_dir(temp.path())
+            .output()
+            .expect("git commit other");
+        std::fs::write(temp.path().join("other.txt"), "dirty other\n").expect("dirty other");
+
+        let response = with_current_dir(temp.path(), || {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("git add tracked.txt"))
+        });
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message.contains("working tree dirty"))
+        ));
+    }
+
+    #[test]
+    fn same_git_input_produces_same_operation_sequence_and_targets() {
+        let left = crate::git::commands::parse_git_command("git add tracked.txt").expect("left");
+        let right = crate::git::commands::parse_git_command("git add tracked.txt").expect("right");
+
+        assert_eq!(left.canonical(), right.canonical());
+        assert_eq!(left.targets(), right.targets());
+        assert_eq!(git_command_policy(&left), git_command_policy(&right));
+    }
+
+    #[test]
+    fn dirty_tree_policy_ignores_dbm_runtime_paths() {
+        let policy = DirtyTreePolicy::default();
+
+        assert!(policy.is_ignored(Path::new(".dbm/replay/cache.json")));
+        assert!(policy.is_ignored(Path::new("target/tmp/dbm-cache")));
+        assert!(!policy.is_ignored(Path::new("apps/cli/src/core.rs")));
+    }
+
+    #[test]
+    fn same_transaction_input_produces_same_transaction_record() {
+        let mut left = ExecutionTransaction::new("tx-fixed".to_string(), 100);
+        left.mark_applied();
+        left.mark_staged(vec![PathBuf::from("tracked.txt")]);
+        left.mark_committed("abc1234".to_string());
+        left.finalize(200);
+
+        let mut right = ExecutionTransaction::new("tx-fixed".to_string(), 100);
+        right.mark_applied();
+        right.mark_staged(vec![PathBuf::from("tracked.txt")]);
+        right.mark_committed("abc1234".to_string());
+        right.finalize(200);
+
+        assert_eq!(
+            crate::git::transaction::TransactionRecord::from(&left),
+            crate::git::transaction::TransactionRecord::from(&right)
+        );
+        assert_eq!(
+            transaction_record_json(&left),
+            transaction_record_json(&right)
+        );
+    }
+
+    #[test]
+    fn recovery_fail_safe_finalizes_unfinished_transaction() {
+        let mut transaction = ExecutionTransaction::new("tx-recovery".to_string(), 100);
+        transaction.mark_applied();
+        transaction.mark_staged(vec![PathBuf::from("tracked.txt")]);
+        transaction.fail_safe_finalize_after_recovery(300);
+
+        assert_eq!(transaction.finalized_at, Some(300));
     }
 
     #[test]
