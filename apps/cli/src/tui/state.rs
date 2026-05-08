@@ -597,25 +597,33 @@ impl TuiState {
             }
             UiEvent::Pipeline { state } => {
                 let next_state = runtime_state_from_pipeline_label(state);
-                // Rule: preview_ready_cannot_be_overwritten_by_old_applying
-                if self.runtime_state == RuntimeShellState::PreviewReady
-                    && next_state == RuntimeShellState::Apply
-                {
-                    // Ignore stale apply event
-                    return;
+                if should_accept_runtime_transition(
+                    self.runtime_state,
+                    next_state,
+                    self.active_transaction.is_some(),
+                ) {
+                    self.runtime_state = next_state;
                 }
-                self.runtime_state = next_state;
-                if matches!(self.runtime_state, RuntimeShellState::Idle) {
+                if matches!(self.runtime_state, RuntimeShellState::Idle)
+                    && self.active_transaction.is_none()
+                {
                     self.clear_runtime_transaction();
                 }
             }
             UiEvent::Error { .. } => {
-                if let Some(tx) = self.active_transaction.as_mut() {
-                    tx.failed_recoverable = true;
-                    self.runtime_state = RuntimeShellState::Failed;
-                } else {
-                    self.runtime_state = RuntimeShellState::Idle;
-                    self.clear_runtime_transaction();
+                let active_tx = self.active_transaction.is_some();
+                if should_accept_runtime_transition(
+                    self.runtime_state,
+                    RuntimeShellState::Failed,
+                    active_tx,
+                ) {
+                    if let Some(tx) = self.active_transaction.as_mut() {
+                        tx.failed_recoverable = true;
+                        self.runtime_state = RuntimeShellState::Failed;
+                    } else {
+                        self.runtime_state = RuntimeShellState::Idle;
+                        self.clear_runtime_transaction();
+                    }
                 }
             }
             _ => {}
@@ -841,21 +849,6 @@ impl TuiState {
         self.language_mode = detect_runtime_language(submitted);
         if let Some(normalized) = normalize_runtime_input(submitted) {
             self.language_mode = normalized.language;
-            self.active_target = normalized
-                .command
-                .target
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .or_else(|| self.active_target.clone());
-            self.runtime_state = match normalized.command.intent {
-                crate::nl::runtime_intent::RuntimeIntent::Analyze => RuntimeShellState::Analyze,
-                crate::nl::runtime_intent::RuntimeIntent::Preview => RuntimeShellState::Analyze,
-                crate::nl::runtime_intent::RuntimeIntent::Apply => RuntimeShellState::Apply,
-                crate::nl::runtime_intent::RuntimeIntent::Rollback => RuntimeShellState::Idle,
-                crate::nl::runtime_intent::RuntimeIntent::Replay => RuntimeShellState::Replay,
-                crate::nl::runtime_intent::RuntimeIntent::GitStatus
-                | crate::nl::runtime_intent::RuntimeIntent::GitDiff => RuntimeShellState::Git,
-            };
         }
     }
 
@@ -970,6 +963,17 @@ fn runtime_state_from_pipeline_label(label: &str) -> RuntimeShellState {
         "Idle" => RuntimeShellState::Idle,
         _ => RuntimeShellState::Idle,
     }
+}
+
+pub fn should_accept_runtime_transition(
+    current: RuntimeShellState,
+    next: RuntimeShellState,
+    active_tx: bool,
+) -> bool {
+    if active_tx && current == RuntimeShellState::PreviewReady {
+        return next == RuntimeShellState::PreviewReady;
+    }
+    true
 }
 
 fn extract_json_string(input: &str, key: &str) -> Option<String> {
@@ -1145,7 +1149,7 @@ mod tests {
     }
 
     #[test]
-    fn tx_clear_destroys_projection_atomically() {
+    fn pipeline_idle_does_not_clear_owned_projection() {
         let mut state = TuiState::new(empty_payload());
         state.append_chat(UiEvent::Diff {
             file: "parser.rs".to_string(),
@@ -1162,9 +1166,9 @@ mod tests {
             state: "Idle".to_string(),
         });
 
-        assert!(state.active_transaction.is_none());
-        assert!(state.active_transaction_id.is_none());
-        assert!(state.active_target.is_none());
+        assert!(state.active_transaction.is_some());
+        assert!(state.active_transaction_id.is_some());
+        assert_eq!(state.active_target.as_deref(), Some("parser.rs"));
     }
 
     #[test]
@@ -1286,9 +1290,9 @@ mod tests {
             action,
             TuiAction::Submit("parser.rs を preview".to_string())
         );
-        assert_eq!(state.active_target.as_deref(), Some("parser.rs"));
+        assert_eq!(state.active_target.as_deref(), None);
         assert_eq!(state.language_mode, SupportedLanguage::Japanese);
-        assert_eq!(state.runtime_state, RuntimeShellState::Analyze);
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
     }
 
     #[test]
@@ -1511,12 +1515,103 @@ mod tests {
     #[test]
     fn preview_ready_cannot_be_overwritten_by_old_applying() {
         let mut state = TuiState::new(empty_payload());
-        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_target = Some("parser.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn parse() {}".to_string()],
+        });
 
         state.append_chat(UiEvent::Pipeline {
             state: "Applied".to_string(),
         });
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+    }
+
+    #[test]
+    fn failed_preview_preserves_runtime_state() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/core.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+preview apps/cli/src/core.rs".to_string()],
+        });
+        let before_state = state.runtime_state;
+        let before_tx = state.active_transaction.clone();
+        let before_target = state.active_target.clone();
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Proposed".to_string(),
+        });
+        state.append_chat(UiEvent::Error {
+            message: "failed invalid preview".to_string(),
+        });
+
+        assert_eq!(state.runtime_state, before_state);
+        assert_eq!(state.active_transaction, before_tx);
+        assert_eq!(state.active_target, before_target);
+    }
+
+    #[test]
+    fn preview_ready_cannot_be_overwritten_by_analyze() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/core.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+preview apps/cli/src/core.rs".to_string()],
+        });
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Proposed".to_string(),
+        });
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+    }
+
+    #[test]
+    fn intent_prediction_never_mutates_runtime_state() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/core.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+preview apps/cli/src/core.rs".to_string()],
+        });
+        let before_state = state.runtime_state;
+        let before_target = state.active_target.clone();
+        let before_tx = state.active_transaction.clone();
+
+        state.update_runtime_intent_state("preview does/not/exist.rs");
+
+        assert_eq!(state.runtime_state, before_state);
+        assert_eq!(state.active_target, before_target);
+        assert_eq!(state.active_transaction, before_tx);
+    }
+
+    #[test]
+    fn shell_commit_is_runtime_authority() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("core.rs");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut state = TuiState::new(empty_payload());
+        state.update_runtime_intent_state("preview core.rs");
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+
+        crate::runtime::shell::runtime_preview(&mut state, root.path(), "core.rs".into());
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+        assert!(state.active_transaction.is_some());
+    }
+
+    #[test]
+    fn stale_pipeline_event_never_overwrites_preview() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/core.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+preview apps/cli/src/core.rs".to_string()],
+        });
+        let before = state.runtime_state;
+
+        for pipeline_state in ["Proposed", "Planned", "Previewed", "Applied", "Idle"] {
+            state.append_chat(UiEvent::Pipeline {
+                state: pipeline_state.to_string(),
+            });
+            assert_eq!(state.runtime_state, before, "{pipeline_state}");
+        }
     }
 }
