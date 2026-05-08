@@ -1618,6 +1618,27 @@ mod tests {
         let mut cache = SimulationCache::new();
         let mut learning =
             LearningEngine::new(crate::WorldModelMode::Deterministic, 0.1, 0.05, 0.55);
+        let metrics = SearchMetrics {
+            hv_delta: 0.0,
+            ..SearchMetrics::default()
+        };
+        let mut simulation = BestActionSimulation {
+            vm: &mut vm,
+            base_alpha: 0.7,
+            base_beta: 0.3,
+            beta_profile: crate::BetaProfile::Balanced,
+            actions_per_state: 5,
+            max_depth: 1,
+            intent_profile: crate::IntentProfile::Balanced,
+            mode: crate::WorldModelMode::Deterministic,
+            variance_penalty: 0.2,
+            semantic_variance_penalty: 0.15,
+            semantic_variance_max_penalty: 0.35,
+            confidence_floor: 0.2,
+            learning_engine: &mut learning,
+            search_metrics: Some(&metrics),
+            cache: &mut cache,
+        };
         let outcome = simulate_best_action(
             &state,
             ObjectiveVector {
@@ -1626,24 +1647,7 @@ mod tests {
                 f_risk: 0.6,
                 f_shape: 0.6,
             },
-            &mut vm,
-            0.7,
-            0.3,
-            crate::BetaProfile::Balanced,
-            5,
-            1,
-            crate::IntentProfile::Balanced,
-            crate::WorldModelMode::Deterministic,
-            0.2,
-            0.15,
-            0.35,
-            0.2,
-            &mut learning,
-            Some(&SearchMetrics {
-                hv_delta: 0.0,
-                ..SearchMetrics::default()
-            }),
-            &mut cache,
+            &mut simulation,
         )
         .expect("simulation outcome");
         assert!(outcome.delta.fallback_used || outcome.delta.consistency_score >= 0.95);
@@ -1662,6 +1666,24 @@ mod tests {
         };
         let mut learning_a =
             LearningEngine::new(crate::WorldModelMode::Deterministic, 0.1, 0.05, 0.55);
+        let mut cache_a = SimulationCache::new();
+        let mut simulation_a = BestActionSimulation {
+            vm: &mut vm_a,
+            base_alpha: 0.7,
+            base_beta: 0.3,
+            beta_profile: crate::BetaProfile::Balanced,
+            actions_per_state: 5,
+            max_depth: 2,
+            intent_profile: crate::IntentProfile::Balanced,
+            mode: crate::WorldModelMode::Deterministic,
+            variance_penalty: 0.2,
+            semantic_variance_penalty: 0.15,
+            semantic_variance_max_penalty: 0.35,
+            confidence_floor: 0.2,
+            learning_engine: &mut learning_a,
+            search_metrics: Some(&metrics),
+            cache: &mut cache_a,
+        };
         let first = simulate_best_action(
             &state,
             ObjectiveVector {
@@ -1670,25 +1692,29 @@ mod tests {
                 f_risk: 0.6,
                 f_shape: 0.6,
             },
-            &mut vm_a,
-            0.7,
-            0.3,
-            crate::BetaProfile::Balanced,
-            5,
-            2,
-            crate::IntentProfile::Balanced,
-            crate::WorldModelMode::Deterministic,
-            0.2,
-            0.15,
-            0.35,
-            0.2,
-            &mut learning_a,
-            Some(&metrics),
-            &mut SimulationCache::new(),
+            &mut simulation_a,
         )
         .expect("first");
         let mut learning_b =
             LearningEngine::new(crate::WorldModelMode::Deterministic, 0.1, 0.05, 0.55);
+        let mut cache_b = SimulationCache::new();
+        let mut simulation_b = BestActionSimulation {
+            vm: &mut vm_b,
+            base_alpha: 0.7,
+            base_beta: 0.3,
+            beta_profile: crate::BetaProfile::Balanced,
+            actions_per_state: 5,
+            max_depth: 2,
+            intent_profile: crate::IntentProfile::Balanced,
+            mode: crate::WorldModelMode::Deterministic,
+            variance_penalty: 0.2,
+            semantic_variance_penalty: 0.15,
+            semantic_variance_max_penalty: 0.35,
+            confidence_floor: 0.2,
+            learning_engine: &mut learning_b,
+            search_metrics: Some(&metrics),
+            cache: &mut cache_b,
+        };
         let second = simulate_best_action(
             &state,
             ObjectiveVector {
@@ -1697,21 +1723,7 @@ mod tests {
                 f_risk: 0.6,
                 f_shape: 0.6,
             },
-            &mut vm_b,
-            0.7,
-            0.3,
-            crate::BetaProfile::Balanced,
-            5,
-            2,
-            crate::IntentProfile::Balanced,
-            crate::WorldModelMode::Deterministic,
-            0.2,
-            0.15,
-            0.35,
-            0.2,
-            &mut learning_b,
-            Some(&metrics),
-            &mut SimulationCache::new(),
+            &mut simulation_b,
         )
         .expect("second");
         assert_eq!(first.state.id, second.state.id);
