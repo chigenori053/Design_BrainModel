@@ -442,7 +442,9 @@ macro_rules! trace_ir {
 }
 
 fn emit_core_log(stage: &str, data: String) {
-    if crate::runtime::logging::tui_logging_isolated() {
+    if crate::runtime::logging::tui_logging_isolated()
+        || crate::runtime::logging::tui_surface_active()
+    {
         return;
     }
     let line = format!("[IR-TRACE][{stage}] {data}\n");
@@ -450,7 +452,9 @@ fn emit_core_log(stage: &str, data: String) {
 }
 
 fn observability_enabled() -> bool {
-    ENABLE_OBSERVABILITY && !crate::runtime::logging::tui_logging_isolated()
+    ENABLE_OBSERVABILITY
+        && !crate::runtime::logging::tui_logging_isolated()
+        && !crate::runtime::logging::tui_surface_active()
 }
 
 pub trait CoreExecutor {

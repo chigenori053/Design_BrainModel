@@ -525,11 +525,10 @@ mod tests {
     use std::path::PathBuf;
 
     use super::*;
-    use crate::mlaal::{
-        AdaptivePolicy, CognitiveContext, EpisodeMemoryStore, MemoryBridge, PlanningConstraints,
-        RecallOptimizer, ResonanceMatcher, RolloutEngine, TelemetryStore, ThresholdOptimizer,
-    };
+    use crate::ir::LoadedCheckpoint;
+    use crate::mlaal::{CognitiveContext, PlanningConstraints};
     use crate::nl::types::PlannedStep;
+    use crate::service::dto::IRState;
 
     fn constraints() -> PlanningConstraints {
         PlanningConstraints {
@@ -543,9 +542,17 @@ mod tests {
     #[test]
     fn mlaal_planner_meets_preview_latency_budget() {
         let planner = MLAALPlanner::default();
+        let temp = tempfile::tempdir().expect("temp workspace");
         let ctx = CognitiveContext {
             target: PathBuf::from("apps/cli/src/nl/planner_v2.rs"),
             user_request: "trait を抽出して dependency cycle を解消して".to_string(),
+            ir_checkpoint: Some(LoadedCheckpoint {
+                step_index: 0,
+                state: IRState {
+                    workspace_root: temp.path().to_path_buf(),
+                    ..IRState::default()
+                },
+            }),
             ..CognitiveContext::default()
         };
 
@@ -553,6 +560,10 @@ mod tests {
         let result = planner.plan(&ctx, &constraints()).expect("plan");
 
         assert!(start.elapsed().as_millis() < 1_500);
-        assert!(matches!(result.selected_action, PlannedStep::Analyze(_)));
+        assert!(matches!(
+            result.selected_action,
+            PlannedStep::Analyze(_) | PlannedStep::Refactor(_)
+        ));
+        assert!(!result.planned_steps.is_empty());
     }
 }

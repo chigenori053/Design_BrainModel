@@ -176,11 +176,11 @@ pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
     let mut lines = Vec::new();
     lines.push("+--------------------------------------------------+".to_string());
     lines.push("| Input / Intent                                   |".to_string());
-    lines.push("+-------------------+------------------------------+".to_string());
+    lines.push("+--------------------------------------------------+".to_string());
     for line in snapshot.runtime.runtime_panel_lines() {
-        lines.push(format!("| {:<17} | {:<28} |", truncate(&line, 17), ""));
+        lines.push(format!("| {:<48} |", truncate(&line, 48)));
     }
-    lines.push("+-------------------+------------------------------+".to_string());
+    lines.push("+--------------------------------------------------+".to_string());
     for line in snapshot.runtime.diff_projection.lines {
         lines.push(format!("| {:<48} |", truncate(&line, 48)));
     }
@@ -192,6 +192,8 @@ pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
 
 fn projection_state_label(state: RuntimeShellState) -> &'static str {
     match state {
+        RuntimeShellState::PreviewReady => "PREVIEW_READY",
+        RuntimeShellState::AwaitingApply => "AWAITING_APPLY",
         RuntimeShellState::Ready | RuntimeShellState::AwaitConfirmation => "READY_TO_APPLY",
         RuntimeShellState::Apply => "APPLYING",
         RuntimeShellState::Git => "APPLIED",

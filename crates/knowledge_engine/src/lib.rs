@@ -334,6 +334,39 @@ pub struct KnowledgeIntegration {
     pub index_telemetry: KnowledgeIndexTelemetry,
 }
 
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KnowledgeFeature {
+    pub tokens: Vec<String>,
+    pub structure: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KnowledgeSnapshotEntry {
+    pub id: String,
+    pub source: String,
+    pub title: String,
+    pub uri: String,
+    pub raw_content: String,
+    pub feature: KnowledgeFeature,
+    pub content_hash: u64,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct KnowledgePattern {
+    pub source_type: String,
+    pub structure: Vec<String>,
+    pub support_count: usize,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct UnifiedKnowledgeRank {
+    pub id: String,
+    pub source_priority: u8,
+    pub score: f64,
+    pub confidence: f64,
+    pub timestamp: u64,
+}
+
 impl Default for WebSearchRetriever {
     fn default() -> Self {
         let mut store = KnowledgeStore::new();
@@ -376,6 +409,14 @@ impl KnowledgeEngine {
             result_set,
             index_telemetry,
         }
+    }
+
+    pub fn snapshot_documents(
+        &self,
+        documents: &[KnowledgeDocument],
+        limit: usize,
+    ) -> Vec<KnowledgeSnapshotEntry> {
+        snapshot_documents(documents, limit)
     }
 }
 
@@ -1023,6 +1064,189 @@ pub fn knowledge_graph_to_constraints(graph: &KnowledgeGraph) -> Vec<Constraint>
         });
     }
     constraints
+}
+
+pub fn snapshot_documents(
+    documents: &[KnowledgeDocument],
+    limit: usize,
+) -> Vec<KnowledgeSnapshotEntry> {
+    let mut entries = documents
+        .iter()
+        .take(limit.max(1))
+        .map(|document| {
+            let source = knowledge_source_slug(&document.source);
+            let content_hash = snapshot_content_hash(document, &source);
+            KnowledgeSnapshotEntry {
+                id: format!("knowledge:{source}:{content_hash:016x}"),
+                source,
+                title: document.metadata.title.clone(),
+                uri: document.metadata.source_uri.clone(),
+                raw_content: document.content.clone(),
+                feature: feature_from_content(&document.content),
+                content_hash,
+            }
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|lhs, rhs| {
+        lhs.source
+            .cmp(&rhs.source)
+            .then_with(|| lhs.title.cmp(&rhs.title))
+            .then_with(|| lhs.uri.cmp(&rhs.uri))
+            .then_with(|| lhs.content_hash.cmp(&rhs.content_hash))
+    });
+    entries
+}
+
+pub fn verify_snapshot(entry: &KnowledgeSnapshotEntry) -> bool {
+    entry.feature == feature_from_content(&entry.raw_content)
+        && entry.content_hash
+            == snapshot_hash_parts(
+                &entry.source,
+                &entry.title,
+                &entry.uri,
+                &entry.raw_content,
+                &entry.feature,
+            )
+        && entry.id.ends_with(&format!("{:016x}", entry.content_hash))
+}
+
+pub fn feature_from_content(content: &str) -> KnowledgeFeature {
+    let lower = content.to_ascii_lowercase();
+    let mut tokens = lower
+        .split(|ch: char| !ch.is_ascii_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    tokens.sort();
+    tokens.dedup();
+
+    let mut structure = Vec::new();
+    if lower.contains("rest") && lower.contains("stateless") {
+        structure.push("rest->stateless".to_string());
+    }
+    if lower.contains("api gateway") && lower.contains("service discovery") {
+        structure.push("api_gateway->service_discovery".to_string());
+    }
+    if lower.contains("cache") && lower.contains("scalable") {
+        structure.push("scalable->cache_strategy".to_string());
+    }
+    if lower.contains("layered") && lower.contains("service") {
+        structure.push("layered_architecture->service".to_string());
+    }
+    if lower.contains("geometry") && (lower.contains("ir") || lower.contains("mesh")) {
+        structure.push("geometry->ir".to_string());
+    }
+    structure.sort();
+    structure.dedup();
+
+    KnowledgeFeature { tokens, structure }
+}
+
+pub fn knowledge_entries_to_memory_records(
+    entries: &[KnowledgeSnapshotEntry],
+) -> Vec<memory_space_phase14::stable_v03::MemoryRecord> {
+    entries
+        .iter()
+        .map(|entry| memory_space_phase14::stable_v03::MemoryRecord {
+            id: entry.id.clone(),
+            text: entry.raw_content.clone(),
+            tags: memory_tags_for_entry(entry),
+            embedding: Some(embed_text(&entry.raw_content)),
+            architecture: None,
+            relations: entry.feature.structure.clone(),
+        })
+        .collect()
+}
+
+pub fn build_knowledge_patterns(entries: &[KnowledgeSnapshotEntry]) -> Vec<KnowledgePattern> {
+    let mut support_by_pattern = BTreeMap::<(String, Vec<String>), usize>::new();
+    for entry in entries {
+        let structure = if entry.feature.structure.is_empty() {
+            entry.feature.tokens.clone()
+        } else {
+            entry.feature.structure.clone()
+        };
+        *support_by_pattern
+            .entry((entry.source.clone(), structure))
+            .or_default() += 1;
+    }
+
+    let mut patterns = support_by_pattern
+        .into_iter()
+        .map(
+            |((source_type, structure), support_count)| KnowledgePattern {
+                source_type,
+                structure,
+                support_count,
+            },
+        )
+        .collect::<Vec<_>>();
+    patterns.sort_by(|lhs, rhs| {
+        rhs.support_count
+            .cmp(&lhs.support_count)
+            .then_with(|| lhs.source_type.cmp(&rhs.source_type))
+            .then_with(|| lhs.structure.cmp(&rhs.structure))
+    });
+    patterns
+}
+
+pub fn rank_unified_knowledge(mut ranks: Vec<UnifiedKnowledgeRank>) -> Vec<UnifiedKnowledgeRank> {
+    ranks.sort_by(|lhs, rhs| {
+        lhs.source_priority
+            .cmp(&rhs.source_priority)
+            .then_with(|| rhs.score.total_cmp(&lhs.score))
+            .then_with(|| rhs.confidence.total_cmp(&lhs.confidence))
+            .then_with(|| lhs.timestamp.cmp(&rhs.timestamp))
+            .then_with(|| lhs.id.cmp(&rhs.id))
+    });
+    ranks
+}
+
+fn knowledge_source_slug(source: &KnowledgeSource) -> String {
+    match source {
+        KnowledgeSource::WebSearch => "web",
+        KnowledgeSource::LocalDocument => "local",
+        KnowledgeSource::ExperienceDerived => "experience",
+        KnowledgeSource::Inferred => "inferred",
+    }
+    .to_string()
+}
+
+fn snapshot_content_hash(document: &KnowledgeDocument, source: &str) -> u64 {
+    let feature = feature_from_content(&document.content);
+    snapshot_hash_parts(
+        source,
+        &document.metadata.title,
+        &document.metadata.source_uri,
+        &document.content,
+        &feature,
+    )
+}
+
+fn snapshot_hash_parts(
+    source: &str,
+    title: &str,
+    uri: &str,
+    raw_content: &str,
+    feature: &KnowledgeFeature,
+) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    title.hash(&mut hasher);
+    uri.hash(&mut hasher);
+    raw_content.hash(&mut hasher);
+    feature.tokens.hash(&mut hasher);
+    feature.structure.hash(&mut hasher);
+    hasher.finish()
+}
+
+fn memory_tags_for_entry(entry: &KnowledgeSnapshotEntry) -> Vec<String> {
+    let mut tags = vec![format!("source:{}", entry.source)];
+    tags.extend(entry.feature.tokens.iter().take(8).cloned());
+    tags.extend(entry.feature.structure.iter().cloned());
+    tags.sort();
+    tags.dedup();
+    tags
 }
 
 fn normalize_query_text(query: &KnowledgeQuery) -> String {

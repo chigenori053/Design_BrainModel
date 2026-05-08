@@ -400,6 +400,9 @@ pub struct TuiState {
     /// Read-only cache of the last `CoreState` returned by Core.  Phase 4.5.
     /// This is the Single Source of Truth snapshot; the UI never mutates it.
     pub core_snapshot: CoreState,
+    pub state_generation_id: u64,
+    pub last_command_trace: Option<crate::runtime::shell::RuntimeCommandTrace>,
+    pub next_command_id: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -438,8 +441,15 @@ impl TuiState {
             language_mode: SupportedLanguage::Unknown,
             debug_events: Vec::new(),
             core_snapshot: CoreState::default(),
+            state_generation_id: 1,
+            last_command_trace: None,
+            next_command_id: 1,
         }
         .with_pseudo_stream()
+    }
+
+    pub fn increment_state_generation(&mut self) {
+        self.state_generation_id = self.state_generation_id.saturating_add(1);
     }
 
     pub fn enable_persistent_history(&mut self, path: std::path::PathBuf) {
@@ -467,6 +477,7 @@ impl TuiState {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
+        self.increment_state_generation();
         match key.code {
             KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 return TuiAction::Quit;
@@ -507,6 +518,9 @@ impl TuiState {
     }
 
     pub fn handle_ui_events(&mut self) {
+        if !self.event_queue.is_empty() {
+            self.increment_state_generation();
+        }
         while let Some(event) = self.event_queue.pop() {
             self.append_chat(event);
         }
@@ -538,7 +552,7 @@ impl TuiState {
     fn apply_event_to_session(&mut self, event: &UiEvent) {
         match event {
             UiEvent::Preview { diff } => {
-                self.runtime_state = RuntimeShellState::Ready;
+                self.runtime_state = RuntimeShellState::PreviewReady;
                 let target = self
                     .active_target
                     .clone()
@@ -582,7 +596,15 @@ impl TuiState {
                 self.retain_debug_event("core", message);
             }
             UiEvent::Pipeline { state } => {
-                self.runtime_state = runtime_state_from_pipeline_label(state);
+                let next_state = runtime_state_from_pipeline_label(state);
+                // Rule: preview_ready_cannot_be_overwritten_by_old_applying
+                if self.runtime_state == RuntimeShellState::PreviewReady
+                    && next_state == RuntimeShellState::Apply
+                {
+                    // Ignore stale apply event
+                    return;
+                }
+                self.runtime_state = next_state;
                 if matches!(self.runtime_state, RuntimeShellState::Idle) {
                     self.clear_runtime_transaction();
                 }
@@ -1482,7 +1504,19 @@ mod tests {
         assert!(
             first
                 .iter()
-                .any(|line| line.contains("state=READY_TO_APPLY"))
+                .any(|line| line.contains("state=PREVIEW_READY"))
         );
+    }
+
+    #[test]
+    fn preview_ready_cannot_be_overwritten_by_old_applying() {
+        let mut state = TuiState::new(empty_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Applied".to_string(),
+        });
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
     }
 }

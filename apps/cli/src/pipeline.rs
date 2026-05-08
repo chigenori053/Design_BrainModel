@@ -65,9 +65,6 @@ impl PipelineState {
         if self == next {
             return true;
         }
-        if matches!((self, next), (Self::Idle, Self::Planned)) {
-            return true;
-        }
         self.rank() + 1 == next.rank()
     }
 
@@ -116,9 +113,15 @@ impl PipelineContext {
 
     /// Transition to `Planned` after a plan is generated.
     ///
-    /// Spec §3.1 Fix: Proposed → Planned (or Idle → Planned in direct-plan flows)
+    /// Spec §3.1 Fix: Proposed → Planned.
+    /// Direct-plan flows are an administrative fastpath, not semantic topology.
     pub fn on_planned(&mut self) {
-        self.state = PipelineState::Planned;
+        match self.state {
+            PipelineState::Idle | PipelineState::Proposed => {
+                self.state = PipelineState::Planned;
+            }
+            _ => {}
+        }
     }
 
     /// Transition to `Previewed` after the diff is shown.

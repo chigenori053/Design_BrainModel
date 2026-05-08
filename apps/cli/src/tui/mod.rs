@@ -49,26 +49,35 @@ fn run_event_loop(
 ) -> Result<(), String> {
     let mut scheduler = RenderScheduler::default();
     scheduler.request_full_repaint();
-    if scheduler.take_pending() {
+    if let Some(request_id) = scheduler.take_pending() {
         let snapshot = RenderSnapshot::from(&*state);
-        renderer.full_repaint(&snapshot)?;
+        renderer.full_repaint(request_id, &snapshot)?;
+        scheduler.on_repaint_complete(renderer.generation_ids().repaint_generation_id);
     }
 
     loop {
         if !state.event_queue.is_empty() {
-            scheduler.request_full_repaint();
+            scheduler.notify_state_change();
         }
         state.handle_ui_events();
 
         if event::poll(FRAME_TIME).map_err(|e| e.to_string())?
             && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
         {
-            scheduler.request_full_repaint();
             match state.handle_key_event(key) {
                 TuiAction::Quit => break,
                 TuiAction::Submit(input) => {
                     let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                    self::core::handle_submit(state, core, input, working_dir);
+                    if let Some(_lines) = crate::runtime::shell::RuntimeCommandDispatcher::dispatch(
+                        state,
+                        &working_dir,
+                        &input,
+                    ) {
+                        // Runtime-owned command handled.
+                        // Trace instrumentation is already handled in dispatcher.
+                    } else {
+                        self::core::handle_submit(state, core, input, working_dir);
+                    }
                 }
                 TuiAction::SaveDesign => {
                     let path = std::env::current_dir()
@@ -85,11 +94,13 @@ fn run_event_loop(
                 }
                 TuiAction::None => {}
             }
+            scheduler.notify_state_change();
         }
 
-        if scheduler.take_pending() {
+        if let Some(request_id) = scheduler.take_pending() {
             let snapshot = RenderSnapshot::from(&*state);
-            renderer.full_repaint(&snapshot)?;
+            renderer.full_repaint(request_id, &snapshot)?;
+            scheduler.on_repaint_complete(renderer.generation_ids().repaint_generation_id);
         }
     }
     Ok(())

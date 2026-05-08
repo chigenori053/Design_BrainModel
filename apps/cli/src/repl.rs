@@ -9,16 +9,28 @@ use std::path::{Path, PathBuf};
 use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
+use crate::runtime::shell::{RuntimeCommandDispatcher, empty_runtime_payload};
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
 use crate::tui::core::to_ui_event;
+use crate::tui::state::TuiState;
 
 /// Thin UI cache for the REPL.  Phase 4.5: all pipeline/design/proposal state
 /// lives in `core_snapshot`; this struct is just a read-only cache.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 struct ReplUiState {
     core_snapshot: CoreState,
+    runtime: TuiState,
+}
+
+impl Default for ReplUiState {
+    fn default() -> Self {
+        Self {
+            core_snapshot: CoreState::default(),
+            runtime: TuiState::new(empty_runtime_payload()),
+        }
+    }
 }
 
 /// REPLを起動して入力ループを実行する。
@@ -30,6 +42,19 @@ where
     W: Write,
 {
     let core = RuntimeCoreBridge::with_defaults();
+    run_repl_with_core(workspace_root, reader, writer, &core)
+}
+
+fn run_repl_with_core<R, W>(
+    workspace_root: PathBuf,
+    reader: &mut R,
+    writer: &mut W,
+    core: &dyn CoreExecutor,
+) -> Result<(), String>
+where
+    R: BufRead,
+    W: Write,
+{
     let mut ui = ReplUiState::default();
 
     print_banner(writer)?;
@@ -53,11 +78,21 @@ where
             continue;
         }
 
+        if let Some(lines) =
+            RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
+        {
+            for line in lines {
+                writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+            }
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+
         eprintln!("[UI] Input received");
         handle_submit(
             trimmed.to_string(),
             workspace_root.as_path(),
-            &core,
+            core,
             &mut ui,
             writer,
         )?;
@@ -99,6 +134,15 @@ pub fn dispatch_repl_input<W: Write>(
             ui.core_snapshot.design.as_ref(),
             writer,
         )?;
+        return Ok(false);
+    }
+
+    if let Some(lines) =
+        RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
+    {
+        for line in lines {
+            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+        }
         return Ok(false);
     }
 
@@ -184,8 +228,38 @@ fn save_design<W: Write>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::{CoreResponse, ExecutionStatus};
     use crate::nl::session::ConversationState;
     use crate::planner::PlannerMode;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct CountingCore {
+        calls: AtomicUsize,
+    }
+
+    impl CountingCore {
+        fn new() -> Self {
+            Self {
+                calls: AtomicUsize::new(0),
+            }
+        }
+
+        fn calls(&self) -> usize {
+            self.calls.load(Ordering::SeqCst)
+        }
+    }
+
+    impl CoreExecutor for CountingCore {
+        fn execute(&self, _request: CoreRequest) -> CoreResponse {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            CoreResponse {
+                events: vec![CoreEvent::Proposal { candidates: vec![] }],
+                status: ExecutionStatus::Proposed,
+                design: None,
+                core_state: None,
+            }
+        }
+    }
 
     #[test]
     fn repl_routes_ambiguous_input_to_core_proposal() {
@@ -228,6 +302,127 @@ mod tests {
 
         assert!(should_exit);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn rollback_bypasses_executor_and_clears_runtime_projection() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\nrollback\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("state=IDLE"), "{output}");
+        assert!(output.contains("Transaction: (none)"), "{output}");
+        assert!(output.contains("Target: (none)"), "{output}");
+        assert!(output.contains("No preview available"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+    }
+
+    #[test]
+    fn preview_short_circuits_executor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(!output.contains("[PROPOSAL]"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+    }
+
+    #[test]
+    fn preview_dispatch_terminates_pipeline() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(!output.contains("[PROPOSAL]"), "{output}");
+        assert!(!output.contains("[RESULT]"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+    }
+
+    #[test]
+    fn invalid_preview_preserves_previous_repl_projection() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut input =
+            io::Cursor::new("preview apps/cli/src/core.rs\npreview does/not/exist.rs\nstatus\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+        let status_lines = output
+            .lines()
+            .filter(|line| line.contains("state=PREVIEW_READY"))
+            .collect::<Vec<_>>();
+        let unique_status_lines = status_lines
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+
+        assert_eq!(core.calls(), 0);
+        assert!(!output.contains("does/not/exist.rs"), "{output}");
+        assert!(status_lines.len() >= 3, "{output}");
+        assert_eq!(unique_status_lines.len(), 1, "{output}");
+    }
+
+    #[test]
+    fn runtime_commands_bypass_reasoning_pipeline() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("status\nrollback\napply\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(core.calls(), 0);
+    }
+
+    #[test]
+    fn non_runtime_input_still_routes_to_core() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("fix parser bug\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(core.calls(), 1);
     }
 }
 // DBM clarification execution guarantee

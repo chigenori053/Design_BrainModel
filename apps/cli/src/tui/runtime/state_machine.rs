@@ -5,6 +5,8 @@ pub enum RuntimeShellState {
     Plan,
     Validate,
     Ready,
+    PreviewReady,
+    AwaitingApply,
     AwaitConfirmation,
     Apply,
     Git,
@@ -20,6 +22,8 @@ impl RuntimeShellState {
             Self::Plan => "PLAN",
             Self::Validate => "VALIDATE",
             Self::Ready => "READY",
+            Self::PreviewReady => "PREVIEW_READY",
+            Self::AwaitingApply => "AWAITING_APPLY",
             Self::AwaitConfirmation => "AWAIT_CONFIRMATION",
             Self::Apply => "APPLY",
             Self::Git => "GIT",
@@ -38,6 +42,10 @@ impl RuntimeShellState {
                 | (Self::Plan, Self::Failed)
                 | (Self::Validate, Self::Ready)
                 | (Self::Validate, Self::Failed)
+                | (Self::Idle, Self::PreviewReady)
+                | (Self::PreviewReady, Self::AwaitingApply)
+                | (Self::AwaitingApply, Self::Apply)
+                | (Self::AwaitingApply, Self::Idle)
                 | (Self::Ready, Self::AwaitConfirmation)
                 | (Self::Ready, Self::Idle)
                 | (Self::AwaitConfirmation, Self::Apply)

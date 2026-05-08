@@ -6,6 +6,7 @@ use crate::runtime::event_queue::RuntimeEventQueue;
 use crate::runtime::logging::{emit_debug, tui_logging_isolated};
 use crate::runtime::runtime_events::{DebugLevel, RenderEvent, RuntimeEvent};
 use crate::runtime::runtime_state::initial_runtime_state;
+use crate::runtime::shell::RuntimeCommandDispatcher;
 use crate::tui::core::handle_submit;
 use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
 use crate::tui::rendering::render_runtime_text;
@@ -56,13 +57,22 @@ where
             break;
         }
 
-        handle_submit(
-            &mut state,
-            &core,
-            trimmed.to_string(),
-            workspace_root.clone(),
-        );
-        state.handle_ui_events();
+        if let Some(lines) =
+            RuntimeCommandDispatcher::dispatch(&mut state, &workspace_root, trimmed)
+        {
+            for line in lines {
+                writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+            }
+            continue;
+        } else {
+            handle_submit(
+                &mut state,
+                &core,
+                trimmed.to_string(),
+                workspace_root.clone(),
+            );
+            state.handle_ui_events();
+        }
         request_render(&mut events, "runtime event consumed");
         render_initial(writer, &state)?;
     }
@@ -138,5 +148,82 @@ mod tests {
         let state = TuiState::new(empty_payload());
 
         assert_eq!(render_runtime_text(&state), render_runtime_text(&state));
+    }
+
+    #[test]
+    fn rollback_runtime_command_never_enters_failed_or_apply_state() {
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\nrollback\n/exit\n");
+        let mut output = Vec::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+
+        run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("state=IDLE"), "{output}");
+        assert!(output.contains("Transaction: (none)"), "{output}");
+        assert!(output.contains("Target: (none)"), "{output}");
+        assert!(output.contains("No preview available"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+        assert!(!output.contains("[ROUTE]"), "{output}");
+    }
+
+    #[test]
+    fn preview_runtime_command_never_converts_to_apply_event() {
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n/exit\n");
+        let mut output = Vec::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+
+        run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(output.contains("Transaction: tx-"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+        assert!(!output.contains("APPLIED"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+        assert!(!output.contains("[ROUTE]"), "{output}");
+    }
+
+    #[test]
+    fn preview_no_post_transition() {
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n/exit\n");
+        let mut output = Vec::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+
+        run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(!output.contains("runtime event consumed"), "{output}");
+        assert!(!output.contains("APPLYING"), "{output}");
+        assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+    }
+
+    #[test]
+    fn preview_no_reducer_after_dispatch() {
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n/exit\n");
+        let mut output = Vec::new();
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+
+        run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(!output.contains("[ROUTE]"), "{output}");
+        assert!(!output.contains("[PROPOSAL]"), "{output}");
+        assert!(!output.contains("runtime event consumed"), "{output}");
     }
 }

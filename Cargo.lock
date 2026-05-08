@@ -2836,6 +2836,9 @@ dependencies = [
  "design_domain",
  "knowledge_store",
  "language_core",
+ "memory_space_phase14",
+ "world_model",
+ "world_model_core",
 ]
 
 [[package]]

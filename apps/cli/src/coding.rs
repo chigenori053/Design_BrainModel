@@ -123,8 +123,46 @@ pub struct CodeIrProgram {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct RustImport {
     line_index: usize,
+    path: String,
+    kind: ImportKind,
     imported_symbols: Vec<String>,
-    wildcard: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ImportKind {
+    Explicit,
+    Aliased,
+    Glob,
+    SideEffectOnly,
+    Nested,
+    UnknownSemantic,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IdentifierReference {
+    name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ImportMutationRecord {
+    pub import_path: String,
+    pub import_kind: ImportKind,
+    pub live_reference_count: usize,
+    pub semantic_confidence: u8,
+    pub protected_reason: Option<String>,
+    pub removed: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct ImportLivenessTelemetry {
+    pub imports_total: usize,
+    pub imports_removed: usize,
+    pub protected_imports: usize,
+    pub glob_imports: usize,
+    pub ambiguous_imports: usize,
+    pub semantic_failures: usize,
+    pub deterministic_hash: String,
+    pub records: Vec<ImportMutationRecord>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -139,6 +177,7 @@ pub struct RefactorDiffResult {
     pub after_code: String,
     pub diff: Option<String>,
     pub removed_lines: usize,
+    pub import_liveness: ImportLivenessTelemetry,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2106,33 +2145,16 @@ pub fn apply_refactor_rule(
 ) -> Result<CodeIrProgram, String> {
     match rule {
         RefactorRule::RemoveUnusedImports => {
-            let source_without_imports = ir
-                .source
-                .lines()
-                .enumerate()
-                .filter(|(index, _)| !ir.imports.iter().any(|import| import.line_index == *index))
-                .map(|(_, line)| line)
-                .collect::<Vec<_>>()
-                .join("\n");
-            // Strip string literal contents before checking symbol usage so that
-            // identifiers appearing only inside string literals (e.g. in test
-            // helpers like `let code = "use std::collections::HashMap;\n..."`)
-            // are not mistaken for real usages (spec §5.3: false negative 禁止).
-            let source_for_usage_check = strip_string_literal_contents(&source_without_imports);
-            let unused_import_lines = ir
-                .imports
-                .iter()
-                .filter(|import| import_is_unused(import, &source_for_usage_check))
-                .map(|import| import.line_index)
-                .collect::<BTreeSet<_>>();
-            code_to_ir_program(&remove_lines(&ir.source, &unused_import_lines))
+            let analysis = analyze_import_liveness(ir);
+            code_to_ir_program(&remove_lines(&ir.source, &analysis.removed_lines))
         }
     }
 }
 
 pub fn remove_unused_imports_refactor(code: &str) -> Result<RefactorDiffResult, String> {
     let before_ir = code_to_ir_program(code)?;
-    let after_ir = apply_refactor_rule(&before_ir, RefactorRule::RemoveUnusedImports)?;
+    let analysis = analyze_import_liveness(&before_ir);
+    let after_ir = code_to_ir_program(&remove_lines(code, &analysis.removed_lines))?;
     let after_code = after_ir.source.clone();
     let diff = if before_ir == after_ir || code.trim() == after_code.trim() {
         None
@@ -2151,6 +2173,7 @@ pub fn remove_unused_imports_refactor(code: &str) -> Result<RefactorDiffResult, 
         after_code,
         diff,
         removed_lines,
+        import_liveness: analysis.telemetry,
     })
 }
 
@@ -2182,11 +2205,39 @@ fn parse_rust_import(line_index: usize, line: &str) -> Option<RustImport> {
         .or_else(|| trimmed.strip_prefix("pub use "))?
         .trim_end_matches(';')
         .trim();
+    let kind = classify_import(path);
     Some(RustImport {
         line_index,
+        path: path.to_string(),
+        kind,
         imported_symbols: imported_symbols_from_use_path(path),
-        wildcard: path.ends_with("::*"),
     })
+}
+
+fn classify_import(path: &str) -> ImportKind {
+    if path.ends_with("::*") || path == "*" {
+        return ImportKind::Glob;
+    }
+    if path.contains(" as _") {
+        return ImportKind::SideEffectOnly;
+    }
+    if path.contains("::{") || path.starts_with('{') {
+        return ImportKind::Nested;
+    }
+    if path.contains(" as ") {
+        return ImportKind::Aliased;
+    }
+    let Some(symbol) = path.rsplit("::").next() else {
+        return ImportKind::UnknownSemantic;
+    };
+    if symbol
+        .chars()
+        .next()
+        .is_some_and(|ch| ch.is_ascii_lowercase())
+    {
+        return ImportKind::SideEffectOnly;
+    }
+    ImportKind::Explicit
 }
 
 fn imported_symbols_from_use_path(path: &str) -> Vec<String> {
@@ -2217,27 +2268,206 @@ fn imported_symbol_from_segment(segment: &str) -> Option<String> {
     (!symbol.is_empty() && symbol != "*").then(|| symbol.to_string())
 }
 
-fn import_is_unused(import: &RustImport, source_without_imports: &str) -> bool {
-    if import.wildcard {
-        return true;
-    }
-    !import.imported_symbols.is_empty()
-        && import
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ImportLivenessAnalysis {
+    removed_lines: BTreeSet<usize>,
+    telemetry: ImportLivenessTelemetry,
+}
+
+fn analyze_import_liveness(ir: &CodeIrProgram) -> ImportLivenessAnalysis {
+    let source_without_imports = ir
+        .source
+        .lines()
+        .enumerate()
+        .filter(|(index, _)| !ir.imports.iter().any(|import| import.line_index == *index))
+        .map(|(_, line)| line)
+        .collect::<Vec<_>>()
+        .join("\n");
+    let references = extract_identifier_references(&source_without_imports);
+    let semantic_failure = references.is_err();
+    let reference_counts = references.unwrap_or_default().into_iter().fold(
+        BTreeMap::<String, usize>::new(),
+        |mut counts, reference| {
+            *counts.entry(reference.name).or_default() += 1;
+            counts
+        },
+    );
+    let duplicate_imports = duplicate_import_paths(&ir.imports);
+    let mut removed_lines = BTreeSet::new();
+    let mut records = Vec::new();
+
+    let mut imports = ir.imports.iter().collect::<Vec<_>>();
+    imports.sort_by(|lhs, rhs| {
+        lhs.path
+            .cmp(&rhs.path)
+            .then_with(|| lhs.line_index.cmp(&rhs.line_index))
+    });
+
+    for import in imports {
+        let live_reference_count = import
             .imported_symbols
             .iter()
-            .all(|symbol| !contains_rust_identifier(source_without_imports, symbol))
+            .map(|symbol| reference_counts.get(symbol).copied().unwrap_or(0))
+            .sum::<usize>();
+        let protected_reason =
+            protected_import_reason(import, semantic_failure, &duplicate_imports);
+        let semantic_confidence = if protected_reason.as_deref() == Some("semantic_failure") {
+            0
+        } else {
+            100
+        };
+        let removed = protected_reason.is_none()
+            && !import.imported_symbols.is_empty()
+            && live_reference_count == 0;
+        if removed {
+            removed_lines.insert(import.line_index);
+        }
+        records.push(ImportMutationRecord {
+            import_path: import.path.clone(),
+            import_kind: import.kind,
+            live_reference_count,
+            semantic_confidence,
+            protected_reason,
+            removed,
+        });
+    }
+
+    if !removed_lines.is_empty() {
+        let candidate_source = remove_lines(&ir.source, &removed_lines);
+        if syn::parse_file(&candidate_source).is_err() {
+            removed_lines.clear();
+            for record in &mut records {
+                record.removed = false;
+                record.semantic_confidence = 0;
+                if record.protected_reason.is_none() {
+                    record.protected_reason = Some("semantic_failure".to_string());
+                }
+            }
+        }
+    }
+
+    let telemetry = build_import_liveness_telemetry(
+        ir.imports.len(),
+        semantic_failure
+            || records
+                .iter()
+                .any(|record| record.protected_reason.as_deref() == Some("semantic_failure")),
+        records,
+    );
+    ImportLivenessAnalysis {
+        removed_lines,
+        telemetry,
+    }
 }
 
-fn contains_rust_identifier(source: &str, symbol: &str) -> bool {
-    source.match_indices(symbol).any(|(index, _)| {
-        let before = source[..index].chars().next_back();
-        let after = source[index + symbol.len()..].chars().next();
-        !before.is_some_and(is_rust_identifier_char) && !after.is_some_and(is_rust_identifier_char)
-    })
+fn duplicate_import_paths(imports: &[RustImport]) -> BTreeSet<String> {
+    let mut seen = BTreeSet::new();
+    let mut duplicates = BTreeSet::new();
+    for path in imports.iter().map(|import| import.path.clone()) {
+        if !seen.insert(path.clone()) {
+            duplicates.insert(path);
+        }
+    }
+    duplicates
 }
 
-fn is_rust_identifier_char(ch: char) -> bool {
-    ch == '_' || ch.is_ascii_alphanumeric()
+fn protected_import_reason(
+    import: &RustImport,
+    semantic_failure: bool,
+    duplicate_imports: &BTreeSet<String>,
+) -> Option<String> {
+    if duplicate_imports.contains(&import.path) && import.kind == ImportKind::Glob {
+        return Some("duplicate_glob_import_detected".to_string());
+    }
+    match import.kind {
+        ImportKind::Glob => Some("glob_import".to_string()),
+        ImportKind::SideEffectOnly => Some("side_effect_import".to_string()),
+        ImportKind::UnknownSemantic => Some("unknown_semantic".to_string()),
+        _ if semantic_failure => Some("semantic_failure".to_string()),
+        _ => None,
+    }
+}
+
+fn build_import_liveness_telemetry(
+    imports_total: usize,
+    semantic_failure: bool,
+    records: Vec<ImportMutationRecord>,
+) -> ImportLivenessTelemetry {
+    let imports_removed = records.iter().filter(|record| record.removed).count();
+    let protected_imports = records
+        .iter()
+        .filter(|record| record.protected_reason.is_some())
+        .count();
+    let glob_imports = records
+        .iter()
+        .filter(|record| record.import_kind == ImportKind::Glob)
+        .count();
+    let ambiguous_imports = records
+        .iter()
+        .filter(|record| {
+            matches!(
+                record.protected_reason.as_deref(),
+                Some("semantic_failure" | "unknown_semantic")
+            )
+        })
+        .count();
+    let semantic_failures = usize::from(semantic_failure);
+    let deterministic_hash = deterministic_import_mutation_hash(&records);
+    ImportLivenessTelemetry {
+        imports_total,
+        imports_removed,
+        protected_imports,
+        glob_imports,
+        ambiguous_imports,
+        semantic_failures,
+        deterministic_hash,
+        records,
+    }
+}
+
+fn deterministic_import_mutation_hash(records: &[ImportMutationRecord]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    for record in records {
+        hasher.update(record.import_path.as_bytes());
+        hasher.update([0]);
+        hasher.update(format!("{:?}", record.import_kind).as_bytes());
+        hasher.update([0]);
+        hasher.update(record.live_reference_count.to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(record.semantic_confidence.to_string().as_bytes());
+        hasher.update([0]);
+        hasher.update(record.protected_reason.as_deref().unwrap_or("").as_bytes());
+        hasher.update([0]);
+        hasher.update(if record.removed { b"1" } else { b"0" });
+        hasher.update([b'\n']);
+    }
+    format!("sha256:{:x}", hasher.finalize())
+}
+
+fn extract_identifier_references(
+    source_without_imports: &str,
+) -> Result<Vec<IdentifierReference>, String> {
+    struct IdentifierVisitor {
+        references: Vec<IdentifierReference>,
+    }
+
+    impl<'ast> syn::visit::Visit<'ast> for IdentifierVisitor {
+        fn visit_ident(&mut self, ident: &'ast syn::Ident) {
+            self.references.push(IdentifierReference {
+                name: ident.to_string(),
+            });
+        }
+    }
+
+    let parsed = syn::parse_file(source_without_imports)
+        .map_err(|err| format!("failed to parse Rust source for import liveness: {err}"))?;
+    let mut visitor = IdentifierVisitor {
+        references: Vec::new(),
+    };
+    syn::visit::visit_file(&mut visitor, &parsed);
+    Ok(visitor.references)
 }
 
 /// Prepares `source` for symbol-usage search by replacing content that should
@@ -2255,6 +2485,7 @@ fn is_rust_identifier_char(ch: char) -> bool {
 ///   the correct closing delimiter (`"` + matching `#` count) is detected.
 /// - `//` line comments (outside strings): rest of line replaced with spaces.
 /// - Block comments and byte-strings are handled as regular strings (Phase A).
+#[cfg(test)]
 fn strip_string_literal_contents(source: &str) -> String {
     let src = source.as_bytes();
     let len = src.len();
@@ -2385,6 +2616,13 @@ mod refactor_diff_tests {
             result.diff.as_deref(),
             Some("- use std::collections::HashMap;")
         );
+        assert_eq!(result.import_liveness.imports_total, 1);
+        assert_eq!(result.import_liveness.imports_removed, 1);
+        assert_eq!(
+            result.import_liveness.records[0].import_kind,
+            ImportKind::Explicit
+        );
+        assert!(result.import_liveness.records[0].removed);
     }
 
     #[test]
@@ -2411,6 +2649,75 @@ mod refactor_diff_tests {
         assert_eq!(diffs[1], diffs[2]);
     }
 
+    #[test]
+    fn remove_unused_imports_preserves_glob_import() {
+        let code = "use super::*;\n\nfn x() { foo(); }\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(result.diff, None);
+        assert_eq!(result.import_liveness.glob_imports, 1);
+        assert_eq!(result.import_liveness.protected_imports, 1);
+        assert_eq!(
+            result.import_liveness.records[0]
+                .protected_reason
+                .as_deref(),
+            Some("glob_import")
+        );
+    }
+
+    #[test]
+    fn remove_unused_imports_removes_explicit_and_preserves_glob_in_mixed_imports() {
+        let code = "use super::*;\nuse std::collections::HashMap;\n\nfn x() {}\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(
+            result.diff.as_deref(),
+            Some("- use std::collections::HashMap;")
+        );
+        assert!(result.after_code.contains("use super::*;"));
+        assert!(!result.after_code.contains("use std::collections::HashMap;"));
+    }
+
+    #[test]
+    fn remove_unused_imports_preserves_side_effect_imports() {
+        let code = "use tracing_subscriber as _;\nuse alloc::vec;\n\nfn x() {}\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(result.diff, None);
+        assert_eq!(result.import_liveness.protected_imports, 2);
+        assert!(
+            result
+                .import_liveness
+                .records
+                .iter()
+                .all(|record| { record.protected_reason.as_deref() == Some("side_effect_import") })
+        );
+    }
+
+    #[test]
+    fn duplicate_glob_imports_are_reported_without_removal() {
+        let code = "use super::*;\nuse super::*;\n\nfn x() {}\n";
+        let result = remove_unused_imports_refactor(code).expect("refactor");
+        assert_eq!(result.diff, None);
+        assert_eq!(result.import_liveness.glob_imports, 2);
+        assert!(result.import_liveness.records.iter().all(|record| {
+            record.protected_reason.as_deref() == Some("duplicate_glob_import_detected")
+        }));
+    }
+
+    #[test]
+    fn remove_unused_imports_hash_is_deterministic() {
+        let code = "use super::*;\nuse std::collections::HashMap;\n\nfn x() {}\n";
+        let first = remove_unused_imports_refactor(code).expect("first");
+        let second = remove_unused_imports_refactor(code).expect("second");
+        assert_eq!(
+            first.import_liveness.deterministic_hash,
+            second.import_liveness.deterministic_hash
+        );
+        assert_eq!(first.diff, second.diff);
+        assert_eq!(
+            first.import_liveness.records,
+            second.import_liveness.records
+        );
+    }
+
     // §5.3: symbol inside a string literal must not block removal
     #[test]
     fn remove_unused_imports_ignores_symbol_in_string_literal() {
@@ -2430,14 +2737,26 @@ mod refactor_diff_tests {
         );
     }
 
-    /// Step B/C/D: run refactor on the actual coding.rs file (which has the
-    /// `use std::collections::HashMap;` inserted in Step A).
-    /// Verifies diff is produced (Step C) and that re-running produces no diff (Step D).
+    /// Step B/C/D: run refactor on a multi-item Rust file with an injected
+    /// unused import. Verifies diff is produced and re-running is idempotent.
     #[test]
-    fn remove_unused_imports_on_real_coding_rs() {
-        let code = std::fs::read_to_string("src/coding.rs").expect("coding.rs must be readable");
+    fn remove_unused_imports_on_multi_item_rust_file() {
+        let code = concat!(
+            "use std::collections::HashMap;\n",
+            "use std::collections::BTreeSet;\n",
+            "\n",
+            "pub struct Index {\n",
+            "    names: BTreeSet<String>,\n",
+            "}\n",
+            "\n",
+            "impl Index {\n",
+            "    pub fn new() -> Self {\n",
+            "        Self { names: BTreeSet::new() }\n",
+            "    }\n",
+            "}\n",
+        );
         // Step B – first run: diff must be produced
-        let result = remove_unused_imports_refactor(&code).expect("refactor run 1");
+        let result = remove_unused_imports_refactor(code).expect("refactor run 1");
         let diff = result
             .diff
             .as_deref()
