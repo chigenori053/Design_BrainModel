@@ -6,6 +6,7 @@ pub mod projection_engine;
 pub mod snapshot_engine;
 pub mod structured_reasoning;
 pub mod fuzzy_convergence;
+pub mod semantic_planning;
 
 pub use hypothesis_engine::{DesignHypothesis, HypothesisEngine};
 pub use language_engine::{
@@ -31,4 +32,8 @@ pub use structured_reasoning::{
 pub use fuzzy_convergence::{
     DesignConvergenceEngine, DesignConvergenceScore, FuzzyIntentScore, FuzzyJudgeLogic,
     IntentCandidate, LatentConstraint,
+};
+pub use semantic_planning::{
+    AbstractionTransition, IntentContinuityEngine, IntentLineage, PlanningMemory,
+    ResponsibilityUnit, SemanticPlanningEngine, SemanticPlanningGraph, SemanticPlanningNode,
 };

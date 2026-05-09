@@ -44,6 +44,12 @@ pub enum RuntimeShellState {
     SemanticAmbiguity,
     FuzzyConvergence,
     IntentCollapse,
+    SemanticPlanning,
+    IntentDrift,
+    SemanticTransition,
+    ResponsibilityCollapse,
+    PlanningConvergence,
+    SemanticDriftRejected,
 }
 
 impl RuntimeShellState {
@@ -93,6 +99,12 @@ impl RuntimeShellState {
             Self::SemanticAmbiguity => "SEMANTIC_AMBIGUITY",
             Self::FuzzyConvergence => "FUZZY_CONVERGENCE",
             Self::IntentCollapse => "INTENT_COLLAPSE",
+            Self::SemanticPlanning => "SEMANTIC_PLANNING",
+            Self::IntentDrift => "INTENT_DRIFT",
+            Self::SemanticTransition => "SEMANTIC_TRANSITION",
+            Self::ResponsibilityCollapse => "RESPONSIBILITY_COLLAPSE",
+            Self::PlanningConvergence => "PLANNING_CONVERGENCE",
+            Self::SemanticDriftRejected => "SEMANTIC_DRIFT_REJECTED",
         }
     }
 
@@ -187,6 +199,18 @@ impl RuntimeShellState {
                 | (Self::FuzzyConvergence, Self::Idle)
                 | (_, Self::IntentCollapse)
                 | (Self::IntentCollapse, Self::Idle)
+                | (_, Self::SemanticPlanning)
+                | (Self::SemanticPlanning, Self::Idle)
+                | (_, Self::IntentDrift)
+                | (Self::IntentDrift, Self::Idle)
+                | (_, Self::SemanticTransition)
+                | (Self::SemanticTransition, Self::Idle)
+                | (_, Self::ResponsibilityCollapse)
+                | (Self::ResponsibilityCollapse, Self::Idle)
+                | (_, Self::PlanningConvergence)
+                | (Self::PlanningConvergence, Self::Idle)
+                | (_, Self::SemanticDriftRejected)
+                | (Self::SemanticDriftRejected, Self::Idle)
         )
     }
 }
