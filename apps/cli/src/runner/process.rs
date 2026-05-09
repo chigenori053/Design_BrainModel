@@ -12,7 +12,7 @@ use super::types::{
 };
 
 const MAX_OUTPUT: usize = 1_000_000;
-const MAX_PARALLEL_EXECUTIONS: usize = 4;
+const MAX_PARALLEL_EXECUTIONS: usize = 2;
 const SPAWN_RETRY_ATTEMPTS: usize = 5;
 const SPAWN_RETRY_DELAY_MS: u64 = 25;
 

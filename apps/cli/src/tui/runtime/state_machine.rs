@@ -29,7 +29,21 @@ pub enum RuntimeShellState {
     IntentCollapseHalt,
     SemanticReplayHalt,
     SemanticRepairRegressionHalt,
+    GovernanceCollapseHalt,
+    RunawayCognitionHalt,
+    PolicyMutationHalt,
+    SemanticGovernanceHalt,
+    Rejected,
+    GovernanceRejected,
+    SemanticRejected,
+    ConvergenceRejected,
+    MutationSuppressed,
     Failed,
+    IntentConvergence,
+    ClarificationRequired,
+    SemanticAmbiguity,
+    FuzzyConvergence,
+    IntentCollapse,
 }
 
 impl RuntimeShellState {
@@ -64,7 +78,21 @@ impl RuntimeShellState {
             Self::IntentCollapseHalt => "INTENT_COLLAPSE_HALT",
             Self::SemanticReplayHalt => "SEMANTIC_REPLAY_HALT",
             Self::SemanticRepairRegressionHalt => "SEMANTIC_REPAIR_REGRESSION_HALT",
+            Self::GovernanceCollapseHalt => "GOVERNANCE_COLLAPSE_HALT",
+            Self::RunawayCognitionHalt => "RUNAWAY_COGNITION_HALT",
+            Self::PolicyMutationHalt => "POLICY_MUTATION_HALT",
+            Self::SemanticGovernanceHalt => "SEMANTIC_GOVERNANCE_HALT",
+            Self::Rejected => "REJECTED",
+            Self::GovernanceRejected => "GOVERNANCE_REJECTED",
+            Self::SemanticRejected => "SEMANTIC_REJECTED",
+            Self::ConvergenceRejected => "CONVERGENCE_REJECTED",
+            Self::MutationSuppressed => "MUTATION_SUPPRESSED",
             Self::Failed => "FAILED",
+            Self::IntentConvergence => "INTENT_CONVERGENCE",
+            Self::ClarificationRequired => "CLARIFICATION_REQUIRED",
+            Self::SemanticAmbiguity => "SEMANTIC_AMBIGUITY",
+            Self::FuzzyConvergence => "FUZZY_CONVERGENCE",
+            Self::IntentCollapse => "INTENT_COLLAPSE",
         }
     }
 
@@ -131,6 +159,34 @@ impl RuntimeShellState {
                 | (Self::SemanticReplayHalt, Self::Idle)
                 | (_, Self::SemanticRepairRegressionHalt)
                 | (Self::SemanticRepairRegressionHalt, Self::Idle)
+                | (_, Self::GovernanceCollapseHalt)
+                | (Self::GovernanceCollapseHalt, Self::Idle)
+                | (_, Self::RunawayCognitionHalt)
+                | (Self::RunawayCognitionHalt, Self::Idle)
+                | (_, Self::PolicyMutationHalt)
+                | (Self::PolicyMutationHalt, Self::Idle)
+                | (_, Self::SemanticGovernanceHalt)
+                | (Self::SemanticGovernanceHalt, Self::Idle)
+                | (_, Self::Rejected)
+                | (Self::Rejected, Self::Idle)
+                | (_, Self::GovernanceRejected)
+                | (Self::GovernanceRejected, Self::Idle)
+                | (_, Self::SemanticRejected)
+                | (Self::SemanticRejected, Self::Idle)
+                | (_, Self::ConvergenceRejected)
+                | (Self::ConvergenceRejected, Self::Idle)
+                | (_, Self::MutationSuppressed)
+                | (Self::MutationSuppressed, Self::Idle)
+                | (_, Self::IntentConvergence)
+                | (Self::IntentConvergence, Self::Idle)
+                | (_, Self::ClarificationRequired)
+                | (Self::ClarificationRequired, Self::Idle)
+                | (_, Self::SemanticAmbiguity)
+                | (Self::SemanticAmbiguity, Self::Idle)
+                | (_, Self::FuzzyConvergence)
+                | (Self::FuzzyConvergence, Self::Idle)
+                | (_, Self::IntentCollapse)
+                | (Self::IntentCollapse, Self::Idle)
         )
     }
 }

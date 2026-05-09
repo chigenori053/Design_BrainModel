@@ -324,14 +324,9 @@ mod tests {
     #[test]
     fn full_redraw_removes_previous_frame_cells() {
         let mut state = TuiState::new(empty_payload());
-        state.append_chat(UiEvent::Diff {
-            file: "old.rs".to_string(),
-            changes: vec![DiffChunk {
-                old_line: None,
-                new_line: Some(1),
-                old: None,
-                new: Some("PREVIOUS_FRAME_RESIDUE_SHOULD_DISAPPEAR".to_string()),
-            }],
+        state.active_target = Some("old.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["PREVIOUS_FRAME_RESIDUE_SHOULD_DISAPPEAR".to_string()],
         });
 
         let backend = TestBackend::new(100, 24);
@@ -592,14 +587,9 @@ mod tests {
     #[test]
     fn diff_panel_full_redraw() {
         let mut state = TuiState::new(empty_payload());
-        state.append_chat(UiEvent::Diff {
-            file: "old.rs".to_string(),
-            changes: vec![DiffChunk {
-                old_line: None,
-                new_line: Some(1),
-                old: None,
-                new: Some("STALE_DIFF_PANEL_TEXT_SHOULD_DISAPPEAR".to_string()),
-            }],
+        state.active_target = Some("old.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["STALE_DIFF_PANEL_TEXT_SHOULD_DISAPPEAR".to_string()],
         });
         let backend = TestBackend::new(110, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -699,14 +689,9 @@ mod tests {
     #[test]
     fn resize_full_redraw_is_deterministic_and_clean() {
         let mut state = TuiState::new(empty_payload());
-        state.append_chat(UiEvent::Diff {
-            file: "wide.rs".to_string(),
-            changes: vec![DiffChunk {
-                old_line: None,
-                new_line: Some(1),
-                old: None,
-                new: Some("WIDE_FRAME_ONLY_TEXT".to_string()),
-            }],
+        state.active_target = Some("wide.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["WIDE_FRAME_ONLY_TEXT".to_string()],
         });
 
         let backend = TestBackend::new(100, 24);

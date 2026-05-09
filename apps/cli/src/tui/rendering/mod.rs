@@ -17,6 +17,7 @@ pub struct RuntimeProjection {
     pub target_label: Option<String>,
     pub transaction_label: Option<String>,
     pub diff_projection: DiffProjection,
+    pub rejection_label: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -99,16 +100,23 @@ impl RuntimeProjection {
     pub fn from_state(state: &TuiState) -> Self {
         let target_label = resolved_target_label(state);
         let diff_projection = DiffProjection::from_state(state, target_label.clone());
+        let rejection_label = state.rejection.as_ref().map(|rej| {
+            format!(
+                "REJECTED: {} (via {})",
+                rej.reason, rej.originating_mutation
+            )
+        });
         Self {
             state_label: projection_state_label_from_runtime(state),
             target_label,
             transaction_label: resolved_transaction_label(state),
             diff_projection,
+            rejection_label,
         }
     }
 
     pub fn runtime_panel_lines(&self) -> Vec<String> {
-        vec![
+        let mut lines = vec![
             format!("State: {}", self.state_label),
             format!(
                 "Target: {}",
@@ -118,7 +126,11 @@ impl RuntimeProjection {
                 "Transaction: {}",
                 self.transaction_label.as_deref().unwrap_or("(none)")
             ),
-        ]
+        ];
+        if let Some(rejection) = &self.rejection_label {
+            lines.push(rejection.clone());
+        }
+        lines
     }
 
     pub fn status_line(&self) -> String {
@@ -556,6 +568,10 @@ mod tests {
     #[test]
     fn failed_recoverable_retains_projection_only_with_tx() {
         let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/core.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn semantic() {}".to_string()],
+        });
         state.append_chat(UiEvent::Diff {
             file: "apps/cli/src/core.rs".to_string(),
             changes: vec![DiffChunk {
@@ -565,6 +581,7 @@ mod tests {
                 new_line: Some(1),
             }],
         });
+        state.runtime_state = RuntimeShellState::Apply;
         state.append_chat(UiEvent::Error {
             message: "recoverable".to_string(),
         });

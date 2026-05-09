@@ -10,7 +10,7 @@ use serde::Serialize;
 /// 設計方針: 精度よりも安定性優先。正規表現不使用・パニック禁止。
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 type ProjectFileRecord = (FileAnalysis, Vec<(String, bool)>, bool);
 
@@ -170,7 +170,7 @@ const MAX_FILES: usize = 2000;
 ///
 /// ディレクトリを再帰走査し、ファイル解析・依存グラフ・モジュール推定を行う。
 pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String> {
-    let root = Path::new(root_path);
+    let root = resolve_analysis_path(root_path);
 
     if !root.exists() {
         return Ok(ProjectAnalysisResult {
@@ -192,7 +192,7 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
         let mut dependencies = Vec::new();
         let mut modules = Vec::new();
 
-        if let Some((file, deps, _)) = analyze_file_project(root, logical_root) {
+        if let Some((file, deps, _)) = analyze_file_project(&root, logical_root) {
             modules.push(Module {
                 name: module_name_from_relative_path(&file.path),
                 files: vec![file.path.clone()],
@@ -225,12 +225,12 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
     }
 
     // 1. ディレクトリ走査
-    let paths = scan_directory(root)?;
+    let paths = scan_directory(&root)?;
 
     // 2. 各ファイル解析（相対パス + 依存抽出）
     let mut records: Vec<ProjectFileRecord> = vec![];
     for path in &paths {
-        if let Some(record) = analyze_file_project(path, root) {
+        if let Some(record) = analyze_file_project(path, &root) {
             records.push(record);
         }
     }
@@ -264,8 +264,9 @@ pub fn analyze_project(root_path: &str) -> Result<ProjectAnalysisResult, String>
 
 /// ディレクトリを再帰走査してサポート対象ファイルのパスリストを返す
 pub fn scan_directory(root: &Path) -> Result<Vec<std::path::PathBuf>, String> {
+    let root = resolve_analysis_path(root);
     let mut files = Vec::new();
-    collect_supported_files(root, &mut files)?;
+    collect_supported_files(&root, &mut files)?;
     files.sort_by(|a, b| a.to_string_lossy().cmp(&b.to_string_lossy()));
     files.dedup();
     files.truncate(MAX_FILES);
@@ -718,7 +719,7 @@ fn build_summary(files: &[FileAnalysis]) -> ProjectSummary {
 
 /// 単一ファイルまたは簡易ディレクトリを解析する（旧 API）
 pub fn analyze_path(path: &str) -> Result<AnalysisResult, String> {
-    let p = Path::new(path);
+    let p = resolve_analysis_path(path);
     if !p.exists() {
         return Ok(AnalysisResult {
             path: path.to_string(),
@@ -730,7 +731,7 @@ pub fn analyze_path(path: &str) -> Result<AnalysisResult, String> {
 
     let mut modules = Vec::new();
     let mut total_lines = 0usize;
-    collect_modules(p, &mut modules, &mut total_lines)
+    collect_modules(&p, &mut modules, &mut total_lines)
         .map_err(|e| format!("analysis error: {e}"))?;
     let suggestions = generate_suggestions(&modules);
     Ok(AnalysisResult {
@@ -739,6 +740,24 @@ pub fn analyze_path(path: &str) -> Result<AnalysisResult, String> {
         total_lines,
         suggestions,
     })
+}
+
+fn resolve_analysis_path<P: AsRef<Path>>(path: P) -> PathBuf {
+    let path = path.as_ref();
+    if path.is_absolute() {
+        return path.to_path_buf();
+    }
+
+    let manifest_relative = Path::new(env!("CARGO_MANIFEST_DIR")).join(path);
+    if manifest_relative.exists() {
+        return manifest_relative;
+    }
+
+    if path.exists() {
+        return path.to_path_buf();
+    }
+
+    path.to_path_buf()
 }
 
 fn collect_modules(

@@ -71,16 +71,23 @@ pub struct ExecutionMemory {
 
 impl ExecutionMemory {
     pub fn record_success(&mut self, repair: String) {
-        self.successful_repairs.push(repair);
+        if !self.successful_repairs.contains(&repair) {
+            self.successful_repairs.push(repair);
+            self.successful_repairs.sort();
+        }
     }
 
     pub fn record_failure(&mut self, repair: String) {
-        self.failed_repairs.push(repair);
+        if !self.failed_repairs.contains(&repair) {
+            self.failed_repairs.push(repair);
+            self.failed_repairs.sort();
+        }
     }
 
     pub fn record_recurring_failure(&mut self, signature: String) {
         if !self.recurring_failures.contains(&signature) {
             self.recurring_failures.push(signature);
+            self.recurring_failures.sort();
         }
     }
 }

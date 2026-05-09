@@ -95,13 +95,14 @@ pub fn load_seeds_into(engine: &InMemoryEngine, path: &Path) -> usize {
         Ok(d) => d,
         Err(_) => return 0,
     };
-    let entries: Vec<SeedEntry> = match serde_json::from_str(&data) {
+    let mut entries: Vec<SeedEntry> = match serde_json::from_str(&data) {
         Ok(v) => v,
         Err(e) => {
             eprintln!("warn: seed parse error in {}: {e}", path.display());
             return 0;
         }
     };
+    entries.sort_by(|a, b| a.id.cmp(&b.id));
     let count = entries.len();
     for entry in entries {
         engine.store(seed_to_record(entry));
@@ -113,10 +114,18 @@ pub fn load_seeds_into(engine: &InMemoryEngine, path: &Path) -> usize {
 /// Searches upward from the current working directory (up to 3 levels) so the
 /// binary works correctly whether invoked from the workspace root or a subdir.
 pub fn load_default_seeds(engine: &InMemoryEngine) -> usize {
+    let manifest_seed = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("seeds/knowledge.json");
+    if manifest_seed.exists() {
+        return load_seeds_into(engine, &manifest_seed);
+    }
+
     let candidates = [
         Path::new("seeds/knowledge.json"),
         Path::new("../seeds/knowledge.json"),
         Path::new("../../seeds/knowledge.json"),
+        Path::new("../../../seeds/knowledge.json"),
     ];
     for path in &candidates {
         if path.exists() {

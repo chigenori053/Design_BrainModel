@@ -3,6 +3,7 @@ pub mod bootstrap;
 pub mod branch;
 pub mod coordination;
 pub mod event_queue;
+pub mod governance;
 pub mod host_loop;
 pub mod logging;
 pub mod runtime_events;

@@ -12,9 +12,12 @@ use crate::nl::types::SupportedLanguage;
 use crate::pipeline::PipelineState;
 use crate::runtime::autonomous::{ExecutionMemory, ExecutionSession};
 use crate::runtime::branch::BranchRuntime;
-use crate::runtime::coordination::{CoordinationMemory, RuntimeNode, RuntimeRole, SharedWorldState};
-use crate::runtime::synthesis::ArchitectureMemory;
+use crate::runtime::coordination::{
+    CoordinationMemory, RuntimeNode, RuntimeRole, SharedWorldState,
+};
+use crate::runtime::governance::{CognitivePolicy, GovernanceMemory, GovernanceState};
 use crate::runtime::runtime_events::DebugEvent;
+use crate::runtime::synthesis::ArchitectureMemory;
 use crate::tui::input::{PersistentInputHistory, complete_command};
 use crate::tui::runtime::RuntimeShellState;
 
@@ -378,7 +381,15 @@ fn render_diff(file: &str, changes: &[DiffChunk]) -> String {
     lines.join("\n")
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RejectionInfo {
+    pub reason: String,
+    pub originating_mutation: String,
+    pub governance_source: Option<String>,
+    pub convergence_source: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct TuiState {
     pub chat: ChatState,
     pub design_doc: DesignDocument,
@@ -398,6 +409,7 @@ pub struct TuiState {
     pub active_target: Option<String>,
     pub active_transaction_id: Option<String>,
     pub active_transaction: Option<RuntimeTransaction>,
+    pub rejection: Option<RejectionInfo>,
     pub dirty_tree_state: String,
     pub language_mode: SupportedLanguage,
     pub debug_events: Vec<DebugEvent>,
@@ -422,6 +434,10 @@ pub struct TuiState {
     pub shared_world_state: SharedWorldState,
     /// Persistent memory for distributed coordination.
     pub coordination_memory: CoordinationMemory,
+    /// Meta-cognitive governance policy and lifecycle.
+    pub cognitive_policy: CognitivePolicy,
+    pub governance_state: GovernanceState,
+    pub governance_memory: GovernanceMemory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -456,6 +472,7 @@ impl TuiState {
             active_target: None,
             active_transaction_id: None,
             active_transaction: None,
+            rejection: None,
             dirty_tree_state: "clean".to_string(),
             language_mode: SupportedLanguage::Unknown,
             debug_events: Vec::new(),
@@ -470,6 +487,9 @@ impl TuiState {
             runtime_node: RuntimeNode::new("local-node".to_string(), RuntimeRole::Planner),
             shared_world_state: SharedWorldState::default(),
             coordination_memory: CoordinationMemory::default(),
+            cognitive_policy: CognitivePolicy::default(),
+            governance_state: GovernanceState::Stable,
+            governance_memory: GovernanceMemory::default(),
         }
         .with_pseudo_stream()
     }
@@ -598,12 +618,15 @@ impl TuiState {
                 self.install_runtime_transaction(target, preview);
             }
             UiEvent::Diff { file, changes } => {
-                self.active_target = Some(file.clone());
+                let Some(existing) = self.active_transaction.as_ref() else {
+                    self.clear_runtime_transaction();
+                    return;
+                };
                 let diff = Diff {
                     file: file.clone(),
                     changes: changes.clone(),
                 };
-                self.install_runtime_transaction(file.clone(), diff);
+                self.install_runtime_transaction(existing.target_path.clone(), diff);
             }
             UiEvent::Debug { message } if message.starts_with("filter set: ") => {
                 self.session.filter = message.strip_prefix("filter set: ").map(ToOwned::to_owned);
@@ -623,17 +646,17 @@ impl TuiState {
             }
             UiEvent::Pipeline { state } => {
                 let next_state = runtime_state_from_pipeline_label(state);
+                if matches!(next_state, RuntimeShellState::Idle) {
+                    self.runtime_state = RuntimeShellState::Idle;
+                    self.clear_runtime_transaction();
+                    return;
+                }
                 if should_accept_runtime_transition(
                     self.runtime_state,
                     next_state,
                     self.active_transaction.is_some(),
                 ) {
                     self.runtime_state = next_state;
-                }
-                if matches!(self.runtime_state, RuntimeShellState::Idle)
-                    && self.active_transaction.is_none()
-                {
-                    self.clear_runtime_transaction();
                 }
             }
             UiEvent::Error { .. } => {
@@ -1141,10 +1164,10 @@ mod tests {
         assert_eq!(state.history, vec!["/save design"]);
     }
 
-    /// Projection diffs are owned by the active runtime transaction, not by
-    /// panel/session cache.
+    /// Projection diffs are owned by the runtime publication gate. A raw diff
+    /// event cannot create transaction ownership by itself.
     #[test]
-    fn runtime_transaction_owns_projection_diff() {
+    fn raw_diff_without_transaction_does_not_publish_projection() {
         let mut state = TuiState::new(empty_payload());
 
         state.append_chat(UiEvent::Proposal { candidates: vec![] });
@@ -1166,25 +1189,17 @@ mod tests {
                 new: Some("fn parse(input: &str)".to_string()),
             }],
         });
-        let tx = state
-            .active_transaction
-            .as_ref()
-            .expect("active transaction");
-        assert_eq!(tx.target_path, "parser.rs");
-        assert_eq!(tx.diff.file, "parser.rs");
+        assert!(state.active_transaction.is_none());
+        assert!(state.active_transaction_id.is_none());
+        assert!(state.active_target.is_none());
     }
 
     #[test]
-    fn pipeline_idle_does_not_clear_owned_projection() {
+    fn pipeline_idle_clears_projection_lifecycle() {
         let mut state = TuiState::new(empty_payload());
-        state.append_chat(UiEvent::Diff {
-            file: "parser.rs".to_string(),
-            changes: vec![DiffChunk {
-                old_line: None,
-                new_line: Some(1),
-                old: None,
-                new: Some("fn parse() {}".to_string()),
-            }],
+        state.active_target = Some("parser.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn parse() {}".to_string()],
         });
         assert!(state.active_transaction.is_some());
 
@@ -1192,9 +1207,35 @@ mod tests {
             state: "Idle".to_string(),
         });
 
-        assert!(state.active_transaction.is_some());
-        assert!(state.active_transaction_id.is_some());
-        assert_eq!(state.active_target.as_deref(), Some("parser.rs"));
+        assert!(state.active_transaction.is_none());
+        assert!(state.active_transaction_id.is_none());
+        assert!(state.active_target.is_none());
+    }
+
+    #[test]
+    fn diff_updates_existing_projection_without_claiming_target() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("parser.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn parse() {}".to_string()],
+        });
+
+        state.append_chat(UiEvent::Diff {
+            file: "other.rs".to_string(),
+            changes: vec![DiffChunk {
+                old_line: None,
+                new_line: Some(1),
+                old: None,
+                new: Some("fn parse(input: &str) {}".to_string()),
+            }],
+        });
+
+        let tx = state
+            .active_transaction
+            .as_ref()
+            .expect("active transaction");
+        assert_eq!(tx.target_path, "parser.rs");
+        assert_eq!(tx.diff.file, "other.rs");
     }
 
     #[test]
@@ -1212,6 +1253,10 @@ mod tests {
     #[test]
     fn failed_recoverable_requires_transaction() {
         let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("parser.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn parse() {}".to_string()],
+        });
         state.append_chat(UiEvent::Diff {
             file: "parser.rs".to_string(),
             changes: vec![DiffChunk {
@@ -1221,6 +1266,7 @@ mod tests {
                 new: Some("fn parse() {}".to_string()),
             }],
         });
+        state.runtime_state = RuntimeShellState::Apply;
 
         state.append_chat(UiEvent::Error {
             message: "apply failed".to_string(),
@@ -1633,7 +1679,7 @@ mod tests {
         });
         let before = state.runtime_state;
 
-        for pipeline_state in ["Proposed", "Planned", "Previewed", "Applied", "Idle"] {
+        for pipeline_state in ["Proposed", "Planned", "Previewed", "Applied"] {
             state.append_chat(UiEvent::Pipeline {
                 state: pipeline_state.to_string(),
             });

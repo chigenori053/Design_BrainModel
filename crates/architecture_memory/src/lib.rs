@@ -18,15 +18,18 @@ impl ArchitectureMemory {
         let analyzer = KnowledgeAnalyzer::default();
         let metrics = MetricsCalculator.compute(graph);
         let detection = analyzer.detect(graph);
+        let mut patterns = detection.matched_patterns;
+        patterns.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
-            patterns: detection.matched_patterns,
+            patterns,
             embeddings: vec![ArchitectureEmbedding {
                 vector: metrics_to_vector(&metrics),
             }],
         }
     }
 
-    pub fn with_seed_patterns(patterns: Vec<ArchitecturePattern>) -> Self {
+    pub fn with_seed_patterns(mut patterns: Vec<ArchitecturePattern>) -> Self {
+        patterns.sort_by(|a, b| a.name.cmp(&b.name));
         Self {
             patterns,
             embeddings: Vec::new(),

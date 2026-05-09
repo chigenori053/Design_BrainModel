@@ -5,6 +5,7 @@ pub mod phase1_engine;
 pub mod projection_engine;
 pub mod snapshot_engine;
 pub mod structured_reasoning;
+pub mod fuzzy_convergence;
 
 pub use hypothesis_engine::{DesignHypothesis, HypothesisEngine};
 pub use language_engine::{
@@ -26,4 +27,8 @@ pub use structured_reasoning::{
     format_explanation, llm_cache_key, model_version, normalize_realized_explanation_for_output,
     normalize_summary_text, parse_realization_mode_from_env, validate_llm_output,
     validate_sentence_count,
+};
+pub use fuzzy_convergence::{
+    DesignConvergenceEngine, DesignConvergenceScore, FuzzyIntentScore, FuzzyJudgeLogic,
+    IntentCandidate, LatentConstraint,
 };

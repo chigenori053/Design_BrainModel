@@ -55,6 +55,47 @@ pub enum SemanticContradiction {
     SemanticRepairRegression,
 }
 
+impl SemanticGraph {
+    pub fn add_node(&mut self, mut node: SemanticNode) {
+        node.dependencies.sort();
+        for res in &mut node.responsibilities {
+            res.owned_symbols.sort();
+            res.owned_modules.sort();
+        }
+        node.responsibilities
+            .sort_by(|a, b| a.responsibility_id.cmp(&b.responsibility_id));
+
+        if !self.nodes.iter().any(|n| n.node_id == node.node_id) {
+            self.nodes.push(node);
+            self.nodes.sort_by(|a, b| a.node_id.cmp(&b.node_id));
+        }
+    }
+
+    pub fn add_causal_edge(&mut self, source: String, target: String) {
+        let edge = (source, target);
+        if !self.causal_edges.contains(&edge) {
+            self.causal_edges.push(edge);
+            self.causal_edges.sort();
+        }
+    }
+
+    pub fn add_ownership_edge(&mut self, source: String, target: String) {
+        let edge = (source, target);
+        if !self.ownership_edges.contains(&edge) {
+            self.ownership_edges.push(edge);
+            self.ownership_edges.sort();
+        }
+    }
+
+    pub fn add_dependency_edge(&mut self, source: String, target: String) {
+        let edge = (source, target);
+        if !self.dependency_edges.contains(&edge) {
+            self.dependency_edges.push(edge);
+            self.dependency_edges.sort();
+        }
+    }
+}
+
 /// Scoring for semantic convergence.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SemanticConvergenceScore {
@@ -159,9 +200,44 @@ mod tests {
     /// Rule 3.4: same input same result.
     #[test]
     fn semantic_graph_deterministic() {
-        let g1 = SemanticGraph::default();
-        let g2 = SemanticGraph::default();
+        let mut g1 = SemanticGraph::default();
+        let mut g2 = SemanticGraph::default();
+
+        let n1 = SemanticNode {
+            node_id: "a".into(),
+            semantic_role: SemanticRole::Coordinator,
+            responsibilities: vec![],
+            dependencies: vec!["z".into(), "b".into()],
+            intent_signature: "a-sig".into(),
+        };
+        let n2 = SemanticNode {
+            node_id: "b".into(),
+            semantic_role: SemanticRole::Executor,
+            responsibilities: vec![],
+            dependencies: vec![],
+            intent_signature: "b-sig".into(),
+        };
+
+        g1.add_node(n1.clone());
+        g1.add_node(n2.clone());
+
+        g2.add_node(n2);
+        g2.add_node(n1);
+
         assert_eq!(g1, g2);
+        assert_eq!(g1.nodes[0].node_id, "a");
+        assert_eq!(
+            g1.nodes[0].dependencies,
+            vec!["b".to_string(), "z".to_string()]
+        );
+    }
+
+    #[test]
+    fn semantic_memory_ordering_stable() {
+        let mut graph = SemanticGraph::default();
+        graph.add_causal_edge("b".into(), "a".into());
+        graph.add_causal_edge("a".into(), "c".into());
+        assert_eq!(graph.causal_edges[0].0, "a");
     }
 
     #[test]

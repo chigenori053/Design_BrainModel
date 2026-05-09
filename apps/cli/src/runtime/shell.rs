@@ -1,20 +1,24 @@
 use std::path::{Path, PathBuf};
 
 use crate::runtime::autonomous::{
-    detect_execution_failure, evaluate_repair_convergence, generate_repair_branch,
-    ContinuityState, ExecutionSession,
+    ContinuityState, ExecutionSession, detect_execution_failure, evaluate_repair_convergence,
+    generate_repair_branch,
 };
 use crate::runtime::branch::{
-    evaluate_branch_convergence, BranchId, BranchRuntime, BranchSnapshot, ContradictionSet,
-    ConvergenceScore, RuntimeEffectSet, WorldStateSnapshot,
+    BranchId, BranchRuntime, BranchSnapshot, ContradictionSet, ConvergenceScore, RuntimeEffectSet,
+    WorldStateSnapshot, evaluate_branch_convergence,
 };
 use crate::runtime::coordination::{
     coordinate_runtime_nodes, distributed_repair, evaluate_distributed_convergence,
     synchronize_world_state,
 };
+use crate::runtime::governance::{
+    GovernanceMemoryEvent, GovernanceState, commit_memory_event, evaluate_governance_stability,
+    observe_cognition, restrict_cognition,
+};
 use crate::runtime::synthesis::{
-    evaluate_architecture_stability, generate_execution_graph, synthesize_architecture,
-    topology_repair, ArchitectureGoal, ArchitectureTopology,
+    ArchitectureGoal, ArchitectureTopology, evaluate_architecture_stability,
+    generate_execution_graph, synthesize_architecture, topology_repair,
 };
 use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
 use crate::tui::rendering::render_runtime_text;
@@ -207,17 +211,39 @@ pub fn runtime_preview(
     target: PathBuf,
 ) -> Vec<String> {
     if state.runtime_state == RuntimeShellState::BoundedHalt {
+        commit_runtime_mutation(
+            state,
+            RuntimeMutation::MutationSuppressed {
+                reason: "runtime in BoundedHalt state".to_string(),
+            },
+        );
         return render_runtime_text(state);
     }
 
     let target_path = resolve_target(workspace_root, target);
-    let Some(staged) = stage_preview_transaction(&target_path) else {
+    let staged_opt = stage_preview_transaction(&target_path);
+
+    if staged_opt.is_none() {
+        commit_runtime_mutation(
+            state,
+            RuntimeMutation::Reject {
+                reason: format!("target missing or invalid: {}", target_path.display()),
+                originating_mutation: "runtime_preview".to_string(),
+                governance_source: None,
+                convergence_source: None,
+            },
+        );
         return render_runtime_text(state);
-    };
+    }
+
+    let staged = staged_opt.unwrap();
 
     if let Some(runtime) = state.branch_runtime.as_mut() {
         if runtime.budget.is_exhausted() {
-            state.runtime_state = RuntimeShellState::BoundedHalt;
+            commit_runtime_mutation(
+                state,
+                RuntimeMutation::SemanticHalt(RuntimeShellState::BoundedHalt),
+            );
             return render_runtime_text(state);
         }
         // Subsequent preview: stage speculative child (invisible on surface).
@@ -293,6 +319,15 @@ pub fn commit_staged_transaction(
     mut staged: StagedTransaction,
 ) -> Result<StagedTransaction, StagedTransaction> {
     if staged.committed || !staged.validation.is_valid() {
+        commit_runtime_mutation(
+            state,
+            RuntimeMutation::Reject {
+                reason: format!("staged transaction validation failed: {:?}", staged.validation),
+                originating_mutation: "commit_staged_transaction".to_string(),
+                governance_source: None,
+                convergence_source: None,
+            },
+        );
         return Err(staged);
     }
     state.active_transaction = Some(RuntimeTransaction {
@@ -323,7 +358,7 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
     // Capture world state (Specified in 8.2)
     let world_state = WorldStateSnapshot::zero();
     let runtime_effects = RuntimeEffectSet::zero();
-    
+
     // Simulate Synthesis (Specified in 5.1 & Step 1)
     let topology = if let Some(session) = state.autonomous_session.as_ref() {
         let goal = ArchitectureGoal {
@@ -363,51 +398,135 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                 new_id,
             ));
         }
-        Some(runtime) => {
-            let parent_id = runtime.committed_branch.branch_id.clone();
-            let parent_depth = runtime.committed_branch.depth;
-            let mut child = BranchSnapshot::new(
-                new_id,
-                Some(parent_id),
-                staged.tx_id.clone(),
-                staged.target.clone(),
-                staged.staged_runtime_state,
-                staged.staged_projection.clone(),
-                ConvergenceScore::zero(),
-                ContradictionSet::zero(),
-                world_state,
-                runtime_effects,
-                topology,
-                parent_depth + 1,
-                0,
-            );
+        Some(_) => {
+            let (mut child, observation) = {
+                let runtime = state.branch_runtime.as_ref().unwrap();
+                let parent_id = runtime.committed_branch.branch_id.clone();
+                let parent_depth = runtime.committed_branch.depth;
+                let mut child = BranchSnapshot::new(
+                    new_id,
+                    Some(parent_id),
+                    staged.tx_id.clone(),
+                    staged.target.clone(),
+                    staged.staged_runtime_state,
+                    staged.staged_projection.clone(),
+                    ConvergenceScore::zero(),
+                    ContradictionSet::zero(),
+                    world_state,
+                    runtime_effects,
+                    topology,
+                    parent_depth + 1,
+                    0,
+                );
 
-            // Rule 1: evaluation and failure detection.
-            evaluate_branch_convergence(&mut child, Some(runtime));
+                // Rule 1: evaluation and failure detection.
+                evaluate_branch_convergence(&mut child, Some(runtime));
+
+                // Meta-Cognitive Governance Rules (DBM-META-COGNITIVE-GOVERNANCE v1)
+                let observation = observe_cognition(
+                    &state.runtime_node.node_id,
+                    state
+                        .autonomous_session
+                        .as_ref()
+                        .map(|session| session.root_goal.as_str())
+                        .unwrap_or("runtime-preview"),
+                    &child,
+                    runtime,
+                    std::slice::from_ref(&state.runtime_node),
+                    &state.shared_world_state,
+                );
+                (child, observation)
+            };
+
+            let governance = evaluate_governance_stability(
+                &state.cognitive_policy,
+                &observation,
+                &state.governance_memory,
+            );
+            state.governance_state = governance.state;
+
+            match governance.state {
+                GovernanceState::Halted => {
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::GovernanceHalt {
+                            halt_state: governance
+                                .halt_state
+                                .unwrap_or(RuntimeShellState::GovernanceCollapseHalt),
+                            explanation: governance.explanation,
+                        },
+                    );
+                    return;
+                }
+                GovernanceState::Restricting | GovernanceState::Recovering => {
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::GovernanceRestrict {
+                            halt_state: governance.halt_state,
+                            explanation: governance.explanation,
+                        },
+                    );
+                    if governance.halt_state.is_some() {
+                        return;
+                    }
+                }
+                GovernanceState::Stable => {
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::GovernanceStable {
+                            policy_id: state.cognitive_policy.policy_id.clone(),
+                        },
+                    );
+                }
+                GovernanceState::Supervising => {}
+            }
 
             // Semantic Cognition Rules (Specified in 5, 6, 9)
             let sc = &child.score.semantic_score;
             if sc.contradiction_penalty > 100.0 {
-                state.runtime_state = RuntimeShellState::SemanticContradictionHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::SemanticContradictionHalt),
+                );
                 return;
             }
             if sc.intent_stability < -10.0 {
-                state.runtime_state = RuntimeShellState::IntentCollapseHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::IntentCollapseHalt),
+                );
                 return;
             }
             if sc.total_score < -50.0 {
-                state.runtime_state = RuntimeShellState::SemanticRepairRegressionHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::SemanticRepairRegressionHalt),
+                );
                 return;
             }
 
             // Distributed Coordination Rules (Specified in 6 & 7)
             if !synchronize_world_state(&mut child, &state.shared_world_state) {
                 // Rule 2: shared world divergence triggers repair.
-                if let Some(repair) = distributed_repair(runtime, &state.shared_world_state) {
-                    runtime.open_speculative(repair);
+                let (_has_repair, repair_opt) = {
+                    let runtime = state.branch_runtime.as_mut().unwrap();
+                    let r = distributed_repair(runtime, &state.shared_world_state);
+                    (r.is_some(), r)
+                };
+
+                if let Some(repair) = repair_opt {
+                    state.branch_runtime.as_mut().unwrap().open_speculative(repair);
                     return;
                 } else {
-                    state.runtime_state = RuntimeShellState::SharedWorldDivergenceHalt;
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::Reject {
+                            reason: "shared world divergence with no repair path".to_string(),
+                            originating_mutation: "synchronize_world_state".to_string(),
+                            governance_source: None,
+                            convergence_source: Some("world_divergence".to_string()),
+                        },
+                    );
                     return;
                 }
             }
@@ -418,36 +537,56 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                 &state.coordination_memory,
             );
 
-            let dist_convergence =
-                evaluate_distributed_convergence(&[state.runtime_node.clone()], &state.shared_world_state);
+            let dist_convergence = evaluate_distributed_convergence(
+                &[state.runtime_node.clone()],
+                &state.shared_world_state,
+            );
             if dist_convergence < -10.0 {
                 // Rule 3: cross-runtime contradiction.
-                state.runtime_state = RuntimeShellState::CoordinationCollapseHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::CoordinationCollapseHalt),
+                );
                 return;
             }
 
             // Architecture Synthesis Rules (Specified in 6 & 7)
-            let stability = evaluate_architecture_stability(&child.topology, &state.architecture_memory);
+            let stability =
+                evaluate_architecture_stability(&child.topology, &state.architecture_memory);
             if stability < -5.0 {
                 // Rule 3: deployment infeasibility.
-                state.runtime_state = RuntimeShellState::DeploymentDivergenceHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::DeploymentDivergenceHalt),
+                );
                 return;
             }
 
             // Rule 4 / 7.3: Execution Graph Halt.
             let execution_graph = generate_execution_graph(&child.topology);
             if !child.topology.nodes.is_empty() && execution_graph.is_empty() {
-                state.runtime_state = RuntimeShellState::ExecutionGraphHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::ExecutionGraphHalt),
+                );
                 return;
             }
 
             // Rule 2: dependency graph instability triggers repair.
             if child.score.world_consistency.dependency_consistency < -1.0 {
-                if let Some(repair) = topology_repair(runtime, &child.topology) {
-                    runtime.open_speculative(repair);
+                let (_has_repair, repair_opt) = {
+                    let runtime = state.branch_runtime.as_mut().unwrap();
+                    let r = topology_repair(runtime, &child.topology);
+                    (r.is_some(), r)
+                };
+                if let Some(repair) = repair_opt {
+                    state.branch_runtime.as_mut().unwrap().open_speculative(repair);
                     return;
                 } else {
-                    state.runtime_state = RuntimeShellState::TopologyCollapseHalt;
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::SemanticHalt(RuntimeShellState::TopologyCollapseHalt),
+                    );
                     return;
                 }
             }
@@ -458,8 +597,15 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                     session.failure_count += 1;
 
                     // Rule 1: repair branch generated before halt.
-                    if let Some(mut repair_branch) = generate_repair_branch(runtime, &failure_signature) {
+                    let (_has_repair, repair_opt) = {
+                        let runtime = state.branch_runtime.as_mut().unwrap();
+                        let r = generate_repair_branch(runtime, &failure_signature);
+                        (r.is_some(), r)
+                    };
+
+                    if let Some(mut repair_branch) = repair_opt {
                         session.repair_attempts += 1;
+                        let runtime = state.branch_runtime.as_mut().unwrap();
                         evaluate_branch_convergence(&mut repair_branch, Some(runtime));
 
                         // Rule 10.2: Regression check.
@@ -467,46 +613,228 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                             runtime.open_speculative(repair_branch);
                             return; // Staged repair successfully.
                         } else {
-                            state.runtime_state = RuntimeShellState::RegressionHalt;
+                            commit_runtime_mutation(
+                                state,
+                                RuntimeMutation::SemanticHalt(RuntimeShellState::RegressionHalt),
+                            );
                             return;
                         }
                     } else {
-                        state.runtime_state = RuntimeShellState::AutonomousRepairHalt;
+                        commit_runtime_mutation(
+                            state,
+                            RuntimeMutation::SemanticHalt(RuntimeShellState::AutonomousRepairHalt),
+                        );
                         return;
                     }
                 }
             }
 
-            if runtime.detect_branch_oscillation(&child) {
-                state.runtime_state = RuntimeShellState::ConvergenceHalt;
+            if state
+                .branch_runtime
+                .as_mut()
+                .unwrap()
+                .detect_branch_oscillation(&child)
+            {
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::ConvergenceReject {
+                        explanation: "branch oscillation detected".to_string(),
+                    },
+                );
                 return;
             }
 
             // Rule 7: World-Convergence Halt (Specified in 7)
             let ws = &child.score.world_consistency;
             if ws.verification_consistency < -10.0 {
-                state.runtime_state = RuntimeShellState::VerificationHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::VerificationHalt),
+                );
                 return;
             }
             if ws.causal_consistency < -50.0 {
-                state.runtime_state = RuntimeShellState::CausalHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::CausalHalt),
+                );
                 return;
             }
             if ws.total() < -10.0 {
-                state.runtime_state = RuntimeShellState::WorldDivergenceHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::WorldDivergenceHalt),
+                );
                 return;
             }
 
             // Rule 2: speculative branch remains invisible on the runtime
             // surface until committed.
+            let runtime = state.branch_runtime.as_mut().unwrap();
             runtime.open_speculative(child);
 
             // Rule 4: architecture instability or stagnation.
             if runtime.should_halt() {
-                state.runtime_state = RuntimeShellState::ConvergenceHalt;
+                commit_runtime_mutation(
+                    state,
+                    RuntimeMutation::SemanticHalt(RuntimeShellState::ConvergenceHalt),
+                );
             }
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub enum RuntimeMutation {
+    GovernanceHalt {
+        halt_state: RuntimeShellState,
+        explanation: String,
+    },
+    GovernanceRestrict {
+        halt_state: Option<RuntimeShellState>,
+        explanation: String,
+    },
+    GovernanceStable {
+        policy_id: String,
+    },
+    CleanupProjection,
+    SemanticHalt(RuntimeShellState),
+    Reject {
+        reason: String,
+        originating_mutation: String,
+        governance_source: Option<String>,
+        convergence_source: Option<String>,
+    },
+    GovernanceReject {
+        explanation: String,
+    },
+    SemanticReject {
+        explanation: String,
+    },
+    ConvergenceReject {
+        explanation: String,
+    },
+    MutationSuppressed {
+        reason: String,
+    },
+}
+
+pub fn commit_runtime_mutation(state: &mut TuiState, mutation: RuntimeMutation) {
+    match mutation {
+        RuntimeMutation::GovernanceHalt {
+            halt_state,
+            explanation,
+        } => {
+            // Rule 13.1 & 13.2: Cleanup before publish
+            cleanup_projection_before_governance_publication(state);
+            state.runtime_state = halt_state;
+            commit_memory_event(
+                &mut state.governance_memory,
+                GovernanceMemoryEvent::GovernanceFailure,
+                explanation,
+            );
+        }
+        RuntimeMutation::GovernanceRestrict {
+            halt_state,
+            explanation,
+        } => {
+            if let Some(runtime) = state.branch_runtime.as_mut() {
+                restrict_cognition(&mut state.cognitive_policy, runtime);
+            }
+            if let Some(hs) = halt_state {
+                // Rule 13.1 & 13.2: Cleanup before publish
+                cleanup_projection_before_governance_publication(state);
+                state.runtime_state = hs;
+                commit_memory_event(
+                    &mut state.governance_memory,
+                    GovernanceMemoryEvent::GovernanceFailure,
+                    explanation,
+                );
+            }
+        }
+        RuntimeMutation::GovernanceStable { policy_id } => {
+            commit_memory_event(
+                &mut state.governance_memory,
+                GovernanceMemoryEvent::StablePolicy,
+                policy_id,
+            );
+        }
+        RuntimeMutation::CleanupProjection => {
+            cleanup_projection_before_governance_publication(state);
+        }
+        RuntimeMutation::SemanticHalt(halt_state) => {
+            // Rule 13.1 & 13.2: Cleanup before publish
+            cleanup_projection_before_governance_publication(state);
+            state.runtime_state = halt_state;
+        }
+        RuntimeMutation::Reject {
+            reason,
+            originating_mutation,
+            governance_source,
+            convergence_source,
+        } => {
+            // Rule 11.1: Preserve existing committed projection on Reject
+            state.runtime_state = RuntimeShellState::Rejected;
+            state.rejection = Some(crate::tui::state::RejectionInfo {
+                reason,
+                originating_mutation,
+                governance_source,
+                convergence_source,
+            });
+        }
+        RuntimeMutation::GovernanceReject { explanation } => {
+            // Rule 11.1: Preserve existing committed projection on Reject
+            state.runtime_state = RuntimeShellState::GovernanceRejected;
+            state.rejection = Some(crate::tui::state::RejectionInfo {
+                reason: explanation.clone(),
+                originating_mutation: "governance_evaluation".to_string(),
+                governance_source: Some("policy_enforcement".to_string()),
+                convergence_source: None,
+            });
+            commit_memory_event(
+                &mut state.governance_memory,
+                GovernanceMemoryEvent::GovernanceFailure,
+                explanation,
+            );
+        }
+        RuntimeMutation::SemanticReject { explanation } => {
+            // Rule 11.1: Preserve existing committed projection on Reject
+            state.runtime_state = RuntimeShellState::SemanticRejected;
+            state.rejection = Some(crate::tui::state::RejectionInfo {
+                reason: explanation,
+                originating_mutation: "semantic_evaluation".to_string(),
+                governance_source: None,
+                convergence_source: Some("semantic_contradiction".to_string()),
+            });
+        }
+        RuntimeMutation::ConvergenceReject { explanation } => {
+            // Rule 11.1: Preserve existing committed projection on Reject
+            state.runtime_state = RuntimeShellState::ConvergenceRejected;
+            state.rejection = Some(crate::tui::state::RejectionInfo {
+                reason: explanation,
+                originating_mutation: "convergence_evaluation".to_string(),
+                governance_source: None,
+                convergence_source: Some("oscillation_detected".to_string()),
+            });
+        }
+        RuntimeMutation::MutationSuppressed { reason } => {
+            // Rule 11.1: Preserve existing committed projection on Reject
+            state.runtime_state = RuntimeShellState::MutationSuppressed;
+            state.rejection = Some(crate::tui::state::RejectionInfo {
+                reason,
+                originating_mutation: "internal_suppression".to_string(),
+                governance_source: None,
+                convergence_source: None,
+            });
+        }
+    }
+}
+
+fn cleanup_projection_before_governance_publication(state: &mut TuiState) {
+    state.active_transaction = None;
+    state.active_transaction_id = None;
+    state.active_target = None;
+    state.autonomous_session = None;
 }
 
 pub fn runtime_apply(state: &mut TuiState) -> Vec<String> {
@@ -554,13 +882,22 @@ pub fn runtime_commit(state: &mut TuiState) -> Vec<String> {
 
 pub fn runtime_rollback(state: &mut TuiState) -> Vec<String> {
     if state.runtime_state == RuntimeShellState::BoundedHalt {
+        commit_runtime_mutation(
+            state,
+            RuntimeMutation::MutationSuppressed {
+                reason: "rollback suppressed in BoundedHalt state".to_string(),
+            },
+        );
         return render_runtime_text(state);
     }
 
     if let Some(runtime) = state.branch_runtime.as_mut() {
         let had_speculative = runtime.has_speculative();
         if !runtime.rollback() {
-            state.runtime_state = RuntimeShellState::BoundedHalt;
+            commit_runtime_mutation(
+                state,
+                RuntimeMutation::SemanticHalt(RuntimeShellState::BoundedHalt),
+            );
             return render_runtime_text(state);
         }
 
@@ -577,6 +914,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<String> {
             state.active_transaction_id = Some(committed.tx_id.clone());
             state.active_target = Some(committed.target.clone());
             state.runtime_state = committed.runtime_state;
+            state.rejection = None; // Clear previous rejection on successful rollback
         } else {
             // Rollback the root committed branch — reverts to Idle.
             state.branch_runtime = None;
@@ -584,6 +922,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<String> {
             state.active_transaction = None;
             state.active_transaction_id = None;
             state.active_target = None;
+            state.rejection = None;
         }
     } else {
         // Fallback to hard reset if no branch runtime exists.
@@ -591,6 +930,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<String> {
         state.active_transaction = None;
         state.active_transaction_id = None;
         state.active_target = None;
+        state.rejection = None;
     }
     render_runtime_text(state)
 }
@@ -1407,8 +1747,14 @@ mod tests {
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
 
         let br = state.branch_runtime.as_ref().expect("branch_runtime");
-        assert_eq!(br.committed_branch.tx_id, state.active_transaction_id.as_deref().unwrap_or(""));
-        assert_eq!(br.committed_branch.target, state.active_target.as_deref().unwrap_or(""));
+        assert_eq!(
+            br.committed_branch.tx_id,
+            state.active_transaction_id.as_deref().unwrap_or("")
+        );
+        assert_eq!(
+            br.committed_branch.target,
+            state.active_target.as_deref().unwrap_or("")
+        );
         assert!(!br.has_speculative());
     }
 
@@ -1428,7 +1774,10 @@ mod tests {
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview extra.rs");
 
-        let br = state.branch_runtime.as_ref().expect("br after second preview");
+        let br = state
+            .branch_runtime
+            .as_ref()
+            .expect("br after second preview");
         // Speculative child exists.
         assert!(br.has_speculative());
         // Surface still reflects the FIRST preview.
@@ -1448,7 +1797,9 @@ mod tests {
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview extra.rs");
-        let speculative_tx_id = state.branch_runtime.as_ref().unwrap().speculative_branches[0].tx_id.clone();
+        let speculative_tx_id = state.branch_runtime.as_ref().unwrap().speculative_branches[0]
+            .tx_id
+            .clone();
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "commit");
 
@@ -1480,7 +1831,10 @@ mod tests {
 
         assert!(!state.branch_runtime.as_ref().unwrap().has_speculative());
         assert_eq!(state.active_transaction, before_state.active_transaction);
-        assert_eq!(state.active_transaction_id, before_state.active_transaction_id);
+        assert_eq!(
+            state.active_transaction_id,
+            before_state.active_transaction_id
+        );
         assert_eq!(state.active_target, before_state.active_target);
         assert_eq!(state.runtime_state, before_state.runtime_state);
     }
@@ -1569,18 +1923,98 @@ mod tests {
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
         // Stage a child so we can rollback without clearing the entire runtime.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        
-        state.branch_runtime.as_mut().unwrap().budget.remaining_rollbacks = 1;
+
+        state
+            .branch_runtime
+            .as_mut()
+            .unwrap()
+            .budget
+            .remaining_rollbacks = 1;
 
         // First rollback succeeds.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "rollback");
         // Surface remains (restored parent), branch_runtime remains.
         assert!(state.branch_runtime.is_some());
-        assert_eq!(state.branch_runtime.as_ref().unwrap().budget.remaining_rollbacks, 0);
+        assert_eq!(
+            state
+                .branch_runtime
+                .as_ref()
+                .unwrap()
+                .budget
+                .remaining_rollbacks,
+            0
+        );
 
         // Second rollback fails -> BoundedHalt.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "rollback");
         assert_eq!(state.runtime_state, RuntimeShellState::BoundedHalt);
+    }
+
+    #[test]
+    fn governance_runaway_restriction_halts_preview_flow() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        state.cognitive_policy.reasoning_depth_limit = 0;
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::RunawayCognitionHalt);
+        assert_eq!(state.governance_state, GovernanceState::Halted);
+        assert!(state.active_transaction.is_none());
+        assert!(state.active_transaction_id.is_none());
+        assert!(state.active_target.is_none());
+        assert!(
+            state
+                .governance_memory
+                .governance_failures
+                .iter()
+                .any(|failure| failure.contains("reasoning depth"))
+        );
+    }
+
+    #[test]
+    fn projection_cleanup_precedes_governance_publication() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        state.cognitive_policy.reasoning_depth_limit = 0;
+        let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs")
+            .unwrap()
+            .join("\n");
+
+        assert!(output.contains("state=RUNAWAY_COGNITION_HALT"));
+        assert!(output.contains("Transaction: (none)"));
+        assert!(output.contains("Target: (none)"));
+        assert!(output.contains("No preview available"));
+    }
+
+    #[test]
+    fn stale_projection_never_survives_governance_halt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        let stale_tx = state.active_transaction_id.clone();
+        state.cognitive_policy.reasoning_depth_limit = 0;
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        let projection = crate::tui::rendering::RuntimeProjection::from_state(&state);
+        assert_eq!(projection.transaction_label, None);
+        assert_eq!(projection.target_label, None);
+        assert!(
+            !projection
+                .diff_projection
+                .lines
+                .iter()
+                .any(|line| stale_tx.as_deref().is_some_and(|tx| line.contains(tx)))
+        );
     }
 
     /// budget exhaustion triggers BoundedHalt.
@@ -1591,7 +2025,12 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        state.branch_runtime.as_mut().unwrap().budget.remaining_branches = 0;
+        state
+            .branch_runtime
+            .as_mut()
+            .unwrap()
+            .budget
+            .remaining_branches = 0;
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
         assert_eq!(state.runtime_state, RuntimeShellState::BoundedHalt);
@@ -1610,7 +2049,7 @@ mod tests {
 
         // 1. Establish root.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        
+
         // 2. Mock a verification failure on the NEXT preview.
         let target = root.path().join("extra.rs");
         std::fs::write(&target, "fn extra() {}\n").expect("write");
@@ -1624,23 +2063,32 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        
+
         let br = state.branch_runtime.as_mut().unwrap();
         let session = state.autonomous_session.as_mut().unwrap();
         let _memory = &mut state.autonomous_memory;
-        
+
         // Simulate a repair cycle.
         let failure = "VERIFICATION_FAILURE:1".to_string();
         session.continuity_state = ContinuityState::Repairing;
         let repair = crate::runtime::autonomous::generate_repair_branch(br, &failure).unwrap();
         br.open_speculative(repair);
-        
+
         // Commit the repair.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "commit");
-        
-        assert_eq!(state.autonomous_session.as_ref().unwrap().continuity_state, ContinuityState::Active);
+
+        assert_eq!(
+            state.autonomous_session.as_ref().unwrap().continuity_state,
+            ContinuityState::Active
+        );
         assert!(!state.autonomous_memory.successful_repairs.is_empty());
-        assert!(state.active_transaction_id.as_ref().unwrap().contains("repair"));
+        assert!(
+            state
+                .active_transaction_id
+                .as_ref()
+                .unwrap()
+                .contains("repair")
+        );
     }
 
     #[test]
@@ -1650,18 +2098,217 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        let before_snap = state.branch_runtime.as_ref().unwrap().committed_branch.clone();
-        
+        let before_snap = state
+            .branch_runtime
+            .as_ref()
+            .unwrap()
+            .committed_branch
+            .clone();
+
         // Stage a repair.
         let br = state.branch_runtime.as_mut().unwrap();
         let repair = make_snapshot("repair", Some("root"), "core.rs");
         br.open_speculative(repair);
-        
+
         // Rollback the repair.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "rollback");
-        
-        assert_eq!(state.branch_runtime.as_ref().unwrap().committed_branch, before_snap);
+
+        assert_eq!(
+            state.branch_runtime.as_ref().unwrap().committed_branch,
+            before_snap
+        );
         assert!(!state.branch_runtime.as_ref().unwrap().has_speculative());
+    }
+
+    #[test]
+    fn governance_cannot_mutate_projection() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        let before_projection = state.active_transaction.as_ref().unwrap().diff.clone();
+
+        // Trigger governance evaluation.
+        state.cognitive_policy.reasoning_depth_limit = 10;
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        assert_eq!(
+            state.active_transaction.as_ref().unwrap().diff,
+            before_projection
+        );
+    }
+
+    #[test]
+    fn governance_cannot_mutate_tx_ownership() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        let before_tx_id = state.active_transaction_id.clone();
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        assert_eq!(state.active_transaction_id, before_tx_id);
+    }
+
+    #[test]
+    fn runaway_cleanup_precedes_halt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        state.autonomous_session = Some(ExecutionSession::new(
+            "test".into(),
+            "test".into(),
+            BranchId("root".into()),
+        ));
+        state.cognitive_policy.reasoning_depth_limit = 0;
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::RunawayCognitionHalt);
+        assert!(state.autonomous_session.is_none());
+        assert!(state.active_transaction.is_none());
+    }
+
+    #[test]
+    fn observable_rejection_published() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        // Attempt preview on invalid target
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview invalid.rs");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.rejection.is_some());
+        let projection = crate::tui::rendering::RuntimeProjection::from_state(&state);
+        assert!(projection.rejection_label.is_some());
+        assert!(projection.rejection_label.unwrap().contains("target missing"));
+    }
+
+    #[test]
+    fn governance_rejection_visible() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        // Initial preview to establish root
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        // Force governance rejection via mutation gate (simulated)
+        commit_runtime_mutation(
+            &mut state,
+            RuntimeMutation::GovernanceReject {
+                explanation: "test policy violation".to_string(),
+            },
+        );
+
+        assert_eq!(state.runtime_state, RuntimeShellState::GovernanceRejected);
+        assert!(state.rejection.is_some());
+        assert_eq!(state.rejection.as_ref().unwrap().reason, "test policy violation");
+    }
+
+    #[test]
+    fn semantic_rejection_visible() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+
+        commit_runtime_mutation(
+            &mut state,
+            RuntimeMutation::SemanticReject {
+                explanation: "test semantic contradiction".to_string(),
+            },
+        );
+
+        assert_eq!(state.runtime_state, RuntimeShellState::SemanticRejected);
+        assert_eq!(
+            state.rejection.as_ref().unwrap().reason,
+            "test semantic contradiction"
+        );
+    }
+
+    #[test]
+    fn projection_preserved_on_reject() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        // Establish committed projection
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        let before_tx = state.active_transaction.clone();
+        assert!(before_tx.is_some());
+
+        // Trigger rejection
+        commit_runtime_mutation(
+            &mut state,
+            RuntimeMutation::Reject {
+                reason: "test reject".to_string(),
+                originating_mutation: "test".to_string(),
+                governance_source: None,
+                convergence_source: None,
+            },
+        );
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        // Rule 11.1: existing committed projection preserved
+        assert_eq!(state.active_transaction, before_tx);
+    }
+
+    #[test]
+    fn cleanup_precedes_halt_publish() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        assert!(state.active_transaction.is_some());
+
+        // Trigger halt
+        commit_runtime_mutation(
+            &mut state,
+            RuntimeMutation::GovernanceHalt {
+                halt_state: RuntimeShellState::GovernanceCollapseHalt,
+                explanation: "test halt".to_string(),
+            },
+        );
+
+        assert_eq!(state.runtime_state, RuntimeShellState::GovernanceCollapseHalt);
+        // Rule 13.1 & 13.2: projection cleaned up before halt published
+        assert!(state.active_transaction.is_none());
+    }
+
+    #[test]
+    fn deterministic_rejection_sequence() {
+        let mut s1 = TuiState::new(empty_runtime_payload());
+        let mut s2 = TuiState::new(empty_runtime_payload());
+
+        let m1 = RuntimeMutation::Reject {
+            reason: "r1".into(),
+            originating_mutation: "m1".into(),
+            governance_source: None,
+            convergence_source: None,
+        };
+        let m2 = RuntimeMutation::Reject {
+            reason: "r2".into(),
+            originating_mutation: "m2".into(),
+            governance_source: None,
+            convergence_source: None,
+        };
+
+        commit_runtime_mutation(&mut s1, m1.clone());
+        commit_runtime_mutation(&mut s1, m2.clone());
+
+        commit_runtime_mutation(&mut s2, m1);
+        commit_runtime_mutation(&mut s2, m2);
+
+        assert_eq!(s1.rejection, s2.rejection);
+        assert_eq!(s1.runtime_state, s2.runtime_state);
     }
 
     #[test]
@@ -1672,8 +2319,8 @@ mod tests {
 
         // Establish root.
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        
-        // We'll manually trigger update_branch_runtime with a staged tx 
+
+        // We'll manually trigger update_branch_runtime with a staged tx
         // and evaluate_architecture_stability will be called.
         // If we had a way to mock the synthesis outcome...
         // For now, let's just verify the logic in synthesis.rs.

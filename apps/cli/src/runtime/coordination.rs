@@ -64,11 +64,17 @@ pub struct CoordinationMemory {
 
 impl CoordinationMemory {
     pub fn record_success(&mut self, pattern: String) {
-        self.successful_coordination_patterns.push(pattern);
+        if !self.successful_coordination_patterns.contains(&pattern) {
+            self.successful_coordination_patterns.push(pattern);
+            self.successful_coordination_patterns.sort();
+        }
     }
 
     pub fn record_failure(&mut self, pattern: String) {
-        self.failed_coordination_patterns.push(pattern);
+        if !self.failed_coordination_patterns.contains(&pattern) {
+            self.failed_coordination_patterns.push(pattern);
+            self.failed_coordination_patterns.sort();
+        }
     }
 }
 
