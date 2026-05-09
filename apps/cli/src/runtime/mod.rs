@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod branch;
 pub mod event_queue;
 pub mod host_loop;
 pub mod logging;

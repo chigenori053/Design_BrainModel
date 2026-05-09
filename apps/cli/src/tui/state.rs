@@ -10,6 +10,7 @@ use crate::nl::language::detect_runtime_language;
 use crate::nl::normalization::normalize_runtime_input;
 use crate::nl::types::SupportedLanguage;
 use crate::pipeline::PipelineState;
+use crate::runtime::branch::BranchRuntime;
 use crate::runtime::runtime_events::DebugEvent;
 use crate::tui::input::{PersistentInputHistory, complete_command};
 use crate::tui::runtime::RuntimeShellState;
@@ -403,6 +404,9 @@ pub struct TuiState {
     pub state_generation_id: u64,
     pub last_command_trace: Option<crate::runtime::shell::RuntimeCommandTrace>,
     pub next_command_id: u64,
+    /// Branch isolation tracking.  `None` until the first successful preview
+    /// commit.  Managed exclusively by `runtime::shell`.
+    pub branch_runtime: Option<BranchRuntime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -444,6 +448,7 @@ impl TuiState {
             state_generation_id: 1,
             last_command_trace: None,
             next_command_id: 1,
+            branch_runtime: None,
         }
         .with_pseudo_stream()
     }

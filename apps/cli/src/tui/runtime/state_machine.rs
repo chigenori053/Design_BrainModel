@@ -11,6 +11,11 @@ pub enum RuntimeShellState {
     Apply,
     Git,
     Replay,
+    BoundedHalt,
+    ConvergenceHalt,
+    WorldDivergenceHalt,
+    VerificationHalt,
+    CausalHalt,
     Failed,
 }
 
@@ -28,6 +33,11 @@ impl RuntimeShellState {
             Self::Apply => "APPLY",
             Self::Git => "GIT",
             Self::Replay => "REPLAY",
+            Self::BoundedHalt => "BOUNDED_HALT",
+            Self::ConvergenceHalt => "CONVERGENCE_HALT",
+            Self::WorldDivergenceHalt => "WORLD_DIVERGENCE_HALT",
+            Self::VerificationHalt => "VERIFICATION_HALT",
+            Self::CausalHalt => "CAUSAL_HALT",
             Self::Failed => "FAILED",
         }
     }
@@ -59,6 +69,16 @@ impl RuntimeShellState {
                 | (Self::Replay, Self::Idle)
                 | (Self::Replay, Self::Failed)
                 | (Self::Failed, Self::Idle)
+                | (_, Self::BoundedHalt)
+                | (Self::BoundedHalt, Self::Idle)
+                | (_, Self::ConvergenceHalt)
+                | (Self::ConvergenceHalt, Self::Idle)
+                | (_, Self::WorldDivergenceHalt)
+                | (Self::WorldDivergenceHalt, Self::Idle)
+                | (_, Self::VerificationHalt)
+                | (Self::VerificationHalt, Self::Idle)
+                | (_, Self::CausalHalt)
+                | (Self::CausalHalt, Self::Idle)
         )
     }
 }
