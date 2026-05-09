@@ -10,7 +10,10 @@ use crate::nl::language::detect_runtime_language;
 use crate::nl::normalization::normalize_runtime_input;
 use crate::nl::types::SupportedLanguage;
 use crate::pipeline::PipelineState;
+use crate::runtime::autonomous::{ExecutionMemory, ExecutionSession};
 use crate::runtime::branch::BranchRuntime;
+use crate::runtime::coordination::{CoordinationMemory, RuntimeNode, RuntimeRole, SharedWorldState};
+use crate::runtime::synthesis::ArchitectureMemory;
 use crate::runtime::runtime_events::DebugEvent;
 use crate::tui::input::{PersistentInputHistory, complete_command};
 use crate::tui::runtime::RuntimeShellState;
@@ -407,6 +410,18 @@ pub struct TuiState {
     /// Branch isolation tracking.  `None` until the first successful preview
     /// commit.  Managed exclusively by `runtime::shell`.
     pub branch_runtime: Option<BranchRuntime>,
+    /// Autonomous execution session.
+    pub autonomous_session: Option<ExecutionSession>,
+    /// Persistent memory for autonomous repairs.
+    pub autonomous_memory: ExecutionMemory,
+    /// Persistent memory for architecture synthesis.
+    pub architecture_memory: ArchitectureMemory,
+    /// Multi-runtime coordination node.
+    pub runtime_node: RuntimeNode,
+    /// Shared world state authority.
+    pub shared_world_state: SharedWorldState,
+    /// Persistent memory for distributed coordination.
+    pub coordination_memory: CoordinationMemory,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -449,6 +464,12 @@ impl TuiState {
             last_command_trace: None,
             next_command_id: 1,
             branch_runtime: None,
+            autonomous_session: None,
+            autonomous_memory: ExecutionMemory::default(),
+            architecture_memory: ArchitectureMemory::default(),
+            runtime_node: RuntimeNode::new("local-node".to_string(), RuntimeRole::Planner),
+            shared_world_state: SharedWorldState::default(),
+            coordination_memory: CoordinationMemory::default(),
         }
         .with_pseudo_stream()
     }

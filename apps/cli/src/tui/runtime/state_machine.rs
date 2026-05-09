@@ -16,6 +16,19 @@ pub enum RuntimeShellState {
     WorldDivergenceHalt,
     VerificationHalt,
     CausalHalt,
+    AutonomousRepairHalt,
+    ContinuityLossHalt,
+    RegressionHalt,
+    TopologyCollapseHalt,
+    DeploymentDivergenceHalt,
+    ExecutionGraphHalt,
+    CoordinationCollapseHalt,
+    SharedWorldDivergenceHalt,
+    DistributedExecutionHalt,
+    SemanticContradictionHalt,
+    IntentCollapseHalt,
+    SemanticReplayHalt,
+    SemanticRepairRegressionHalt,
     Failed,
 }
 
@@ -38,6 +51,19 @@ impl RuntimeShellState {
             Self::WorldDivergenceHalt => "WORLD_DIVERGENCE_HALT",
             Self::VerificationHalt => "VERIFICATION_HALT",
             Self::CausalHalt => "CAUSAL_HALT",
+            Self::AutonomousRepairHalt => "AUTONOMOUS_REPAIR_HALT",
+            Self::ContinuityLossHalt => "CONTINUITY_LOSS_HALT",
+            Self::RegressionHalt => "REGRESSION_HALT",
+            Self::TopologyCollapseHalt => "TOPOLOGY_COLLAPSE_HALT",
+            Self::DeploymentDivergenceHalt => "DEPLOYMENT_DIVERGENCE_HALT",
+            Self::ExecutionGraphHalt => "EXECUTION_GRAPH_HALT",
+            Self::CoordinationCollapseHalt => "COORDINATION_COLLAPSE_HALT",
+            Self::SharedWorldDivergenceHalt => "SHARED_WORLD_DIVERGENCE_HALT",
+            Self::DistributedExecutionHalt => "DISTRIBUTED_EXECUTION_HALT",
+            Self::SemanticContradictionHalt => "SEMANTIC_CONTRADICTION_HALT",
+            Self::IntentCollapseHalt => "INTENT_COLLAPSE_HALT",
+            Self::SemanticReplayHalt => "SEMANTIC_REPLAY_HALT",
+            Self::SemanticRepairRegressionHalt => "SEMANTIC_REPAIR_REGRESSION_HALT",
             Self::Failed => "FAILED",
         }
     }
@@ -79,6 +105,32 @@ impl RuntimeShellState {
                 | (Self::VerificationHalt, Self::Idle)
                 | (_, Self::CausalHalt)
                 | (Self::CausalHalt, Self::Idle)
+                | (_, Self::AutonomousRepairHalt)
+                | (Self::AutonomousRepairHalt, Self::Idle)
+                | (_, Self::ContinuityLossHalt)
+                | (Self::ContinuityLossHalt, Self::Idle)
+                | (_, Self::RegressionHalt)
+                | (Self::RegressionHalt, Self::Idle)
+                | (_, Self::TopologyCollapseHalt)
+                | (Self::TopologyCollapseHalt, Self::Idle)
+                | (_, Self::DeploymentDivergenceHalt)
+                | (Self::DeploymentDivergenceHalt, Self::Idle)
+                | (_, Self::ExecutionGraphHalt)
+                | (Self::ExecutionGraphHalt, Self::Idle)
+                | (_, Self::CoordinationCollapseHalt)
+                | (Self::CoordinationCollapseHalt, Self::Idle)
+                | (_, Self::SharedWorldDivergenceHalt)
+                | (Self::SharedWorldDivergenceHalt, Self::Idle)
+                | (_, Self::DistributedExecutionHalt)
+                | (Self::DistributedExecutionHalt, Self::Idle)
+                | (_, Self::SemanticContradictionHalt)
+                | (Self::SemanticContradictionHalt, Self::Idle)
+                | (_, Self::IntentCollapseHalt)
+                | (Self::IntentCollapseHalt, Self::Idle)
+                | (_, Self::SemanticReplayHalt)
+                | (Self::SemanticReplayHalt, Self::Idle)
+                | (_, Self::SemanticRepairRegressionHalt)
+                | (Self::SemanticRepairRegressionHalt, Self::Idle)
         )
     }
 }

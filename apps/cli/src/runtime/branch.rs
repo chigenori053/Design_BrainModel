@@ -1,4 +1,6 @@
 use crate::core::Diff;
+use crate::runtime::semantic::{evaluate_semantic_convergence, SemanticConvergenceScore};
+use crate::runtime::synthesis::ArchitectureTopology;
 use crate::tui::runtime::RuntimeShellState;
 
 /// Unique identifier for a branch instance.
@@ -129,6 +131,7 @@ pub struct ConvergenceScore {
     pub repairability: f32,
     pub complexity_penalty: f32,
     pub world_consistency: WorldConsistencyScore,
+    pub semantic_score: SemanticConvergenceScore,
 }
 
 impl ConvergenceScore {
@@ -141,6 +144,7 @@ impl ConvergenceScore {
             repairability: 0.0,
             complexity_penalty: 0.0,
             world_consistency: WorldConsistencyScore::zero(),
+            semantic_score: SemanticConvergenceScore::zero(),
         }
     }
 
@@ -149,7 +153,8 @@ impl ConvergenceScore {
             + self.dependency_stability
             + self.replay_reliability
             + self.repairability
-            + self.world_consistency.total())
+            + self.world_consistency.total()
+            + self.semantic_score.total_score as f32)
             - (self.contradiction_penalty + self.complexity_penalty)
     }
 }
@@ -229,6 +234,7 @@ pub struct BranchSnapshot {
     pub contradictions: ContradictionSet,
     pub world_state: WorldStateSnapshot,
     pub runtime_effects: RuntimeEffectSet,
+    pub topology: ArchitectureTopology,
     pub depth: usize,
     pub created_at: u64,
 }
@@ -245,6 +251,7 @@ impl BranchSnapshot {
         contradictions: ContradictionSet,
         world_state: WorldStateSnapshot,
         runtime_effects: RuntimeEffectSet,
+        topology: ArchitectureTopology,
         depth: usize,
         created_at: u64,
     ) -> Self {
@@ -259,6 +266,7 @@ impl BranchSnapshot {
             contradictions,
             world_state,
             runtime_effects,
+            topology,
             depth,
             created_at,
         }
@@ -316,29 +324,28 @@ impl BranchRuntime {
 
     /// Deterministically prune speculative branches to fit limits.
     fn prune_branches(&mut self) {
-        // Deterministic Evaluation Ordering (Specified in 5.2 & 8.1):
-        // verification -> causal consistency -> dependency consistency -> filesystem consistency -> replay consistency
-        // (Unified via total score, but tie-breakers follow ordering)
+        // Deterministic Evaluation Ordering (Specified in DBM-SEMANTIC-COGNITION-CORE 10.2):
+        // score desc -> contradiction asc -> intent stability desc -> replay stability desc -> branch_id asc
         self.speculative_branches.sort_by(|a, b| {
             b.score
                 .total()
                 .partial_cmp(&a.score.total())
                 .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| {
-                    b.score
-                        .world_consistency
-                        .verification_consistency
-                        .partial_cmp(&a.score.world_consistency.verification_consistency)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .then_with(|| {
-                    b.score
-                        .world_consistency
-                        .causal_consistency
-                        .partial_cmp(&a.score.world_consistency.causal_consistency)
-                        .unwrap_or(std::cmp::Ordering::Equal)
-                })
                 .then_with(|| a.contradictions.total().cmp(&b.contradictions.total()))
+                .then_with(|| {
+                    b.score
+                        .semantic_score
+                        .intent_stability
+                        .partial_cmp(&a.score.semantic_score.intent_stability)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
+                .then_with(|| {
+                    b.score
+                        .semantic_score
+                        .semantic_replay_stability
+                        .partial_cmp(&a.score.semantic_score.semantic_replay_stability)
+                        .unwrap_or(std::cmp::Ordering::Equal)
+                })
                 .then_with(|| a.created_at.cmp(&b.created_at))
                 .then_with(|| a.branch_id.0.cmp(&b.branch_id.0))
         });
@@ -430,7 +437,7 @@ impl BranchRuntime {
 }
 
 /// Branch Evaluation Engine (Specified in 5.1)
-pub fn evaluate_branch_convergence(snapshot: &mut BranchSnapshot) {
+pub fn evaluate_branch_convergence(snapshot: &mut BranchSnapshot, runtime: Option<&BranchRuntime>) {
     // 5.1 branch scoring based on specified rules.
 
     // Rule 2: contradiction accumulation penalty.
@@ -446,6 +453,11 @@ pub fn evaluate_branch_convergence(snapshot: &mut BranchSnapshot) {
 
     // Integrated World Convergence (Specified in 5.1)
     evaluate_world_convergence(snapshot);
+
+    // Integrated Semantic Convergence (Specified in DBM-SEMANTIC-COGNITION-CORE)
+    if let Some(r) = runtime {
+        evaluate_semantic_convergence(snapshot, r);
+    }
 }
 
 /// World Model Convergence Evaluation (Specified in 5.1)
@@ -504,6 +516,7 @@ mod tests {
             ContradictionSet::zero(),
             WorldStateSnapshot::zero(),
             RuntimeEffectSet::zero(),
+            ArchitectureTopology::default(),
             parent.map(|_| 1).unwrap_or(0),
             0,
         )
@@ -528,8 +541,9 @@ mod tests {
     fn contradiction_penalty_applied() {
         let mut s = make_snapshot("c1", None, "t1");
         s.contradictions.ownership_conflicts = 1;
+        let r = make_runtime("p", "t");
 
-        evaluate_branch_convergence(&mut s);
+        evaluate_branch_convergence(&mut s, Some(&r));
         // Penalty should be applied.
         assert!(s.score.contradiction_penalty > 0.0);
         assert!(s.score.total() < 0.0);

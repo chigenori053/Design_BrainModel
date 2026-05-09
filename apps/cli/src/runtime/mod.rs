@@ -1,8 +1,12 @@
+pub mod autonomous;
 pub mod bootstrap;
 pub mod branch;
+pub mod coordination;
 pub mod event_queue;
 pub mod host_loop;
 pub mod logging;
 pub mod runtime_events;
 pub mod runtime_state;
+pub mod semantic;
 pub mod shell;
+pub mod synthesis;
