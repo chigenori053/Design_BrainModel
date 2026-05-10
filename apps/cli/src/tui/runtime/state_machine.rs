@@ -99,6 +99,10 @@ pub enum RuntimeShellState {
     SafeMode,
     IsolationMode,
     GovernanceRecovery,
+    GitGovernanceValidation,
+    GovernedCommit,
+    GovernedMerge,
+    BranchStabilityAnalysis,
     RollbackRecovery,
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
@@ -258,6 +262,10 @@ impl RuntimeShellState {
             Self::SafeMode => "SAFE_MODE",
             Self::IsolationMode => "ISOLATION_MODE",
             Self::GovernanceRecovery => "GOVERNANCE_RECOVERY",
+            Self::GitGovernanceValidation => "GIT_GOVERNANCE_VALIDATION",
+            Self::GovernedCommit => "GOVERNED_COMMIT",
+            Self::GovernedMerge => "GOVERNED_MERGE",
+            Self::BranchStabilityAnalysis => "BRANCH_STABILITY_ANALYSIS",
             Self::RollbackRecovery => "ROLLBACK_RECOVERY",
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
@@ -485,6 +493,14 @@ impl RuntimeShellState {
                 | (Self::IsolationMode, Self::Idle)
                 | (_, Self::GovernanceRecovery)
                 | (Self::GovernanceRecovery, Self::Idle)
+                | (_, Self::GitGovernanceValidation)
+                | (Self::GitGovernanceValidation, Self::Idle)
+                | (_, Self::GovernedCommit)
+                | (Self::GovernedCommit, Self::Idle)
+                | (_, Self::GovernedMerge)
+                | (Self::GovernedMerge, Self::Idle)
+                | (_, Self::BranchStabilityAnalysis)
+                | (Self::BranchStabilityAnalysis, Self::Idle)
                 | (_, Self::VerificationExecution)
                 | (Self::VerificationExecution, Self::Idle)
                 | (_, Self::RollbackRecovery)
