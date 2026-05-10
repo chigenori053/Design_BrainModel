@@ -72,6 +72,23 @@ pub enum RuntimeShellState {
     SemanticDriftRecovery,
     SemanticIdentityCollapse,
     TemporalCompression,
+    // Section 10: Semantic World Model Prediction states
+    SemanticWorldPrediction,
+    FutureTrajectorySimulation,
+    ForecastedContradiction,
+    PredictiveRepair,
+    SemanticFutureCollapse,
+    DeploymentPrediction,
+    PredictiveConceptEvolution,
+    // Section 10: Autonomous Software Evolution states
+    AutonomousEvolution,
+    AutonomousPlanning,
+    SemanticImplementation,
+    AutonomousVerification,
+    PredictiveRepairExecution,
+    DeploymentEvolution,
+    DependencyEvolution,
+    AutonomousEvolutionCollapse,
 }
 
 impl RuntimeShellState {
@@ -146,6 +163,21 @@ impl RuntimeShellState {
             Self::SemanticDriftRecovery => "SEMANTIC_DRIFT_RECOVERY",
             Self::SemanticIdentityCollapse => "SEMANTIC_IDENTITY_COLLAPSE",
             Self::TemporalCompression => "TEMPORAL_COMPRESSION",
+            Self::SemanticWorldPrediction => "SEMANTIC_WORLD_PREDICTION",
+            Self::FutureTrajectorySimulation => "FUTURE_TRAJECTORY_SIMULATION",
+            Self::ForecastedContradiction => "FORECASTED_CONTRADICTION",
+            Self::PredictiveRepair => "PREDICTIVE_REPAIR",
+            Self::SemanticFutureCollapse => "SEMANTIC_FUTURE_COLLAPSE",
+            Self::DeploymentPrediction => "DEPLOYMENT_PREDICTION",
+            Self::PredictiveConceptEvolution => "PREDICTIVE_CONCEPT_EVOLUTION",
+            Self::AutonomousEvolution => "AUTONOMOUS_EVOLUTION",
+            Self::AutonomousPlanning => "AUTONOMOUS_PLANNING",
+            Self::SemanticImplementation => "SEMANTIC_IMPLEMENTATION",
+            Self::AutonomousVerification => "AUTONOMOUS_VERIFICATION",
+            Self::PredictiveRepairExecution => "PREDICTIVE_REPAIR_EXECUTION",
+            Self::DeploymentEvolution => "DEPLOYMENT_EVOLUTION",
+            Self::DependencyEvolution => "DEPENDENCY_EVOLUTION",
+            Self::AutonomousEvolutionCollapse => "AUTONOMOUS_EVOLUTION_COLLAPSE",
         }
     }
 
@@ -290,6 +322,20 @@ impl RuntimeShellState {
                 | (Self::SemanticIdentityCollapse, Self::Idle)
                 | (_, Self::TemporalCompression)
                 | (Self::TemporalCompression, Self::Idle)
+                | (_, Self::SemanticWorldPrediction)
+                | (Self::SemanticWorldPrediction, Self::Idle)
+                | (_, Self::FutureTrajectorySimulation)
+                | (Self::FutureTrajectorySimulation, Self::Idle)
+                | (_, Self::ForecastedContradiction)
+                | (Self::ForecastedContradiction, Self::Idle)
+                | (_, Self::PredictiveRepair)
+                | (Self::PredictiveRepair, Self::Idle)
+                | (_, Self::SemanticFutureCollapse)
+                | (Self::SemanticFutureCollapse, Self::Idle)
+                | (_, Self::DeploymentPrediction)
+                | (Self::DeploymentPrediction, Self::Idle)
+                | (_, Self::PredictiveConceptEvolution)
+                | (Self::PredictiveConceptEvolution, Self::Idle)
         )
     }
 }

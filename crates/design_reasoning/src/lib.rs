@@ -10,6 +10,8 @@ pub mod semantic_planning;
 pub mod holographic_semantic_memory;
 pub mod semantic_concept_synthesis;
 pub mod long_horizon_semantic_continuity;
+pub mod semantic_world_prediction;
+pub mod autonomous_software_evolution;
 
 pub use hypothesis_engine::{DesignHypothesis, HypothesisEngine};
 pub use language_engine::{
@@ -55,4 +57,15 @@ pub use long_horizon_semantic_continuity::{
     ContinuityEvent, DriftClassification, EvolvingConcept, LongHorizonContinuityRuntime,
     LongHorizonPlanningState, LongHorizonReport, SemanticIdentityState, TemporalAttractor,
     TemporalContinuityEngine, TemporalSemanticMemory,
+};
+pub use semantic_world_prediction::{
+    DeploymentForecast, ForecastedContradiction, FutureSemanticTrajectory, PredictionEvent,
+    PredictiveConceptEvolution, PredictiveSemanticRepair, SemanticConsequence,
+    SemanticWorldPredictionReport, SemanticWorldPredictionRuntime, SemanticWorldState,
+    WorldPredictionEngine,
+};
+pub use autonomous_software_evolution::{
+    AutonomousEvolutionEngine, AutonomousEvolutionState, AutonomousPlan,
+    AutonomousVerificationResult, DependencyEvolution, DeploymentEvolutionState,
+    SemanticImplementationUnit,
 };
