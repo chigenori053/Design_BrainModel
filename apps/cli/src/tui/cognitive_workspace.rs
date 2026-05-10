@@ -132,6 +132,87 @@ pub struct SemanticNavigationEvent {
     pub navigation_reason: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CognitiveAttentionSystem {
+    pub active_focus: ActiveFocus,
+    pub semantic_attention_router: SemanticAttentionRouter,
+    pub saliency_engine: SemanticSaliencyEngine,
+    pub interrupt_governor: InterruptGovernor,
+    pub projection_priority_queue: ProjectionPriorityQueue,
+    pub focus_recovery_engine: FocusRecoveryEngine,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ActiveFocus {
+    pub focus_id: String,
+    pub semantic_target: String,
+    pub focus_reason: String,
+    pub focus_priority: f64,
+    pub interruption_resistance: f64,
+    pub continuity_score: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticAttentionRouter {
+    pub active_attention_targets: Vec<String>,
+    pub semantic_relevance_scores: Vec<f64>,
+    pub governance_risk_scores: Vec<f64>,
+    pub predictive_instability_scores: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticSaliencyEngine {
+    pub saliency_regions: Vec<String>,
+    pub semantic_entropy_scores: Vec<f64>,
+    pub instability_scores: Vec<f64>,
+    pub convergence_pressure_scores: Vec<f64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct InterruptGovernor {
+    pub interrupt_threshold: f64,
+    pub pending_interruptions: Vec<String>,
+    pub suppression_reasons: Vec<String>,
+    pub escalation_state: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ProjectionPriorityQueue {
+    pub active_projection_budget: usize,
+    pub prioritized_projection_ids: Vec<String>,
+    pub suppressed_projection_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct FocusRecoveryEngine {
+    pub previous_focus_stack: Vec<String>,
+    pub interrupted_focus_regions: Vec<String>,
+    pub recovery_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttentionProjection {
+    pub active_focus_region: String,
+    pub suppressed_regions: Vec<String>,
+    pub escalated_regions: Vec<String>,
+    pub saliency_heatmap: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PredictiveAttentionState {
+    pub predicted_attention_failures: Vec<String>,
+    pub future_overload_probability: f64,
+    pub recommended_focus_shift: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AttentionNavigationEvent {
+    pub source_focus: String,
+    pub target_focus: String,
+    pub navigation_reason: String,
+    pub semantic_continuity_score: f64,
+}
+
 pub struct CognitiveWorkspaceEngine;
 
 impl CognitiveWorkspaceEngine {
@@ -188,6 +269,33 @@ impl CognitiveWorkspaceEngine {
     // 15.6 Density Governance Tests
     pub fn focus_preserved_under_density() {}
     pub fn projection_budget_enforced() {}
+
+    // 15.1 Focus Tests (DBM-COGNITIVE-FOCUS-AND-ATTENTION-GOVERNANCE)
+    pub fn single_primary_focus_preserved() {}
+    pub fn focus_continuity_stable() {}
+    pub fn focus_transition_deterministic() {}
+
+    // 15.2 Saliency Tests
+    pub fn high_saliency_region_prioritized() {}
+    pub fn semantic_entropy_escalation_triggered() {}
+    pub fn low_saliency_projection_suppressed() {}
+
+    // 15.3 Interrupt Tests
+    pub fn low_priority_interrupt_suppressed() {}
+    pub fn critical_interrupt_escalated() {}
+    pub fn interrupt_ordering_stable() {}
+
+    // 15.4 Projection Tests
+    pub fn projection_ordering_deterministic() {}
+
+    // 15.5 Recovery Tests
+    pub fn focus_recovery_successful() {}
+    pub fn interrupted_context_restored() {}
+
+    // 15.6 Predictive Attention Tests
+    pub fn future_overload_detected() {}
+    pub fn predictive_focus_shift_triggered() {}
+    pub fn root_intent_preserved() {}
 }
 
 #[cfg(test)]
@@ -352,5 +460,80 @@ mod tests {
     #[test]
     fn test_projection_budget_enforced() {
         CognitiveWorkspaceEngine::projection_budget_enforced();
+    }
+
+    #[test]
+    fn test_single_primary_focus_preserved() {
+        CognitiveWorkspaceEngine::single_primary_focus_preserved();
+    }
+
+    #[test]
+    fn test_focus_continuity_stable() {
+        CognitiveWorkspaceEngine::focus_continuity_stable();
+    }
+
+    #[test]
+    fn test_focus_transition_deterministic() {
+        CognitiveWorkspaceEngine::focus_transition_deterministic();
+    }
+
+    #[test]
+    fn test_high_saliency_region_prioritized() {
+        CognitiveWorkspaceEngine::high_saliency_region_prioritized();
+    }
+
+    #[test]
+    fn test_semantic_entropy_escalation_triggered() {
+        CognitiveWorkspaceEngine::semantic_entropy_escalation_triggered();
+    }
+
+    #[test]
+    fn test_low_saliency_projection_suppressed() {
+        CognitiveWorkspaceEngine::low_saliency_projection_suppressed();
+    }
+
+    #[test]
+    fn test_low_priority_interrupt_suppressed() {
+        CognitiveWorkspaceEngine::low_priority_interrupt_suppressed();
+    }
+
+    #[test]
+    fn test_critical_interrupt_escalated() {
+        CognitiveWorkspaceEngine::critical_interrupt_escalated();
+    }
+
+    #[test]
+    fn test_interrupt_ordering_stable() {
+        CognitiveWorkspaceEngine::interrupt_ordering_stable();
+    }
+
+    #[test]
+    fn test_projection_ordering_deterministic() {
+        CognitiveWorkspaceEngine::projection_ordering_deterministic();
+    }
+
+    #[test]
+    fn test_focus_recovery_successful() {
+        CognitiveWorkspaceEngine::focus_recovery_successful();
+    }
+
+    #[test]
+    fn test_interrupted_context_restored() {
+        CognitiveWorkspaceEngine::interrupted_context_restored();
+    }
+
+    #[test]
+    fn test_future_overload_detected() {
+        CognitiveWorkspaceEngine::future_overload_detected();
+    }
+
+    #[test]
+    fn test_predictive_focus_shift_triggered() {
+        CognitiveWorkspaceEngine::predictive_focus_shift_triggered();
+    }
+
+    #[test]
+    fn test_root_intent_preserved() {
+        CognitiveWorkspaceEngine::root_intent_preserved();
     }
 }

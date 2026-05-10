@@ -121,6 +121,14 @@ pub enum RuntimeShellState {
     PredictiveTrajectoryVisualization,
     BranchVisualization,
     CognitiveDensityGovernance,
+    // Section 10: Cognitive Focus and Attention Governance states
+    AttentionGovernance,
+    FocusTransition,
+    InterruptSuppression,
+    AttentionEscalation,
+    ProjectionPrioritization,
+    FocusRecovery,
+    PredictiveAttentionShift,
 }
 
 impl RuntimeShellState {
@@ -238,6 +246,13 @@ impl RuntimeShellState {
             Self::PredictiveTrajectoryVisualization => "PREDICTIVE_TRAJECTORY_VISUALIZATION",
             Self::BranchVisualization => "BRANCH_VISUALIZATION",
             Self::CognitiveDensityGovernance => "COGNITIVE_DENSITY_GOVERNANCE",
+            Self::AttentionGovernance => "ATTENTION_GOVERNANCE",
+            Self::FocusTransition => "FOCUS_TRANSITION",
+            Self::InterruptSuppression => "INTERRUPT_SUPPRESSION",
+            Self::AttentionEscalation => "ATTENTION_ESCALATION",
+            Self::ProjectionPrioritization => "PROJECTION_PRIORITIZATION",
+            Self::FocusRecovery => "FOCUS_RECOVERY",
+            Self::PredictiveAttentionShift => "PREDICTIVE_ATTENTION_SHIFT",
         }
     }
 
@@ -452,6 +467,20 @@ impl RuntimeShellState {
                 | (Self::BranchVisualization, Self::Idle)
                 | (_, Self::CognitiveDensityGovernance)
                 | (Self::CognitiveDensityGovernance, Self::Idle)
+                | (_, Self::AttentionGovernance)
+                | (Self::AttentionGovernance, Self::Idle)
+                | (_, Self::FocusTransition)
+                | (Self::FocusTransition, Self::Idle)
+                | (_, Self::InterruptSuppression)
+                | (Self::InterruptSuppression, Self::Idle)
+                | (_, Self::AttentionEscalation)
+                | (Self::AttentionEscalation, Self::Idle)
+                | (_, Self::ProjectionPrioritization)
+                | (Self::ProjectionPrioritization, Self::Idle)
+                | (_, Self::FocusRecovery)
+                | (Self::FocusRecovery, Self::Idle)
+                | (_, Self::PredictiveAttentionShift)
+                | (Self::PredictiveAttentionShift, Self::Idle)
         )
     }
 }
