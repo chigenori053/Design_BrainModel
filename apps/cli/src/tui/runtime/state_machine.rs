@@ -92,8 +92,13 @@ pub enum RuntimeShellState {
     // Section 10: Real Execution Substrate states
     ExecutionTransaction,
     FilesystemMutation,
+    ExecutionPermitGeneration,
     GovernedExecution,
+    ExecutionRejected,
     VerificationExecution,
+    SafeMode,
+    IsolationMode,
+    GovernanceRecovery,
     RollbackRecovery,
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
@@ -246,8 +251,13 @@ impl RuntimeShellState {
             Self::AutonomousEvolutionCollapse => "AUTONOMOUS_EVOLUTION_COLLAPSE",
             Self::ExecutionTransaction => "EXECUTION_TRANSACTION",
             Self::FilesystemMutation => "FILESYSTEM_MUTATION",
+            Self::ExecutionPermitGeneration => "EXECUTION_PERMIT_GENERATION",
             Self::GovernedExecution => "GOVERNED_EXECUTION",
+            Self::ExecutionRejected => "EXECUTION_REJECTED",
             Self::VerificationExecution => "VERIFICATION_EXECUTION",
+            Self::SafeMode => "SAFE_MODE",
+            Self::IsolationMode => "ISOLATION_MODE",
+            Self::GovernanceRecovery => "GOVERNANCE_RECOVERY",
             Self::RollbackRecovery => "ROLLBACK_RECOVERY",
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
@@ -463,8 +473,18 @@ impl RuntimeShellState {
                 | (Self::ExecutionTransaction, Self::Idle)
                 | (_, Self::FilesystemMutation)
                 | (Self::FilesystemMutation, Self::Idle)
+                | (_, Self::ExecutionPermitGeneration)
+                | (Self::ExecutionPermitGeneration, Self::Idle)
                 | (_, Self::GovernedExecution)
                 | (Self::GovernedExecution, Self::Idle)
+                | (_, Self::ExecutionRejected)
+                | (Self::ExecutionRejected, Self::Idle)
+                | (_, Self::SafeMode)
+                | (Self::SafeMode, Self::Idle)
+                | (_, Self::IsolationMode)
+                | (Self::IsolationMode, Self::Idle)
+                | (_, Self::GovernanceRecovery)
+                | (Self::GovernanceRecovery, Self::Idle)
                 | (_, Self::VerificationExecution)
                 | (Self::VerificationExecution, Self::Idle)
                 | (_, Self::RollbackRecovery)

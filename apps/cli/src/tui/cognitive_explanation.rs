@@ -68,17 +68,23 @@ impl NarrativeAggregator {
             };
         }
 
-        let ja = explanations.iter()
-            .map(|e| e.summary_ja.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
-        
-        let en = explanations.iter()
-            .map(|e| e.summary_en.clone())
-            .collect::<Vec<_>>()
-            .join("\n");
+        // 9.2 Semantic Deduplication
+        let mut unique_ja = Vec::new();
+        let mut unique_en = Vec::new();
+        let mut seen_en = std::collections::HashSet::new();
 
-        BilingualProjection { ja, en }
+        for e in explanations {
+            if !seen_en.contains(&e.summary_en) {
+                unique_ja.push(e.summary_ja.clone());
+                unique_en.push(e.summary_en.clone());
+                seen_en.insert(e.summary_en.clone());
+            }
+        }
+
+        BilingualProjection {
+            ja: unique_ja.join("\n"),
+            en: unique_en.join("\n"),
+        }
     }
 }
 
@@ -455,8 +461,26 @@ mod tests {
     }
 
     #[test]
-    fn test_explanation_lifecycle_stability() {
-        CognitiveExplanationEngine::explanation_lifecycle_stability();
+    fn test_semantic_deduplication() {
+        let aggregator = NarrativeAggregator { max_explanations: 5 };
+        let explanations = vec![
+            CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Execution,
+                summary_ja: "安定性が低下しています。".to_string(),
+                summary_en: "Stability is decreasing.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+            CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Execution,
+                summary_ja: "安定性が低下しています。".to_string(),
+                summary_en: "Stability is decreasing.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+        ];
+        let projection = aggregator.aggregate(explanations);
+        assert_eq!(projection.en, "Stability is decreasing.");
     }
 
     #[test]
