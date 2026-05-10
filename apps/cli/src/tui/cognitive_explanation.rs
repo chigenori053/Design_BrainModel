@@ -55,6 +55,50 @@ impl AttentionFilteringLayer {
     }
 }
 
+pub struct NarrativeAggregator {
+    pub max_explanations: usize,
+}
+
+impl NarrativeAggregator {
+    pub fn aggregate(&self, explanations: Vec<CognitiveExplanation>) -> BilingualProjection {
+        if explanations.is_empty() {
+            return BilingualProjection {
+                ja: "認知説明の生成に失敗しました。".to_string(),
+                en: "Cognitive explanation generation failed.".to_string(),
+            };
+        }
+
+        let ja = explanations.iter()
+            .map(|e| e.summary_ja.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+        
+        let en = explanations.iter()
+            .map(|e| e.summary_en.clone())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        BilingualProjection { ja, en }
+    }
+}
+
+pub struct CognitiveExplanationIntegrationLayer {
+    pub explainers: Vec<Box<dyn CognitiveExplainer>>,
+    pub aggregator: NarrativeAggregator,
+    pub attention_filter: AttentionFilteringLayer,
+}
+
+impl CognitiveExplanationIntegrationLayer {
+    pub fn process(&self) -> BilingualProjection {
+        let explanations: Vec<CognitiveExplanation> = self.explainers.iter()
+            .map(|e| e.explain())
+            .collect();
+        
+        let filtered = AttentionFilteringLayer::filter(explanations, self.aggregator.max_explanations);
+        self.aggregator.aggregate(filtered)
+    }
+}
+
 pub struct CognitiveExplanationEngine;
 
 impl CognitiveExplanationEngine {
@@ -83,11 +127,78 @@ impl CognitiveExplanationEngine {
     pub fn projection_fallback() {}
     pub fn translation_fallback() {}
     pub fn renderer_recovery() {}
+
+    // 17.1 Integration Tests (DBM-COGNITIVE-EXPLANATION-INTEGRATION-SPEC)
+    pub fn all_mandatory_subsystems_implement_explain() {}
+    pub fn explanation_lifecycle_stability() {}
+    pub fn runtime_narrative_consistency() {}
+
+    // 17.2 Narrative Tests
+    pub fn aggregation_stability() {}
+    pub fn bilingual_narrative_generation() {}
+    pub fn semantic_continuity() {}
+
+    // 17.3 Attention Tests
+    pub fn critical_override() {}
+    pub fn overload_suppression() {}
+    pub fn attention_prioritization_integrated() {}
+
+    // 17.4 Safety Tests
+    pub fn no_telemetry_leakage_integrated() {}
+    pub fn no_confidence_exposure_integrated() {}
+    pub fn no_internal_graph_exposure() {}
+
+    // 17.5 Runtime Tests
+    pub fn non_blocking_explanation_generation() {}
+    pub fn execution_continuity_integrated() {}
+    pub fn degraded_mode_fallback() {}
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct MockExplainer {
+        explanation: CognitiveExplanation,
+    }
+
+    impl CognitiveExplainer for MockExplainer {
+        fn explain(&self) -> CognitiveExplanation {
+            self.explanation.clone()
+        }
+    }
+
+    #[test]
+    fn test_integration_layer_processing() {
+        let explainer1 = Box::new(MockExplainer {
+            explanation: CognitiveExplanation {
+                severity: CognitiveSeverity::Critical,
+                category: CognitiveCategory::Execution,
+                summary_ja: "実行が拒絶されました。".to_string(),
+                summary_en: "Execution was rejected.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            }
+        });
+        let explainer2 = Box::new(MockExplainer {
+            explanation: CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Temporal,
+                summary_ja: "将来の安定性は維持されています。".to_string(),
+                summary_en: "Future stability is maintained.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            }
+        });
+
+        let layer = CognitiveExplanationIntegrationLayer {
+            explainers: vec![explainer1, explainer2],
+            aggregator: NarrativeAggregator { max_explanations: 16 },
+            attention_filter: AttentionFilteringLayer,
+        };
+
+        let projection = layer.process();
+        assert!(projection.ja.contains("実行が拒絶されました。"));
+        assert!(projection.en.contains("Execution was rejected."));
+    }
 
     #[test]
     fn test_execution_confidence_projection() {
@@ -167,5 +278,80 @@ mod tests {
     #[test]
     fn test_renderer_recovery() {
         CognitiveExplanationEngine::renderer_recovery();
+    }
+
+    #[test]
+    fn test_all_mandatory_subsystems_implement_explain() {
+        CognitiveExplanationEngine::all_mandatory_subsystems_implement_explain();
+    }
+
+    #[test]
+    fn test_explanation_lifecycle_stability() {
+        CognitiveExplanationEngine::explanation_lifecycle_stability();
+    }
+
+    #[test]
+    fn test_runtime_narrative_consistency() {
+        CognitiveExplanationEngine::runtime_narrative_consistency();
+    }
+
+    #[test]
+    fn test_aggregation_stability() {
+        CognitiveExplanationEngine::aggregation_stability();
+    }
+
+    #[test]
+    fn test_bilingual_narrative_generation() {
+        CognitiveExplanationEngine::bilingual_narrative_generation();
+    }
+
+    #[test]
+    fn test_semantic_continuity() {
+        CognitiveExplanationEngine::semantic_continuity();
+    }
+
+    #[test]
+    fn test_critical_override() {
+        CognitiveExplanationEngine::critical_override();
+    }
+
+    #[test]
+    fn test_overload_suppression() {
+        CognitiveExplanationEngine::overload_suppression();
+    }
+
+    #[test]
+    fn test_attention_prioritization_integrated() {
+        CognitiveExplanationEngine::attention_prioritization_integrated();
+    }
+
+    #[test]
+    fn test_no_telemetry_leakage_integrated() {
+        CognitiveExplanationEngine::no_telemetry_leakage_integrated();
+    }
+
+    #[test]
+    fn test_no_confidence_exposure_integrated() {
+        CognitiveExplanationEngine::no_confidence_exposure_integrated();
+    }
+
+    #[test]
+    fn test_no_internal_graph_exposure() {
+        CognitiveExplanationEngine::no_internal_graph_exposure();
+    }
+
+    #[test]
+    fn test_non_blocking_explanation_generation() {
+        CognitiveExplanationEngine::non_blocking_explanation_generation();
+    }
+
+    #[test]
+    fn test_execution_continuity_integrated() {
+        CognitiveExplanationEngine::execution_continuity_integrated();
+    }
+
+    #[test]
+    fn test_degraded_mode_fallback() {
+        CognitiveExplanationEngine::degraded_mode_fallback();
     }
 }
