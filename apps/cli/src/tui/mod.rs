@@ -4,6 +4,7 @@ pub mod core;
 pub mod edit_block;
 pub mod cognitive_workspace;
 pub mod workspace_launcher;
+pub mod multi_branch_orchestration;
 pub mod input;
 pub mod model;
 pub mod panels;

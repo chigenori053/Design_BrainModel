@@ -129,6 +129,14 @@ pub enum RuntimeShellState {
     ProjectionPrioritization,
     FocusRecovery,
     PredictiveAttentionShift,
+    // Section 10: Multi-Branch Cognitive Orchestration states
+    MultiBranchCognition,
+    BranchArbitration,
+    BranchExpansion,
+    BranchCollapse,
+    BranchPrediction,
+    BranchRecovery,
+    ConvergenceCompetition,
 }
 
 impl RuntimeShellState {
@@ -253,6 +261,13 @@ impl RuntimeShellState {
             Self::ProjectionPrioritization => "PROJECTION_PRIORITIZATION",
             Self::FocusRecovery => "FOCUS_RECOVERY",
             Self::PredictiveAttentionShift => "PREDICTIVE_ATTENTION_SHIFT",
+            Self::MultiBranchCognition => "MULTI_BRANCH_COGNITION",
+            Self::BranchArbitration => "BRANCH_ARBITRATION",
+            Self::BranchExpansion => "BRANCH_EXPANSION",
+            Self::BranchCollapse => "BRANCH_COLLAPSE",
+            Self::BranchPrediction => "BRANCH_PREDICTION",
+            Self::BranchRecovery => "BRANCH_RECOVERY",
+            Self::ConvergenceCompetition => "CONVERGENCE_COMPETITION",
         }
     }
 
@@ -481,6 +496,20 @@ impl RuntimeShellState {
                 | (Self::FocusRecovery, Self::Idle)
                 | (_, Self::PredictiveAttentionShift)
                 | (Self::PredictiveAttentionShift, Self::Idle)
+                | (_, Self::MultiBranchCognition)
+                | (Self::MultiBranchCognition, Self::Idle)
+                | (_, Self::BranchArbitration)
+                | (Self::BranchArbitration, Self::Idle)
+                | (_, Self::BranchExpansion)
+                | (Self::BranchExpansion, Self::Idle)
+                | (_, Self::BranchCollapse)
+                | (Self::BranchCollapse, Self::Idle)
+                | (_, Self::BranchPrediction)
+                | (Self::BranchPrediction, Self::Idle)
+                | (_, Self::BranchRecovery)
+                | (Self::BranchRecovery, Self::Idle)
+                | (_, Self::ConvergenceCompetition)
+                | (Self::ConvergenceCompetition, Self::Idle)
         )
     }
 }
