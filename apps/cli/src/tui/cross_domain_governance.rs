@@ -117,35 +117,20 @@ impl CrossDomainGovernanceSystem {
             }
         }
 
-        let mut protection_state = UnifiedProtectionState::Normal;
-        let mut execution_allowed = true;
-        let (mut ja_msg, mut en_msg) = ("".to_string(), "".to_string());
-
-        if highest_risk == UnifiedRiskLevel::Critical {
-            execution_allowed = false;
-            protection_state = UnifiedProtectionState::CatastrophicProtection;
-            if escalated {
-                ja_msg = "複数領域の組み合わせにより致命的不安定化が検出されました。".to_string();
-                en_msg = "Combined authority domains produced catastrophic instability risks.".to_string();
+        let (mut execution_allowed, mut protection_state, mut ja_msg, mut en_msg) = if highest_risk == UnifiedRiskLevel::Critical {
+            let (j, e) = if escalated {
+                ("複数領域の組み合わせにより致命的不安定化が検出されました。".to_string(), "Combined authority domains produced catastrophic instability risks.".to_string())
             } else {
-                ja_msg = "複数の権限領域間で整合性競合が検出されました。".to_string();
-                en_msg = "Governance consistency conflicts were detected across authority domains.".to_string();
-            }
+                ("複数の権限領域間で整合性競合が検出されました。".to_string(), "Governance consistency conflicts were detected across authority domains.".to_string())
+            };
+            (false, UnifiedProtectionState::CatastrophicProtection, j, e)
         } else if highest_risk == UnifiedRiskLevel::High {
-            execution_allowed = false;
-            protection_state = UnifiedProtectionState::SafeMode;
-            ja_msg = "権限連鎖による実行影響範囲が拡大しています。".to_string();
-            en_msg = "Execution authority scope is expanding through chained governance escalation.".to_string();
+            (false, UnifiedProtectionState::SafeMode, "権限連鎖による実行影響範囲が拡大しています。".to_string(), "Execution authority scope is expanding through chained governance escalation.".to_string())
         } else if temporal_stability == TemporalStability::Decaying || temporal_stability == TemporalStability::Collapsing {
-            execution_allowed = false;
-            protection_state = UnifiedProtectionState::SafeMode;
-            ja_msg = "複数領域を跨ぐ将来的な整合性低下が検出されています。".to_string();
-            en_msg = "Cross-domain future semantic instability has been detected.".to_string();
+            (false, UnifiedProtectionState::SafeMode, "複数領域を跨ぐ将来的な整合性低下が検出されています。".to_string(), "Cross-domain future semantic instability has been detected.".to_string())
         } else {
-            execution_allowed = true;
-            ja_msg = "権限領域間の整合性が維持されています。".to_string();
-            en_msg = "Consistency across authority domains is preserved.".to_string();
-        }
+            (true, UnifiedProtectionState::Normal, "権限領域間の整合性が維持されています。".to_string(), "Consistency across authority domains is preserved.".to_string())
+        };
 
         if !rollback_possible && highest_risk > UnifiedRiskLevel::Minimal {
             execution_allowed = false;

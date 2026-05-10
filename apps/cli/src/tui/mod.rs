@@ -11,6 +11,7 @@ pub mod governed_execution;
 pub mod git_governance;
 pub mod remote_governance;
 pub mod cross_domain_governance;
+pub mod governance_observability;
 pub mod cognitive_explanation;
 pub mod input;
 pub mod model;

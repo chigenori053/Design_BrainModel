@@ -112,6 +112,10 @@ pub enum RuntimeShellState {
     AuthorityEscalationTracking,
     UnifiedTemporalAnalysis,
     CatastrophicProtection,
+    GovernanceObservation,
+    AuthorityTraceReplay,
+    GovernanceTimelineProjection,
+    CausalNarrativeGeneration,
     RollbackRecovery,
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
@@ -284,6 +288,10 @@ impl RuntimeShellState {
             Self::AuthorityEscalationTracking => "AUTHORITY_ESCALATION_TRACKING",
             Self::UnifiedTemporalAnalysis => "UNIFIED_TEMPORAL_ANALYSIS",
             Self::CatastrophicProtection => "CATASTROPHIC_PROTECTION",
+            Self::GovernanceObservation => "GOVERNANCE_OBSERVATION",
+            Self::AuthorityTraceReplay => "AUTHORITY_TRACE_REPLAY",
+            Self::GovernanceTimelineProjection => "GOVERNANCE_TIMELINE_PROJECTION",
+            Self::CausalNarrativeGeneration => "CAUSAL_NARRATIVE_GENERATION",
             Self::RollbackRecovery => "ROLLBACK_RECOVERY",
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
@@ -537,6 +545,14 @@ impl RuntimeShellState {
                 | (Self::UnifiedTemporalAnalysis, Self::Idle)
                 | (_, Self::CatastrophicProtection)
                 | (Self::CatastrophicProtection, Self::Idle)
+                | (_, Self::GovernanceObservation)
+                | (Self::GovernanceObservation, Self::Idle)
+                | (_, Self::AuthorityTraceReplay)
+                | (Self::AuthorityTraceReplay, Self::Idle)
+                | (_, Self::GovernanceTimelineProjection)
+                | (Self::GovernanceTimelineProjection, Self::Idle)
+                | (_, Self::CausalNarrativeGeneration)
+                | (Self::CausalNarrativeGeneration, Self::Idle)
                 | (_, Self::VerificationExecution)
                 | (Self::VerificationExecution, Self::Idle)
                 | (_, Self::RollbackRecovery)
