@@ -42,7 +42,16 @@ fn main() {
         return;
     }
 
-    if raw_input == "repl" {
+    if raw_input == "repl" || raw_input == "workspace" {
+        if let Err(err) = start_runtime_tui() {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if raw_input == "legacy-repl" {
+        // Compatibility path
         if let Err(err) = start_runtime_tui() {
             eprintln!("{err}");
             std::process::exit(1);
@@ -77,6 +86,8 @@ AI-native architecture analysis, safe refactoring, and structure visualization C
 Usage: design_cli [INPUT]...
 
 Examples:
+  design_cli workspace
+  design_cli repl
   design_cli \"/analyze .\"
   design_cli \"/structure view .\"
   design_cli \"このプロジェクトを解析して\"
@@ -95,6 +106,7 @@ fn subcommand_help(input: &[String]) -> Option<&'static str> {
         "coding" => Some(CODING_HELP),
         "structure" => Some(STRUCTURE_HELP),
         "repl" => Some(REPL_HELP),
+        "workspace" => Some("Cognitive Workspace: natural language cognition control shell"),
         _ => None,
     }
 }

@@ -106,6 +106,13 @@ pub enum RuntimeShellState {
     RollbackProjection,
     IntentClarification,
     ConvergenceProjection,
+    // Section 10: Cognitive Workspace Launch Integration states
+    WorkspaceInitialization,
+    WorkspaceActive,
+    ProjectionSynchronization,
+    WorkspaceFocusTransition,
+    WorkspaceGovernanceReject,
+    WorkspaceRecovery,
 }
 
 impl RuntimeShellState {
@@ -210,6 +217,12 @@ impl RuntimeShellState {
             Self::RollbackProjection => "ROLLBACK_PROJECTION",
             Self::IntentClarification => "INTENT_CLARIFICATION",
             Self::ConvergenceProjection => "CONVERGENCE_PROJECTION",
+            Self::WorkspaceInitialization => "WORKSPACE_INITIALIZATION",
+            Self::WorkspaceActive => "WORKSPACE_ACTIVE",
+            Self::ProjectionSynchronization => "PROJECTION_SYNCHRONIZATION",
+            Self::WorkspaceFocusTransition => "WORKSPACE_FOCUS_TRANSITION",
+            Self::WorkspaceGovernanceReject => "WORKSPACE_GOVERNANCE_REJECT",
+            Self::WorkspaceRecovery => "WORKSPACE_RECOVERY",
         }
     }
 
@@ -398,6 +411,18 @@ impl RuntimeShellState {
                 | (Self::IntentClarification, Self::Idle)
                 | (_, Self::ConvergenceProjection)
                 | (Self::ConvergenceProjection, Self::Idle)
+                | (_, Self::WorkspaceInitialization)
+                | (Self::WorkspaceInitialization, Self::Idle)
+                | (_, Self::WorkspaceActive)
+                | (Self::WorkspaceActive, Self::Idle)
+                | (_, Self::ProjectionSynchronization)
+                | (Self::ProjectionSynchronization, Self::Idle)
+                | (_, Self::WorkspaceFocusTransition)
+                | (Self::WorkspaceFocusTransition, Self::Idle)
+                | (_, Self::WorkspaceGovernanceReject)
+                | (Self::WorkspaceGovernanceReject, Self::Idle)
+                | (_, Self::WorkspaceRecovery)
+                | (Self::WorkspaceRecovery, Self::Idle)
         )
     }
 }
