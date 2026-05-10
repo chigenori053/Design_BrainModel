@@ -98,6 +98,14 @@ pub enum RuntimeShellState {
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
     PredictiveExecutionReject,
+    // Section 10: Cognitive Workspace states
+    CognitiveWorkspace,
+    ChatInteraction,
+    ExecutionProjection,
+    GovernanceProjection,
+    RollbackProjection,
+    IntentClarification,
+    ConvergenceProjection,
 }
 
 impl RuntimeShellState {
@@ -195,6 +203,13 @@ impl RuntimeShellState {
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
             Self::PredictiveExecutionReject => "PREDICTIVE_EXECUTION_REJECT",
+            Self::CognitiveWorkspace => "COGNITIVE_WORKSPACE",
+            Self::ChatInteraction => "CHAT_INTERACTION",
+            Self::ExecutionProjection => "EXECUTION_PROJECTION",
+            Self::GovernanceProjection => "GOVERNANCE_PROJECTION",
+            Self::RollbackProjection => "ROLLBACK_PROJECTION",
+            Self::IntentClarification => "INTENT_CLARIFICATION",
+            Self::ConvergenceProjection => "CONVERGENCE_PROJECTION",
         }
     }
 
@@ -369,6 +384,20 @@ impl RuntimeShellState {
                 | (Self::ExecutionGovernanceHalt, Self::Idle)
                 | (_, Self::PredictiveExecutionReject)
                 | (Self::PredictiveExecutionReject, Self::Idle)
+                | (_, Self::CognitiveWorkspace)
+                | (Self::CognitiveWorkspace, Self::Idle)
+                | (_, Self::ChatInteraction)
+                | (Self::ChatInteraction, Self::Idle)
+                | (_, Self::ExecutionProjection)
+                | (Self::ExecutionProjection, Self::Idle)
+                | (_, Self::GovernanceProjection)
+                | (Self::GovernanceProjection, Self::Idle)
+                | (_, Self::RollbackProjection)
+                | (Self::RollbackProjection, Self::Idle)
+                | (_, Self::IntentClarification)
+                | (Self::IntentClarification, Self::Idle)
+                | (_, Self::ConvergenceProjection)
+                | (Self::ConvergenceProjection, Self::Idle)
         )
     }
 }

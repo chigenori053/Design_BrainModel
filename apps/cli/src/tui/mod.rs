@@ -2,6 +2,7 @@ pub mod composer;
 pub mod confidence_rank;
 pub mod core;
 pub mod edit_block;
+pub mod cognitive_workspace;
 pub mod input;
 pub mod model;
 pub mod panels;
