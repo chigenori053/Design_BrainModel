@@ -24,12 +24,17 @@
 pub mod checksum;
 pub mod effect;
 pub mod error;
+pub mod real_execution_substrate;
 pub mod replay;
 pub mod sandbox;
 pub mod snapshot;
 pub mod trace;
 
 // Convenience re-exports at crate root
+pub use real_execution_substrate::{
+    EnvironmentState, ExecutionSubstrateEngine, ExecutionTransaction, FilesystemMutation,
+    GovernedProcess, RollbackSnapshot, VerificationExecutionResult,
+};
 pub use checksum::{Checksum, ChecksumBuilder, ExecutionTraceHash};
 pub use effect::{Effect, StagedEffectManager};
 pub use error::HardeningError;

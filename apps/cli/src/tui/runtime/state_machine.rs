@@ -89,6 +89,15 @@ pub enum RuntimeShellState {
     DeploymentEvolution,
     DependencyEvolution,
     AutonomousEvolutionCollapse,
+    // Section 10: Real Execution Substrate states
+    ExecutionTransaction,
+    FilesystemMutation,
+    GovernedExecution,
+    VerificationExecution,
+    RollbackRecovery,
+    EnvironmentIntegration,
+    ExecutionGovernanceHalt,
+    PredictiveExecutionReject,
 }
 
 impl RuntimeShellState {
@@ -178,6 +187,14 @@ impl RuntimeShellState {
             Self::DeploymentEvolution => "DEPLOYMENT_EVOLUTION",
             Self::DependencyEvolution => "DEPENDENCY_EVOLUTION",
             Self::AutonomousEvolutionCollapse => "AUTONOMOUS_EVOLUTION_COLLAPSE",
+            Self::ExecutionTransaction => "EXECUTION_TRANSACTION",
+            Self::FilesystemMutation => "FILESYSTEM_MUTATION",
+            Self::GovernedExecution => "GOVERNED_EXECUTION",
+            Self::VerificationExecution => "VERIFICATION_EXECUTION",
+            Self::RollbackRecovery => "ROLLBACK_RECOVERY",
+            Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
+            Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
+            Self::PredictiveExecutionReject => "PREDICTIVE_EXECUTION_REJECT",
         }
     }
 
@@ -336,6 +353,22 @@ impl RuntimeShellState {
                 | (Self::DeploymentPrediction, Self::Idle)
                 | (_, Self::PredictiveConceptEvolution)
                 | (Self::PredictiveConceptEvolution, Self::Idle)
+                | (_, Self::ExecutionTransaction)
+                | (Self::ExecutionTransaction, Self::Idle)
+                | (_, Self::FilesystemMutation)
+                | (Self::FilesystemMutation, Self::Idle)
+                | (_, Self::GovernedExecution)
+                | (Self::GovernedExecution, Self::Idle)
+                | (_, Self::VerificationExecution)
+                | (Self::VerificationExecution, Self::Idle)
+                | (_, Self::RollbackRecovery)
+                | (Self::RollbackRecovery, Self::Idle)
+                | (_, Self::EnvironmentIntegration)
+                | (Self::EnvironmentIntegration, Self::Idle)
+                | (_, Self::ExecutionGovernanceHalt)
+                | (Self::ExecutionGovernanceHalt, Self::Idle)
+                | (_, Self::PredictiveExecutionReject)
+                | (Self::PredictiveExecutionReject, Self::Idle)
         )
     }
 }
