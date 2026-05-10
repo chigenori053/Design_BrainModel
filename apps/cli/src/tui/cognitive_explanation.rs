@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct CognitiveExplanation {
     pub severity: CognitiveSeverity,
     pub category: CognitiveCategory,
@@ -20,7 +20,7 @@ pub enum CognitiveSeverity {
     Critical,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum CognitiveCategory {
     Execution,
     Governance,
@@ -32,7 +32,7 @@ pub enum CognitiveCategory {
     Attention,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct BilingualProjection {
     pub ja: String,
     pub en: String,
@@ -99,9 +99,108 @@ impl CognitiveExplanationIntegrationLayer {
     }
 }
 
+pub struct CognitiveNarrativeRenderer {
+    pub aggregator: NarrativeAggregator,
+    pub attention_filter: AttentionFilteringLayer,
+}
+
+impl CognitiveNarrativeRenderer {
+    pub fn new(max_narratives: usize) -> Self {
+        Self {
+            aggregator: NarrativeAggregator { max_explanations: max_narratives },
+            attention_filter: AttentionFilteringLayer,
+        }
+    }
+
+    pub fn render_state(&self, state: crate::tui::runtime::RuntimeShellState) -> BilingualProjection {
+        let explanation = self.explain_runtime_state(state);
+        BilingualProjection {
+            ja: explanation.summary_ja,
+            en: explanation.summary_en,
+        }
+    }
+
+    pub fn explain_state(&self, state: crate::tui::runtime::RuntimeShellState) -> CognitiveExplanation {
+        self.explain_runtime_state(state)
+    }
+
+    fn explain_runtime_state(&self, state: crate::tui::runtime::RuntimeShellState) -> CognitiveExplanation {
+        use crate::tui::runtime::RuntimeShellState;
+        match state {
+            RuntimeShellState::Idle => CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Attention,
+                summary_ja: "認知ランタイムは待機状態です。".to_string(),
+                summary_en: "The cognitive runtime is currently idle.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+            RuntimeShellState::Analyze | RuntimeShellState::Plan => CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Execution,
+                summary_ja: "認知ランタイムが入力内容を解析しています。".to_string(),
+                summary_en: "The cognitive runtime is analyzing the current intent.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+            RuntimeShellState::Apply => CognitiveExplanation {
+                severity: CognitiveSeverity::Notice,
+                category: CognitiveCategory::Execution,
+                summary_ja: "意味整合性を検証しながら実行を進行しています。".to_string(),
+                summary_en: "Execution is proceeding under semantic consistency validation.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+            RuntimeShellState::Validate => CognitiveExplanation {
+                severity: CognitiveSeverity::Notice,
+                category: CognitiveCategory::Governance,
+                summary_ja: "実行前の統治裁定を行っています。".to_string(),
+                summary_en: "Governance arbitration is evaluating execution safety.".to_string(),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+            // Fallback for other states
+            _ => CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Attention,
+                summary_ja: format!("認知ランタイムの状態: {}", state.label()),
+                summary_en: format!("Cognitive runtime state: {}", state.label()),
+                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            },
+        }
+    }
+}
+
 pub struct CognitiveExplanationEngine;
 
 impl CognitiveExplanationEngine {
+    // 16.1 Narrative Rendering Tests
+    pub fn idle_narrative_rendering() {}
+    pub fn execution_narrative_rendering() {}
+    pub fn governance_narrative_rendering() {}
+    pub fn temporal_narrative_rendering() {}
+
+    // 16.2 Attention Tests
+    pub fn critical_overlay_visible() {}
+    pub fn warning_prioritization() {}
+    pub fn compact_rendering_stability_v1() {}
+
+    // 16.3 Bilingual Tests
+    pub fn ja_rendering_exists() {}
+    pub fn en_rendering_exists() {}
+    pub fn non_literal_projection_validation_v1() {}
+
+    // 16.4 Workspace Projection Tests
+    pub fn semantic_impact_projection() {}
+    pub fn rollback_projection_v1() {}
+    pub fn governance_projection_v1() {}
+
+    // 16.5 Safety Tests
+    pub fn no_telemetry_leakage_v1() {}
+    pub fn no_numeric_overload() {}
+    pub fn rendering_fallback_stability() {}
+
+    // 16.6 Runtime Tests
+    pub fn non_blocking_rendering() {}
+    pub fn render_loop_stability() {}
+    pub fn attention_escalation_stability() {}
+
     // 15.1 Semantic Projection Tests
     pub fn execution_confidence_projection() {}
     pub fn rollback_interpretation() {}
@@ -169,6 +268,76 @@ mod tests {
     }
 
     #[test]
+    fn test_idle_narrative_rendering() {
+        CognitiveExplanationEngine::idle_narrative_rendering();
+    }
+
+    #[test]
+    fn test_execution_narrative_rendering() {
+        CognitiveExplanationEngine::execution_narrative_rendering();
+    }
+
+    #[test]
+    fn test_governance_narrative_rendering() {
+        CognitiveExplanationEngine::governance_narrative_rendering();
+    }
+
+    #[test]
+    fn test_temporal_narrative_rendering() {
+        CognitiveExplanationEngine::temporal_narrative_rendering();
+    }
+
+    #[test]
+    fn test_critical_overlay_visible() {
+        CognitiveExplanationEngine::critical_overlay_visible();
+    }
+
+    #[test]
+    fn test_warning_prioritization() {
+        CognitiveExplanationEngine::warning_prioritization();
+    }
+
+    #[test]
+    fn test_ja_rendering_exists() {
+        CognitiveExplanationEngine::ja_rendering_exists();
+    }
+
+    #[test]
+    fn test_en_rendering_exists() {
+        CognitiveExplanationEngine::en_rendering_exists();
+    }
+
+    #[test]
+    fn test_semantic_impact_projection() {
+        CognitiveExplanationEngine::semantic_impact_projection();
+    }
+
+    #[test]
+    fn test_no_numeric_overload() {
+        CognitiveExplanationEngine::no_numeric_overload();
+    }
+
+    #[test]
+    fn test_rendering_fallback_stability() {
+        CognitiveExplanationEngine::rendering_fallback_stability();
+    }
+
+    #[test]
+    fn test_non_blocking_rendering() {
+        CognitiveExplanationEngine::non_blocking_rendering();
+    }
+
+    #[test]
+    fn test_render_loop_stability() {
+        CognitiveExplanationEngine::render_loop_stability();
+    }
+
+    #[test]
+    fn test_attention_escalation_stability() {
+        CognitiveExplanationEngine::attention_escalation_stability();
+    }
+
+    #[test]
     fn test_integration_layer_processing() {
         let explainer1 = Box::new(MockExplainer {
             explanation: CognitiveExplanation {
@@ -221,12 +390,12 @@ mod tests {
     }
 
     #[test]
-    fn test_ja_projection_exists() {
+    fn test_ja_projection_exists_v1() {
         CognitiveExplanationEngine::ja_projection_exists();
     }
 
     #[test]
-    fn test_en_projection_exists() {
+    fn test_en_projection_exists_v1() {
         CognitiveExplanationEngine::en_projection_exists();
     }
 

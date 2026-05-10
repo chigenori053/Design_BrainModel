@@ -1,5 +1,8 @@
 use ratatui::layout::Rect;
 
+use crate::tui::cognitive_explanation::{
+    CognitiveExplanation, CognitiveNarrativeRenderer, CognitiveSeverity,
+};
 use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{Focus, TuiState};
@@ -11,6 +14,7 @@ pub struct RenderSnapshot {
     pub input: InputModel,
     pub focus: Focus,
     pub identity: RuntimeIdentity,
+    pub is_expanded: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -20,6 +24,7 @@ pub struct RuntimeProjection {
     pub transaction_label: Option<String>,
     pub diff_projection: DiffProjection,
     pub rejection_label: Option<String>,
+    pub explanations: Vec<CognitiveExplanation>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -96,6 +101,7 @@ impl From<&TuiState> for RenderSnapshot {
             },
             focus: state.focus,
             identity: RuntimeIdentity::default(),
+            is_expanded: state.narrative_expanded,
         }
     }
 }
@@ -110,27 +116,57 @@ impl RuntimeProjection {
                 rej.reason, rej.originating_mutation
             )
         });
+
+        // DBM-COGNITIVE-NARRATIVE-RENDERING Integration
+        let renderer = CognitiveNarrativeRenderer::new(16);
+        let state_explanation = renderer.explain_state(state.runtime_state);
+
         Self {
             state_label: projection_state_label_from_runtime(state),
             target_label,
             transaction_label: resolved_transaction_label(state),
             diff_projection,
             rejection_label,
+            explanations: vec![state_explanation],
         }
     }
 
-    pub fn runtime_panel_lines(&self) -> Vec<String> {
-        let mut lines = vec![
-            format!("State: {}", self.state_label),
-            format!(
-                "Target: {}",
-                self.target_label.as_deref().unwrap_or("(none)")
-            ),
-            format!(
-                "Transaction: {}",
-                self.transaction_label.as_deref().unwrap_or("(none)")
-            ),
-        ];
+    pub fn runtime_panel_lines(&self, expanded: bool) -> Vec<String> {
+        let mut lines = Vec::new();
+
+        // Narrative-First Rendering
+        for (i, explanation) in self.explanations.iter().enumerate() {
+            // Severity Labeling (Spec 7.2)
+            let prefix = match explanation.severity {
+                CognitiveSeverity::Critical => "[CRITICAL] ",
+                CognitiveSeverity::Warning => "[WARNING] ",
+                CognitiveSeverity::Notice => "[NOTICE] ",
+                CognitiveSeverity::Info => "",
+            };
+
+            lines.push(format!("{} [JA] {}", prefix, explanation.summary_ja));
+            lines.push(format!("{} [EN] {}", prefix, explanation.summary_en));
+
+            if expanded {
+                if let Some(detail_ja) = &explanation.detail_ja {
+                    lines.push(format!("  [Detail-JA] {}", detail_ja));
+                }
+                if let Some(detail_en) = &explanation.detail_en {
+                    lines.push(format!("  [Detail-EN] {}", detail_en));
+                }
+                if let Some(rec_ja) = &explanation.recommendation_ja {
+                    lines.push(format!("  [Action-JA] {}", rec_ja));
+                }
+                if let Some(rec_en) = &explanation.recommendation_en {
+                    lines.push(format!("  [Action-EN] {}", rec_en));
+                }
+            }
+
+            if i < self.explanations.len() - 1 || self.rejection_label.is_some() {
+                lines.push(String::new());
+            }
+        }
+
         if let Some(rejection) = &self.rejection_label {
             lines.push(rejection.clone());
         }
@@ -196,7 +232,7 @@ pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
     lines.push("+--------------------------------------------------+".to_string());
     lines.push("| Conversation / Intent                            |".to_string());
     lines.push("+--------------------------------------------------+".to_string());
-    for line in snapshot.runtime.runtime_panel_lines() {
+    for line in snapshot.runtime.runtime_panel_lines(false) {
         lines.push(format!("| {:<48} |", truncate(&line, 48)));
     }
     lines.push("+--------------------------------------------------+".to_string());
@@ -392,7 +428,7 @@ mod tests {
         let snapshot = RenderSnapshot::from(&state);
         let surface = format!(
             "{}\n{}\n{}\n{}",
-            snapshot.runtime.runtime_panel_lines().join("\n"),
+            snapshot.runtime.runtime_panel_lines(false).join("\n"),
             snapshot.runtime.diff_projection.lines.join("\n"),
             snapshot.status.line,
             snapshot.input.text
@@ -630,7 +666,7 @@ mod tests {
     fn projection_surface(snapshot: &RenderSnapshot) -> String {
         format!(
             "{}\n{}\n{}",
-            snapshot.runtime.runtime_panel_lines().join("\n"),
+            snapshot.runtime.runtime_panel_lines(false).join("\n"),
             snapshot.runtime.diff_projection.lines.join("\n"),
             snapshot.status.line
         )

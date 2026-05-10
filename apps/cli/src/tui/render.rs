@@ -149,13 +149,19 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.runtime;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
+
+    let lines_vec = snapshot
+        .runtime
+        .runtime_panel_lines(snapshot.is_expanded);
+
+    let has_critical = lines_vec.iter().any(|l| l.contains("[CRITICAL]"));
+
     let block = Block::default()
         .borders(Borders::TOP)
         .title(" Cognitive Narrative ")
-        .border_style(active_border(snapshot.focus == Focus::Chat));
-    let lines = snapshot
-        .runtime
-        .runtime_panel_lines()
+        .border_style(active_border(snapshot.focus == Focus::Chat, has_critical));
+
+    let lines = lines_vec
         .into_iter()
         .map(Line::from)
         .collect::<Vec<_>>();
@@ -169,7 +175,7 @@ fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
     let block = Block::default()
         .borders(Borders::TOP)
         .title(" Workspace Projection ")
-        .border_style(active_border(snapshot.focus == Focus::Design));
+        .border_style(active_border(snapshot.focus == Focus::Design, false));
     let lines = snapshot
         .runtime
         .diff_projection
@@ -197,7 +203,7 @@ fn render_input(frame: &mut Frame, immutable: &ImmutableFrame) {
             " Conversation / Intent [{}] ",
             snapshot.input.pipeline_label
         ))
-        .border_style(active_border(snapshot.focus == Focus::Input));
+        .border_style(active_border(snapshot.focus == Focus::Input, false));
 
     let display_text = if snapshot.input.text.is_empty() {
         "> ".to_string()
@@ -219,8 +225,12 @@ fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     );
 }
 
-fn active_border(active: bool) -> Style {
-    if active {
+fn active_border(active: bool, critical: bool) -> Style {
+    if critical {
+        Style::default()
+            .fg(Color::Red)
+            .add_modifier(Modifier::BOLD)
+    } else if active {
         Style::default()
             .fg(Color::Cyan)
             .add_modifier(Modifier::BOLD)

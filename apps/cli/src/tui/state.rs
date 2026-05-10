@@ -402,6 +402,7 @@ pub struct TuiState {
     pub design_scroll: usize,
     pub design_collapsed: bool,
     pub design_updated: bool,
+    pub narrative_expanded: bool,
     pub history: Vec<String>,
     history_cursor: Option<usize>,
     pub persistent_history: Option<PersistentInputHistory>,
@@ -465,6 +466,7 @@ impl TuiState {
             design_scroll: 0,
             design_collapsed: false,
             design_updated: false,
+            narrative_expanded: false,
             history: Vec::new(),
             history_cursor: None,
             persistent_history: None,
@@ -832,6 +834,9 @@ impl TuiState {
             }
             KeyCode::End => {
                 self.chat_scroll.scroll_to_bottom();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') => {
+                self.narrative_expanded = !self.narrative_expanded;
             }
             _ => {}
         }
