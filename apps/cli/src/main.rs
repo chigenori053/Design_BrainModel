@@ -6,9 +6,9 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "design_cli",
+    name = "dbm",
     version = VERSION,
-    about = "AI-native architecture analysis, safe refactoring, and structure visualization CLI",
+    about = "Explainable Governed Cognitive Runtime Workspace",
     disable_help_subcommand = true,
     allow_external_subcommands = true,
 )]
@@ -81,16 +81,16 @@ fn main() {
 }
 
 const ONBOARDING_HELP: &str = "\
-AI-native architecture analysis, safe refactoring, and structure visualization CLI
+DBM_CLI | Explainable Governed Cognitive Runtime
 
-Usage: design_cli [INPUT]...
+Usage: dbm [INPUT]...
 
 Examples:
-  design_cli workspace
-  design_cli repl
-  design_cli \"/analyze .\"
-  design_cli \"/structure view .\"
-  design_cli \"このプロジェクトを解析して\"
+  dbm workspace
+  dbm repl
+  dbm \"/analyze .\"
+  dbm \"/structure view .\"
+  dbm \"このプロジェクトを解析して\"
 
 Use /help to see all available slash commands.
 ";

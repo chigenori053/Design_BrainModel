@@ -925,6 +925,21 @@ impl TuiState {
 
 fn seed_chat_stream(payload: &UiPayload) -> Vec<UiEvent> {
     let mut events = Vec::new();
+
+    // DBM-CLI Branding Integration: Startup narratives
+    events.push(UiEvent::Result {
+        message: "Initializing cognitive runtime.".to_string(),
+    });
+    events.push(UiEvent::Result {
+        message: "認知ランタイムを初期化しています。".to_string(),
+    });
+    events.push(UiEvent::Result {
+        message: "Governed cognitive runtime is ready.".to_string(),
+    });
+    events.push(UiEvent::Result {
+        message: "認知実行ランタイムの準備が完了しました。".to_string(),
+    });
+
     events.push(UiEvent::Pipeline {
         state: format!("request_id={}", payload.trace.request_id),
     });
@@ -951,18 +966,7 @@ fn seed_chat_stream(payload: &UiPayload) -> Vec<UiEvent> {
 }
 
 pub fn pseudo_stream_events() -> Vec<UiEvent> {
-    vec![
-        UiEvent::Thinking {
-            summary: "analyzing".to_string(),
-        },
-        UiEvent::Editing {
-            target: "parser".to_string(),
-            action: "replace block".to_string(),
-        },
-        UiEvent::Result {
-            message: "done".to_string(),
-        },
-    ]
+    vec![]
 }
 
 fn seed_design_document(payload: &UiPayload) -> DesignDocument {

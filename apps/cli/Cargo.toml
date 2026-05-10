@@ -2,14 +2,14 @@
 name = "design_cli"
 version = "0.1.0"
 edition = "2024"
-default-run = "design_cli"
+default-run = "dbm"
 
 [features]
 ci-heavy = []
 contract_strict = []
 
 [[bin]]
-name = "design_cli"
+name = "dbm"
 path = "src/main.rs"
 
 [[bin]]

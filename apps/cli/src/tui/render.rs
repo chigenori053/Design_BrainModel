@@ -13,6 +13,7 @@ use crate::tui::rendering::{
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelCellOwner {
+    Header,
     Input,
     Runtime,
     Diff,
@@ -32,14 +33,15 @@ pub fn layout_for_area(area: Rect) -> LayoutMetadata {
     let middle = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(rows[1]);
+        .split(rows[2]);
 
     LayoutMetadata {
         viewport: area,
-        input: rows[0],
+        header: rows[0],
+        input: rows[1],
         runtime: middle[0],
         diff: middle[1],
-        status: rows[2],
+        status: rows[3],
     }
 }
 
@@ -47,6 +49,7 @@ fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
     Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1),
             Constraint::Length(5),
             Constraint::Min(8),
             Constraint::Length(1),
@@ -59,7 +62,13 @@ pub fn runtime_panel_bounds(layout: &LayoutMetadata) -> Rect {
 }
 
 pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
-    let panels = [layout.input, layout.runtime, layout.diff, layout.status];
+    let panels = [
+        layout.header,
+        layout.input,
+        layout.runtime,
+        layout.diff,
+        layout.status,
+    ];
     panels.iter().enumerate().any(|(index, panel)| {
         panels
             .iter()
@@ -70,6 +79,7 @@ pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
 
 pub fn cell_ownership_map(layout: &LayoutMetadata) -> Vec<(u16, u16, PanelCellOwner)> {
     let mut cells = Vec::new();
+    push_owned_cells(&mut cells, layout.header, PanelCellOwner::Header);
     push_owned_cells(&mut cells, layout.input, PanelCellOwner::Input);
     push_owned_cells(&mut cells, layout.runtime, PanelCellOwner::Runtime);
     push_owned_cells(&mut cells, layout.diff, PanelCellOwner::Diff);
@@ -107,6 +117,7 @@ impl SurfaceProjector {
     pub fn project(frame: &mut Frame, projection: &FullSurfaceProjection) {
         let immutable = &projection.frame;
         frame.render_widget(Clear, immutable.layout.viewport);
+        render_header(frame, immutable);
         render_input(frame, immutable);
         render_runtime_state(frame, immutable);
         render_diff_preview(frame, immutable);
@@ -117,13 +128,30 @@ impl SurfaceProjector {
     }
 }
 
+fn render_header(frame: &mut Frame, immutable: &ImmutableFrame) {
+    let area = immutable.layout.header;
+    let snapshot = &immutable.snapshot;
+    let text = format!(
+        " {} | {} ",
+        snapshot.identity.runtime_name, snapshot.identity.runtime_descriptor
+    );
+    frame.render_widget(
+        Paragraph::new(text).style(
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        area,
+    );
+}
+
 fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.runtime;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
     let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Runtime State ")
+        .borders(Borders::TOP)
+        .title(" Cognitive Narrative ")
         .border_style(active_border(snapshot.focus == Focus::Chat));
     let lines = snapshot
         .runtime
@@ -139,8 +167,8 @@ fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
     let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Diff / Preview ")
+        .borders(Borders::TOP)
+        .title(" Workspace Projection ")
         .border_style(active_border(snapshot.focus == Focus::Design));
     let lines = snapshot
         .runtime
@@ -164,9 +192,9 @@ fn render_input(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
     let block = Block::default()
-        .borders(Borders::ALL)
+        .borders(Borders::TOP)
         .title(format!(
-            " Command / Input [{}] ",
+            " Conversation / Intent [{}] ",
             snapshot.input.pipeline_label
         ))
         .border_style(active_border(snapshot.focus == Focus::Input));
@@ -638,7 +666,7 @@ mod tests {
 
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
-            render_source.matches(".title(\" Runtime State \")").count(),
+            render_source.matches(".title(\" Cognitive Narrative \")").count(),
             1
         );
         assert_eq!(rendering_source.matches("State: {}").count(), 1);

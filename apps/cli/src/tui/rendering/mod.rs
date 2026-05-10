@@ -1,5 +1,6 @@
 use ratatui::layout::Rect;
 
+use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{Focus, TuiState};
 
@@ -9,6 +10,7 @@ pub struct RenderSnapshot {
     pub status: StatusModel,
     pub input: InputModel,
     pub focus: Focus,
+    pub identity: RuntimeIdentity,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -41,6 +43,7 @@ pub struct InputModel {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LayoutMetadata {
     pub viewport: Rect,
+    pub header: Rect,
     pub input: Rect,
     pub runtime: Rect,
     pub diff: Rect,
@@ -92,6 +95,7 @@ impl From<&TuiState> for RenderSnapshot {
                 cursor: state.input.cursor.min(state.input.text.len()),
             },
             focus: state.focus,
+            identity: RuntimeIdentity::default(),
         }
     }
 }
@@ -187,7 +191,10 @@ pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
     let snapshot = RenderSnapshot::from(state);
     let mut lines = Vec::new();
     lines.push("+--------------------------------------------------+".to_string());
-    lines.push("| Input / Intent                                   |".to_string());
+    lines.push("| DBM_CLI                                          |".to_string());
+    lines.push("| Explainable Governed Cognitive Runtime           |".to_string());
+    lines.push("+--------------------------------------------------+".to_string());
+    lines.push("| Conversation / Intent                            |".to_string());
     lines.push("+--------------------------------------------------+".to_string());
     for line in snapshot.runtime.runtime_panel_lines() {
         lines.push(format!("| {:<48} |", truncate(&line, 48)));
@@ -402,9 +409,10 @@ mod tests {
         let state = TuiState::new(empty_payload());
         let layout = LayoutMetadata {
             viewport: Rect::new(0, 0, 80, 24),
-            input: Rect::new(0, 0, 80, 5),
-            runtime: Rect::new(0, 5, 30, 18),
-            diff: Rect::new(30, 5, 50, 18),
+            header: Rect::new(0, 0, 80, 1),
+            input: Rect::new(0, 1, 80, 5),
+            runtime: Rect::new(0, 6, 30, 17),
+            diff: Rect::new(30, 6, 50, 17),
             status: Rect::new(0, 23, 80, 1),
         };
 

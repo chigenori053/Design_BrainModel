@@ -213,6 +213,21 @@ pub struct AttentionNavigationEvent {
     pub semantic_continuity_score: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RuntimeIdentity {
+    pub runtime_name: String,
+    pub runtime_descriptor: String,
+}
+
+impl Default for RuntimeIdentity {
+    fn default() -> Self {
+        Self {
+            runtime_name: "DBM_CLI".to_string(),
+            runtime_descriptor: "Explainable Governed Cognitive Runtime Workspace".to_string(),
+        }
+    }
+}
+
 pub struct CognitiveWorkspaceEngine;
 
 impl CognitiveWorkspaceEngine {
