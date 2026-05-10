@@ -137,6 +137,14 @@ pub enum RuntimeShellState {
     BranchPrediction,
     BranchRecovery,
     ConvergenceCompetition,
+    // Section 10: Cognitive Temporal Orchestration states
+    TemporalCognition,
+    TemporalConvergence,
+    SemanticAging,
+    DelayedContradictionDetection,
+    TemporalRecovery,
+    TemporalAttentionEscalation,
+    TemporalBranchEvolution,
 }
 
 impl RuntimeShellState {
@@ -268,6 +276,13 @@ impl RuntimeShellState {
             Self::BranchPrediction => "BRANCH_PREDICTION",
             Self::BranchRecovery => "BRANCH_RECOVERY",
             Self::ConvergenceCompetition => "CONVERGENCE_COMPETITION",
+            Self::TemporalCognition => "TEMPORAL_COGNITION",
+            Self::TemporalConvergence => "TEMPORAL_CONVERGENCE",
+            Self::SemanticAging => "SEMANTIC_AGING",
+            Self::DelayedContradictionDetection => "DELAYED_CONTRADICTION_DETECTION",
+            Self::TemporalRecovery => "TEMPORAL_RECOVERY",
+            Self::TemporalAttentionEscalation => "TEMPORAL_ATTENTION_ESCALATION",
+            Self::TemporalBranchEvolution => "TEMPORAL_BRANCH_EVOLUTION",
         }
     }
 
@@ -510,6 +525,20 @@ impl RuntimeShellState {
                 | (Self::BranchRecovery, Self::Idle)
                 | (_, Self::ConvergenceCompetition)
                 | (Self::ConvergenceCompetition, Self::Idle)
+                | (_, Self::TemporalCognition)
+                | (Self::TemporalCognition, Self::Idle)
+                | (_, Self::TemporalConvergence)
+                | (Self::TemporalConvergence, Self::Idle)
+                | (_, Self::SemanticAging)
+                | (Self::SemanticAging, Self::Idle)
+                | (_, Self::DelayedContradictionDetection)
+                | (Self::DelayedContradictionDetection, Self::Idle)
+                | (_, Self::TemporalRecovery)
+                | (Self::TemporalRecovery, Self::Idle)
+                | (_, Self::TemporalAttentionEscalation)
+                | (Self::TemporalAttentionEscalation, Self::Idle)
+                | (_, Self::TemporalBranchEvolution)
+                | (Self::TemporalBranchEvolution, Self::Idle)
         )
     }
 }
