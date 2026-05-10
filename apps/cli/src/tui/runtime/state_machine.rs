@@ -50,6 +50,28 @@ pub enum RuntimeShellState {
     ResponsibilityCollapse,
     PlanningConvergence,
     SemanticDriftRejected,
+    // Section 11: Holographic Semantic Memory states
+    SemanticMemoryConvergence,
+    DuplicateMemoryDetected,
+    SemanticAttractorFormation,
+    SemanticLineageExpansion,
+    AttractorDrift,
+    MemoryUniquenessRejected,
+    // Section 11: Semantic Abstraction and Concept Synthesis states
+    ConceptSynthesis,
+    AbstractionCompression,
+    ConceptHierarchyFormation,
+    CrossDomainTransfer,
+    MetaConceptFormation,
+    ConceptualDrift,
+    SemanticCompressionRejected,
+    // Section 10: Long-Horizon Semantic Continuity states
+    LongHorizonContinuity,
+    TemporalConceptEvolution,
+    TemporalAttractorStabilization,
+    SemanticDriftRecovery,
+    SemanticIdentityCollapse,
+    TemporalCompression,
 }
 
 impl RuntimeShellState {
@@ -105,6 +127,25 @@ impl RuntimeShellState {
             Self::ResponsibilityCollapse => "RESPONSIBILITY_COLLAPSE",
             Self::PlanningConvergence => "PLANNING_CONVERGENCE",
             Self::SemanticDriftRejected => "SEMANTIC_DRIFT_REJECTED",
+            Self::SemanticMemoryConvergence => "SEMANTIC_MEMORY_CONVERGENCE",
+            Self::DuplicateMemoryDetected => "DUPLICATE_MEMORY_DETECTED",
+            Self::SemanticAttractorFormation => "SEMANTIC_ATTRACTOR_FORMATION",
+            Self::SemanticLineageExpansion => "SEMANTIC_LINEAGE_EXPANSION",
+            Self::AttractorDrift => "ATTRACTOR_DRIFT",
+            Self::MemoryUniquenessRejected => "MEMORY_UNIQUENESS_REJECTED",
+            Self::ConceptSynthesis => "CONCEPT_SYNTHESIS",
+            Self::AbstractionCompression => "ABSTRACTION_COMPRESSION",
+            Self::ConceptHierarchyFormation => "CONCEPT_HIERARCHY_FORMATION",
+            Self::CrossDomainTransfer => "CROSS_DOMAIN_TRANSFER",
+            Self::MetaConceptFormation => "META_CONCEPT_FORMATION",
+            Self::ConceptualDrift => "CONCEPTUAL_DRIFT",
+            Self::SemanticCompressionRejected => "SEMANTIC_COMPRESSION_REJECTED",
+            Self::LongHorizonContinuity => "LONG_HORIZON_CONTINUITY",
+            Self::TemporalConceptEvolution => "TEMPORAL_CONCEPT_EVOLUTION",
+            Self::TemporalAttractorStabilization => "TEMPORAL_ATTRACTOR_STABILIZATION",
+            Self::SemanticDriftRecovery => "SEMANTIC_DRIFT_RECOVERY",
+            Self::SemanticIdentityCollapse => "SEMANTIC_IDENTITY_COLLAPSE",
+            Self::TemporalCompression => "TEMPORAL_COMPRESSION",
         }
     }
 
@@ -211,6 +252,44 @@ impl RuntimeShellState {
                 | (Self::PlanningConvergence, Self::Idle)
                 | (_, Self::SemanticDriftRejected)
                 | (Self::SemanticDriftRejected, Self::Idle)
+                | (_, Self::SemanticMemoryConvergence)
+                | (Self::SemanticMemoryConvergence, Self::Idle)
+                | (_, Self::DuplicateMemoryDetected)
+                | (Self::DuplicateMemoryDetected, Self::Idle)
+                | (_, Self::SemanticAttractorFormation)
+                | (Self::SemanticAttractorFormation, Self::Idle)
+                | (_, Self::SemanticLineageExpansion)
+                | (Self::SemanticLineageExpansion, Self::Idle)
+                | (_, Self::AttractorDrift)
+                | (Self::AttractorDrift, Self::Idle)
+                | (_, Self::MemoryUniquenessRejected)
+                | (Self::MemoryUniquenessRejected, Self::Idle)
+                | (_, Self::ConceptSynthesis)
+                | (Self::ConceptSynthesis, Self::Idle)
+                | (_, Self::AbstractionCompression)
+                | (Self::AbstractionCompression, Self::Idle)
+                | (_, Self::ConceptHierarchyFormation)
+                | (Self::ConceptHierarchyFormation, Self::Idle)
+                | (_, Self::CrossDomainTransfer)
+                | (Self::CrossDomainTransfer, Self::Idle)
+                | (_, Self::MetaConceptFormation)
+                | (Self::MetaConceptFormation, Self::Idle)
+                | (_, Self::ConceptualDrift)
+                | (Self::ConceptualDrift, Self::Idle)
+                | (_, Self::SemanticCompressionRejected)
+                | (Self::SemanticCompressionRejected, Self::Idle)
+                | (_, Self::LongHorizonContinuity)
+                | (Self::LongHorizonContinuity, Self::Idle)
+                | (_, Self::TemporalConceptEvolution)
+                | (Self::TemporalConceptEvolution, Self::Idle)
+                | (_, Self::TemporalAttractorStabilization)
+                | (Self::TemporalAttractorStabilization, Self::Idle)
+                | (_, Self::SemanticDriftRecovery)
+                | (Self::SemanticDriftRecovery, Self::Idle)
+                | (_, Self::SemanticIdentityCollapse)
+                | (Self::SemanticIdentityCollapse, Self::Idle)
+                | (_, Self::TemporalCompression)
+                | (Self::TemporalCompression, Self::Idle)
         )
     }
 }

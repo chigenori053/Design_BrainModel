@@ -7,6 +7,9 @@ pub mod snapshot_engine;
 pub mod structured_reasoning;
 pub mod fuzzy_convergence;
 pub mod semantic_planning;
+pub mod holographic_semantic_memory;
+pub mod semantic_concept_synthesis;
+pub mod long_horizon_semantic_continuity;
 
 pub use hypothesis_engine::{DesignHypothesis, HypothesisEngine};
 pub use language_engine::{
@@ -36,4 +39,20 @@ pub use fuzzy_convergence::{
 pub use semantic_planning::{
     AbstractionTransition, IntentContinuityEngine, IntentLineage, PlanningMemory,
     ResponsibilityUnit, SemanticPlanningEngine, SemanticPlanningGraph, SemanticPlanningNode,
+};
+pub use holographic_semantic_memory::{
+    DuplicateEliminationEngine, GeneralizedAbstraction, GovernanceEvent, HolographicMemoryStore,
+    HolographicSemanticMemory, SemanticAttractor, SemanticGeneralizationEngine,
+    SemanticIdentityScore, SemanticLineage, UniquenessGovernanceEngine, UniquenessScore,
+};
+pub use semantic_concept_synthesis::{
+    ConceptCognitionRuntime, ConceptFormationEvent, ConceptGraph, ConceptHierarchyNode,
+    ConceptNode, ConceptSynthesisEngine, ConceptSynthesisReport, CrossDomainTransferEngine,
+    SemanticAbstraction, SemanticAbstractionEngine, SemanticCompressionEngine,
+    SemanticPatternInput, TransferMapping,
+};
+pub use long_horizon_semantic_continuity::{
+    ContinuityEvent, DriftClassification, EvolvingConcept, LongHorizonContinuityRuntime,
+    LongHorizonPlanningState, LongHorizonReport, SemanticIdentityState, TemporalAttractor,
+    TemporalContinuityEngine, TemporalSemanticMemory,
 };
