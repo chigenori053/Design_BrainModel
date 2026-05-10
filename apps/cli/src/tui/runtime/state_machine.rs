@@ -103,6 +103,11 @@ pub enum RuntimeShellState {
     GovernedCommit,
     GovernedMerge,
     BranchStabilityAnalysis,
+    RemoteGovernanceValidation,
+    CredentialIsolationMode,
+    GovernedRemoteExecution,
+    DeploymentGovernance,
+    RemoteExecutionRejected,
     RollbackRecovery,
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
@@ -266,6 +271,11 @@ impl RuntimeShellState {
             Self::GovernedCommit => "GOVERNED_COMMIT",
             Self::GovernedMerge => "GOVERNED_MERGE",
             Self::BranchStabilityAnalysis => "BRANCH_STABILITY_ANALYSIS",
+            Self::RemoteGovernanceValidation => "REMOTE_GOVERNANCE_VALIDATION",
+            Self::CredentialIsolationMode => "CREDENTIAL_ISOLATION_MODE",
+            Self::GovernedRemoteExecution => "GOVERNED_REMOTE_EXECUTION",
+            Self::DeploymentGovernance => "DEPLOYMENT_GOVERNANCE",
+            Self::RemoteExecutionRejected => "REMOTE_EXECUTION_REJECTED",
             Self::RollbackRecovery => "ROLLBACK_RECOVERY",
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
@@ -501,6 +511,16 @@ impl RuntimeShellState {
                 | (Self::GovernedMerge, Self::Idle)
                 | (_, Self::BranchStabilityAnalysis)
                 | (Self::BranchStabilityAnalysis, Self::Idle)
+                | (_, Self::RemoteGovernanceValidation)
+                | (Self::RemoteGovernanceValidation, Self::Idle)
+                | (_, Self::CredentialIsolationMode)
+                | (Self::CredentialIsolationMode, Self::Idle)
+                | (_, Self::GovernedRemoteExecution)
+                | (Self::GovernedRemoteExecution, Self::Idle)
+                | (_, Self::DeploymentGovernance)
+                | (Self::DeploymentGovernance, Self::Idle)
+                | (_, Self::RemoteExecutionRejected)
+                | (Self::RemoteExecutionRejected, Self::Idle)
                 | (_, Self::VerificationExecution)
                 | (Self::VerificationExecution, Self::Idle)
                 | (_, Self::RollbackRecovery)
