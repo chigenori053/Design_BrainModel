@@ -108,6 +108,10 @@ pub enum RuntimeShellState {
     GovernedRemoteExecution,
     DeploymentGovernance,
     RemoteExecutionRejected,
+    CrossDomainArbitration,
+    AuthorityEscalationTracking,
+    UnifiedTemporalAnalysis,
+    CatastrophicProtection,
     RollbackRecovery,
     EnvironmentIntegration,
     ExecutionGovernanceHalt,
@@ -276,6 +280,10 @@ impl RuntimeShellState {
             Self::GovernedRemoteExecution => "GOVERNED_REMOTE_EXECUTION",
             Self::DeploymentGovernance => "DEPLOYMENT_GOVERNANCE",
             Self::RemoteExecutionRejected => "REMOTE_EXECUTION_REJECTED",
+            Self::CrossDomainArbitration => "CROSS_DOMAIN_ARBITRATION",
+            Self::AuthorityEscalationTracking => "AUTHORITY_ESCALATION_TRACKING",
+            Self::UnifiedTemporalAnalysis => "UNIFIED_TEMPORAL_ANALYSIS",
+            Self::CatastrophicProtection => "CATASTROPHIC_PROTECTION",
             Self::RollbackRecovery => "ROLLBACK_RECOVERY",
             Self::EnvironmentIntegration => "ENVIRONMENT_INTEGRATION",
             Self::ExecutionGovernanceHalt => "EXECUTION_GOVERNANCE_HALT",
@@ -521,6 +529,14 @@ impl RuntimeShellState {
                 | (Self::DeploymentGovernance, Self::Idle)
                 | (_, Self::RemoteExecutionRejected)
                 | (Self::RemoteExecutionRejected, Self::Idle)
+                | (_, Self::CrossDomainArbitration)
+                | (Self::CrossDomainArbitration, Self::Idle)
+                | (_, Self::AuthorityEscalationTracking)
+                | (Self::AuthorityEscalationTracking, Self::Idle)
+                | (_, Self::UnifiedTemporalAnalysis)
+                | (Self::UnifiedTemporalAnalysis, Self::Idle)
+                | (_, Self::CatastrophicProtection)
+                | (Self::CatastrophicProtection, Self::Idle)
                 | (_, Self::VerificationExecution)
                 | (Self::VerificationExecution, Self::Idle)
                 | (_, Self::RollbackRecovery)
