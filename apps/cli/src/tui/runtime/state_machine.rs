@@ -113,6 +113,14 @@ pub enum RuntimeShellState {
     WorkspaceFocusTransition,
     WorkspaceGovernanceReject,
     WorkspaceRecovery,
+    // Section 10: Cognitive Workspace TUI v2 - Semantic Observability states
+    SemanticObservability,
+    ConvergenceVisualization,
+    AmbiguityVisualization,
+    GovernanceReasoning,
+    PredictiveTrajectoryVisualization,
+    BranchVisualization,
+    CognitiveDensityGovernance,
 }
 
 impl RuntimeShellState {
@@ -223,6 +231,13 @@ impl RuntimeShellState {
             Self::WorkspaceFocusTransition => "WORKSPACE_FOCUS_TRANSITION",
             Self::WorkspaceGovernanceReject => "WORKSPACE_GOVERNANCE_REJECT",
             Self::WorkspaceRecovery => "WORKSPACE_RECOVERY",
+            Self::SemanticObservability => "SEMANTIC_OBSERVABILITY",
+            Self::ConvergenceVisualization => "CONVERGENCE_VISUALIZATION",
+            Self::AmbiguityVisualization => "AMBIGUITY_VISUALIZATION",
+            Self::GovernanceReasoning => "GOVERNANCE_REASONING",
+            Self::PredictiveTrajectoryVisualization => "PREDICTIVE_TRAJECTORY_VISUALIZATION",
+            Self::BranchVisualization => "BRANCH_VISUALIZATION",
+            Self::CognitiveDensityGovernance => "COGNITIVE_DENSITY_GOVERNANCE",
         }
     }
 
@@ -423,6 +438,20 @@ impl RuntimeShellState {
                 | (Self::WorkspaceGovernanceReject, Self::Idle)
                 | (_, Self::WorkspaceRecovery)
                 | (Self::WorkspaceRecovery, Self::Idle)
+                | (_, Self::SemanticObservability)
+                | (Self::SemanticObservability, Self::Idle)
+                | (_, Self::ConvergenceVisualization)
+                | (Self::ConvergenceVisualization, Self::Idle)
+                | (_, Self::AmbiguityVisualization)
+                | (Self::AmbiguityVisualization, Self::Idle)
+                | (_, Self::GovernanceReasoning)
+                | (Self::GovernanceReasoning, Self::Idle)
+                | (_, Self::PredictiveTrajectoryVisualization)
+                | (Self::PredictiveTrajectoryVisualization, Self::Idle)
+                | (_, Self::BranchVisualization)
+                | (Self::BranchVisualization, Self::Idle)
+                | (_, Self::CognitiveDensityGovernance)
+                | (Self::CognitiveDensityGovernance, Self::Idle)
         )
     }
 }

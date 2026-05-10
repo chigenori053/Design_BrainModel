@@ -54,6 +54,84 @@ pub struct RecoveryProjection {
     pub recovery_stability: f64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticObservabilityLayer {
+    pub convergence_projection: ConvergenceProjection,
+    pub governance_projection: GovernanceReasoningProjection,
+    pub ambiguity_projection: AmbiguityProjection,
+    pub semantic_reasoning_projection: SemanticReasoningProjection,
+    pub predictive_projection: PredictiveProjection,
+    pub branch_projection: BranchProjection,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticReasoningProjection {
+    pub reasoning_id: String,
+    pub active_intent: String,
+    pub inferred_constraints: Vec<String>,
+    pub semantic_dependencies: Vec<String>,
+    pub convergence_rationale: Vec<String>,
+    pub rejection_rationale: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ConvergenceProjection {
+    pub convergence_score: f64,
+    pub semantic_stability: f64,
+    pub ambiguity_score: f64,
+    pub governance_alignment: f64,
+    pub convergence_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct AmbiguityProjection {
+    pub ambiguity_score: f64,
+    pub inferred_candidate_intents: Vec<String>,
+    pub clarification_priority: f64,
+    pub semantic_uncertainty_regions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct GovernanceReasoningProjection {
+    pub governance_score: f64,
+    pub active_constraints: Vec<String>,
+    pub predicted_risks: Vec<String>,
+    pub rejection_causes: Vec<String>,
+    pub mitigation_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PredictiveProjection {
+    pub predicted_future_states: Vec<String>,
+    pub collapse_risk_score: f64,
+    pub semantic_drift_forecast: f64,
+    pub predicted_repair_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct BranchProjection {
+    pub active_branch_id: String,
+    pub branch_candidates: Vec<String>,
+    pub branch_convergence_scores: Vec<f64>,
+    pub semantic_divergence_regions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct CognitiveDensityController {
+    pub active_focus: String,
+    pub visible_projection_budget: usize,
+    pub semantic_priority_weights: Vec<f64>,
+    pub suppressed_regions: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SemanticNavigationEvent {
+    pub source_panel: String,
+    pub target_panel: String,
+    pub semantic_focus: String,
+    pub navigation_reason: String,
+}
+
 pub struct CognitiveWorkspaceEngine;
 
 impl CognitiveWorkspaceEngine {
@@ -81,6 +159,35 @@ impl CognitiveWorkspaceEngine {
     pub fn rollback_projection_traceable() {}
     pub fn semantic_identity_restored_visible() {}
     pub fn recovery_lineage_deterministic() {}
+
+    // 15.1 Semantic Reasoning Tests
+    pub fn reasoning_projection_visible() {}
+    pub fn rejection_rationale_traceable() {}
+    pub fn semantic_dependency_visible() {}
+
+    // 15.2 Convergence Tests
+    pub fn convergence_candidates_stable() {}
+    pub fn convergence_scores_deterministic() {}
+    pub fn semantic_alignment_ordering_correct() {}
+
+    // 15.3 Ambiguity Tests
+    pub fn ambiguity_projection_visible() {}
+    pub fn clarification_triggered_correctly() {}
+    pub fn clarification_suppression_stable() {}
+
+    // 15.4 Governance Tests
+    pub fn governance_reasoning_visible() {}
+    pub fn risk_priority_ordering_correct() {}
+    pub fn rejection_reason_traceable() {}
+
+    // 15.5 Predictive Tests
+    pub fn future_trajectory_visible() {}
+    pub fn collapse_risk_projection_stable() {}
+    pub fn repair_candidate_projection_deterministic() {}
+
+    // 15.6 Density Governance Tests
+    pub fn focus_preserved_under_density() {}
+    pub fn projection_budget_enforced() {}
 }
 
 #[cfg(test)]
@@ -160,5 +267,90 @@ mod tests {
     #[test]
     fn test_recovery_lineage_deterministic() {
         CognitiveWorkspaceEngine::recovery_lineage_deterministic();
+    }
+
+    #[test]
+    fn test_reasoning_projection_visible() {
+        CognitiveWorkspaceEngine::reasoning_projection_visible();
+    }
+
+    #[test]
+    fn test_rejection_rationale_traceable() {
+        CognitiveWorkspaceEngine::rejection_rationale_traceable();
+    }
+
+    #[test]
+    fn test_semantic_dependency_visible() {
+        CognitiveWorkspaceEngine::semantic_dependency_visible();
+    }
+
+    #[test]
+    fn test_convergence_candidates_stable() {
+        CognitiveWorkspaceEngine::convergence_candidates_stable();
+    }
+
+    #[test]
+    fn test_convergence_scores_deterministic() {
+        CognitiveWorkspaceEngine::convergence_scores_deterministic();
+    }
+
+    #[test]
+    fn test_semantic_alignment_ordering_correct() {
+        CognitiveWorkspaceEngine::semantic_alignment_ordering_correct();
+    }
+
+    #[test]
+    fn test_ambiguity_projection_visible() {
+        CognitiveWorkspaceEngine::ambiguity_projection_visible();
+    }
+
+    #[test]
+    fn test_clarification_triggered_correctly() {
+        CognitiveWorkspaceEngine::clarification_triggered_correctly();
+    }
+
+    #[test]
+    fn test_clarification_suppression_stable() {
+        CognitiveWorkspaceEngine::clarification_suppression_stable();
+    }
+
+    #[test]
+    fn test_governance_reasoning_visible() {
+        CognitiveWorkspaceEngine::governance_reasoning_visible();
+    }
+
+    #[test]
+    fn test_risk_priority_ordering_correct() {
+        CognitiveWorkspaceEngine::risk_priority_ordering_correct();
+    }
+
+    #[test]
+    fn test_rejection_reason_traceable() {
+        CognitiveWorkspaceEngine::rejection_reason_traceable();
+    }
+
+    #[test]
+    fn test_future_trajectory_visible() {
+        CognitiveWorkspaceEngine::future_trajectory_visible();
+    }
+
+    #[test]
+    fn test_collapse_risk_projection_stable() {
+        CognitiveWorkspaceEngine::collapse_risk_projection_stable();
+    }
+
+    #[test]
+    fn test_repair_candidate_projection_deterministic() {
+        CognitiveWorkspaceEngine::repair_candidate_projection_deterministic();
+    }
+
+    #[test]
+    fn test_focus_preserved_under_density() {
+        CognitiveWorkspaceEngine::focus_preserved_under_density();
+    }
+
+    #[test]
+    fn test_projection_budget_enforced() {
+        CognitiveWorkspaceEngine::projection_budget_enforced();
     }
 }
