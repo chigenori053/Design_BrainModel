@@ -153,6 +153,8 @@ pub enum RuntimeShellState {
     AutonomousRepair,
     SelfModificationGovernance,
     AutonomousExecutionCollapse,
+    // Section 10: Bilingual Cognitive Explanation UI states
+    CognitiveExplanation,
 }
 
 impl RuntimeShellState {
@@ -298,6 +300,7 @@ impl RuntimeShellState {
             Self::AutonomousRepair => "AUTONOMOUS_REPAIR",
             Self::SelfModificationGovernance => "SELF_MODIFICATION_GOVERNANCE",
             Self::AutonomousExecutionCollapse => "AUTONOMOUS_EXECUTION_COLLAPSE",
+            Self::CognitiveExplanation => "COGNITIVE_EXPLANATION",
         }
     }
 
@@ -568,6 +571,8 @@ impl RuntimeShellState {
                 | (Self::SelfModificationGovernance, Self::Idle)
                 | (_, Self::AutonomousExecutionCollapse)
                 | (Self::AutonomousExecutionCollapse, Self::Idle)
+                | (_, Self::CognitiveExplanation)
+                | (Self::CognitiveExplanation, Self::Idle)
         )
     }
 }

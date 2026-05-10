@@ -7,6 +7,7 @@ pub mod workspace_launcher;
 pub mod multi_branch_orchestration;
 pub mod temporal_cognition;
 pub mod autonomous_execution;
+pub mod cognitive_explanation;
 pub mod input;
 pub mod model;
 pub mod panels;
