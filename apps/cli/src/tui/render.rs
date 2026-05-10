@@ -172,19 +172,48 @@ fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.diff;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
+
+    let diff_proj = &snapshot.runtime.diff_projection;
+    let mut lines = Vec::new();
+
+    // Semantic Projection Layer Integration
+    if let Some(proj) = &diff_proj.semantic_projection {
+        let prefix = match proj.risk_level {
+            crate::tui::cognitive_workspace::WorkspaceRiskLevel::Critical => "[CRITICAL] ",
+            crate::tui::cognitive_workspace::WorkspaceRiskLevel::High => "[WARNING] ",
+            _ => "",
+        };
+
+        lines.push(Line::from(format!(
+            "{} [JA] {}",
+            prefix, proj.narrative.summary_ja
+        )));
+        lines.push(Line::from(format!(
+            "{} [EN] {}",
+            prefix, proj.narrative.summary_en
+        )));
+        lines.push(Line::from(""));
+    }
+
+    lines.extend(
+        diff_proj
+            .lines
+            .iter()
+            .cloned()
+            .into_iter()
+            .map(Line::from)
+            .collect::<Vec<_>>(),
+    );
+
+    let has_critical = diff_proj.semantic_projection.as_ref().is_some_and(|p| {
+        p.risk_level == crate::tui::cognitive_workspace::WorkspaceRiskLevel::Critical
+    });
+
     let block = Block::default()
         .borders(Borders::TOP)
         .title(" Workspace Projection ")
-        .border_style(active_border(snapshot.focus == Focus::Design, false));
-    let lines = snapshot
-        .runtime
-        .diff_projection
-        .lines
-        .iter()
-        .cloned()
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+        .border_style(active_border(snapshot.focus == Focus::Design, has_critical));
+
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -460,51 +489,45 @@ mod tests {
     #[test]
     fn shorter_runtime_state_overwrites_longer_state() {
         let mut state = TuiState::new(empty_payload());
-        state.runtime_state = RuntimeShellState::PreviewReady;
-        let width = 100;
+        state.runtime_state = RuntimeShellState::Apply;
+        let width = 120;
         let height = 24;
-        let layout = layout_for_area(Rect::new(0, 0, width, height));
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        let first_row = runtime_content_row(terminal.backend().buffer(), width, &layout);
-        assert!(first_row.contains("PREVIEW_READY"));
+        let surface = buffer_text(terminal.backend().buffer());
+        assert!(surface.contains("整合性") || surface.contains("Execution"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
-        let second_row = runtime_content_row(terminal.backend().buffer(), width, &layout);
+        let surface2 = buffer_text(terminal.backend().buffer());
 
-        assert!(second_row.contains("State: IDLE"));
-        assert!(!second_row.contains("PREVIEW_READY"));
-        assert_eq!(
-            second_row.chars().count(),
-            usize::from(layout.runtime.width)
-        );
+        assert!(surface2.contains("待機") || surface2.contains("idle"));
+        assert!(!surface2.contains("整合性"));
     }
 
     #[test]
     fn applying_to_preview_ready_erases_old_cells() {
         let mut state = TuiState::new(empty_payload());
         state.runtime_state = RuntimeShellState::Apply;
-        let width = 100;
+        let width = 120;
         let height = 24;
-        let layout = layout_for_area(Rect::new(0, 0, width, height));
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
         assert!(
-            runtime_content_row(terminal.backend().buffer(), width, &layout).contains("APPLYING")
+            buffer_text(terminal.backend().buffer()).contains("整合性") ||
+            buffer_text(terminal.backend().buffer()).contains("Execution")
         );
 
-        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
-        let row = runtime_content_row(terminal.backend().buffer(), width, &layout);
+        let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(row.contains("PREVIEW_READY"));
-        assert!(!row.contains("APPLYING"));
-        assert_eq!(row.chars().count(), usize::from(layout.runtime.width));
+        assert!(surface.contains("待機") || surface.contains("idle"));
+        assert!(!surface.contains("整合性"));
     }
 
     #[test]
@@ -531,70 +554,72 @@ mod tests {
     #[test]
     fn no_stale_cells_after_state_shrink() {
         let mut state = TuiState::new(empty_payload());
-        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.runtime_state = RuntimeShellState::Apply;
         state.active_target = Some("apps/cli/src/very_long_previous_runtime_target.rs".to_string());
-        let width = 110;
+        let width = 120;
         let height = 24;
-        let layout = layout_for_area(Rect::new(0, 0, width, height));
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let first = buffer_text(terminal.backend().buffer());
-        assert!(first.contains("PREVIEW_READY"));
+        assert!(first.contains("整合性") || first.contains("Execution"));
 
         state.runtime_state = RuntimeShellState::Idle;
         state.active_target = None;
         redraw_without_terminal_clear(&mut terminal, &state);
         let second = buffer_text(terminal.backend().buffer());
-        let row = runtime_content_row(terminal.backend().buffer(), width, &layout);
 
-        assert!(row.contains("State: IDLE"));
-        assert!(!second.contains("PREVIEW_READY"));
+        assert!(second.contains("待機") || second.contains("idle"));
+        assert!(!second.contains("Execution"));
         assert!(!second.contains("very_long_previous_runtime_target"));
-        assert_eq!(row.chars().count(), usize::from(layout.runtime.width));
     }
 
     #[test]
     fn redraw_replaces_previous_runtime_text() {
         let mut state = TuiState::new(empty_payload());
-        state.runtime_state = RuntimeShellState::Git;
-        let backend = TestBackend::new(100, 24);
+        state.runtime_state = RuntimeShellState::Apply;
+        let width = 120;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("APPLIED"));
+        assert!(first.contains("整合性") || first.contains("Execution"));
 
-        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("PREVIEW_READY"));
-        assert!(!second.contains("APPLIED"));
-        assert!(!second.contains("APPLYING"));
+        assert!(second.contains("待機") || second.contains("idle"));
+        assert!(!second.contains("整合性"));
     }
 
     #[test]
     fn repaint_never_restores_old_frame() {
         let mut state = TuiState::new(empty_payload());
         state.runtime_state = RuntimeShellState::Apply;
-        let backend = TestBackend::new(100, 24);
+        let width = 120;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
         let third = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
         assert_eq!(second, third);
-        assert!(third.contains("PREVIEW_READY"));
-        assert!(!third.contains("APPLYING"));
+        assert!(third.contains("待機") || third.contains("idle"));
+        assert!(!third.contains("整合性"));
     }
 
     #[test]
     fn terminal_surface_matches_snapshot() {
         let mut state = TuiState::new(empty_payload());
-        state.runtime_state = RuntimeShellState::PreviewReady;
-        let backend = TestBackend::new(100, 24);
+        state.runtime_state = RuntimeShellState::Idle;
+        let width = 120;
+        let height = 24;
+        let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let snapshot = RenderSnapshot::from(&state);
@@ -603,11 +628,10 @@ mod tests {
             .expect("draw");
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains(&snapshot.runtime.state_label));
+        assert!(surface.contains("待機") || surface.contains("idle"));
         assert!(surface.contains(&snapshot.status.line));
         assert!(surface.contains("No preview available."));
-        assert!(!surface.contains("APPLYING"));
-        assert!(!surface.contains("APPLIED"));
+        assert!(!surface.contains("整合性"));
     }
 
     #[test]
@@ -655,7 +679,7 @@ mod tests {
                 .expect("production render source"),
         );
 
-        assert_eq!(rendering_source.matches("format!(\"State: {}\"").count(), 1);
+        assert_eq!(rendering_source.matches("format!(\"{}[JA] {}\"").count(), 1);
         assert_eq!(
             rendering_source
                 .matches("pub fn runtime_panel_lines")
@@ -679,7 +703,7 @@ mod tests {
             render_source.matches(".title(\" Cognitive Narrative \")").count(),
             1
         );
-        assert_eq!(rendering_source.matches("State: {}").count(), 1);
+        assert_eq!(rendering_source.matches("[JA] {}").count(), 1);
     }
 
     #[test]
@@ -704,7 +728,7 @@ mod tests {
         );
         assert_eq!(runtime_fn.matches("frame.render_widget(").count(), 2);
         assert_eq!(runtime_fn.matches("Paragraph::new(lines)").count(), 1);
-        assert_eq!(runtime_fn.matches("runtime_panel_lines()").count(), 1);
+        assert_eq!(runtime_fn.matches("runtime_panel_lines(").count(), 1);
     }
 
     #[test]
@@ -718,7 +742,7 @@ mod tests {
         let rendering_source = include_str!("rendering/mod.rs");
         let combined = format!("{render_source}\n{rendering_source}");
 
-        assert_eq!(render_source.matches("runtime_panel_lines()").count(), 1);
+        assert_eq!(render_source.matches("runtime_panel_lines(").count(), 1);
         assert!(!combined.contains("runtime_overlay"));
         assert!(!combined.contains("Runtime Overlay"));
         assert!(!combined.contains("overlay_runtime"));

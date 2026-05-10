@@ -31,6 +31,7 @@ pub struct RuntimeProjection {
 pub struct DiffProjection {
     pub target_label: Option<String>,
     pub lines: Vec<String>,
+    pub semantic_projection: Option<crate::tui::cognitive_workspace::WorkspaceSemanticProjection>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -144,8 +145,8 @@ impl RuntimeProjection {
                 CognitiveSeverity::Info => "",
             };
 
-            lines.push(format!("{} [JA] {}", prefix, explanation.summary_ja));
-            lines.push(format!("{} [EN] {}", prefix, explanation.summary_en));
+            lines.push(format!("{}[JA] {}", prefix, explanation.summary_ja));
+            lines.push(format!("{}[EN] {}", prefix, explanation.summary_en));
 
             if expanded {
                 if let Some(detail_ja) = &explanation.detail_ja {
@@ -189,8 +190,18 @@ impl DiffProjection {
             return Self {
                 target_label,
                 lines: vec!["No preview available.".to_string()],
+                semantic_projection: None,
             };
         };
+
+        // DBM-WORKSPACE-SEMANTIC-PROJECTION Integration
+        let engine = crate::tui::cognitive_workspace::WorkspaceSemanticProjectionEngine {
+            analyzer: crate::tui::cognitive_workspace::WorkspaceSemanticAnalyzer,
+            classifier: crate::tui::cognitive_workspace::SemanticImpactClassifier,
+            narrative_renderer: crate::tui::cognitive_workspace::WorkspaceNarrativeRenderer,
+        };
+        let semantic_projection = Some(engine.project_impact(&transaction.target_path));
+
         let diff = &transaction.diff;
         let target_label = target_label.or_else(|| semantic_label(&transaction.target_path));
         let mut lines = Vec::new();
@@ -219,6 +230,7 @@ impl DiffProjection {
         Self {
             target_label,
             lines: sanitize_lines(lines),
+            semantic_projection,
         }
     }
 }
