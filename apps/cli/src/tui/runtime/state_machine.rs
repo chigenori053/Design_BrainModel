@@ -145,6 +145,14 @@ pub enum RuntimeShellState {
     TemporalRecovery,
     TemporalAttentionEscalation,
     TemporalBranchEvolution,
+    // Section 10: Autonomous Cognitive Execution Governance states
+    AutonomousExecution,
+    ExecutionArbitration,
+    RollbackPreparation,
+    CatastrophicPrevention,
+    AutonomousRepair,
+    SelfModificationGovernance,
+    AutonomousExecutionCollapse,
 }
 
 impl RuntimeShellState {
@@ -283,6 +291,13 @@ impl RuntimeShellState {
             Self::TemporalRecovery => "TEMPORAL_RECOVERY",
             Self::TemporalAttentionEscalation => "TEMPORAL_ATTENTION_ESCALATION",
             Self::TemporalBranchEvolution => "TEMPORAL_BRANCH_EVOLUTION",
+            Self::AutonomousExecution => "AUTONOMOUS_EXECUTION",
+            Self::ExecutionArbitration => "EXECUTION_ARBITRATION",
+            Self::RollbackPreparation => "ROLLBACK_PREPARATION",
+            Self::CatastrophicPrevention => "CATASTROPHIC_PREVENTION",
+            Self::AutonomousRepair => "AUTONOMOUS_REPAIR",
+            Self::SelfModificationGovernance => "SELF_MODIFICATION_GOVERNANCE",
+            Self::AutonomousExecutionCollapse => "AUTONOMOUS_EXECUTION_COLLAPSE",
         }
     }
 
@@ -539,6 +554,20 @@ impl RuntimeShellState {
                 | (Self::TemporalAttentionEscalation, Self::Idle)
                 | (_, Self::TemporalBranchEvolution)
                 | (Self::TemporalBranchEvolution, Self::Idle)
+                | (_, Self::AutonomousExecution)
+                | (Self::AutonomousExecution, Self::Idle)
+                | (_, Self::ExecutionArbitration)
+                | (Self::ExecutionArbitration, Self::Idle)
+                | (_, Self::RollbackPreparation)
+                | (Self::RollbackPreparation, Self::Idle)
+                | (_, Self::CatastrophicPrevention)
+                | (Self::CatastrophicPrevention, Self::Idle)
+                | (_, Self::AutonomousRepair)
+                | (Self::AutonomousRepair, Self::Idle)
+                | (_, Self::SelfModificationGovernance)
+                | (Self::SelfModificationGovernance, Self::Idle)
+                | (_, Self::AutonomousExecutionCollapse)
+                | (Self::AutonomousExecutionCollapse, Self::Idle)
         )
     }
 }
