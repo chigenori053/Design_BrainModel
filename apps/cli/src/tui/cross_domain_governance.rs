@@ -117,7 +117,15 @@ impl CrossDomainGovernanceSystem {
             }
         }
 
-        let (mut execution_allowed, mut protection_state, mut ja_msg, mut en_msg) = if highest_risk == UnifiedRiskLevel::Critical {
+        // 8. Cross-Domain Arbitration logic
+        let (execution_allowed, protection_state, ja_msg, en_msg) = if !rollback_possible && highest_risk > UnifiedRiskLevel::Minimal {
+            (
+                false,
+                UnifiedProtectionState::SafeMode,
+                "複数領域統治裁定に失敗したため安全状態へ移行しました。".to_string(),
+                "Cross-domain governance arbitration failed and the runtime entered protected mode.".to_string(),
+            )
+        } else if highest_risk == UnifiedRiskLevel::Critical {
             let (j, e) = if escalated {
                 ("複数領域の組み合わせにより致命的不安定化が検出されました。".to_string(), "Combined authority domains produced catastrophic instability risks.".to_string())
             } else {
@@ -131,13 +139,6 @@ impl CrossDomainGovernanceSystem {
         } else {
             (true, UnifiedProtectionState::Normal, "権限領域間の整合性が維持されています。".to_string(), "Consistency across authority domains is preserved.".to_string())
         };
-
-        if !rollback_possible && highest_risk > UnifiedRiskLevel::Minimal {
-            execution_allowed = false;
-            protection_state = UnifiedProtectionState::SafeMode;
-            ja_msg = "複数領域統治裁定に失敗したため安全状態へ移行しました。".to_string();
-            en_msg = "Cross-domain governance arbitration failed and the runtime entered protected mode.".to_string();
-        }
 
         UnifiedGovernanceDecision {
             authority_domains: domains,
