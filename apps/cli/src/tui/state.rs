@@ -971,7 +971,18 @@ fn seed_chat_stream(payload: &UiPayload) -> Vec<UiEvent> {
 }
 
 pub fn pseudo_stream_events() -> Vec<UiEvent> {
-    vec![]
+    vec![
+        UiEvent::Thinking {
+            summary: "analyzing".to_string(),
+        },
+        UiEvent::Editing {
+            target: "parser".to_string(),
+            action: "replace block".to_string(),
+        },
+        UiEvent::Result {
+            message: "done".to_string(),
+        },
+    ]
 }
 
 fn seed_design_document(payload: &UiPayload) -> DesignDocument {

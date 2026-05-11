@@ -702,7 +702,7 @@ impl RuntimeCoreBridge {
 
         let mut events = vec![
             CoreEvent::Thinking {
-                summary: "refining natural language intent".to_string(),
+                summary: "refining natural language intent / 自然言語の意図を精製中".to_string(),
             },
             trace_event(
                 "INTENT",
@@ -805,7 +805,7 @@ impl RuntimeCoreBridge {
         }
 
         events.push(CoreEvent::Thinking {
-            summary: "strategy execution started".to_string(),
+            summary: "strategy execution started / 戦略実行を開始しました".to_string(),
         });
         events.push(trace_event(
             "IR",

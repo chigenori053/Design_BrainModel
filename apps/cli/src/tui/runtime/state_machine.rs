@@ -1,6 +1,8 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeShellState {
     Idle,
+    /// Active intent processing — emitted before Core dispatch (§7.1).
+    Thinking,
     Analyze,
     Plan,
     Validate,
@@ -183,6 +185,7 @@ impl RuntimeShellState {
     pub fn label(self) -> &'static str {
         match self {
             Self::Idle => "IDLE",
+            Self::Thinking => "THINKING",
             Self::Analyze => "ANALYZE",
             Self::Plan => "PLAN",
             Self::Validate => "VALIDATE",

@@ -140,6 +140,16 @@ impl CognitiveNarrativeRenderer {
                 summary_en: "The cognitive runtime is currently idle.".to_string(),
                 detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
             },
+            RuntimeShellState::Thinking => CognitiveExplanation {
+                severity: CognitiveSeverity::Info,
+                category: CognitiveCategory::Execution,
+                summary_ja: "意図を処理中です。認知ランタイムが思考を開始しました。".to_string(),
+                summary_en: "Processing intent. The cognitive runtime has begun thinking.".to_string(),
+                detail_ja: Some("入力を解析し実行計画を生成しています。".to_string()),
+                detail_en: Some("Analyzing input and generating an execution plan.".to_string()),
+                recommendation_ja: None,
+                recommendation_en: None,
+            },
             RuntimeShellState::Analyze | RuntimeShellState::Plan => CognitiveExplanation {
                 severity: CognitiveSeverity::Info,
                 category: CognitiveCategory::Execution,
