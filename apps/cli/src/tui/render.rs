@@ -140,7 +140,17 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
         .border_style(active_border(snapshot.focus == Focus::Chat, has_critical));
 
     let lines = lines_vec.into_iter().map(Line::from).collect::<Vec<_>>();
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    let total_lines = lines.len() as u16;
+    let viewport_height = area.height.saturating_sub(1);
+    let max_scroll = total_lines.saturating_sub(viewport_height);
+    let scroll = max_scroll.saturating_sub(snapshot.runtime.scroll_offset as u16);
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((scroll, 0)),
+        area,
+    );
 }
 
 fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
@@ -498,14 +508,14 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
-        assert!(surface.contains("整合性") || surface.contains("Execution"));
+        assert!(surface.contains("state=APPLY"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface2 = buffer_text(terminal.backend().buffer());
 
-        assert!(surface2.contains("待機") || surface2.contains("idle"));
-        assert!(!surface2.contains("整合性"));
+        assert!(surface2.contains("state=IDLE"));
+        assert!(!surface2.contains("state=APPLY"));
     }
 
     #[test]
@@ -519,16 +529,15 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         assert!(
-            buffer_text(terminal.backend().buffer()).contains("整合性")
-                || buffer_text(terminal.backend().buffer()).contains("Execution")
+            buffer_text(terminal.backend().buffer()).contains("state=APPLY")
         );
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("待機") || surface.contains("idle"));
-        assert!(!surface.contains("整合性"));
+        assert!(surface.contains("state=IDLE"));
+        assert!(!surface.contains("state=APPLY"));
     }
 
     #[test]
@@ -564,15 +573,15 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let first = buffer_text(terminal.backend().buffer());
-        assert!(first.contains("整合性") || first.contains("Execution"));
+        assert!(first.contains("state=APPLY"));
 
         state.runtime_state = RuntimeShellState::Idle;
         state.active_target = None;
         redraw_without_terminal_clear(&mut terminal, &state);
         let second = buffer_text(terminal.backend().buffer());
 
-        assert!(second.contains("待機") || second.contains("idle"));
-        assert!(!second.contains("Execution"));
+        assert!(second.contains("state=IDLE"));
+        assert!(!second.contains("state=APPLY"));
         assert!(!second.contains("very_long_previous_runtime_target"));
     }
 
@@ -586,13 +595,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("整合性") || first.contains("Execution"));
+        assert!(first.contains("state=APPLY"));
 
         state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("待機") || second.contains("idle"));
-        assert!(!second.contains("整合性"));
+        assert!(second.contains("state=IDLE"));
+        assert!(!second.contains("state=APPLY"));
     }
 
     #[test]
@@ -610,8 +619,8 @@ mod tests {
         let third = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
         assert_eq!(second, third);
-        assert!(third.contains("待機") || third.contains("idle"));
-        assert!(!third.contains("整合性"));
+        assert!(third.contains("state=IDLE"));
+        assert!(!third.contains("state=APPLY"));
     }
 
     #[test]
@@ -629,10 +638,10 @@ mod tests {
             .expect("draw");
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("待機") || surface.contains("idle"));
+        assert!(surface.contains("state=IDLE"));
         assert!(surface.contains(&snapshot.status.line));
         assert!(surface.contains("No preview available."));
-        assert!(!surface.contains("整合性"));
+        assert!(!surface.contains("state=APPLY"));
     }
 
     #[test]
@@ -672,7 +681,6 @@ mod tests {
 
     #[test]
     fn single_runtime_render_source() {
-        let rendering_source = include_str!("rendering/mod.rs");
         let render_source = without_string_literals(
             include_str!("render.rs")
                 .split("#[cfg(test)]")
@@ -680,10 +688,9 @@ mod tests {
                 .expect("production render source"),
         );
 
-        assert_eq!(rendering_source.matches("format!(\"{}[JA] {}\"").count(), 1);
         assert_eq!(
-            rendering_source
-                .matches("pub fn runtime_panel_lines")
+            render_source
+                .matches("pub fn runtime_panel_bounds")
                 .count(),
             1
         );
@@ -697,7 +704,6 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production render source");
-        let rendering_source = include_str!("rendering/mod.rs");
 
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
@@ -706,7 +712,6 @@ mod tests {
                 .count(),
             1
         );
-        assert_eq!(rendering_source.matches("[JA] {}").count(), 1);
     }
 
     #[test]

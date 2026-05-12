@@ -52,6 +52,68 @@ impl Focus {
     }
 }
 
+pub const BANNED_SURFACE_TOKENS: &[&str] = &[
+    "[IR-TRACE]",
+    "[GRAPH]",
+    "[SCORE]",
+    "[CODING]",
+    "TRACE:",
+    "[ROUTE]",
+    "[EXECUTE]",
+    "[ANALYZE]",
+    "runtime.active_preview",
+    "RuntimeState",
+    "ActivePreview",
+    "active_preview",
+];
+
+pub fn sanitize_line(line: &str) -> Option<String> {
+    if BANNED_SURFACE_TOKENS
+        .iter()
+        .any(|token| line.contains(token))
+    {
+        None
+    } else {
+        Some(line.to_string())
+    }
+}
+
+pub fn contains_runtime_reference(line: &str) -> bool {
+    BANNED_SURFACE_TOKENS
+        .iter()
+        .skip(8) // Skip non-reference tokens
+        .any(|token| line.contains(token))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuntimeNarrativeEvent {
+    Status { state: String },
+    Thinking { summary: String },
+    Execution { summary: String },
+    Preview { target: String },
+    Apply { summary: String },
+    Commit { summary: String },
+    Rollback { summary: String },
+    GovernanceReject { reason: String },
+    Error { message: String },
+}
+
+impl RuntimeNarrativeEvent {
+    pub fn render(&self) -> String {
+        match self {
+            Self::Status { state } => format!("status: {}", state),
+            Self::Thinking { summary } => format!("thinking: {}", summary),
+            Self::Execution { summary } => format!("execution: {}", summary),
+            Self::Preview { target } => format!("preview generated for {}", target),
+            Self::Apply { summary } => format!("applied: {}", summary),
+            Self::Commit { summary } => format!("committed: {}", summary),
+            Self::Rollback { summary } => format!("rolled back: {}", summary),
+            Self::GovernanceReject { reason } => format!("rejected: {}", reason),
+            Self::Error { message } => format!("error: {}", message),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
     Thinking {
@@ -136,8 +198,10 @@ impl UiEvent {
             Self::Editing { target, action } => format!("{target}: {action}"),
             Self::Plan { steps } => steps.join("\n"),
             Self::Execution { step } => step.clone(),
-            Self::Preview { diff } => diff.join("\n"),
-            Self::Diff { file, changes } => render_diff(file, changes),
+            Self::Preview { diff } => format!("Preview generated ({} lines)", diff.len()),
+            Self::Diff { file, changes } => {
+                format!("Applied {} changes to {}", changes.len(), file)
+            }
             Self::Result { message }
             | Self::Runtime { message }
             | Self::Error { message }
@@ -363,27 +427,6 @@ impl ChatState {
             self.events.remove(0);
         }
     }
-}
-
-fn render_diff(file: &str, changes: &[DiffChunk]) -> String {
-    let mut lines = vec![file.to_string()];
-    for chunk in changes {
-        if let Some(old) = &chunk.old {
-            let prefix = chunk
-                .old_line
-                .map(|line| format!("-{:>4} ", line))
-                .unwrap_or_else(|| "-     ".to_string());
-            lines.push(format!("{prefix}{old}"));
-        }
-        if let Some(new) = &chunk.new {
-            let prefix = chunk
-                .new_line
-                .map(|line| format!("+{:>4} ", line))
-                .unwrap_or_else(|| "+     ".to_string());
-            lines.push(format!("{prefix}{new}"));
-        }
-    }
-    lines.join("\n")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -752,7 +795,9 @@ impl TuiState {
             .chat
             .events
             .iter()
+            .filter(|event| !matches!(event, UiEvent::Debug { .. }))
             .flat_map(|event| event.lines())
+            .filter_map(|line| sanitize_line(&line))
             .collect::<Vec<_>>();
         let Some(filter) = self.session.filter.as_ref() else {
             return lines;
@@ -1663,19 +1708,19 @@ mod tests {
     fn deterministic_runtime_text_rendering_is_stable() {
         let mut state = TuiState::new(empty_payload());
         state.active_target = Some("parser.rs".to_string());
-        state.runtime_state = RuntimeShellState::Ready;
+        state.runtime_state = RuntimeShellState::PreviewReady;
         state.append_chat(UiEvent::Preview {
             diff: vec!["+fn parse() {}".to_string()],
         });
 
-        let first = crate::tui::rendering::render_runtime_text(&state);
-        let second = crate::tui::rendering::render_runtime_text(&state);
+        let first = crate::tui::rendering::runtime_semantic_events(&state);
+        let second = crate::tui::rendering::runtime_semantic_events(&state);
 
         assert_eq!(first, second);
         assert!(
             first
                 .iter()
-                .any(|line| line.contains("state=PREVIEW_READY"))
+                .any(|event| event.render().contains("status: PREVIEW_READY"))
         );
     }
 

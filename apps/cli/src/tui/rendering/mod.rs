@@ -1,11 +1,10 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
-use crate::tui::cognitive_explanation::{
-    CognitiveExplanation, CognitiveNarrativeRenderer, CognitiveSeverity,
-};
 use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::runtime::RuntimeShellState;
-use crate::tui::state::{Focus, TuiState};
+use crate::tui::state::{
+    contains_runtime_reference, sanitize_line, Focus, RuntimeNarrativeEvent, TuiState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderSnapshot {
@@ -33,7 +32,8 @@ pub struct RuntimeProjection {
     pub transaction_label: Option<String>,
     pub diff_projection: DiffProjection,
     pub rejection_label: Option<String>,
-    pub explanations: Vec<CognitiveExplanation>,
+    pub chat_lines: Vec<String>,
+    pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -192,60 +192,19 @@ impl RuntimeProjection {
             )
         });
 
-        // DBM-COGNITIVE-NARRATIVE-RENDERING Integration
-        let renderer = CognitiveNarrativeRenderer::new(16);
-        let state_explanation = renderer.explain_state(state.runtime_state);
-
         Self {
             state_label: projection_state_label_from_runtime(state),
             target_label,
             transaction_label: resolved_transaction_label(state),
             diff_projection,
             rejection_label,
-            explanations: vec![state_explanation],
+            chat_lines: state.flattened_chat_lines(),
+            scroll_offset: state.chat_scroll.offset,
         }
     }
 
-    pub fn runtime_panel_lines(&self, expanded: bool) -> Vec<String> {
-        let mut lines = Vec::new();
-
-        // Narrative-First Rendering
-        for (i, explanation) in self.explanations.iter().enumerate() {
-            // Severity Labeling (Spec 7.2)
-            let prefix = match explanation.severity {
-                CognitiveSeverity::Critical => "[CRITICAL] ",
-                CognitiveSeverity::Warning => "[WARNING] ",
-                CognitiveSeverity::Notice => "[NOTICE] ",
-                CognitiveSeverity::Info => "",
-            };
-
-            lines.push(format!("{}[JA] {}", prefix, explanation.summary_ja));
-            lines.push(format!("{}[EN] {}", prefix, explanation.summary_en));
-
-            if expanded {
-                if let Some(detail_ja) = &explanation.detail_ja {
-                    lines.push(format!("  [Detail-JA] {}", detail_ja));
-                }
-                if let Some(detail_en) = &explanation.detail_en {
-                    lines.push(format!("  [Detail-EN] {}", detail_en));
-                }
-                if let Some(rec_ja) = &explanation.recommendation_ja {
-                    lines.push(format!("  [Action-JA] {}", rec_ja));
-                }
-                if let Some(rec_en) = &explanation.recommendation_en {
-                    lines.push(format!("  [Action-EN] {}", rec_en));
-                }
-            }
-
-            if i < self.explanations.len() - 1 || self.rejection_label.is_some() {
-                lines.push(String::new());
-            }
-        }
-
-        if let Some(rejection) = &self.rejection_label {
-            lines.push(rejection.clone());
-        }
-        lines
+    pub fn runtime_panel_lines(&self, _expanded: bool) -> Vec<String> {
+        self.chat_lines.clone()
     }
 
     pub fn status_line(&self) -> String {
@@ -309,26 +268,38 @@ impl DiffProjection {
     }
 }
 
+pub fn runtime_semantic_events(state: &TuiState) -> Vec<RuntimeNarrativeEvent> {
+    let mut events = Vec::new();
+    let projection = RuntimeProjection::from_state(state);
+
+    events.push(RuntimeNarrativeEvent::Status {
+        state: projection.state_label,
+    });
+
+    if let Some(target) = projection.target_label {
+        events.push(RuntimeNarrativeEvent::Preview { target });
+    }
+
+    if let Some(rejection) = projection.rejection_label {
+        events.push(RuntimeNarrativeEvent::GovernanceReject { reason: rejection });
+    }
+
+    events.push(RuntimeNarrativeEvent::Execution {
+        summary: format!(
+            "transaction: {}",
+            projection.transaction_label.as_deref().unwrap_or("none")
+        ),
+    });
+
+    events
+}
+
+#[deprecated(note = "Use runtime_semantic_events instead")]
 pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
-    let snapshot = RenderSnapshot::from(state);
-    let mut lines = Vec::new();
-    lines.push("+--------------------------------------------------+".to_string());
-    lines.push("| DBM_CLI                                          |".to_string());
-    lines.push("| Explainable Governed Cognitive Runtime           |".to_string());
-    lines.push("+--------------------------------------------------+".to_string());
-    lines.push("| Conversation / Intent                            |".to_string());
-    lines.push("+--------------------------------------------------+".to_string());
-    for line in snapshot.runtime.runtime_panel_lines(false) {
-        lines.push(format!("| {:<48} |", truncate(&line, 48)));
-    }
-    lines.push("+--------------------------------------------------+".to_string());
-    for line in snapshot.runtime.diff_projection.lines {
-        lines.push(format!("| {:<48} |", truncate(&line, 48)));
-    }
-    lines.push("+--------------------------------------------------+".to_string());
-    lines.push(format!("| {} |", truncate(&snapshot.status.line, 48)));
-    lines.push("+--------------------------------------------------+".to_string());
-    lines
+    runtime_semantic_events(state)
+        .into_iter()
+        .map(|e| e.render())
+        .collect()
 }
 
 fn projection_state_label(state: RuntimeShellState) -> &'static str {
@@ -431,46 +402,6 @@ fn sanitize_lines(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn sanitize_line(line: &str) -> Option<String> {
-    const BANNED_SURFACE_TOKENS: &[&str] = &[
-        "[IR-TRACE]",
-        "[GRAPH]",
-        "[SCORE]",
-        "[CODING]",
-        "TRACE:",
-        "[ROUTE]",
-        "[EXECUTE]",
-        "[ANALYZE]",
-        "runtime.active_preview",
-        "RuntimeState",
-        "ActivePreview",
-        "active_preview",
-    ];
-    if BANNED_SURFACE_TOKENS
-        .iter()
-        .any(|token| line.contains(token))
-    {
-        None
-    } else {
-        Some(line.to_string())
-    }
-}
-
-fn contains_runtime_reference(line: &str) -> bool {
-    [
-        "runtime.active_preview",
-        "RuntimeState",
-        "ActivePreview",
-        "active_preview",
-    ]
-    .iter()
-    .any(|token| line.contains(token))
-}
-
-fn truncate(input: &str, width: usize) -> String {
-    input.chars().take(width).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -535,6 +466,18 @@ mod tests {
         let second = FrameComposer::compose(RenderSnapshot::from(&state), layout);
 
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn runtime_panel_shows_runtime_events() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Runtime {
+            message: "status: ok".to_string(),
+        });
+
+        let snapshot = RenderSnapshot::from(&state);
+        let lines = snapshot.runtime.runtime_panel_lines(false);
+        assert!(lines.iter().any(|l| l.contains("[RUNTIME] status: ok")));
     }
 
     #[test]

@@ -126,7 +126,7 @@ fn dispatch_runtime_command_to_projection(
     working_dir: &std::path::Path,
     input: &str,
 ) -> bool {
-    let Some(lines) =
+    let Some(events) =
         crate::runtime::shell::RuntimeCommandDispatcher::dispatch(state, working_dir, input)
     else {
         return false;
@@ -141,19 +141,34 @@ fn dispatch_runtime_command_to_projection(
     if let Some(message) = rejection_message {
         state.append_chat(UiEvent::Error { message });
     }
-    project_runtime_lines(state, lines);
+    project_runtime_lines(state, events);
     true
 }
 
-fn project_runtime_lines(state: &mut TuiState, lines: Vec<String>) {
+fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeNarrativeEvent>) {
     let mut projected = false;
-    for line in lines {
-        state.append_chat(UiEvent::Runtime { message: line });
+    for event in events {
+        let ui_event = match event {
+            self::state::RuntimeNarrativeEvent::Thinking { summary } => {
+                self::state::UiEvent::Thinking { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Execution { summary } => {
+                self::state::UiEvent::Execution { step: summary }
+            }
+            self::state::RuntimeNarrativeEvent::Error { message }
+            | self::state::RuntimeNarrativeEvent::GovernanceReject { reason: message } => {
+                self::state::UiEvent::Error { message }
+            }
+            _ => self::state::UiEvent::Runtime {
+                message: event.render(),
+            },
+        };
+        state.append_chat(ui_event);
         projected = true;
     }
 
     if !projected {
-        state.append_chat(UiEvent::Runtime {
+        state.append_chat(self::state::UiEvent::Runtime {
             message: "[Runtime] command completed with no output".to_string(),
         });
     }
@@ -172,6 +187,9 @@ mod tests {
             .iter()
             .filter_map(|event| match event {
                 UiEvent::Runtime { message } => Some(message.clone()),
+                UiEvent::Error { message } => Some(message.clone()),
+                UiEvent::Thinking { summary } => Some(summary.clone()),
+                UiEvent::Execution { step } => Some(step.clone()),
                 _ => None,
             })
             .collect()
@@ -189,7 +207,7 @@ mod tests {
         ));
 
         let projection = runtime_messages(&state).join("\n");
-        assert!(projection.contains("state=IDLE"), "{projection}");
+        assert!(projection.contains("status: IDLE"), "{projection}");
         assert!(!state.chat.events.is_empty());
     }
 
@@ -207,7 +225,7 @@ mod tests {
 
         let projection = runtime_messages(&state).join("\n");
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
-        assert!(projection.contains("state=PREVIEW_READY"), "{projection}");
+        assert!(projection.contains("status: PREVIEW_READY"), "{projection}");
         assert!(
             state
                 .active_target
@@ -235,7 +253,7 @@ mod tests {
 
         let projection = runtime_messages(&state).join("\n");
         assert_eq!(state.runtime_state, RuntimeShellState::Git);
-        assert!(projection.contains("state=APPLIED"), "{projection}");
+        assert!(projection.contains("status: APPLIED"), "{projection}");
     }
 
     #[test]
@@ -251,7 +269,7 @@ mod tests {
 
         assert!(state.chat.events.iter().any(|event| matches!(
             event,
-            UiEvent::Runtime { message } if message.contains("state=IDLE")
+            UiEvent::Runtime { message } if message.contains("status: IDLE")
         )));
     }
 
@@ -268,12 +286,12 @@ mod tests {
 
         let projection = runtime_messages(&state).join("\n");
         assert!(
-            projection.contains("REJECTED: target missing"),
+            projection.contains("target missing"),
             "{projection}"
         );
         assert!(state.chat.events.iter().any(|event| matches!(
             event,
-            UiEvent::Error { message } if message.contains("runtime rejected: target missing")
+            UiEvent::Error { message } if message.contains("target missing")
         )));
     }
 
@@ -296,6 +314,6 @@ mod tests {
             .collect::<Vec<_>>()
             .join("\n");
         assert!(rendered.contains("[RUNTIME]"), "{rendered}");
-        assert!(rendered.contains("state=IDLE"), "{rendered}");
+        assert!(rendered.contains("status: IDLE"), "{rendered}");
     }
 }

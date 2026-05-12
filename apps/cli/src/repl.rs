@@ -78,11 +78,11 @@ where
             continue;
         }
 
-        if let Some(lines) =
+        if let Some(events) =
             RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
         {
-            for line in lines {
-                writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+            for event in events {
+                writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
             }
             writer.flush().map_err(|err| err.to_string())?;
             continue;
@@ -137,11 +137,11 @@ pub fn dispatch_repl_input<W: Write>(
         return Ok(false);
     }
 
-    if let Some(lines) =
+    if let Some(events) =
         RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
     {
-        for line in lines {
-            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+        for event in events {
+            writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
         }
         return Ok(false);
     }

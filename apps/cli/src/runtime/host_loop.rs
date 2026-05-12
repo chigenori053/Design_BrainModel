@@ -9,7 +9,7 @@ use crate::runtime::runtime_state::initial_runtime_state;
 use crate::runtime::shell::RuntimeCommandDispatcher;
 use crate::tui::core::handle_submit;
 use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
-use crate::tui::rendering::render_runtime_text;
+use crate::tui::rendering::runtime_semantic_events;
 use crate::tui::state::TuiState;
 
 pub fn run_runtime_loop_stdio() -> Result<(), String> {
@@ -57,11 +57,11 @@ where
             break;
         }
 
-        if let Some(lines) =
+        if let Some(events) =
             RuntimeCommandDispatcher::dispatch(&mut state, &workspace_root, trimmed)
         {
-            for line in lines {
-                writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+            for event in events {
+                writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
             }
             continue;
         } else {
@@ -82,8 +82,8 @@ where
 }
 
 fn render_initial<W: Write>(writer: &mut W, state: &TuiState) -> Result<(), String> {
-    for line in render_runtime_text(state) {
-        writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+    for event in runtime_semantic_events(state) {
+        writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
     }
     Ok(())
 }
@@ -147,7 +147,7 @@ mod tests {
     fn deterministic_initial_rendering_is_stable() {
         let state = TuiState::new(empty_payload());
 
-        assert_eq!(render_runtime_text(&state), render_runtime_text(&state));
+        assert_eq!(runtime_semantic_events(&state), runtime_semantic_events(&state));
     }
 
     #[test]

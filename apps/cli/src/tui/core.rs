@@ -125,6 +125,7 @@ mod tests {
         Constraint, CoreResponse, DesignDocument, ExecutionStatus, ReasonUnit, StructureTree,
     };
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
+    use crate::tui::rendering::RenderSnapshot;
 
     #[derive(Default)]
     struct FakeCore {
@@ -704,5 +705,55 @@ mod tests {
         // No panic, pipeline stable, events visible.
         assert!(!state.flattened_chat_lines().is_empty());
         assert_eq!(state.pipeline_state, PipelineState::Idle);
+    }
+
+    /// DBM-NARRATIVE-PROJECTION-BINDING-SPEC §12.5 — status command visible in narrative.
+    #[test]
+    fn test_submit_status_visible_end_to_end() {
+        let mut state = TuiState::new(empty_payload());
+        // Use a real dispatcher command 'status'
+        super::super::dispatch_runtime_command_to_projection(
+            &mut state,
+            std::path::Path::new("."),
+            "status",
+        );
+
+        let lines = state.flattened_chat_lines();
+        assert!(
+            lines
+                .iter()
+                .any(|l: &String| l.contains("[RUNTIME]") && l.contains("status:")),
+            "status output not visible in narrative"
+        );
+    }
+
+    /// DBM-NARRATIVE-PROJECTION-BINDING-SPEC §12.5 — narrative survives redraw.
+    #[test]
+    fn test_runtime_projection_survives_redraw() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Runtime {
+            message: "trace 1".to_string(),
+        });
+
+        let snapshot1 = RenderSnapshot::from(&state);
+        assert!(snapshot1
+            .runtime
+            .runtime_panel_lines(false)
+            .iter()
+            .any(|l: &String| l.contains("trace 1")));
+
+        // Simulating a "redraw" by creating a new snapshot
+        let snapshot2 = RenderSnapshot::from(&state);
+        assert_eq!(snapshot1.runtime.chat_lines, snapshot2.runtime.chat_lines);
+    }
+
+    /// DBM-NARRATIVE-PROJECTION-BINDING-SPEC §12.5 — narrative is scrollable.
+    #[test]
+    fn test_runtime_projection_scrollable() {
+        let mut state = TuiState::new(empty_payload());
+        state.chat_scroll.offset = 5;
+
+        let snapshot = RenderSnapshot::from(&state);
+        assert_eq!(snapshot.runtime.scroll_offset, 5);
     }
 }
