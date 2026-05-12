@@ -1,5 +1,7 @@
-use serde::{Serialize, Deserialize};
-use crate::tui::cognitive_explanation::{CognitiveExplanation, CognitiveSeverity, CognitiveCategory};
+use crate::tui::cognitive_explanation::{
+    CognitiveCategory, CognitiveExplanation, CognitiveSeverity,
+};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum AuthorityDomain {
@@ -76,7 +78,7 @@ impl CrossDomainGovernanceSystem {
     ) -> UnifiedGovernanceDecision {
         let mut highest_risk = UnifiedRiskLevel::Minimal;
         let mut domains = Vec::new();
-        
+
         let mut has_git = false;
         let mut has_remote = false;
         let mut has_deployment = false;
@@ -118,7 +120,9 @@ impl CrossDomainGovernanceSystem {
         }
 
         // 8. Cross-Domain Arbitration logic
-        let (execution_allowed, protection_state, ja_msg, en_msg) = if !rollback_possible && highest_risk > UnifiedRiskLevel::Minimal {
+        let (execution_allowed, protection_state, ja_msg, en_msg) = if !rollback_possible
+            && highest_risk > UnifiedRiskLevel::Minimal
+        {
             (
                 false,
                 UnifiedProtectionState::SafeMode,
@@ -127,17 +131,43 @@ impl CrossDomainGovernanceSystem {
             )
         } else if highest_risk == UnifiedRiskLevel::Critical {
             let (j, e) = if escalated {
-                ("複数領域の組み合わせにより致命的不安定化が検出されました。".to_string(), "Combined authority domains produced catastrophic instability risks.".to_string())
+                (
+                    "複数領域の組み合わせにより致命的不安定化が検出されました。".to_string(),
+                    "Combined authority domains produced catastrophic instability risks."
+                        .to_string(),
+                )
             } else {
-                ("複数の権限領域間で整合性競合が検出されました。".to_string(), "Governance consistency conflicts were detected across authority domains.".to_string())
+                (
+                    "複数の権限領域間で整合性競合が検出されました。".to_string(),
+                    "Governance consistency conflicts were detected across authority domains."
+                        .to_string(),
+                )
             };
             (false, UnifiedProtectionState::CatastrophicProtection, j, e)
         } else if highest_risk == UnifiedRiskLevel::High {
-            (false, UnifiedProtectionState::SafeMode, "権限連鎖による実行影響範囲が拡大しています。".to_string(), "Execution authority scope is expanding through chained governance escalation.".to_string())
-        } else if temporal_stability == TemporalStability::Decaying || temporal_stability == TemporalStability::Collapsing {
-            (false, UnifiedProtectionState::SafeMode, "複数領域を跨ぐ将来的な整合性低下が検出されています。".to_string(), "Cross-domain future semantic instability has been detected.".to_string())
+            (
+                false,
+                UnifiedProtectionState::SafeMode,
+                "権限連鎖による実行影響範囲が拡大しています。".to_string(),
+                "Execution authority scope is expanding through chained governance escalation."
+                    .to_string(),
+            )
+        } else if temporal_stability == TemporalStability::Decaying
+            || temporal_stability == TemporalStability::Collapsing
+        {
+            (
+                false,
+                UnifiedProtectionState::SafeMode,
+                "複数領域を跨ぐ将来的な整合性低下が検出されています。".to_string(),
+                "Cross-domain future semantic instability has been detected.".to_string(),
+            )
         } else {
-            (true, UnifiedProtectionState::Normal, "権限領域間の整合性が維持されています。".to_string(), "Consistency across authority domains is preserved.".to_string())
+            (
+                true,
+                UnifiedProtectionState::Normal,
+                "権限領域間の整合性が維持されています。".to_string(),
+                "Consistency across authority domains is preserved.".to_string(),
+            )
         };
 
         UnifiedGovernanceDecision {
@@ -148,7 +178,11 @@ impl CrossDomainGovernanceSystem {
             execution_allowed,
             protection_state,
             narrative: CognitiveExplanation {
-                severity: if execution_allowed { CognitiveSeverity::Info } else { CognitiveSeverity::Critical },
+                severity: if execution_allowed {
+                    CognitiveSeverity::Info
+                } else {
+                    CognitiveSeverity::Critical
+                },
                 category: CognitiveCategory::Governance,
                 summary_ja: ja_msg,
                 summary_en: en_msg,
@@ -184,8 +218,14 @@ mod tests {
         let decision = sys.arbitrate(&risks, true, TemporalStability::Stable);
         assert!(!decision.execution_allowed);
         assert_eq!(decision.semantic_risk, UnifiedRiskLevel::Critical);
-        assert_eq!(decision.protection_state, UnifiedProtectionState::CatastrophicProtection);
-        assert_eq!(decision.narrative.summary_en, "Governance consistency conflicts were detected across authority domains.");
+        assert_eq!(
+            decision.protection_state,
+            UnifiedProtectionState::CatastrophicProtection
+        );
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Governance consistency conflicts were detected across authority domains."
+        );
     }
 
     #[test]
@@ -198,7 +238,10 @@ mod tests {
         let decision = sys.arbitrate(&risks, true, TemporalStability::Stable);
         assert!(!decision.execution_allowed);
         assert_eq!(decision.semantic_risk, UnifiedRiskLevel::Critical);
-        assert_eq!(decision.narrative.summary_en, "Combined authority domains produced catastrophic instability risks.");
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Combined authority domains produced catastrophic instability risks."
+        );
     }
 
     #[test]
@@ -211,18 +254,22 @@ mod tests {
         let decision = sys.arbitrate(&risks, true, TemporalStability::Stable);
         assert!(!decision.execution_allowed);
         assert_eq!(decision.semantic_risk, UnifiedRiskLevel::High);
-        assert_eq!(decision.narrative.summary_en, "Execution authority scope is expanding through chained governance escalation.");
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Execution authority scope is expanding through chained governance escalation."
+        );
     }
 
     #[test]
     fn test_unified_temporal_stability() {
         let sys = get_system();
-        let risks = vec![
-            (AuthorityDomain::LocalExecution, UnifiedRiskLevel::Minimal),
-        ];
+        let risks = vec![(AuthorityDomain::LocalExecution, UnifiedRiskLevel::Minimal)];
         let decision = sys.arbitrate(&risks, true, TemporalStability::Decaying);
         assert!(!decision.execution_allowed);
-        assert_eq!(decision.narrative.summary_en, "Cross-domain future semantic instability has been detected.");
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Cross-domain future semantic instability has been detected."
+        );
     }
 
     #[test]
@@ -234,29 +281,34 @@ mod tests {
         ];
         let decision = sys.arbitrate(&risks, true, TemporalStability::Stable);
         assert!(!decision.execution_allowed);
-        assert_eq!(decision.protection_state, UnifiedProtectionState::CatastrophicProtection);
+        assert_eq!(
+            decision.protection_state,
+            UnifiedProtectionState::CatastrophicProtection
+        );
     }
 
     #[test]
     fn test_rollback_impossibility_propagation() {
         let sys = get_system();
-        let risks = vec![
-            (AuthorityDomain::LocalExecution, UnifiedRiskLevel::Moderate),
-        ];
+        let risks = vec![(AuthorityDomain::LocalExecution, UnifiedRiskLevel::Moderate)];
         let decision = sys.arbitrate(&risks, false, TemporalStability::Stable);
         assert!(!decision.execution_allowed);
         assert_eq!(decision.protection_state, UnifiedProtectionState::SafeMode);
-        assert_eq!(decision.narrative.summary_en, "Cross-domain governance arbitration failed and the runtime entered protected mode.");
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Cross-domain governance arbitration failed and the runtime entered protected mode."
+        );
     }
 
     #[test]
     fn test_unified_narrative_coherence() {
         let sys = get_system();
-        let risks = vec![
-            (AuthorityDomain::LocalExecution, UnifiedRiskLevel::Minimal),
-        ];
+        let risks = vec![(AuthorityDomain::LocalExecution, UnifiedRiskLevel::Minimal)];
         let decision = sys.arbitrate(&risks, true, TemporalStability::Stable);
         assert!(decision.execution_allowed);
-        assert_eq!(decision.narrative.summary_en, "Consistency across authority domains is preserved.");
+        assert_eq!(
+            decision.narrative.summary_en,
+            "Consistency across authority domains is preserved."
+        );
     }
 }

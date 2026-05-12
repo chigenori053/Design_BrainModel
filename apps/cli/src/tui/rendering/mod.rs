@@ -1,4 +1,4 @@
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::tui::cognitive_explanation::{
     CognitiveExplanation, CognitiveNarrativeRenderer, CognitiveSeverity,
@@ -15,6 +15,15 @@ pub struct RenderSnapshot {
     pub focus: Focus,
     pub identity: RuntimeIdentity,
     pub is_expanded: bool,
+    pub diagnostics: Option<DiagnosticModel>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticModel {
+    pub last_event: String,
+    pub last_focus: String,
+    pub last_mutation: String,
+    pub raw_mode: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,14 +55,57 @@ pub struct InputModel {
     pub cursor: usize,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutMetadata {
     pub viewport: Rect,
     pub header: Rect,
     pub input: Rect,
     pub runtime: Rect,
     pub diff: Rect,
+    pub diagnostics: Rect,
     pub status: Rect,
+}
+
+pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
+    let rows = layout_rows(area);
+
+    let (middle_rect, diag_rect) = if show_diagnostics {
+        let diag_width = if area.width > 100 { 40 } else { 20 };
+        let cols = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([Constraint::Min(40), Constraint::Length(diag_width)])
+            .split(rows[2]);
+        (cols[0], cols[1])
+    } else {
+        (rows[2], Rect::new(0, 0, 0, 0))
+    };
+
+    let middle = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .split(middle_rect);
+
+    LayoutMetadata {
+        viewport: area,
+        header: rows[0],
+        input: rows[1],
+        runtime: middle[0],
+        diff: middle[1],
+        diagnostics: diag_rect,
+        status: rows[3],
+    }
+}
+
+fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
+    Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(5),
+            Constraint::Min(8),
+            Constraint::Length(1),
+        ])
+        .split(area)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -103,6 +155,28 @@ impl From<&TuiState> for RenderSnapshot {
             focus: state.focus,
             identity: RuntimeIdentity::default(),
             is_expanded: state.narrative_expanded,
+            diagnostics: if state.diagnostic_mode {
+                Some(DiagnosticModel {
+                    last_event: state
+                        .diagnostics
+                        .last_event
+                        .clone()
+                        .unwrap_or_else(|| "(none)".to_string()),
+                    last_focus: state
+                        .diagnostics
+                        .last_focus_transition
+                        .clone()
+                        .unwrap_or_else(|| format!("{:?}", state.focus)),
+                    last_mutation: state
+                        .diagnostics
+                        .last_mutation
+                        .clone()
+                        .unwrap_or_else(|| "(none)".to_string()),
+                    raw_mode: state.diagnostics.raw_mode_active,
+                })
+            } else {
+                None
+            },
         }
     }
 }
@@ -455,14 +529,7 @@ mod tests {
     #[test]
     fn immutable_frame_composition_is_repeatable() {
         let state = TuiState::new(empty_payload());
-        let layout = LayoutMetadata {
-            viewport: Rect::new(0, 0, 80, 24),
-            header: Rect::new(0, 0, 80, 1),
-            input: Rect::new(0, 1, 80, 5),
-            runtime: Rect::new(0, 6, 30, 17),
-            diff: Rect::new(30, 6, 50, 17),
-            status: Rect::new(0, 23, 80, 1),
-        };
+        let layout = layout_for_area(Rect::new(0, 0, 80, 24), false);
 
         let first = FrameComposer::compose(RenderSnapshot::from(&state), layout);
         let second = FrameComposer::compose(RenderSnapshot::from(&state), layout);

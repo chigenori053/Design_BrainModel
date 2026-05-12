@@ -1,8 +1,12 @@
+use serde::{Deserialize, Serialize};
 use std::time::SystemTime;
-use serde::{Serialize, Deserialize};
 
-use crate::tui::cross_domain_governance::{AuthorityDomain, UnifiedGovernanceDecision, UnifiedRiskLevel};
-use crate::tui::cognitive_explanation::{CognitiveExplanation, CognitiveSeverity, CognitiveCategory};
+use crate::tui::cognitive_explanation::{
+    CognitiveCategory, CognitiveExplanation, CognitiveSeverity,
+};
+use crate::tui::cross_domain_governance::{
+    AuthorityDomain, UnifiedGovernanceDecision, UnifiedRiskLevel,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct GovernanceTimelineEvent {
@@ -18,7 +22,11 @@ pub struct GovernanceTimelineEngine {
 }
 
 impl GovernanceTimelineEngine {
-    pub fn record_event(&mut self, domains: Vec<AuthorityDomain>, decision: UnifiedGovernanceDecision) {
+    pub fn record_event(
+        &mut self,
+        domains: Vec<AuthorityDomain>,
+        decision: UnifiedGovernanceDecision,
+    ) {
         let event = GovernanceTimelineEvent {
             timestamp: SystemTime::now(),
             authority_domains: domains,
@@ -33,13 +41,27 @@ impl GovernanceTimelineEngine {
 pub struct AuthorityTraceEngine;
 
 impl AuthorityTraceEngine {
-    pub fn trace_escalation(&self, domains: &[AuthorityDomain], target_risk: UnifiedRiskLevel) -> CognitiveExplanation {
-        let (ja, en) = if domains.contains(&AuthorityDomain::Deployment) && domains.contains(&AuthorityDomain::CredentialAccess) {
+    pub fn trace_escalation(
+        &self,
+        domains: &[AuthorityDomain],
+        target_risk: UnifiedRiskLevel,
+    ) -> CognitiveExplanation {
+        let (ja, en) = if domains.contains(&AuthorityDomain::Deployment)
+            && domains.contains(&AuthorityDomain::CredentialAccess)
+        {
             ("Remote deployment authority が CredentialAccessとの組み合わせにより Critical へ昇格しました。".to_string(),
              "Remote deployment authority escalated to Critical when combined with CredentialAccess.".to_string())
         } else {
-            (format!("権限領域の組み合わせにより {:?} へ昇格しました。", target_risk),
-             format!("Authority escalated to {:?} due to domain combination.", target_risk))
+            (
+                format!(
+                    "権限領域の組み合わせにより {:?} へ昇格しました。",
+                    target_risk
+                ),
+                format!(
+                    "Authority escalated to {:?} due to domain combination.",
+                    target_risk
+                ),
+            )
         };
 
         CognitiveExplanation {
@@ -47,7 +69,10 @@ impl AuthorityTraceEngine {
             category: CognitiveCategory::Governance,
             summary_ja: ja,
             summary_en: en,
-            detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            detail_ja: None,
+            detail_en: None,
+            recommendation_ja: None,
+            recommendation_en: None,
         }
     }
 }
@@ -59,20 +84,34 @@ pub struct GovernanceReplayEngine;
 pub struct GovernanceCausalNarrativeEngine;
 
 impl GovernanceCausalNarrativeEngine {
-    pub fn generate_causal_narrative(&self, initial_safe: bool, final_risk: UnifiedRiskLevel) -> CognitiveExplanation {
+    pub fn generate_causal_narrative(
+        &self,
+        initial_safe: bool,
+        final_risk: UnifiedRiskLevel,
+    ) -> CognitiveExplanation {
         let (ja, en) = if initial_safe && final_risk >= UnifiedRiskLevel::High {
             ("当初は安全と判定されていましたが、特定の権限が追加されたことで統治リスクが上昇しました。".to_string(),
              "The operation was initially considered safe, but governance risk increased after additional authority was added.".to_string())
         } else {
-            ("意味的整合性が維持されています。".to_string(), "Semantic consistency is preserved.".to_string())
+            (
+                "意味的整合性が維持されています。".to_string(),
+                "Semantic consistency is preserved.".to_string(),
+            )
         };
 
         CognitiveExplanation {
-            severity: if final_risk >= UnifiedRiskLevel::High { CognitiveSeverity::Warning } else { CognitiveSeverity::Info },
+            severity: if final_risk >= UnifiedRiskLevel::High {
+                CognitiveSeverity::Warning
+            } else {
+                CognitiveSeverity::Info
+            },
             category: CognitiveCategory::Governance,
             summary_ja: ja,
             summary_en: en,
-            detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+            detail_ja: None,
+            detail_en: None,
+            recommendation_ja: None,
+            recommendation_en: None,
         }
     }
 }
@@ -115,13 +154,16 @@ impl GovernanceObservabilitySystem {
             trace_engine: AuthorityTraceEngine,
             replay_engine: GovernanceReplayEngine,
             causal_engine: GovernanceCausalNarrativeEngine,
-            memory_engine: GovernanceMemoryEngine { history: Vec::new() },
+            memory_engine: GovernanceMemoryEngine {
+                history: Vec::new(),
+            },
             compression_layer: GovernanceCompressionLayer,
         }
     }
 
     pub fn process_decision(&mut self, decision: UnifiedGovernanceDecision) {
-        self.timeline_engine.record_event(decision.authority_domains.clone(), decision.clone());
+        self.timeline_engine
+            .record_event(decision.authority_domains.clone(), decision.clone());
         self.memory_engine.history.push(decision);
     }
 }
@@ -138,13 +180,20 @@ mod tests {
             rollback_recoverability: true,
             temporal_stability: TemporalStability::Stable,
             execution_allowed: allowed,
-            protection_state: if allowed { UnifiedProtectionState::Normal } else { UnifiedProtectionState::SafeMode },
+            protection_state: if allowed {
+                UnifiedProtectionState::Normal
+            } else {
+                UnifiedProtectionState::SafeMode
+            },
             narrative: CognitiveExplanation {
                 severity: CognitiveSeverity::Info,
                 category: CognitiveCategory::Governance,
                 summary_ja: "テスト".to_string(),
                 summary_en: "Test".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         }
     }
@@ -160,9 +209,15 @@ mod tests {
     #[test]
     fn test_authority_escalation_tracing() {
         let engine = AuthorityTraceEngine;
-        let domains = vec![AuthorityDomain::Deployment, AuthorityDomain::CredentialAccess];
+        let domains = vec![
+            AuthorityDomain::Deployment,
+            AuthorityDomain::CredentialAccess,
+        ];
         let trace = engine.trace_escalation(&domains, UnifiedRiskLevel::Critical);
-        assert_eq!(trace.summary_en, "Remote deployment authority escalated to Critical when combined with CredentialAccess.");
+        assert_eq!(
+            trace.summary_en,
+            "Remote deployment authority escalated to Critical when combined with CredentialAccess."
+        );
     }
 
     #[test]
@@ -175,8 +230,15 @@ mod tests {
     #[test]
     fn test_governance_compression() {
         let layer = GovernanceCompressionLayer;
-        let narratives = vec!["Risk1".to_string(), "Risk2".to_string(), "Risk3".to_string()];
+        let narratives = vec![
+            "Risk1".to_string(),
+            "Risk2".to_string(),
+            "Risk3".to_string(),
+        ];
         let compressed = layer.compress_narratives(narratives);
-        assert_eq!(compressed, "Cross-domain authority instability has increased.");
+        assert_eq!(
+            compressed,
+            "Cross-domain authority instability has increased."
+        );
     }
 }

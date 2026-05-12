@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent, MouseEventKind};
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
@@ -369,6 +369,9 @@ impl ComposerViewState {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> ComposerAction {
+        if key.kind != KeyEventKind::Press {
+            return ComposerAction::None;
+        }
         match self.focus {
             ComposerFocus::Editor => self.handle_editor_key(key),
             ComposerFocus::SendButton => self.handle_send_button_key(key),

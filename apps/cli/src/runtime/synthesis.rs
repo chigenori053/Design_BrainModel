@@ -102,10 +102,10 @@ pub fn topology_repair(
     let mut repair = parent.clone();
     repair.branch_id.0.push_str("-topology-repair");
     repair.tx_id.push_str("-topology-repair-tx");
-    
+
     // Improve stability in the repair branch.
     repair.score.world_consistency.dependency_consistency = 10.0;
-    
+
     Some(repair)
 }
 
@@ -173,7 +173,10 @@ mod tests {
             "tx-root".into(),
             "target".into(),
             RuntimeShellState::PreviewReady,
-            crate::core::Diff { file: "t".into(), changes: vec![] },
+            crate::core::Diff {
+                file: "t".into(),
+                changes: vec![],
+            },
             ConvergenceScore::zero(),
             ContradictionSet::zero(),
             WorldStateSnapshot::zero(),
@@ -184,7 +187,7 @@ mod tests {
         );
         let mut runtime = BranchRuntime::new(snapshot);
         let topology = ArchitectureTopology::default();
-        
+
         let repair = topology_repair(&mut runtime, &topology).unwrap();
         assert!(repair.branch_id.0.contains("topology-repair"));
         assert!(repair.score.world_consistency.dependency_consistency > 0.0);
@@ -194,6 +197,10 @@ mod tests {
     fn architecture_memory_prevents_repeated_failure() {
         let mut memory = ArchitectureMemory::default();
         memory.record_failure("bad-topology".into());
-        assert!(memory.failed_topologies.contains(&"bad-topology".to_string()));
+        assert!(
+            memory
+                .failed_topologies
+                .contains(&"bad-topology".to_string())
+        );
     }
 }

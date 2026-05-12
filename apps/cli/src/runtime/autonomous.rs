@@ -132,17 +132,17 @@ pub fn generate_repair_branch(
     // Simulate "repairing" the failure signature.
     if failure_signature.starts_with("VERIFICATION_FAILURE") {
         repair_snapshot.runtime_effects.verification_failures = 0;
-        repair_snapshot.score.world_consistency.verification_consistency = 15.0; // Improved
+        repair_snapshot
+            .score
+            .world_consistency
+            .verification_consistency = 15.0; // Improved
     }
 
     Some(repair_snapshot)
 }
 
 /// Evaluate if a repair branch improves convergence without regression.
-pub fn evaluate_repair_convergence(
-    runtime: &BranchRuntime,
-    repair: &BranchSnapshot,
-) -> bool {
+pub fn evaluate_repair_convergence(runtime: &BranchRuntime, repair: &BranchSnapshot) -> bool {
     // Rule 10.2: Regression promotion is forbidden.
     repair.score.total() > runtime.committed_branch.score.total()
 }

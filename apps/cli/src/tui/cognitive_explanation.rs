@@ -45,11 +45,14 @@ pub trait CognitiveExplainer {
 pub struct AttentionFilteringLayer;
 
 impl AttentionFilteringLayer {
-    pub fn filter(explanations: Vec<CognitiveExplanation>, budget: usize) -> Vec<CognitiveExplanation> {
+    pub fn filter(
+        explanations: Vec<CognitiveExplanation>,
+        budget: usize,
+    ) -> Vec<CognitiveExplanation> {
         let mut sorted = explanations;
         // 7.2 Priority Rules: Critical > Warning > Notice > Info
         sorted.sort_by(|a, b| b.severity.partial_cmp(&a.severity).unwrap());
-        
+
         // 12.2 Projection Budget: maximum 16 explanations
         sorted.into_iter().take(budget).collect()
     }
@@ -96,11 +99,11 @@ pub struct CognitiveExplanationIntegrationLayer {
 
 impl CognitiveExplanationIntegrationLayer {
     pub fn process(&self) -> BilingualProjection {
-        let explanations: Vec<CognitiveExplanation> = self.explainers.iter()
-            .map(|e| e.explain())
-            .collect();
-        
-        let filtered = AttentionFilteringLayer::filter(explanations, self.aggregator.max_explanations);
+        let explanations: Vec<CognitiveExplanation> =
+            self.explainers.iter().map(|e| e.explain()).collect();
+
+        let filtered =
+            AttentionFilteringLayer::filter(explanations, self.aggregator.max_explanations);
         self.aggregator.aggregate(filtered)
     }
 }
@@ -113,12 +116,17 @@ pub struct CognitiveNarrativeRenderer {
 impl CognitiveNarrativeRenderer {
     pub fn new(max_narratives: usize) -> Self {
         Self {
-            aggregator: NarrativeAggregator { max_explanations: max_narratives },
+            aggregator: NarrativeAggregator {
+                max_explanations: max_narratives,
+            },
             attention_filter: AttentionFilteringLayer,
         }
     }
 
-    pub fn render_state(&self, state: crate::tui::runtime::RuntimeShellState) -> BilingualProjection {
+    pub fn render_state(
+        &self,
+        state: crate::tui::runtime::RuntimeShellState,
+    ) -> BilingualProjection {
         let explanation = self.explain_runtime_state(state);
         BilingualProjection {
             ja: explanation.summary_ja,
@@ -126,11 +134,17 @@ impl CognitiveNarrativeRenderer {
         }
     }
 
-    pub fn explain_state(&self, state: crate::tui::runtime::RuntimeShellState) -> CognitiveExplanation {
+    pub fn explain_state(
+        &self,
+        state: crate::tui::runtime::RuntimeShellState,
+    ) -> CognitiveExplanation {
         self.explain_runtime_state(state)
     }
 
-    fn explain_runtime_state(&self, state: crate::tui::runtime::RuntimeShellState) -> CognitiveExplanation {
+    fn explain_runtime_state(
+        &self,
+        state: crate::tui::runtime::RuntimeShellState,
+    ) -> CognitiveExplanation {
         use crate::tui::runtime::RuntimeShellState;
         match state {
             RuntimeShellState::Idle => CognitiveExplanation {
@@ -138,13 +152,17 @@ impl CognitiveNarrativeRenderer {
                 category: CognitiveCategory::Attention,
                 summary_ja: "認知ランタイムは待機状態です。".to_string(),
                 summary_en: "The cognitive runtime is currently idle.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
             RuntimeShellState::Thinking => CognitiveExplanation {
                 severity: CognitiveSeverity::Info,
                 category: CognitiveCategory::Execution,
                 summary_ja: "意図を処理中です。認知ランタイムが思考を開始しました。".to_string(),
-                summary_en: "Processing intent. The cognitive runtime has begun thinking.".to_string(),
+                summary_en: "Processing intent. The cognitive runtime has begun thinking."
+                    .to_string(),
                 detail_ja: Some("入力を解析し実行計画を生成しています。".to_string()),
                 detail_en: Some("Analyzing input and generating an execution plan.".to_string()),
                 recommendation_ja: None,
@@ -155,21 +173,31 @@ impl CognitiveNarrativeRenderer {
                 category: CognitiveCategory::Execution,
                 summary_ja: "認知ランタイムが入力内容を解析しています。".to_string(),
                 summary_en: "The cognitive runtime is analyzing the current intent.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
             RuntimeShellState::Apply => CognitiveExplanation {
                 severity: CognitiveSeverity::Notice,
                 category: CognitiveCategory::Execution,
                 summary_ja: "意味整合性を検証しながら実行を進行しています。".to_string(),
-                summary_en: "Execution is proceeding under semantic consistency validation.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                summary_en: "Execution is proceeding under semantic consistency validation."
+                    .to_string(),
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
             RuntimeShellState::Validate => CognitiveExplanation {
                 severity: CognitiveSeverity::Notice,
                 category: CognitiveCategory::Governance,
                 summary_ja: "実行前の統治裁定を行っています。".to_string(),
                 summary_en: "Governance arbitration is evaluating execution safety.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
             // Fallback for other states
             _ => CognitiveExplanation {
@@ -177,7 +205,10 @@ impl CognitiveNarrativeRenderer {
                 category: CognitiveCategory::Attention,
                 summary_ja: format!("認知ランタイムの状態: {}", state.label()),
                 summary_en: format!("Cognitive runtime state: {}", state.label()),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         }
     }
@@ -361,8 +392,11 @@ mod tests {
                 category: CognitiveCategory::Execution,
                 summary_ja: "実行が拒絶されました。".to_string(),
                 summary_en: "Execution was rejected.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
-            }
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
+            },
         });
         let explainer2 = Box::new(MockExplainer {
             explanation: CognitiveExplanation {
@@ -370,13 +404,18 @@ mod tests {
                 category: CognitiveCategory::Temporal,
                 summary_ja: "将来の安定性は維持されています。".to_string(),
                 summary_en: "Future stability is maintained.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
-            }
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
+            },
         });
 
         let layer = CognitiveExplanationIntegrationLayer {
             explainers: vec![explainer1, explainer2],
-            aggregator: NarrativeAggregator { max_explanations: 16 },
+            aggregator: NarrativeAggregator {
+                max_explanations: 16,
+            },
             attention_filter: AttentionFilteringLayer,
         };
 
@@ -472,21 +511,29 @@ mod tests {
 
     #[test]
     fn test_semantic_deduplication() {
-        let aggregator = NarrativeAggregator { max_explanations: 5 };
+        let aggregator = NarrativeAggregator {
+            max_explanations: 5,
+        };
         let explanations = vec![
             CognitiveExplanation {
                 severity: CognitiveSeverity::Info,
                 category: CognitiveCategory::Execution,
                 summary_ja: "安定性が低下しています。".to_string(),
                 summary_en: "Stability is decreasing.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
             CognitiveExplanation {
                 severity: CognitiveSeverity::Info,
                 category: CognitiveCategory::Execution,
                 summary_ja: "安定性が低下しています。".to_string(),
                 summary_en: "Stability is decreasing.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         ];
         let projection = aggregator.aggregate(explanations);

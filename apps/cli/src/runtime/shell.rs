@@ -322,7 +322,10 @@ pub fn commit_staged_transaction(
         commit_runtime_mutation(
             state,
             RuntimeMutation::Reject {
-                reason: format!("staged transaction validation failed: {:?}", staged.validation),
+                reason: format!(
+                    "staged transaction validation failed: {:?}",
+                    staged.validation
+                ),
                 originating_mutation: "commit_staged_transaction".to_string(),
                 governance_source: None,
                 convergence_source: None,
@@ -515,7 +518,11 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                 };
 
                 if let Some(repair) = repair_opt {
-                    state.branch_runtime.as_mut().unwrap().open_speculative(repair);
+                    state
+                        .branch_runtime
+                        .as_mut()
+                        .unwrap()
+                        .open_speculative(repair);
                     return;
                 } else {
                     commit_runtime_mutation(
@@ -580,7 +587,11 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                     (r.is_some(), r)
                 };
                 if let Some(repair) = repair_opt {
-                    state.branch_runtime.as_mut().unwrap().open_speculative(repair);
+                    state
+                        .branch_runtime
+                        .as_mut()
+                        .unwrap()
+                        .open_speculative(repair);
                     return;
                 } else {
                     commit_runtime_mutation(
@@ -2186,7 +2197,12 @@ mod tests {
         assert!(state.rejection.is_some());
         let projection = crate::tui::rendering::RuntimeProjection::from_state(&state);
         assert!(projection.rejection_label.is_some());
-        assert!(projection.rejection_label.unwrap().contains("target missing"));
+        assert!(
+            projection
+                .rejection_label
+                .unwrap()
+                .contains("target missing")
+        );
     }
 
     #[test]
@@ -2208,7 +2224,10 @@ mod tests {
 
         assert_eq!(state.runtime_state, RuntimeShellState::GovernanceRejected);
         assert!(state.rejection.is_some());
-        assert_eq!(state.rejection.as_ref().unwrap().reason, "test policy violation");
+        assert_eq!(
+            state.rejection.as_ref().unwrap().reason,
+            "test policy violation"
+        );
     }
 
     #[test]
@@ -2278,7 +2297,10 @@ mod tests {
             },
         );
 
-        assert_eq!(state.runtime_state, RuntimeShellState::GovernanceCollapseHalt);
+        assert_eq!(
+            state.runtime_state,
+            RuntimeShellState::GovernanceCollapseHalt
+        );
         // Rule 13.1 & 13.2: projection cleaned up before halt published
         assert!(state.active_transaction.is_none());
     }

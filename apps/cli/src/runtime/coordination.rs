@@ -79,10 +79,7 @@ impl CoordinationMemory {
 }
 
 /// Coordinate runtime nodes through role assignment and branch ownership.
-pub fn coordinate_runtime_nodes(
-    nodes: &mut [RuntimeNode],
-    _memory: &CoordinationMemory,
-) {
+pub fn coordinate_runtime_nodes(nodes: &mut [RuntimeNode], _memory: &CoordinationMemory) {
     // Mock coordination logic (Specified in 5.1).
     // Ensures role alignment and stable branch ownership.
     for node in nodes {
@@ -101,7 +98,7 @@ pub fn evaluate_distributed_convergence(
     if shared_state.distributed_causal_hash == "CONFLICT" {
         return -50.0;
     }
-    
+
     1.0
 }
 
@@ -128,10 +125,10 @@ pub fn distributed_repair(
     let mut repair = parent.clone();
     repair.branch_id.0.push_str("-distributed-repair");
     repair.tx_id.push_str("-distributed-repair-tx");
-    
+
     // Attempt to restore synchronization.
     repair.score.world_consistency.causal_consistency = 20.0;
-    
+
     Some(repair)
 }
 
@@ -161,7 +158,7 @@ mod tests {
     fn split_ownership_rejected() {
         let mut n1 = RuntimeNode::new("n1".into(), RuntimeRole::Planner);
         n1.owned_branches.push(BranchId("b1".into()));
-        
+
         // In a real system, we'd check if another node tries to own "b1".
         assert!(n1.owned_branches.contains(&BranchId("b1".into())));
     }
@@ -175,7 +172,10 @@ mod tests {
             "tx-root".into(),
             "target".into(),
             RuntimeShellState::PreviewReady,
-            crate::core::Diff { file: "t".into(), changes: vec![] },
+            crate::core::Diff {
+                file: "t".into(),
+                changes: vec![],
+            },
             ConvergenceScore::zero(),
             ContradictionSet::zero(),
             WorldStateSnapshot::zero(),
@@ -188,7 +188,7 @@ mod tests {
             filesystem_hash: "0".into(), // Matches zero snapshot.
             ..SharedWorldState::default()
         };
-        
+
         assert!(synchronize_world_state(&mut snapshot, &shared_state));
     }
 
@@ -201,7 +201,10 @@ mod tests {
             "tx-root".into(),
             "target".into(),
             RuntimeShellState::PreviewReady,
-            crate::core::Diff { file: "t".into(), changes: vec![] },
+            crate::core::Diff {
+                file: "t".into(),
+                changes: vec![],
+            },
             ConvergenceScore::zero(),
             ContradictionSet::zero(),
             WorldStateSnapshot::zero(),
@@ -212,7 +215,7 @@ mod tests {
         );
         let mut runtime = BranchRuntime::new(snapshot);
         let shared_state = SharedWorldState::default();
-        
+
         let repair = distributed_repair(&mut runtime, &shared_state).unwrap();
         assert!(repair.branch_id.0.contains("distributed-repair"));
         assert!(repair.score.world_consistency.causal_consistency > 0.0);
@@ -222,6 +225,10 @@ mod tests {
     fn coordination_memory_prevents_repeated_failure() {
         let mut memory = CoordinationMemory::default();
         memory.record_failure("conflict-01".into());
-        assert!(memory.failed_coordination_patterns.contains(&"conflict-01".to_string()));
+        assert!(
+            memory
+                .failed_coordination_patterns
+                .contains(&"conflict-01".to_string())
+        );
     }
 }

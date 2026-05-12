@@ -1,5 +1,5 @@
 use crate::core::Diff;
-use crate::runtime::semantic::{evaluate_semantic_convergence, SemanticConvergenceScore};
+use crate::runtime::semantic::{SemanticConvergenceScore, evaluate_semantic_convergence};
 use crate::runtime::synthesis::ArchitectureTopology;
 use crate::tui::runtime::RuntimeShellState;
 
@@ -355,12 +355,17 @@ impl BranchRuntime {
         }
 
         // Lowest ranked branches pruned first.
-        self.speculative_branches.truncate(self.budget.max_active_branches);
+        self.speculative_branches
+            .truncate(self.budget.max_active_branches);
     }
 
     /// Promote a specific speculative branch to committed.
     pub fn commit_branch_by_id(&mut self, id: &BranchId) -> bool {
-        let Some(pos) = self.speculative_branches.iter().position(|b| &b.branch_id == id) else {
+        let Some(pos) = self
+            .speculative_branches
+            .iter()
+            .position(|b| &b.branch_id == id)
+        else {
             return false;
         };
         let child = self.speculative_branches.remove(pos);
@@ -564,7 +569,10 @@ mod tests {
         runtime.open_speculative(s2);
 
         assert_eq!(runtime.speculative_branches.len(), 1);
-        assert_eq!(runtime.speculative_branches[0].branch_id, BranchId("c1".to_string()));
+        assert_eq!(
+            runtime.speculative_branches[0].branch_id,
+            BranchId("c1".to_string())
+        );
     }
 
     #[test]
@@ -607,18 +615,21 @@ mod tests {
     #[test]
     fn stable_branch_selected_consistently() {
         let mut runtime = make_runtime("p", "t");
-        
+
         let mut s1 = make_snapshot("c1", Some("p"), "t1");
         s1.score.architectural_consistency = 10.0;
-        
+
         let mut s2 = make_snapshot("c2", Some("p"), "t2");
         s2.score.architectural_consistency = 20.0; // winner
 
         runtime.open_speculative(s1);
         runtime.open_speculative(s2);
-        
+
         runtime.commit_branch();
-        assert_eq!(runtime.committed_branch.branch_id, BranchId("c2".to_string()));
+        assert_eq!(
+            runtime.committed_branch.branch_id,
+            BranchId("c2".to_string())
+        );
     }
 
     /// Rule 11: world_consistency_score_deterministic
@@ -626,11 +637,14 @@ mod tests {
     fn world_consistency_score_deterministic() {
         let mut s1 = make_snapshot("c1", None, "t1");
         let mut s2 = make_snapshot("c1", None, "t1");
-        
+
         evaluate_world_convergence(&mut s1);
         evaluate_world_convergence(&mut s2);
-        
-        assert_eq!(s1.score.world_consistency.total(), s2.score.world_consistency.total());
+
+        assert_eq!(
+            s1.score.world_consistency.total(),
+            s2.score.world_consistency.total()
+        );
     }
 
     /// Rule 11: verification_failure_penalized
@@ -638,7 +652,7 @@ mod tests {
     fn verification_failure_penalized() {
         let mut s = make_snapshot("c1", None, "t1");
         s.runtime_effects.verification_failures = 1;
-        
+
         evaluate_world_convergence(&mut s);
         assert!(s.score.world_consistency.verification_consistency < 0.0);
     }
@@ -648,7 +662,7 @@ mod tests {
     fn causal_divergence_detected() {
         let mut s = make_snapshot("c1", None, "t1");
         s.world_state.causal_state_hash = "INVALID".to_string();
-        
+
         evaluate_world_convergence(&mut s);
         assert!(s.score.world_consistency.causal_consistency < -50.0);
     }
@@ -698,7 +712,7 @@ mod tests {
         let mut runtime = make_runtime("parent-01", "core.rs");
         runtime.budget.max_active_branches = 5;
         runtime.budget.remaining_branches = 20;
-        
+
         for i in 0..10 {
             let mut s = make_snapshot(&format!("c-{}", i), Some("p"), "t");
             s.score.architectural_consistency = i as f32; // Higher i = higher score
@@ -707,7 +721,12 @@ mod tests {
 
         assert_eq!(runtime.speculative_branches.len(), 5);
         // Pruned lowest scores (0-4), kept highest (5-9)
-        assert!(runtime.speculative_branches.iter().all(|b| b.score.total() >= 5.0));
+        assert!(
+            runtime
+                .speculative_branches
+                .iter()
+                .all(|b| b.score.total() >= 5.0)
+        );
     }
 
     /// Rule 2: child never appears on the runtime surface before commit.
@@ -868,10 +887,7 @@ mod tests {
     fn parent_branch_id_set_on_child_snapshot() {
         let child = make_snapshot("child-01", Some("parent-01"), "core.rs");
 
-        assert_eq!(
-            child.parent_branch,
-            Some(BranchId("parent-01".to_string()))
-        );
+        assert_eq!(child.parent_branch, Some(BranchId("parent-01".to_string())));
         assert_eq!(child.branch_id, BranchId("child-01".to_string()));
     }
 

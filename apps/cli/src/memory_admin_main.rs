@@ -771,11 +771,12 @@ fn run_event_loop(
             .draw(|frame| render(frame, state))
             .map_err(|e| e.to_string())?;
 
-        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())?
-            && let Event::Key(key) = event::read().map_err(|e| e.to_string())?
-            && handle_key(state, key)
-        {
-            break;
+        if event::poll(Duration::from_millis(50)).map_err(|e| e.to_string())? {
+            if let Event::Key(key) = event::read().map_err(|e| e.to_string())? {
+                if key.kind == event::KeyEventKind::Press && handle_key(state, key) {
+                    break;
+                }
+            }
         }
     }
     Ok(())

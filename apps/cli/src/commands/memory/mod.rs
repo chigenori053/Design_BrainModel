@@ -1,3 +1,5 @@
+mod maintenance;
+
 use crate::command::{
     CommandError, CommandHandler, CommandPlugin, CommandRegistry, Output, SubCommandHandler,
 };
@@ -9,6 +11,10 @@ impl CommandPlugin for MemoryPlugin {
     fn register(&self, registry: &mut CommandRegistry) {
         let mut cmd = CommandHandler::new("memory");
         cmd.register_subcommand(SubCommandHandler::new("import", import));
+        cmd.register_subcommand(SubCommandHandler::new(
+            "maintenance",
+            maintenance::handle_maintenance,
+        ));
         registry.register(cmd);
     }
 }

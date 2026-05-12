@@ -239,7 +239,12 @@ mod tests {
     fn test_submit_generates_visible_event() {
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
-        handle_submit(&mut state, &core, "analyze workspace".to_string(), ".".into());
+        handle_submit(
+            &mut state,
+            &core,
+            "analyze workspace".to_string(),
+            ".".into(),
+        );
         state.handle_ui_events();
         assert!(!state.flattened_chat_lines().is_empty());
     }
@@ -277,7 +282,9 @@ mod tests {
         let lines = state.flattened_chat_lines();
         assert!(!lines.is_empty(), "runtime silence after empty response");
         assert!(
-            lines.iter().any(|l| l.starts_with("[THINKING]") || l.starts_with("[ERROR]")),
+            lines
+                .iter()
+                .any(|l| l.starts_with("[THINKING]") || l.starts_with("[ERROR]")),
             "no visible narrative after empty response: {lines:?}"
         );
     }
@@ -297,7 +304,12 @@ mod tests {
             }),
             seen_input: std::sync::Mutex::new(None),
         };
-        handle_submit(&mut state, &core, "analyze workspace".to_string(), ".".into());
+        handle_submit(
+            &mut state,
+            &core,
+            "analyze workspace".to_string(),
+            ".".into(),
+        );
         state.handle_ui_events();
         assert!(
             state
@@ -340,12 +352,14 @@ mod tests {
     fn test_english_intent_execution() {
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
-        handle_submit(&mut state, &core, "analyze workspace".to_string(), ".".into());
-        // "analyze workspace" starts with "analyze" → normalized to "analyze"
-        assert_eq!(
-            core.seen_input.lock().unwrap().as_deref(),
-            Some("analyze")
+        handle_submit(
+            &mut state,
+            &core,
+            "analyze workspace".to_string(),
+            ".".into(),
         );
+        // "analyze workspace" starts with "analyze" → normalized to "analyze"
+        assert_eq!(core.seen_input.lock().unwrap().as_deref(), Some("analyze"));
     }
 
     /// §14.2 — Japanese intent (解析) normalizes and reaches Core.
@@ -363,10 +377,7 @@ mod tests {
         // Must not be silent.
         assert!(!state.flattened_chat_lines().is_empty());
         // Intent should have been normalized to "analyze"
-        assert_eq!(
-            core.seen_input.lock().unwrap().as_deref(),
-            Some("analyze")
-        );
+        assert_eq!(core.seen_input.lock().unwrap().as_deref(), Some("analyze"));
     }
 
     /// §14.2 — Mixed bilingual intent normalizes correctly.
@@ -405,7 +416,9 @@ mod tests {
         state.handle_ui_events();
         let lines = state.flattened_chat_lines();
         assert!(
-            lines.iter().any(|l| l.starts_with("[ERROR]") || l.starts_with("[THINKING]")),
+            lines
+                .iter()
+                .any(|l| l.starts_with("[ERROR]") || l.starts_with("[THINKING]")),
             "no visible event for unknown intent: {lines:?}"
         );
     }
@@ -542,10 +555,19 @@ mod tests {
             }),
             seen_input: std::sync::Mutex::new(None),
         };
-        handle_submit(&mut state, &core, "analyze workspace".to_string(), ".".into());
+        handle_submit(
+            &mut state,
+            &core,
+            "analyze workspace".to_string(),
+            ".".into(),
+        );
         state.handle_ui_events();
         let lines = state.flattened_chat_lines();
-        assert!(lines.iter().any(|l| l.contains("planning workspace update")));
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.contains("planning workspace update"))
+        );
         assert!(lines.iter().any(|l| l.contains("workspace updated")));
     }
 
@@ -566,7 +588,12 @@ mod tests {
             }),
             seen_input: std::sync::Mutex::new(None),
         };
-        handle_submit(&mut state, &core, "redesign workspace".to_string(), ".".into());
+        handle_submit(
+            &mut state,
+            &core,
+            "redesign workspace".to_string(),
+            ".".into(),
+        );
         state.handle_ui_events();
         let panel = state.design_panel_lines();
         assert!(
@@ -671,12 +698,7 @@ mod tests {
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
         for i in 0..5 {
-            handle_submit(
-                &mut state,
-                &core,
-                format!("command {i}"),
-                ".".into(),
-            );
+            handle_submit(&mut state, &core, format!("command {i}"), ".".into());
             state.handle_ui_events();
         }
         // No panic, pipeline stable, events visible.

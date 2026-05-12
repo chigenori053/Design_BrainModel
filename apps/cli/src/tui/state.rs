@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use strategy_engine::ExecutionPlanCandidate;
 
 pub use crate::core::{
@@ -87,6 +87,9 @@ pub enum UiEvent {
     Pipeline {
         state: String,
     },
+    Runtime {
+        message: String,
+    },
     Next {
         actions: Vec<String>,
     },
@@ -118,6 +121,7 @@ impl UiEvent {
             Self::DesignUpdate { .. } => "DESIGN",
             Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
+            Self::Runtime { .. } => "RUNTIME",
             Self::Next { .. } => "NEXT",
             Self::Error { .. } => "ERROR",
             Self::ErrorRecovery { .. } => "RECOVERY",
@@ -134,9 +138,10 @@ impl UiEvent {
             Self::Execution { step } => step.clone(),
             Self::Preview { diff } => diff.join("\n"),
             Self::Diff { file, changes } => render_diff(file, changes),
-            Self::Result { message } | Self::Error { message } | Self::Debug { message } => {
-                message.clone()
-            }
+            Self::Result { message }
+            | Self::Runtime { message }
+            | Self::Error { message }
+            | Self::Debug { message } => message.clone(),
             Self::DesignUpdate { summary, score } => format!("Score: {score:.2}\n- {summary}"),
             Self::DesignDiff { changes } => changes.join("\n"),
             Self::Pipeline { state } => state.clone(),
@@ -389,8 +394,18 @@ pub struct RejectionInfo {
     pub convergence_source: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct TuiDiagnostics {
+    pub last_event: Option<String>,
+    pub last_focus_transition: Option<String>,
+    pub last_mutation: Option<String>,
+    pub raw_mode_active: bool,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TuiState {
+    pub diagnostic_mode: bool,
+    pub diagnostics: TuiDiagnostics,
     pub chat: ChatState,
     pub design_doc: DesignDocument,
     pub input: InputBuffer,
@@ -453,6 +468,8 @@ impl TuiState {
     pub fn new(payload: UiPayload) -> Self {
         let design_doc = seed_design_document(&payload);
         Self {
+            diagnostic_mode: false,
+            diagnostics: TuiDiagnostics::default(),
             chat: ChatState {
                 events: seed_chat_stream(&payload),
             },
@@ -525,6 +542,9 @@ impl TuiState {
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
+        if key.kind != KeyEventKind::Press {
+            return TuiAction::None;
+        }
         self.increment_state_generation();
         match key.code {
             KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -538,6 +558,7 @@ impl TuiState {
                 return TuiAction::Quit;
             }
             KeyCode::Tab => {
+                let prev_focus = self.focus;
                 if self.focus == Focus::Input
                     && let Some(completed) = complete_command(&self.input.text)
                 {
@@ -545,10 +566,19 @@ impl TuiState {
                     return TuiAction::None;
                 }
                 self.focus = self.focus.next();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_focus_transition =
+                        Some(format!("{:?} -> {:?}", prev_focus, self.focus));
+                }
                 return TuiAction::None;
             }
             KeyCode::BackTab => {
+                let prev_focus = self.focus;
                 self.focus = self.focus.previous();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_focus_transition =
+                        Some(format!("{:?} -> {:?}", prev_focus, self.focus));
+                }
                 return TuiAction::None;
             }
             _ => {}
@@ -661,6 +691,7 @@ impl TuiState {
                     self.runtime_state = next_state;
                 }
             }
+            UiEvent::Error { .. } if self.rejection.is_some() => {}
             UiEvent::Error { .. } => {
                 let active_tx = self.active_transaction.is_some();
                 if should_accept_runtime_transition(
@@ -785,6 +816,9 @@ impl TuiState {
                 self.history_cursor = None;
                 self.input.clear();
                 self.update_runtime_intent_state(&submitted);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some(format!("submit('{}')", submitted));
+                }
                 self.enqueue_event(UiEvent::Next {
                     actions: vec![submitted.clone()],
                 });
@@ -792,10 +826,16 @@ impl TuiState {
             }
             KeyCode::Backspace => {
                 self.input.backspace();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("backspace()".to_string());
+                }
                 TuiAction::None
             }
             KeyCode::Delete => {
                 self.input.delete();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("delete()".to_string());
+                }
                 TuiAction::None
             }
             KeyCode::Left => {
@@ -817,6 +857,10 @@ impl TuiState {
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
                 if self.input.line_count() < 3 || ch != '\n' {
                     self.input.insert_char(ch);
+                    if self.diagnostic_mode {
+                        self.diagnostics.last_mutation =
+                            Some(format!("insert_char('{}')", ch.escape_debug()));
+                    }
                 }
                 TuiAction::None
             }
@@ -828,15 +872,28 @@ impl TuiState {
         match key.code {
             KeyCode::PageUp | KeyCode::Up => {
                 self.chat_scroll.user_scroll_up(5);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("chat_scroll_up".to_string());
+                }
             }
             KeyCode::PageDown | KeyCode::Down => {
                 self.chat_scroll.user_scroll_down(5);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("chat_scroll_down".to_string());
+                }
             }
             KeyCode::End => {
                 self.chat_scroll.scroll_to_bottom();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("chat_scroll_bottom".to_string());
+                }
             }
             KeyCode::Char('n') | KeyCode::Char('N') => {
                 self.narrative_expanded = !self.narrative_expanded;
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation =
+                        Some(format!("toggle_narrative({})", self.narrative_expanded));
+                }
             }
             _ => {}
         }
@@ -847,19 +904,37 @@ impl TuiState {
         match key.code {
             KeyCode::PageUp | KeyCode::Up => {
                 self.design_scroll = self.design_scroll.saturating_sub(5);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("design_scroll_up".to_string());
+                }
             }
             KeyCode::PageDown | KeyCode::Down => {
                 let max = self.design_doc.rendered.len().saturating_sub(1);
                 self.design_scroll = (self.design_scroll + 5).min(max);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("design_scroll_down".to_string());
+                }
             }
             KeyCode::Home => {
                 self.design_scroll = 0;
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("design_scroll_home".to_string());
+                }
             }
             KeyCode::End => {
                 self.design_scroll = self.design_doc.rendered.len().saturating_sub(1);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("design_scroll_end".to_string());
+                }
             }
             KeyCode::Char('d') | KeyCode::Char('D') => {
                 self.design_collapsed = !self.design_collapsed;
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some(format!(
+                        "toggle_design_collapsed({})",
+                        self.design_collapsed
+                    ));
+                }
             }
             _ => {}
         }

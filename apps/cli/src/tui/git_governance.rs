@@ -1,6 +1,8 @@
-use serde::{Serialize, Deserialize};
+use crate::tui::cognitive_explanation::{
+    CognitiveCategory, CognitiveExplanation, CognitiveSeverity,
+};
 use crate::tui::cognitive_workspace::{WorkspaceRiskLevel, WorkspaceSemanticProjection};
-use crate::tui::cognitive_explanation::{CognitiveExplanation, CognitiveSeverity, CognitiveCategory};
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub enum StabilityLevel {
@@ -48,25 +50,59 @@ pub struct GitGovernanceSystem {
 }
 
 impl GitGovernanceSystem {
-    pub fn validate_commit(&self, projection: &WorkspaceSemanticProjection, class: CommitSemanticClass) -> CommitPermit {
-        let (approved, ja_msg, en_msg, stability) = if class == CommitSemanticClass::SelfModification {
-            (false, "自己変更 commit によりランタイム安定性へ影響する可能性があります。", "Self-modification commits may affect runtime stability.", StabilityLevel::Critical)
-        } else if class == CommitSemanticClass::CatastrophicMutation {
-            (false, "致命的な改変が検出されたため commit は拒否されました。", "Commit was rejected due to catastrophic mutation detection.", StabilityLevel::Critical)
-        } else if projection.risk_level == WorkspaceRiskLevel::Critical {
-            (false, "将来的な認知崩壊リスクが検出されました。", "Potential future cognitive collapse has been detected.", StabilityLevel::Critical)
-        } else if projection.risk_level == WorkspaceRiskLevel::High {
-            (false, "Runtime Core の不安定化リスクが検出されたため commit は拒否されました。", "Commit was rejected due to Runtime Core instability risks.", StabilityLevel::Unstable)
-        } else {
-            (true, "意味的整合性が維持されているため commit が許可されました。", "Commit was approved because semantic consistency was preserved.", StabilityLevel::Stable)
-        };
+    pub fn validate_commit(
+        &self,
+        projection: &WorkspaceSemanticProjection,
+        class: CommitSemanticClass,
+    ) -> CommitPermit {
+        let (approved, ja_msg, en_msg, stability) =
+            if class == CommitSemanticClass::SelfModification {
+                (
+                    false,
+                    "自己変更 commit によりランタイム安定性へ影響する可能性があります。",
+                    "Self-modification commits may affect runtime stability.",
+                    StabilityLevel::Critical,
+                )
+            } else if class == CommitSemanticClass::CatastrophicMutation {
+                (
+                    false,
+                    "致命的な改変が検出されたため commit は拒否されました。",
+                    "Commit was rejected due to catastrophic mutation detection.",
+                    StabilityLevel::Critical,
+                )
+            } else if projection.risk_level == WorkspaceRiskLevel::Critical {
+                (
+                    false,
+                    "将来的な認知崩壊リスクが検出されました。",
+                    "Potential future cognitive collapse has been detected.",
+                    StabilityLevel::Critical,
+                )
+            } else if projection.risk_level == WorkspaceRiskLevel::High {
+                (
+                    false,
+                    "Runtime Core の不安定化リスクが検出されたため commit は拒否されました。",
+                    "Commit was rejected due to Runtime Core instability risks.",
+                    StabilityLevel::Unstable,
+                )
+            } else {
+                (
+                    true,
+                    "意味的整合性が維持されているため commit が許可されました。",
+                    "Commit was approved because semantic consistency was preserved.",
+                    StabilityLevel::Stable,
+                )
+            };
 
         CommitPermit {
             approved,
             rollback_recoverable: projection.rollback_recoverable,
             semantic_stability: stability,
             governance_reason: CognitiveExplanation {
-                severity: if approved { CognitiveSeverity::Info } else { CognitiveSeverity::Critical },
+                severity: if approved {
+                    CognitiveSeverity::Info
+                } else {
+                    CognitiveSeverity::Critical
+                },
                 category: CognitiveCategory::Governance,
                 summary_ja: ja_msg.to_string(),
                 summary_en: en_msg.to_string(),
@@ -78,19 +114,41 @@ impl GitGovernanceSystem {
         }
     }
 
-    pub fn validate_merge(&self, source_projection: &WorkspaceSemanticProjection, target_projection: &WorkspaceSemanticProjection) -> CommitPermit {
-        let (approved, ja_msg, en_msg, stability) = if source_projection.risk_level == WorkspaceRiskLevel::Critical || target_projection.risk_level == WorkspaceRiskLevel::Critical {
-            (false, "merge により Runtime Governance の整合性が崩壊する可能性があります。", "The merge may destabilize Runtime Governance consistency.", StabilityLevel::Critical)
+    pub fn validate_merge(
+        &self,
+        source_projection: &WorkspaceSemanticProjection,
+        target_projection: &WorkspaceSemanticProjection,
+    ) -> CommitPermit {
+        let (approved, ja_msg, en_msg, stability) = if source_projection.risk_level
+            == WorkspaceRiskLevel::Critical
+            || target_projection.risk_level == WorkspaceRiskLevel::Critical
+        {
+            (
+                false,
+                "merge により Runtime Governance の整合性が崩壊する可能性があります。",
+                "The merge may destabilize Runtime Governance consistency.",
+                StabilityLevel::Critical,
+            )
         } else {
-            (true, "merge の安全性が確認されました。", "Merge safety was confirmed.", StabilityLevel::Stable)
+            (
+                true,
+                "merge の安全性が確認されました。",
+                "Merge safety was confirmed.",
+                StabilityLevel::Stable,
+            )
         };
 
         CommitPermit {
             approved,
-            rollback_recoverable: source_projection.rollback_recoverable && target_projection.rollback_recoverable,
+            rollback_recoverable: source_projection.rollback_recoverable
+                && target_projection.rollback_recoverable,
             semantic_stability: stability,
             governance_reason: CognitiveExplanation {
-                severity: if approved { CognitiveSeverity::Info } else { CognitiveSeverity::Critical },
+                severity: if approved {
+                    CognitiveSeverity::Info
+                } else {
+                    CognitiveSeverity::Critical
+                },
                 category: CognitiveCategory::Governance,
                 summary_ja: ja_msg.to_string(),
                 summary_en: en_msg.to_string(),
@@ -111,14 +169,20 @@ pub struct GovernedGitExecutor {
 impl GovernedGitExecutor {
     pub fn execute_commit(&self, permit: &CommitPermit, message: &str) -> Result<String, String> {
         if self.permit_required && !permit.approved {
-            return Err(format!("Git commit blocked: {}", permit.governance_reason.summary_en));
+            return Err(format!(
+                "Git commit blocked: {}",
+                permit.governance_reason.summary_en
+            ));
         }
         Ok(format!("Governed commit executed: {}", message))
     }
 
     pub fn execute_merge(&self, permit: &CommitPermit, branch: &str) -> Result<String, String> {
         if self.permit_required && !permit.approved {
-            return Err(format!("Git merge blocked: {}", permit.governance_reason.summary_en));
+            return Err(format!(
+                "Git merge blocked: {}",
+                permit.governance_reason.summary_en
+            ));
         }
         Ok(format!("Governed merge executed with branch: {}", branch))
     }
@@ -140,7 +204,10 @@ mod tests {
                 category: CognitiveCategory::Governance,
                 summary_ja: "Test".to_string(),
                 summary_en: "Test".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         }
     }
@@ -156,7 +223,10 @@ mod tests {
         let proj = test_projection(WorkspaceRiskLevel::Minimal);
         let permit = system.validate_commit(&proj, CommitSemanticClass::SafeRefactor);
         assert!(permit.approved);
-        assert_eq!(permit.governance_reason.summary_en, "Commit was approved because semantic consistency was preserved.");
+        assert_eq!(
+            permit.governance_reason.summary_en,
+            "Commit was approved because semantic consistency was preserved."
+        );
     }
 
     #[test]
@@ -170,7 +240,10 @@ mod tests {
         let proj = test_projection(WorkspaceRiskLevel::High);
         let permit = system.validate_commit(&proj, CommitSemanticClass::RuntimeMutation);
         assert!(!permit.approved);
-        assert_eq!(permit.governance_reason.summary_en, "Commit was rejected due to Runtime Core instability risks.");
+        assert_eq!(
+            permit.governance_reason.summary_en,
+            "Commit was rejected due to Runtime Core instability risks."
+        );
     }
 
     #[test]
@@ -184,7 +257,10 @@ mod tests {
         let proj = test_projection(WorkspaceRiskLevel::Minimal);
         let permit = system.validate_commit(&proj, CommitSemanticClass::SelfModification);
         assert!(!permit.approved);
-        assert_eq!(permit.governance_reason.summary_en, "Self-modification commits may affect runtime stability.");
+        assert_eq!(
+            permit.governance_reason.summary_en,
+            "Self-modification commits may affect runtime stability."
+        );
     }
 
     #[test]
@@ -199,12 +275,17 @@ mod tests {
         let t_proj = test_projection(WorkspaceRiskLevel::Minimal);
         let permit = system.validate_merge(&s_proj, &t_proj);
         assert!(!permit.approved);
-        assert_eq!(permit.governance_reason.summary_en, "The merge may destabilize Runtime Governance consistency.");
+        assert_eq!(
+            permit.governance_reason.summary_en,
+            "The merge may destabilize Runtime Governance consistency."
+        );
     }
 
     #[test]
     fn test_governed_git_executor_blocked() {
-        let executor = GovernedGitExecutor { permit_required: true };
+        let executor = GovernedGitExecutor {
+            permit_required: true,
+        };
         let permit = CommitPermit {
             approved: false,
             rollback_recoverable: true,
@@ -214,7 +295,10 @@ mod tests {
                 category: CognitiveCategory::Governance,
                 summary_ja: "拒否".to_string(),
                 summary_en: "Rejected".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         };
         let result = executor.execute_commit(&permit, "message");
@@ -223,7 +307,9 @@ mod tests {
 
     #[test]
     fn test_governed_git_executor_bypass_impossible() {
-        let executor = GovernedGitExecutor { permit_required: true };
+        let executor = GovernedGitExecutor {
+            permit_required: true,
+        };
         assert!(executor.permit_required);
     }
 }

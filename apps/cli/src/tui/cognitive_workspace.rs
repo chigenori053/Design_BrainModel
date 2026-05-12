@@ -1,5 +1,7 @@
+use crate::tui::cognitive_explanation::{
+    CognitiveCategory, CognitiveExplanation, CognitiveSeverity,
+};
 use serde::{Deserialize, Serialize};
-use crate::tui::cognitive_explanation::{CognitiveExplanation, CognitiveSeverity, CognitiveCategory};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct CognitiveShellState {
@@ -282,7 +284,10 @@ impl WorkspaceSemanticProjectionEngine {
                 category: CognitiveCategory::Execution,
                 summary_ja: "待機状態です。".to_string(),
                 summary_en: "Idle state.".to_string(),
-                detail_ja: None, detail_en: None, recommendation_ja: None, recommendation_en: None,
+                detail_ja: None,
+                detail_en: None,
+                recommendation_ja: None,
+                recommendation_en: None,
             },
         }
     }

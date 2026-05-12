@@ -9,7 +9,7 @@ use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
 pub const FAILED_BOOTSTRAP: &str = "FAILED_BOOTSTRAP";
 pub const FAILED_RUNTIME: &str = "FAILED_RUNTIME";
 
-pub fn start_runtime_tui() -> Result<(), String> {
+pub fn start_runtime_tui(diagnostic: bool) -> Result<(), String> {
     let initial = initial_runtime_state();
     if initial.label() != "IDLE" {
         return Err(format!(
@@ -22,7 +22,7 @@ pub fn start_runtime_tui() -> Result<(), String> {
     let _event = emit_debug("RUNTIME][BOOTSTRAP", "start", DebugLevel::Info);
 
     let result = if tui_mode {
-        crate::tui::run_tui(empty_payload())
+        crate::tui::run_tui(empty_payload(), diagnostic)
     } else {
         run_runtime_loop_stdio()
     };

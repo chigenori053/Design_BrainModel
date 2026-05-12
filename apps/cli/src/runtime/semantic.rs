@@ -129,23 +129,20 @@ impl SemanticConvergenceScore {
 }
 
 /// Semantic Evaluation Engine (Specified in 5).
-pub fn evaluate_semantic_convergence(
-    snapshot: &mut BranchSnapshot,
-    _runtime: &BranchRuntime,
-) {
+pub fn evaluate_semantic_convergence(snapshot: &mut BranchSnapshot, _runtime: &BranchRuntime) {
     // 5.1 Semantic Graph Construction (Mocked).
     let _graph = SemanticGraph::default();
-    
+
     // 5.2 Contradiction Detection (Rule-based).
     let penalty = 0.0;
-    
+
     // Rule: Responsibility Collision detection.
     // (Logic: check if multiple nodes share identical intent signatures).
-    
+
     // Rule: Ownership Drift.
-    
+
     // Rule: Invalid Abstraction.
-    
+
     // Rule: Intent Mismatch.
 
     snapshot.score.semantic_score.contradiction_penalty = penalty;
@@ -161,11 +158,11 @@ pub fn restore_intent(
     let mut repair = parent.clone();
     repair.branch_id.0.push_str("-semantic-repair");
     repair.tx_id.push_str("-semantic-repair-tx");
-    
+
     // Restore intent stability.
     repair.score.semantic_score.intent_stability = 20.0;
     repair.score.semantic_score.update_total();
-    
+
     Some(repair)
 }
 
@@ -173,8 +170,8 @@ pub fn restore_intent(
 mod tests {
     use super::*;
     use crate::runtime::branch::{
-        BranchId, BranchSnapshot, ContradictionSet, ConvergenceScore,
-        RuntimeEffectSet, WorldStateSnapshot,
+        BranchId, BranchSnapshot, ContradictionSet, ConvergenceScore, RuntimeEffectSet,
+        WorldStateSnapshot,
     };
     use crate::runtime::synthesis::ArchitectureTopology;
     use crate::tui::runtime::RuntimeShellState;
@@ -186,7 +183,10 @@ mod tests {
             format!("tx-{id}"),
             "target".into(),
             RuntimeShellState::PreviewReady,
-            crate::core::Diff { file: "t".into(), changes: vec![] },
+            crate::core::Diff {
+                file: "t".into(),
+                changes: vec![],
+            },
             ConvergenceScore::zero(),
             ContradictionSet::zero(),
             WorldStateSnapshot::zero(),

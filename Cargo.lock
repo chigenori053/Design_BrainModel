@@ -3067,6 +3067,7 @@ dependencies = [
  "memory_space_phase14",
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -13,6 +13,10 @@ name = "dbm"
 path = "src/main.rs"
 
 [[bin]]
+name = "design_cli"
+path = "src/design_cli_main.rs"
+
+[[bin]]
 name = "verify_cli"
 path = "src/verify_cli_main.rs"
 

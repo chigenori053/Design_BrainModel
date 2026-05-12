@@ -8,11 +8,17 @@
 //! 4. **重複排除 (Deduplication)**: 類似度が高い場合は保存しない
 
 pub mod generalized_memory;
+pub mod maintenance;
 pub mod optimizer;
 pub mod persistence_store;
 pub mod similarity;
 
 pub use generalized_memory::GeneralizedMemory;
+pub use maintenance::{
+    DuplicateMemory, DuplicateReason, MaintenanceDedupAuditEntry, MaintenanceDedupOptions,
+    MaintenanceDedupResult, compute_serialized_hash, compute_spectrum_hash, find_duplicates,
+    is_protected, run_dedup, save_rollback_snapshot,
+};
 pub use optimizer::{
     DUPLICATE_THRESHOLD, DecisionAction, DecisionEngine, DecisionEvidence, DecisionPolicy,
     IngestResult, SimilarityProfile, UNIQUE_THRESHOLD, UpgradeGate,

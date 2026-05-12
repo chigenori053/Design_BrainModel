@@ -1,6 +1,6 @@
 use ratatui::{
     Frame,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::Line,
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -17,44 +17,16 @@ pub enum PanelCellOwner {
     Input,
     Runtime,
     Diff,
+    Diagnostics,
     Status,
 }
 
 pub fn render(frame: &mut Frame, snapshot: &RenderSnapshot) {
     let area = frame.area();
-    let layout = layout_for_area(area);
+    let layout = crate::tui::rendering::layout_for_area(area, snapshot.diagnostics.is_some());
     let immutable = FrameComposer::compose(snapshot.clone(), layout);
     let projection = FullSurfaceProjection { frame: immutable };
     SurfaceProjector::project(frame, &projection);
-}
-
-pub fn layout_for_area(area: Rect) -> LayoutMetadata {
-    let rows = layout_rows(area);
-    let middle = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
-        .split(rows[2]);
-
-    LayoutMetadata {
-        viewport: area,
-        header: rows[0],
-        input: rows[1],
-        runtime: middle[0],
-        diff: middle[1],
-        status: rows[3],
-    }
-}
-
-fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(1),
-            Constraint::Length(5),
-            Constraint::Min(8),
-            Constraint::Length(1),
-        ])
-        .split(area)
 }
 
 pub fn runtime_panel_bounds(layout: &LayoutMetadata) -> Rect {
@@ -67,13 +39,19 @@ pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
         layout.input,
         layout.runtime,
         layout.diff,
+        layout.diagnostics,
         layout.status,
     ];
     panels.iter().enumerate().any(|(index, panel)| {
-        panels
-            .iter()
-            .skip(index + 1)
-            .any(|other| rects_overlap(*panel, *other))
+        if panel.width == 0 || panel.height == 0 {
+            return false;
+        }
+        panels.iter().skip(index + 1).any(|other| {
+            if other.width == 0 || other.height == 0 {
+                return false;
+            }
+            rects_overlap(*panel, *other)
+        })
     })
 }
 
@@ -83,6 +61,7 @@ pub fn cell_ownership_map(layout: &LayoutMetadata) -> Vec<(u16, u16, PanelCellOw
     push_owned_cells(&mut cells, layout.input, PanelCellOwner::Input);
     push_owned_cells(&mut cells, layout.runtime, PanelCellOwner::Runtime);
     push_owned_cells(&mut cells, layout.diff, PanelCellOwner::Diff);
+    push_owned_cells(&mut cells, layout.diagnostics, PanelCellOwner::Diagnostics);
     push_owned_cells(&mut cells, layout.status, PanelCellOwner::Status);
     cells
 }
@@ -122,6 +101,7 @@ impl SurfaceProjector {
         render_runtime_state(frame, immutable);
         render_diff_preview(frame, immutable);
         render_status_line(frame, immutable);
+        render_diagnostics_overlay(frame, immutable);
         if let Some(cursor) = immutable.cursor {
             frame.set_cursor_position((cursor.x, cursor.y));
         }
@@ -150,9 +130,7 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
 
-    let lines_vec = snapshot
-        .runtime
-        .runtime_panel_lines(snapshot.is_expanded);
+    let lines_vec = snapshot.runtime.runtime_panel_lines(snapshot.is_expanded);
 
     let has_critical = lines_vec.iter().any(|l| l.contains("[CRITICAL]"));
 
@@ -161,10 +139,7 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
         .title(" Cognitive Narrative ")
         .border_style(active_border(snapshot.focus == Focus::Chat, has_critical));
 
-    let lines = lines_vec
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+    let lines = lines_vec.into_iter().map(Line::from).collect::<Vec<_>>();
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
@@ -256,9 +231,7 @@ fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
 
 fn active_border(active: bool, critical: bool) -> Style {
     if critical {
-        Style::default()
-            .fg(Color::Red)
-            .add_modifier(Modifier::BOLD)
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
     } else if active {
         Style::default()
             .fg(Color::Cyan)
@@ -266,6 +239,42 @@ fn active_border(active: bool, critical: bool) -> Style {
     } else {
         Style::default().fg(Color::DarkGray)
     }
+}
+
+fn render_diagnostics_overlay(frame: &mut Frame, immutable: &ImmutableFrame) {
+    let Some(diagnostics) = &immutable.snapshot.diagnostics else {
+        return;
+    };
+
+    let area = immutable.layout.diagnostics;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+
+    let text = vec![
+        Line::from(format!(" [EVENT] {}", diagnostics.last_event)),
+        Line::from(format!(" [FOCUS] {}", diagnostics.last_focus)),
+        Line::from(format!(" [INPUT] {}", diagnostics.last_mutation)),
+        Line::from(format!(" [SUBSTRATE] raw_mode={}", diagnostics.raw_mode)),
+    ];
+
+    // DBM-DIAGNOSTICS-RENDER-BINDING-INTEGRATION-SPEC v1.0 Compliance
+    // 7.1 Clear Before Render
+    frame.render_widget(Clear, area);
+
+    frame.render_widget(
+        Paragraph::new(text)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    // 6.3 Title Visibility & 8.2 Rect Visualization
+                    .title(format!(" DIAGNOSTICS {:?} ", area))
+                    // 6.1 Temporary High-Contrast Mode
+                    .border_style(Style::default().fg(Color::Yellow).bg(Color::Black)),
+            )
+            .wrap(Wrap { trim: true }),
+        area,
+    );
 }
 
 #[cfg(test)]
@@ -366,14 +375,6 @@ mod tests {
             .collect::<String>()
     }
 
-    fn runtime_content_row(
-        buffer: &Buffer,
-        terminal_width: u16,
-        layout: &LayoutMetadata,
-    ) -> String {
-        buffer_rect_row(buffer, terminal_width, layout.runtime, 1)
-    }
-
     #[test]
     fn repeated_full_redraw_is_identical() {
         let state = TuiState::new(empty_payload());
@@ -468,7 +469,7 @@ mod tests {
 
     #[test]
     fn runtime_panel_no_overlap() {
-        let layout = layout_for_area(Rect::new(0, 0, 100, 24));
+        let layout = crate::tui::rendering::layout_for_area(Rect::new(0, 0, 100, 24), false);
         let runtime = runtime_panel_bounds(&layout);
         let ownership = cell_ownership_map(&layout);
         let runtime_cells = ownership
@@ -518,8 +519,8 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         assert!(
-            buffer_text(terminal.backend().buffer()).contains("整合性") ||
-            buffer_text(terminal.backend().buffer()).contains("Execution")
+            buffer_text(terminal.backend().buffer()).contains("整合性")
+                || buffer_text(terminal.backend().buffer()).contains("Execution")
         );
 
         state.runtime_state = RuntimeShellState::Idle;
@@ -535,7 +536,7 @@ mod tests {
         let state = TuiState::new(empty_payload());
         let width = 100;
         let height = 24;
-        let layout = layout_for_area(Rect::new(0, 0, width, height));
+        let layout = crate::tui::rendering::layout_for_area(Rect::new(0, 0, width, height), false);
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
@@ -700,7 +701,9 @@ mod tests {
 
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
-            render_source.matches(".title(\" Cognitive Narrative \")").count(),
+            render_source
+                .matches(".title(\" Cognitive Narrative \")")
+                .count(),
             1
         );
         assert_eq!(rendering_source.matches("[JA] {}").count(), 1);
@@ -804,5 +807,73 @@ mod tests {
         for token in ["[IR-TRACE]", "[GRAPH]", "[SCORE]", "[CODING]"] {
             assert!(!surface.contains(token), "{token} should be filtered");
         }
+    }
+
+    #[test]
+    fn test_diagnostics_visible_when_enabled() {
+        let mut state = TuiState::new(empty_payload());
+        state.diagnostic_mode = true;
+        state.diagnostics.last_event = Some("DIAG_TEST_EVENT".to_string());
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        full_repaint(&mut terminal, &state);
+
+        let surface = buffer_text(terminal.backend().buffer());
+        assert!(
+            surface.contains("DIAGNOSTICS"),
+            "Buffer should contain DIAGNOSTICS title"
+        );
+        assert!(
+            surface.contains("DIAG_TEST_EVENT"),
+            "Buffer should contain the test event"
+        );
+    }
+
+    #[test]
+    fn test_no_layout_overlap_with_diagnostics() {
+        let area = Rect::new(0, 0, 120, 24);
+        let layout = crate::tui::rendering::layout_for_area(area, true);
+        assert!(
+            !panel_overlap_detected(&layout),
+            "Layout panels should not overlap when diagnostics is enabled"
+        );
+        assert!(
+            layout.diagnostics.width > 0,
+            "Diagnostics area should have positive width"
+        );
+    }
+
+    #[test]
+    fn test_diagnostics_uses_authoritative_layout_rect() {
+        let area = Rect::new(0, 0, 120, 24);
+        let layout = crate::tui::rendering::layout_for_area(area, true);
+        let diag_rect = layout.diagnostics;
+
+        let mut state = TuiState::new(empty_payload());
+        state.diagnostic_mode = true;
+        let snapshot = RenderSnapshot::from(&state);
+
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        terminal
+            .draw(|frame| {
+                let layout = crate::tui::rendering::layout_for_area(
+                    frame.area(),
+                    snapshot.diagnostics.is_some(),
+                );
+                let immutable = FrameComposer::compose(snapshot.clone(), layout);
+                render_diagnostics_overlay(frame, &immutable);
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        // Check if the title is at the expected location (diag_rect.x + 1)
+        let title_content = buffer_rect_row(buffer, 120, diag_rect, 0);
+        assert!(
+            title_content.contains("DIAGNOSTICS"),
+            "Title 'DIAGNOSTICS' should be rendered in the allocated rect"
+        );
     }
 }
