@@ -319,10 +319,9 @@ mod tests {
         let output = String::from_utf8(output).expect("utf8");
 
         assert_eq!(core.calls(), 0);
-        assert!(output.contains("state=IDLE"), "{output}");
-        assert!(output.contains("Transaction: (none)"), "{output}");
-        assert!(output.contains("Target: (none)"), "{output}");
-        assert!(output.contains("No preview available"), "{output}");
+        assert!(output.contains("runtime idle"), "{output}");
+        assert!(output.contains("no active transaction"), "{output}");
+        assert!(output.contains("transaction reverted"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
     }
@@ -342,7 +341,8 @@ mod tests {
         let output = String::from_utf8(output).expect("utf8");
 
         assert_eq!(core.calls(), 0);
-        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(output.contains("preview ready"), "{output}");
+        assert!(output.contains("transaction active"), "{output}");
         assert!(!output.contains("[PROPOSAL]"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
@@ -363,7 +363,8 @@ mod tests {
         let output = String::from_utf8(output).expect("utf8");
 
         assert_eq!(core.calls(), 0);
-        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(output.contains("preview ready"), "{output}");
+        assert!(output.contains("transaction active"), "{output}");
         assert!(!output.contains("[PROPOSAL]"), "{output}");
         assert!(!output.contains("[RESULT]"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
@@ -386,7 +387,7 @@ mod tests {
         let output = String::from_utf8(output).expect("utf8");
         let status_lines = output
             .lines()
-            .filter(|line| line.contains("state=PREVIEW_READY"))
+            .filter(|line| line.contains("preview ready"))
             .collect::<Vec<_>>();
         let unique_status_lines = status_lines
             .iter()

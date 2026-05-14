@@ -149,14 +149,38 @@ fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeN
     let mut projected = false;
     for event in events {
         let ui_event = match event {
+            self::state::RuntimeNarrativeEvent::Intent { summary } => {
+                self::state::UiEvent::Intent { summary }
+            }
             self::state::RuntimeNarrativeEvent::Thinking { summary } => {
                 self::state::UiEvent::Thinking { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Analysis { summary } => {
+                self::state::UiEvent::Analysis { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Planning { summary } => {
+                self::state::UiEvent::Planning { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Validation { summary } => {
+                self::state::UiEvent::Validation { summary }
             }
             self::state::RuntimeNarrativeEvent::Execution { summary } => {
                 self::state::UiEvent::Execution { step: summary }
             }
-            self::state::RuntimeNarrativeEvent::Error { message }
-            | self::state::RuntimeNarrativeEvent::GovernanceReject { reason: message } => {
+            self::state::RuntimeNarrativeEvent::Apply { summary }
+            | self::state::RuntimeNarrativeEvent::Commit { summary } => {
+                self::state::UiEvent::Apply { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Rollback { summary } => {
+                self::state::UiEvent::Rollback { summary }
+            }
+            self::state::RuntimeNarrativeEvent::System { summary } => {
+                self::state::UiEvent::System { summary }
+            }
+            self::state::RuntimeNarrativeEvent::GovernanceReject { reason } => {
+                self::state::UiEvent::Reject { reason }
+            }
+            self::state::RuntimeNarrativeEvent::Error { message } => {
                 self::state::UiEvent::Error { message }
             }
             _ => self::state::UiEvent::Runtime {
@@ -188,8 +212,16 @@ mod tests {
             .filter_map(|event| match event {
                 UiEvent::Runtime { message } => Some(message.clone()),
                 UiEvent::Error { message } => Some(message.clone()),
+                UiEvent::Intent { summary } => Some(summary.clone()),
                 UiEvent::Thinking { summary } => Some(summary.clone()),
+                UiEvent::Analysis { summary } => Some(summary.clone()),
+                UiEvent::Planning { summary } => Some(summary.clone()),
+                UiEvent::Validation { summary } => Some(summary.clone()),
                 UiEvent::Execution { step } => Some(step.clone()),
+                UiEvent::Apply { summary } => Some(summary.clone()),
+                UiEvent::Rollback { summary } => Some(summary.clone()),
+                UiEvent::System { summary } => Some(summary.clone()),
+                UiEvent::Reject { reason } => Some(reason.clone()),
                 _ => None,
             })
             .collect()
@@ -207,7 +239,8 @@ mod tests {
         ));
 
         let projection = runtime_messages(&state).join("\n");
-        assert!(projection.contains("status: IDLE"), "{projection}");
+        assert!(projection.contains("runtime idle"), "{projection}");
+        assert!(!projection.contains("status: IDLE"), "{projection}");
         assert!(!state.chat.events.is_empty());
     }
 
@@ -225,7 +258,8 @@ mod tests {
 
         let projection = runtime_messages(&state).join("\n");
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
-        assert!(projection.contains("status: PREVIEW_READY"), "{projection}");
+        assert!(projection.contains("preview ready"), "{projection}");
+        assert!(projection.contains("transaction active"), "{projection}");
         assert!(
             state
                 .active_target
@@ -253,7 +287,11 @@ mod tests {
 
         let projection = runtime_messages(&state).join("\n");
         assert_eq!(state.runtime_state, RuntimeShellState::Git);
-        assert!(projection.contains("status: APPLIED"), "{projection}");
+        assert!(
+            projection.contains("transaction committed successfully"),
+            "{projection}"
+        );
+        assert!(projection.contains("transaction committed"), "{projection}");
     }
 
     #[test]
@@ -269,7 +307,7 @@ mod tests {
 
         assert!(state.chat.events.iter().any(|event| matches!(
             event,
-            UiEvent::Runtime { message } if message.contains("status: IDLE")
+            UiEvent::System { summary } if summary == "runtime idle"
         )));
     }
 
@@ -285,10 +323,7 @@ mod tests {
         ));
 
         let projection = runtime_messages(&state).join("\n");
-        assert!(
-            projection.contains("target missing"),
-            "{projection}"
-        );
+        assert!(projection.contains("target missing"), "{projection}");
         assert!(state.chat.events.iter().any(|event| matches!(
             event,
             UiEvent::Error { message } if message.contains("target missing")
@@ -313,7 +348,8 @@ mod tests {
             .flat_map(UiEvent::lines)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(rendered.contains("[RUNTIME]"), "{rendered}");
-        assert!(rendered.contains("status: IDLE"), "{rendered}");
+        assert!(rendered.contains("[SYSTEM] runtime idle"), "{rendered}");
+        assert!(!rendered.contains("[RUNTIME] status:"), "{rendered}");
+        assert!(!rendered.contains("status: IDLE"), "{rendered}");
     }
 }

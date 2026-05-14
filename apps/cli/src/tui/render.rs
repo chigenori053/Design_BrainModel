@@ -145,12 +145,7 @@ fn render_runtime_state(frame: &mut Frame, immutable: &ImmutableFrame) {
     let max_scroll = total_lines.saturating_sub(viewport_height);
     let scroll = max_scroll.saturating_sub(snapshot.runtime.scroll_offset as u16);
 
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .scroll((scroll, 0)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(lines).block(block).scroll((scroll, 0)), area);
 }
 
 fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
@@ -528,9 +523,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(
-            buffer_text(terminal.backend().buffer()).contains("state=APPLY")
-        );
+        assert!(buffer_text(terminal.backend().buffer()).contains("state=APPLY"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
@@ -689,9 +682,7 @@ mod tests {
         );
 
         assert_eq!(
-            render_source
-                .matches("pub fn runtime_panel_bounds")
-                .count(),
+            render_source.matches("pub fn runtime_panel_bounds").count(),
             1
         );
         assert_eq!(render_source.matches("fn render_runtime_state").count(), 1);

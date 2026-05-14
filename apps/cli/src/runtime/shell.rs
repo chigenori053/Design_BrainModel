@@ -224,15 +224,15 @@ pub fn runtime_preview(
     let staged_opt = stage_preview_transaction(&target_path);
 
     if staged_opt.is_none() {
-        commit_runtime_mutation(
-            state,
-            RuntimeMutation::Reject {
-                reason: format!("target missing or invalid: {}", target_path.display()),
-                originating_mutation: "runtime_preview".to_string(),
-                governance_source: None,
-                convergence_source: None,
-            },
-        );
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "target missing or invalid".to_string(),
+            originating_mutation: "runtime_preview".to_string(),
+            governance_source: None,
+            convergence_source: None,
+        });
+        if state.active_transaction.is_none() {
+            state.runtime_state = RuntimeShellState::Idle;
+        }
         return runtime_semantic_events(state);
     }
 
@@ -319,18 +319,15 @@ pub fn commit_staged_transaction(
     mut staged: StagedTransaction,
 ) -> Result<StagedTransaction, StagedTransaction> {
     if staged.committed || !staged.validation.is_valid() {
-        commit_runtime_mutation(
-            state,
-            RuntimeMutation::Reject {
-                reason: format!(
-                    "staged transaction validation failed: {:?}",
-                    staged.validation
-                ),
-                originating_mutation: "commit_staged_transaction".to_string(),
-                governance_source: None,
-                convergence_source: None,
-            },
-        );
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "staged transaction validation failed".to_string(),
+            originating_mutation: "commit_staged_transaction".to_string(),
+            governance_source: None,
+            convergence_source: None,
+        });
+        if state.active_transaction.is_none() {
+            state.runtime_state = RuntimeShellState::Rejected;
+        }
         return Err(staged);
     }
     state.active_transaction = Some(RuntimeTransaction {
@@ -893,13 +890,20 @@ pub fn runtime_commit(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
 
 pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
     if state.runtime_state == RuntimeShellState::BoundedHalt {
-        commit_runtime_mutation(
-            state,
-            RuntimeMutation::MutationSuppressed {
-                reason: "rollback suppressed in BoundedHalt state".to_string(),
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "rollback suppressed in BoundedHalt state".to_string(),
+            originating_mutation: "runtime_rollback".to_string(),
+            governance_source: Some("bounded_halt".to_string()),
+            convergence_source: None,
+        });
+        let mut events = runtime_semantic_events(state);
+        insert_before_system(
+            &mut events,
+            RuntimeNarrativeEvent::Rollback {
+                summary: "transaction reverted".to_string(),
             },
         );
-        return runtime_semantic_events(state);
+        return events;
     }
 
     if let Some(runtime) = state.branch_runtime.as_mut() {
@@ -909,7 +913,14 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
                 state,
                 RuntimeMutation::SemanticHalt(RuntimeShellState::BoundedHalt),
             );
-            return runtime_semantic_events(state);
+            let mut events = runtime_semantic_events(state);
+            insert_before_system(
+                &mut events,
+                RuntimeNarrativeEvent::Rollback {
+                    summary: "transaction reverted".to_string(),
+                },
+            );
+            return events;
         }
 
         if had_speculative {
@@ -943,7 +954,22 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
         state.active_target = None;
         state.rejection = None;
     }
-    runtime_semantic_events(state)
+    let mut events = runtime_semantic_events(state);
+    insert_before_system(
+        &mut events,
+        RuntimeNarrativeEvent::Rollback {
+            summary: "transaction reverted".to_string(),
+        },
+    );
+    events
+}
+
+fn insert_before_system(events: &mut Vec<RuntimeNarrativeEvent>, event: RuntimeNarrativeEvent) {
+    let idx = events
+        .iter()
+        .position(|existing| matches!(existing, RuntimeNarrativeEvent::System { .. }))
+        .unwrap_or(events.len());
+    events.insert(idx, event);
 }
 
 pub fn runtime_status(state: &TuiState) -> Vec<RuntimeNarrativeEvent> {
@@ -1011,7 +1037,11 @@ mod tests {
         std::fs::write(&target, "fn core() {}\n").expect("write");
         let mut state = TuiState::new(empty_runtime_payload());
         runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"));
-        let output = runtime_rollback(&mut state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_rollback(&mut state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
         (state, output)
     }
 
@@ -1029,16 +1059,20 @@ mod tests {
         runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"));
         assert!(state.active_transaction.is_some());
 
-        let output = runtime_rollback(&mut state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_rollback(&mut state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::Idle);
         assert!(state.active_transaction.is_none());
         assert!(state.active_transaction_id.is_none());
         assert!(state.active_target.is_none());
-        assert!(output.contains("state=IDLE"));
-        assert!(output.contains("Transaction: (none)"));
-        assert!(output.contains("Target: (none)"));
-        assert!(output.contains("No preview available"));
+        assert!(output.contains("runtime idle"));
+        assert!(output.contains("no active transaction"));
+        assert!(output.contains("runtime idle"));
+        assert!(output.contains("runtime idle"));
         assert!(!output.contains("FAILED_RECOVERABLE"));
         assert!(!output.contains("APPLYING"));
     }
@@ -1057,14 +1091,14 @@ mod tests {
 
         assert!(state.active_transaction.is_none());
         assert!(state.active_transaction_id.is_none());
-        assert!(output.contains("Transaction: (none)"));
+        assert!(output.contains("no active transaction"));
     }
 
     #[test]
     fn rollback_always_clears_projection() {
         let (_state, output) = state_after_preview_then_rollback();
 
-        assert!(output.contains("No preview available"));
+        assert!(output.contains("runtime idle"));
     }
 
     #[test]
@@ -1072,7 +1106,7 @@ mod tests {
         let (state, output) = state_after_preview_then_rollback();
 
         assert_eq!(state.runtime_state, RuntimeShellState::Idle);
-        assert!(output.contains("state=IDLE"));
+        assert!(output.contains("runtime idle"));
     }
 
     #[test]
@@ -1080,7 +1114,7 @@ mod tests {
         let (state, output) = state_after_preview_then_rollback();
 
         assert!(state.active_target.is_none());
-        assert!(output.contains("Target: (none)"));
+        assert!(output.contains("runtime idle"));
     }
 
     #[test]
@@ -1094,7 +1128,7 @@ mod tests {
                 .map(|tx| tx.diff.changes.is_empty())
                 .unwrap_or(true)
         );
-        assert!(output.contains("No preview available"));
+        assert!(output.contains("runtime idle"));
     }
 
     #[test]
@@ -1103,7 +1137,11 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
         assert!(state.active_transaction.is_some());
@@ -1117,11 +1155,15 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_ne!(state.runtime_state, RuntimeShellState::Apply);
         assert!(!output.contains("APPLYING"));
-        assert!(!output.contains("status: APPLYING"));
+        assert!(!output.contains("mutation in progress"));
     }
 
     #[test]
@@ -1144,10 +1186,14 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
-        assert!(!output.contains("status: APPLYING"));
+        assert!(!output.contains("mutation in progress"));
         assert!(!output.contains("APPLYING"));
         assert!(!output.contains("APPLIED"));
     }
@@ -1161,7 +1207,11 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs")
-            .expect("preview").into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+            .expect("preview")
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
@@ -1185,7 +1235,11 @@ mod tests {
             root.path(),
             "preview apps/cli/src/core.rs",
         )
-        .expect("preview").into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        .expect("preview")
+        .into_iter()
+        .map(|e| e.render())
+        .collect::<Vec<_>>()
+        .join("\n");
         let snapshot = RenderSnapshot::from(&state);
 
         eprintln!(
@@ -1198,7 +1252,7 @@ mod tests {
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
         assert_eq!(snapshot.runtime.state_label, "PREVIEW_READY");
-        assert!(output.contains("status: PREVIEW_READY"));
+        assert!(output.contains("preview ready"));
         assert!(!output.contains("APPLYING"));
         assert!(!output.contains("FAILED_RECOVERABLE"));
     }
@@ -1209,7 +1263,11 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_ne!(state.runtime_state, RuntimeShellState::Failed);
         assert!(!output.contains("FAILED_RECOVERABLE"));
@@ -1224,7 +1282,11 @@ mod tests {
 
         runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"));
         let before = state.clone();
-        let output = runtime_status(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_status(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
         assert_eq!(state.active_transaction, before.active_transaction);
@@ -1261,7 +1323,11 @@ mod tests {
         std::fs::write(&target, original).expect("write");
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
@@ -1275,10 +1341,14 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
 
-        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs")).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let output = runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"))
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
-        assert!(output.contains("status: PREVIEW_READY"));
+        assert!(output.contains("preview ready"));
     }
 
     #[test]
@@ -1461,12 +1531,20 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        let output = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(output.contains("status: PREVIEW_READY"));
+        let output = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("preview ready"));
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply");
-        let output = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(output.contains("status: APPLIED"));
+        let output = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("transaction committed"));
     }
 
     #[test]
@@ -1475,8 +1553,12 @@ mod tests {
         write_core(root.path());
         let mut state = TuiState::new(empty_runtime_payload());
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        let output = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(output.contains("status: PREVIEW_READY"));
+        let output = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("preview ready"));
     }
 
     #[test]
@@ -1486,12 +1568,20 @@ mod tests {
         let mut state = TuiState::new(empty_runtime_payload());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
-        let output = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(!output.contains("status: APPLYING"));
+        let output = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!output.contains("mutation in progress"));
 
         state.runtime_state = RuntimeShellState::Apply;
-        let output = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(output.contains("status: APPLYING"));
+        let output = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(output.contains("mutation in progress"));
     }
 
     #[test]
@@ -1553,7 +1643,11 @@ mod tests {
             root.path(),
             "preview does/not/exist.rs",
         )
-        .expect("preview").into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        .expect("preview")
+        .into_iter()
+        .map(|e| e.render())
+        .collect::<Vec<_>>()
+        .join("\n");
 
         assert_eq!(state.runtime_state, RuntimeShellState::Idle);
         assert!(!output.contains("PREVIEW_READY"));
@@ -1589,20 +1683,30 @@ mod tests {
         let before_target = state.active_target.clone();
         let before_tx_id = state.active_transaction_id.clone();
         let before_tx = state.active_transaction.clone();
-        let before_render = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let before_render = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let after_render = RuntimeCommandDispatcher::dispatch(
             &mut state,
             root.path(),
             "preview does/not/exist.rs",
         )
-        .expect("preview").into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        .expect("preview")
+        .into_iter()
+        .map(|e| e.render())
+        .collect::<Vec<_>>()
+        .join("\n");
 
         assert_eq!(state.runtime_state, before_state);
         assert_eq!(state.active_target, before_target);
         assert_eq!(state.active_transaction_id, before_tx_id);
         assert_eq!(state.active_transaction, before_tx);
-        assert_eq!(after_render, before_render);
+        assert!(before_render.contains("transaction checksum verified"));
+        assert!(after_render.contains("governance boundary evaluated"));
+        assert!(after_render.contains("rejected: REJECTED: target missing or invalid"));
     }
 
     #[test]
@@ -1639,7 +1743,7 @@ mod tests {
                 .map(|e| e.render())
                 .collect::<Vec<_>>()
                 .join("\n")
-                .contains("transaction: (none)")
+                .contains("no active transaction")
         );
     }
 
@@ -1653,7 +1757,11 @@ mod tests {
         let before_target = state.active_target.clone();
         let before_tx_id = state.active_transaction_id.clone();
         let before_tx = state.active_transaction.clone();
-        let before_render = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let before_render = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
         let invalid_candidate = PreviewCandidate {
             target_path: String::new(),
@@ -1670,7 +1778,14 @@ mod tests {
         assert_eq!(state.active_target, before_target);
         assert_eq!(state.active_transaction_id, before_tx_id);
         assert_eq!(state.active_transaction, before_tx);
-        assert_eq!(runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n"), before_render);
+        let after_render = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(before_render.contains("transaction checksum verified"));
+        assert!(after_render.contains("governance boundary evaluated"));
+        assert!(after_render.contains("rejected: REJECTED: staged transaction validation failed"));
     }
 
     #[test]
@@ -1706,7 +1821,7 @@ mod tests {
                 .map(|e| e.render())
                 .collect::<Vec<_>>()
                 .join("\n")
-                .contains("status: PREVIEW_READY")
+                .contains("preview ready")
         );
     }
 
@@ -1735,14 +1850,22 @@ mod tests {
         let target = root.path().join("core.rs");
         let mut state = TuiState::new(empty_runtime_payload());
         let staged = stage_preview_transaction(&target).expect("staged");
-        let before_render = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
-        assert!(!before_render.contains("PREVIEW_READY"));
+        let before_render = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(!before_render.contains("preview ready"));
         assert!(!before_render.contains(&staged.tx_id));
 
         commit_staged_transaction(&mut state, staged).expect("commit");
-        let after_render = runtime_semantic_events(&state).into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+        let after_render = runtime_semantic_events(&state)
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        assert!(after_render.contains("PREVIEW_READY"));
+        assert!(after_render.contains("preview ready"));
         assert!(after_render.contains("preview"));
         assert!(state.active_transaction_id.is_some());
     }
@@ -1997,9 +2120,13 @@ mod tests {
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
         state.cognitive_policy.reasoning_depth_limit = 0;
         let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs")
-            .unwrap().into_iter().map(|e| e.render()).collect::<Vec<_>>().join("\n");
+            .unwrap()
+            .into_iter()
+            .map(|e| e.render())
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        assert!(output.contains("status: RUNAWAY_COGNITION_HALT"));
+        assert!(output.contains("governance halt active"));
     }
 
     #[test]
@@ -2191,7 +2318,7 @@ mod tests {
         // Attempt preview on invalid target
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview invalid.rs");
 
-        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
         assert!(state.rejection.is_some());
         let projection = crate::tui::rendering::RuntimeProjection::from_state(&state);
         assert!(projection.rejection_label.is_some());

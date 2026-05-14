@@ -87,13 +87,17 @@ pub fn contains_runtime_reference(line: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeNarrativeEvent {
-    Status { state: String },
+    Intent { summary: String },
     Thinking { summary: String },
+    Analysis { summary: String },
+    Planning { summary: String },
+    Validation { summary: String },
     Execution { summary: String },
     Preview { target: String },
     Apply { summary: String },
     Commit { summary: String },
     Rollback { summary: String },
+    System { summary: String },
     GovernanceReject { reason: String },
     Error { message: String },
 }
@@ -101,13 +105,17 @@ pub enum RuntimeNarrativeEvent {
 impl RuntimeNarrativeEvent {
     pub fn render(&self) -> String {
         match self {
-            Self::Status { state } => format!("status: {}", state),
-            Self::Thinking { summary } => format!("thinking: {}", summary),
-            Self::Execution { summary } => format!("execution: {}", summary),
-            Self::Preview { target } => format!("preview generated for {}", target),
-            Self::Apply { summary } => format!("applied: {}", summary),
-            Self::Commit { summary } => format!("committed: {}", summary),
-            Self::Rollback { summary } => format!("rolled back: {}", summary),
+            Self::Intent { summary }
+            | Self::Thinking { summary }
+            | Self::Analysis { summary }
+            | Self::Planning { summary }
+            | Self::Validation { summary }
+            | Self::Execution { summary }
+            | Self::Apply { summary }
+            | Self::Commit { summary }
+            | Self::Rollback { summary }
+            | Self::System { summary } => summary.clone(),
+            Self::Preview { target } => format!("changes prepared for {target}"),
             Self::GovernanceReject { reason } => format!("rejected: {}", reason),
             Self::Error { message } => format!("error: {}", message),
         }
@@ -116,7 +124,19 @@ impl RuntimeNarrativeEvent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum UiEvent {
+    Intent {
+        summary: String,
+    },
     Thinking {
+        summary: String,
+    },
+    Analysis {
+        summary: String,
+    },
+    Planning {
+        summary: String,
+    },
+    Validation {
         summary: String,
     },
     Editing {
@@ -152,6 +172,18 @@ pub enum UiEvent {
     Runtime {
         message: String,
     },
+    Apply {
+        summary: String,
+    },
+    Rollback {
+        summary: String,
+    },
+    System {
+        summary: String,
+    },
+    Reject {
+        reason: String,
+    },
     Next {
         actions: Vec<String>,
     },
@@ -173,7 +205,11 @@ pub enum UiEvent {
 impl UiEvent {
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Intent { .. } => "INTENT",
             Self::Thinking { .. } => "THINKING",
+            Self::Analysis { .. } => "ANALYSIS",
+            Self::Planning { .. } => "PLANNING",
+            Self::Validation { .. } => "VALIDATION",
             Self::Editing { .. } => "EDITING",
             Self::Plan { .. } => "PLAN",
             Self::Execution { .. } => "EXECUTION",
@@ -184,7 +220,11 @@ impl UiEvent {
             Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
             Self::Runtime { .. } => "RUNTIME",
-            Self::Next { .. } => "NEXT",
+            Self::Apply { .. } => "APPLY",
+            Self::Rollback { .. } => "ROLLBACK",
+            Self::System { .. } => "SYSTEM",
+            Self::Reject { .. } => "REJECT",
+            Self::Next { .. } => "INTENT",
             Self::Error { .. } => "ERROR",
             Self::ErrorRecovery { .. } => "RECOVERY",
             Self::Debug { .. } => "DEBUG",
@@ -194,7 +234,11 @@ impl UiEvent {
 
     pub fn text(&self) -> String {
         match self {
+            Self::Intent { summary } => summary.clone(),
             Self::Thinking { summary } => summary.clone(),
+            Self::Analysis { summary } => summary.clone(),
+            Self::Planning { summary } => summary.clone(),
+            Self::Validation { summary } => summary.clone(),
             Self::Editing { target, action } => format!("{target}: {action}"),
             Self::Plan { steps } => steps.join("\n"),
             Self::Execution { step } => step.clone(),
@@ -209,7 +253,15 @@ impl UiEvent {
             Self::DesignUpdate { summary, score } => format!("Score: {score:.2}\n- {summary}"),
             Self::DesignDiff { changes } => changes.join("\n"),
             Self::Pipeline { state } => state.clone(),
-            Self::Next { actions } => actions.join("\n"),
+            Self::Apply { summary } => summary.clone(),
+            Self::Rollback { summary } => summary.clone(),
+            Self::System { summary } => summary.clone(),
+            Self::Reject { reason } => reason.clone(),
+            Self::Next { actions } => actions
+                .iter()
+                .map(|action| normalize_intent_summary(action))
+                .collect::<Vec<_>>()
+                .join("\n"),
             Self::ErrorRecovery { candidates } => {
                 let mut lines = vec!["Retry candidates:".to_string()];
                 for candidate in candidates {
@@ -246,6 +298,16 @@ impl UiEvent {
                 }
             })
             .collect()
+    }
+}
+
+fn normalize_intent_summary(action: &str) -> String {
+    match action.trim().to_ascii_lowercase().as_str() {
+        "apply" => "applying active transaction".to_string(),
+        "status" => "checking runtime state".to_string(),
+        "rollback" => "reverting active transaction".to_string(),
+        other if other.starts_with("preview") => "preparing transaction preview".to_string(),
+        _ => action.to_string(),
     }
 }
 
@@ -1254,7 +1316,7 @@ mod tests {
             state
                 .flattened_chat_lines()
                 .iter()
-                .any(|line| line == "[NEXT] fix parser bug")
+                .any(|line| line == "[INTENT] fix parser bug")
         );
     }
 
@@ -1720,7 +1782,7 @@ mod tests {
         assert!(
             first
                 .iter()
-                .any(|event| event.render().contains("status: PREVIEW_READY"))
+                .any(|event| event.render().contains("preview ready"))
         );
     }
 

@@ -138,7 +138,7 @@ mod tests {
         run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert!(output.contains("state=IDLE"));
+        assert!(output.contains("runtime idle"));
         assert!(output.contains("[RUNTIME][EVENT] BootstrapStarted"));
         assert!(!output.contains("[ROUTE]"));
     }
@@ -147,7 +147,10 @@ mod tests {
     fn deterministic_initial_rendering_is_stable() {
         let state = TuiState::new(empty_payload());
 
-        assert_eq!(runtime_semantic_events(&state), runtime_semantic_events(&state));
+        assert_eq!(
+            runtime_semantic_events(&state),
+            runtime_semantic_events(&state)
+        );
     }
 
     #[test]
@@ -162,10 +165,9 @@ mod tests {
         run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert!(output.contains("state=IDLE"), "{output}");
-        assert!(output.contains("Transaction: (none)"), "{output}");
-        assert!(output.contains("Target: (none)"), "{output}");
-        assert!(output.contains("No preview available"), "{output}");
+        assert!(output.contains("runtime idle"), "{output}");
+        assert!(output.contains("no active transaction"), "{output}");
+        assert!(output.contains("transaction reverted"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
         assert!(!output.contains("[ROUTE]"), "{output}");
@@ -183,8 +185,8 @@ mod tests {
         run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert!(output.contains("state=PREVIEW_READY"), "{output}");
-        assert!(output.contains("Transaction: tx-"), "{output}");
+        assert!(output.contains("preview ready"), "{output}");
+        assert!(output.contains("transaction active"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
         assert!(!output.contains("APPLIED"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
@@ -203,7 +205,7 @@ mod tests {
         run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(output.contains("preview ready"), "{output}");
         assert!(!output.contains("runtime event consumed"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
@@ -221,7 +223,7 @@ mod tests {
         run_runtime_loop(&mut input, &mut output, root.path().to_path_buf()).expect("loop");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert!(output.contains("state=PREVIEW_READY"), "{output}");
+        assert!(output.contains("preview ready"), "{output}");
         assert!(!output.contains("[ROUTE]"), "{output}");
         assert!(!output.contains("[PROPOSAL]"), "{output}");
         assert!(!output.contains("runtime event consumed"), "{output}");

@@ -480,7 +480,7 @@ mod tests {
             "rejection not projected"
         );
         assert!(
-            lines.iter().any(|l| l.contains("[NEXT]")),
+            lines.iter().any(|l| l.contains("[INTENT]")),
             "recovery actions not projected"
         );
     }
@@ -722,7 +722,7 @@ mod tests {
         assert!(
             lines
                 .iter()
-                .any(|l: &String| l.contains("[RUNTIME]") && l.contains("status:")),
+                .any(|l: &String| l.contains("[SYSTEM]") && l.contains("runtime idle")),
             "status output not visible in narrative"
         );
     }
@@ -736,11 +736,13 @@ mod tests {
         });
 
         let snapshot1 = RenderSnapshot::from(&state);
-        assert!(snapshot1
-            .runtime
-            .runtime_panel_lines(false)
-            .iter()
-            .any(|l: &String| l.contains("trace 1")));
+        assert!(
+            snapshot1
+                .runtime
+                .runtime_panel_lines(false)
+                .iter()
+                .any(|l: &String| l.contains("trace 1"))
+        );
 
         // Simulating a "redraw" by creating a new snapshot
         let snapshot2 = RenderSnapshot::from(&state);

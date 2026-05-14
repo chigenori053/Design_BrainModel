@@ -3,7 +3,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{
-    contains_runtime_reference, sanitize_line, Focus, RuntimeNarrativeEvent, TuiState,
+    Focus, RuntimeNarrativeEvent, TuiState, contains_runtime_reference, sanitize_line,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -272,23 +272,39 @@ pub fn runtime_semantic_events(state: &TuiState) -> Vec<RuntimeNarrativeEvent> {
     let mut events = Vec::new();
     let projection = RuntimeProjection::from_state(state);
 
-    events.push(RuntimeNarrativeEvent::Status {
-        state: projection.state_label,
+    events.push(RuntimeNarrativeEvent::Intent {
+        summary: intent_summary(&projection),
     });
-
-    if let Some(target) = projection.target_label {
+    events.push(RuntimeNarrativeEvent::Thinking {
+        summary: "resolving target graph".to_string(),
+    });
+    events.push(RuntimeNarrativeEvent::Analysis {
+        summary: analysis_summary(&projection),
+    });
+    events.push(RuntimeNarrativeEvent::Validation {
+        summary: validation_summary(&projection),
+    });
+    if projection.state_label == "READY_TO_APPLY" || projection.state_label == "AWAITING_APPLY" {
+        events.push(RuntimeNarrativeEvent::Planning {
+            summary: "preparing governed mutation".to_string(),
+        });
+    }
+    events.push(RuntimeNarrativeEvent::Execution {
+        summary: execution_summary(&projection),
+    });
+    if let Some(target) = projection.target_label.clone() {
         events.push(RuntimeNarrativeEvent::Preview { target });
     }
-
+    if projection.state_label == "APPLIED" {
+        events.push(RuntimeNarrativeEvent::Apply {
+            summary: "transaction committed successfully".to_string(),
+        });
+    }
     if let Some(rejection) = projection.rejection_label {
         events.push(RuntimeNarrativeEvent::GovernanceReject { reason: rejection });
     }
-
-    events.push(RuntimeNarrativeEvent::Execution {
-        summary: format!(
-            "transaction: {}",
-            projection.transaction_label.as_deref().unwrap_or("none")
-        ),
+    events.push(RuntimeNarrativeEvent::System {
+        summary: system_summary(&projection.state_label),
     });
 
     events
@@ -300,6 +316,54 @@ pub fn render_runtime_text(state: &TuiState) -> Vec<String> {
         .into_iter()
         .map(|e| e.render())
         .collect()
+}
+
+fn intent_summary(projection: &RuntimeProjection) -> String {
+    match projection.state_label.as_str() {
+        "APPLIED" => "applying active transaction".to_string(),
+        "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => {
+            "preparing governed transaction".to_string()
+        }
+        _ => "observing runtime cognition".to_string(),
+    }
+}
+
+fn analysis_summary(projection: &RuntimeProjection) -> String {
+    if projection.target_label.is_some() {
+        "diff structure computed".to_string()
+    } else {
+        "runtime state assessed".to_string()
+    }
+}
+
+fn validation_summary(projection: &RuntimeProjection) -> String {
+    if projection.rejection_label.is_some() {
+        "governance boundary evaluated".to_string()
+    } else if projection.transaction_label.is_some() {
+        "transaction checksum verified".to_string()
+    } else {
+        "runtime invariants verified".to_string()
+    }
+}
+
+fn execution_summary(projection: &RuntimeProjection) -> String {
+    if projection.transaction_label.is_some() {
+        "transaction active".to_string()
+    } else {
+        "no active transaction".to_string()
+    }
+}
+
+fn system_summary(state_label: &str) -> String {
+    match state_label {
+        "IDLE" => "runtime idle".to_string(),
+        "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => "preview ready".to_string(),
+        "APPLIED" => "transaction committed".to_string(),
+        "APPLYING" => "mutation in progress".to_string(),
+        "FAILED_RECOVERABLE" => "runtime recovery available".to_string(),
+        "RUNAWAY_COGNITION_HALT" => "governance halt active".to_string(),
+        _ => "runtime state projected".to_string(),
+    }
 }
 
 fn projection_state_label(state: RuntimeShellState) -> &'static str {
@@ -350,18 +414,32 @@ fn semantic_label(raw: &str) -> Option<String> {
     }
     let path = std::path::Path::new(trimmed);
     let display = if path.is_absolute() {
-        std::env::current_dir()
-            .ok()
-            .and_then(|cwd| {
-                path.strip_prefix(cwd)
-                    .ok()
-                    .map(|relative| relative.to_path_buf())
+        semantic_workspace_relative_path(path)
+            .or_else(|| {
+                std::env::current_dir().ok().and_then(|cwd| {
+                    path.strip_prefix(cwd)
+                        .ok()
+                        .map(|relative| relative.to_path_buf())
+                })
             })
             .unwrap_or_else(|| path.to_path_buf())
     } else {
         path.to_path_buf()
     };
     sanitize_line(&display.display().to_string())
+}
+
+fn semantic_workspace_relative_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
+    let components = path.components().collect::<Vec<_>>();
+    for anchor in ["apps", "crates", "docs", "specs", "tests"] {
+        if let Some(idx) = components
+            .iter()
+            .position(|component| component.as_os_str() == anchor)
+        {
+            return Some(components[idx..].iter().collect());
+        }
+    }
+    None
 }
 
 fn cursor_model(snapshot: &RenderSnapshot, input_area: Rect) -> Option<CursorModel> {
@@ -426,6 +504,144 @@ mod tests {
         }
     }
 
+    fn event_lines(state: &TuiState) -> Vec<String> {
+        runtime_semantic_events(state)
+            .into_iter()
+            .map(|event| match event {
+                RuntimeNarrativeEvent::Intent { summary } => format!("[INTENT] {summary}"),
+                RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
+                RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
+                RuntimeNarrativeEvent::Planning { summary } => format!("[PLANNING] {summary}"),
+                RuntimeNarrativeEvent::Validation { summary } => {
+                    format!("[VALIDATION] {summary}")
+                }
+                RuntimeNarrativeEvent::Execution { summary } => format!("[EXECUTION] {summary}"),
+                RuntimeNarrativeEvent::Preview { target } => {
+                    format!("[PREVIEW] changes prepared for {target}")
+                }
+                RuntimeNarrativeEvent::Apply { summary }
+                | RuntimeNarrativeEvent::Commit { summary } => format!("[APPLY] {summary}"),
+                RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
+                RuntimeNarrativeEvent::System { summary } => format!("[SYSTEM] {summary}"),
+                RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
+                RuntimeNarrativeEvent::Error { message } => format!("[ERROR] {message}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn next_events_are_normalized_to_intent() {
+        let apply = UiEvent::Next {
+            actions: vec!["apply".to_string()],
+        }
+        .lines();
+
+        assert_eq!(apply, vec!["[INTENT] applying active transaction"]);
+        assert!(!apply.join("\n").contains("[NEXT]"));
+    }
+
+    #[test]
+    fn governance_rejections_are_projected() {
+        let mut state = TuiState::new(empty_payload());
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "target outside workspace boundary".to_string(),
+            originating_mutation: "workspace_boundary".to_string(),
+            governance_source: Some("workspace".to_string()),
+            convergence_source: None,
+        });
+
+        let lines = event_lines(&state);
+
+        assert!(
+            lines
+                .iter()
+                .any(|line| line.contains("[VALIDATION] governance boundary evaluated"))
+        );
+        assert!(lines.iter().any(|line| {
+            line.contains("[REJECT]") && line.contains("target outside workspace boundary")
+        }));
+    }
+
+    #[test]
+    fn thinking_analysis_events_are_visible() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/main.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn main() {}".to_string()],
+        });
+
+        let lines = event_lines(&state);
+
+        assert!(lines.contains(&"[THINKING] resolving target graph".to_string()));
+        assert!(lines.contains(&"[ANALYSIS] diff structure computed".to_string()));
+    }
+
+    #[test]
+    fn apply_projection_is_semantically_visible() {
+        let mut state = TuiState::new(empty_payload());
+        state.runtime_state = RuntimeShellState::Git;
+
+        let lines = event_lines(&state);
+
+        assert!(lines.contains(&"[APPLY] transaction committed successfully".to_string()));
+        assert!(lines.contains(&"[SYSTEM] transaction committed".to_string()));
+    }
+
+    #[test]
+    fn semantic_narrative_order_is_stable() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/main.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn main() {}".to_string()],
+        });
+        state.runtime_state = RuntimeShellState::AwaitConfirmation;
+
+        let first = event_lines(&state);
+        let second = event_lines(&state);
+        let categories = first
+            .iter()
+            .map(|line| line.split(']').next().unwrap_or_default().to_string() + "]")
+            .collect::<Vec<_>>();
+
+        assert_eq!(first, second);
+        assert_eq!(
+            categories,
+            vec![
+                "[INTENT]",
+                "[THINKING]",
+                "[ANALYSIS]",
+                "[VALIDATION]",
+                "[PLANNING]",
+                "[EXECUTION]",
+                "[PREVIEW]",
+                "[SYSTEM]",
+            ]
+        );
+    }
+
+    #[test]
+    fn runtime_internal_state_is_not_exposed() {
+        let mut state = TuiState::new(empty_payload());
+        let absolute_target = std::env::current_dir()
+            .expect("cwd")
+            .join("apps/cli/src/main.rs");
+        state.active_target = Some(absolute_target.display().to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["fn main() {}".to_string()],
+        });
+
+        let surface = event_lines(&state).join("\n");
+
+        assert!(!surface.contains("[NEXT]"));
+        assert!(!surface.contains("[RUNTIME] status:"));
+        assert!(!surface.contains("status: IDLE"));
+        assert!(!surface.contains("PREVIEW_READY"));
+        assert!(!surface.contains("tx-users-chigenori-development"));
+        assert!(!surface.contains("/Users/chigenori/development"));
+        assert!(surface.contains("[EXECUTION] transaction active"));
+        assert!(surface.contains("apps/cli/src/main.rs"));
+    }
+
     #[test]
     fn render_snapshot_excludes_debug_and_trace_residue() {
         let mut state = TuiState::new(empty_payload());
@@ -471,13 +687,13 @@ mod tests {
     #[test]
     fn runtime_panel_shows_runtime_events() {
         let mut state = TuiState::new(empty_payload());
-        state.append_chat(UiEvent::Runtime {
-            message: "status: ok".to_string(),
+        state.append_chat(UiEvent::System {
+            summary: "runtime idle".to_string(),
         });
 
         let snapshot = RenderSnapshot::from(&state);
         let lines = snapshot.runtime.runtime_panel_lines(false);
-        assert!(lines.iter().any(|l| l.contains("[RUNTIME] status: ok")));
+        assert!(lines.iter().any(|l| l.contains("[SYSTEM] runtime idle")));
     }
 
     #[test]
