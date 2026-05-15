@@ -4,6 +4,9 @@ use core::fmt;
 pub enum MemorySpaceError {
     EmptyField,
     DimensionMismatch { left: usize, right: usize },
+    MissingCanonicalMemory(u64),
+    TransitionHashMismatch { expected: u64, actual: u64 },
+    UnsafeTransitionMerge,
 }
 
 impl fmt::Display for MemorySpaceError {
@@ -13,6 +16,19 @@ impl fmt::Display for MemorySpaceError {
             Self::DimensionMismatch { left, right } => {
                 write!(f, "dimension mismatch: left={left}, right={right}")
             }
+            Self::MissingCanonicalMemory(memory_id) => {
+                write!(f, "missing canonical memory: memory_id={memory_id}")
+            }
+            Self::TransitionHashMismatch { expected, actual } => {
+                write!(
+                    f,
+                    "transition hash mismatch: expected={expected} actual={actual}"
+                )
+            }
+            Self::UnsafeTransitionMerge => write!(
+                f,
+                "unsafe transition merge: semantic equality is not state equality"
+            ),
         }
     }
 }
