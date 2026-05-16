@@ -162,11 +162,23 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
 }
 
 fn run_runtime_command(args: &[String]) -> Result<(), String> {
+    use design_cli::runtime::persistence::{
+        cognitive_session_state, persistent_revision_lineage, persistent_runtime_memory,
+        render_checkpoint, render_cognitive_session_state, render_evolution_events, render_lineage,
+        render_persistent_runtime_memory, restore_runtime_checkpoint, runtime_memory_checkpoint,
+        runtime_memory_evolution_events,
+    };
+    use design_cli::runtime::unified_apply::{
+        execution_apply_transaction, unified_mutation_transaction, unified_runtime_apply,
+        unified_runtime_rollback,
+    };
     use design_cli::runtime::unified_projection::{
         Runtime, render_revision, render_unified_snapshot, unified_runtime_snapshot,
     };
+    use memory_space_core::{SemanticIdentityGraph, semantic_rewrite_transaction};
 
-    let snapshot = unified_runtime_snapshot(&Runtime::default());
+    let mut runtime = Runtime::default();
+    let snapshot = unified_runtime_snapshot(&runtime);
     match args.first().map(String::as_str) {
         Some("snapshot") => {
             println!("{}", render_unified_snapshot(&snapshot));
@@ -176,10 +188,115 @@ fn run_runtime_command(args: &[String]) -> Result<(), String> {
             println!("{}", render_revision(&snapshot));
             Ok(())
         }
+        Some("memory") => {
+            let memory = persistent_runtime_memory(&runtime);
+            let session = cognitive_session_state(&runtime);
+            println!("{}", render_persistent_runtime_memory(&memory));
+            println!();
+            println!("{}", render_cognitive_session_state(&session));
+            Ok(())
+        }
+        Some("checkpoint") => {
+            let checkpoint = runtime_memory_checkpoint(&runtime);
+            println!("{}", render_checkpoint(&checkpoint));
+            Ok(())
+        }
+        Some("restore") => {
+            if !args.iter().any(|arg| arg == "--yes") {
+                return Err("runtime restore requires explicit --yes confirmation".to_string());
+            }
+            let checkpoint = runtime_memory_checkpoint(&runtime);
+            let result = restore_runtime_checkpoint(checkpoint);
+            println!(
+                "runtime restore: restored={} revision={} replay_invariant={} topology_invariant={} revision_invariant={} errors={}",
+                result.restored,
+                result.runtime.runtime_revision,
+                result.replay_invariant,
+                result.topology_invariant,
+                result.revision_invariant,
+                result.errors.join(", ")
+            );
+            Ok(())
+        }
+        Some("lineage") => {
+            let lineage = persistent_revision_lineage(&runtime);
+            println!("{}", render_lineage(&lineage));
+            Ok(())
+        }
+        Some("evolution") => {
+            let memory = persistent_runtime_memory(&runtime);
+            let events = runtime_memory_evolution_events(&memory);
+            println!("{}", render_evolution_events(&events));
+            Ok(())
+        }
+        Some("apply") => {
+            let execution = execution_apply_transaction(&runtime, "runtime/unified-apply", 1);
+            let semantic = semantic_rewrite_transaction(&SemanticIdentityGraph::default());
+            let transaction =
+                unified_mutation_transaction(&runtime, Some(execution), Some(semantic));
+            if args.iter().any(|arg| arg == "--preview") {
+                println!(
+                    "unified preview: execution_diff={} topology_diff={} continuity_delta={:.6} semantic_mass_delta={:.6} revision_delta={}->{}",
+                    transaction.unified_preview.execution_diff.is_some(),
+                    transaction.unified_preview.topology_diff.is_some(),
+                    transaction.unified_preview.continuity_delta,
+                    transaction.unified_preview.semantic_mass_delta,
+                    transaction
+                        .unified_preview
+                        .runtime_state_delta
+                        .revision_before,
+                    transaction
+                        .unified_preview
+                        .runtime_state_delta
+                        .revision_after
+                );
+                Ok(())
+            } else if args.iter().any(|arg| arg == "--validate") {
+                println!(
+                    "unified validation: execution_safe={} semantic_safe={} rollback_safe={} replay_invariant={} topology_invariant={} revision_consistent={} errors={}",
+                    transaction.unified_validation.execution_safe,
+                    transaction.unified_validation.semantic_safe,
+                    transaction.unified_validation.rollback_safe,
+                    transaction.unified_validation.replay_invariant,
+                    transaction.unified_validation.topology_invariant,
+                    transaction.unified_validation.revision_consistent,
+                    transaction.unified_validation.validation_errors.join(", ")
+                );
+                Ok(())
+            } else if args.iter().any(|arg| arg == "--yes") {
+                let result = unified_runtime_apply(&mut runtime, transaction);
+                println!(
+                    "unified apply: applied={} rolled_back={} revision={} projection_synchronized={} checksum={} errors={}",
+                    result.applied,
+                    result.rolled_back,
+                    result.runtime_revision,
+                    result.projection_synchronized,
+                    result.checksum,
+                    result.errors.join(", ")
+                );
+                Ok(())
+            } else {
+                Err("runtime apply requires --preview, --validate, or --yes".to_string())
+            }
+        }
+        Some("rollback") => {
+            let transaction = unified_mutation_transaction(&runtime, None, None);
+            let result = unified_runtime_rollback(&mut runtime, transaction.rollback_chain);
+            println!(
+                "unified rollback: rolled_back={} revision={} projection_synchronized={} replay_invariant={} topology_invariant={} errors={}",
+                result.rolled_back,
+                result.runtime_revision,
+                result.projection_synchronized,
+                result.replay_invariant,
+                result.topology_invariant,
+                result.errors.join(", ")
+            );
+            Ok(())
+        }
         Some(other) => Err(format!(
-            "unrecognized runtime command `{other}`. Available: snapshot, revisions"
+            "unrecognized runtime command `{other}`. Available: snapshot, revisions, memory, checkpoint, restore, lineage, evolution, apply, rollback"
         )),
-        None => Err("runtime command required. Available: snapshot, revisions".to_string()),
+        None => Err("runtime command required. Available: snapshot, revisions, memory, checkpoint, restore, lineage, evolution, apply, rollback".to_string()),
     }
 }
 
