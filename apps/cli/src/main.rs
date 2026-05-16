@@ -25,7 +25,7 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Repl,
-    Workspace,
+    Workspace(CoreArgs),
     #[command(name = "legacy-repl")]
     LegacyRepl,
     Analyze(CoreArgs),
@@ -95,6 +95,16 @@ fn main() {
         return;
     }
 
+    if let Commands::Workspace(args) = &cli.command
+        && !args.args.is_empty()
+    {
+        if let Err(err) = run_workspace_command(&args.args) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
     match runtime_intent(&cli.command) {
         Some(RuntimeIntent::Repl | RuntimeIntent::Workspace | RuntimeIntent::LegacyRepl) => {
             if let Err(err) = start_runtime_tui(cli.diagnostic_input) {
@@ -112,7 +122,7 @@ fn main() {
 fn runtime_intent(command: &Commands) -> Option<RuntimeIntent> {
     match command {
         Commands::Repl => Some(RuntimeIntent::Repl),
-        Commands::Workspace => Some(RuntimeIntent::Workspace),
+        Commands::Workspace(args) if args.args.is_empty() => Some(RuntimeIntent::Workspace),
         Commands::LegacyRepl => Some(RuntimeIntent::LegacyRepl),
         _ => None,
     }
@@ -156,9 +166,55 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Reject(args) => join_core("reject", &args.args),
         Commands::Export(args) => join_core("export", &args.args),
         Commands::External(args) => external_core_input(args)?,
-        Commands::Repl | Commands::Workspace | Commands::LegacyRepl => String::new(),
+        Commands::Workspace(args) => join_core("workspace", &args.args),
+        Commands::Repl | Commands::LegacyRepl => String::new(),
     };
     Ok(input)
+}
+
+fn run_workspace_command(args: &[String]) -> Result<(), String> {
+    use design_cli::runtime::workspace_awareness::{
+        render_dependency_graph, render_mutation_risks, render_runtime_boundaries,
+        render_workspace_architecture, render_workspace_snapshot, runtime_boundary_map,
+        validate_workspace_topology, workspace_dependency_graph, workspace_semantic_map,
+        workspace_topology_snapshot,
+    };
+
+    let root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let snapshot = workspace_topology_snapshot(&root);
+    match args.first().map(String::as_str) {
+        Some("snapshot") => {
+            println!("{}", render_workspace_snapshot(&snapshot));
+            Ok(())
+        }
+        Some("graph") => {
+            println!("{}", render_dependency_graph(&workspace_dependency_graph(&snapshot)));
+            Ok(())
+        }
+        Some("boundaries") => {
+            println!("{}", render_runtime_boundaries(&runtime_boundary_map(&snapshot)));
+            Ok(())
+        }
+        Some("architecture") => {
+            println!(
+                "{}",
+                render_workspace_architecture(&workspace_semantic_map(&snapshot))
+            );
+            Ok(())
+        }
+        Some("risks") => {
+            println!("{}", render_mutation_risks(&snapshot));
+            Ok(())
+        }
+        Some("validate") => {
+            println!("workspace topology valid: {}", validate_workspace_topology(&snapshot));
+            Ok(())
+        }
+        Some(other) => Err(format!(
+            "unrecognized workspace command `{other}`. Available: snapshot, graph, boundaries, architecture, risks"
+        )),
+        None => Err("workspace command required. Available: snapshot, graph, boundaries, architecture, risks".to_string()),
+    }
 }
 
 fn run_runtime_command(args: &[String]) -> Result<(), String> {
@@ -347,6 +403,16 @@ mod tests {
     fn test_workspace_command_parses() {
         let cli = Cli::try_parse_from(["dbm", "workspace"]).expect("parse workspace");
         assert_eq!(runtime_intent(&cli.command), Some(RuntimeIntent::Workspace));
+    }
+
+    #[test]
+    fn test_workspace_snapshot_command_is_not_tui_activation() {
+        let cli = Cli::try_parse_from(["dbm", "workspace", "snapshot"]).expect("parse workspace");
+        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "workspace snapshot"
+        );
     }
 
     #[test]
