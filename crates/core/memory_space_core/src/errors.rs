@@ -7,6 +7,7 @@ pub enum MemorySpaceError {
     MissingCanonicalMemory(u64),
     TransitionHashMismatch { expected: u64, actual: u64 },
     UnsafeTransitionMerge,
+    UnsafeSemanticMerge(String),
 }
 
 impl fmt::Display for MemorySpaceError {
@@ -29,6 +30,9 @@ impl fmt::Display for MemorySpaceError {
                 f,
                 "unsafe transition merge: semantic equality is not state equality"
             ),
+            Self::UnsafeSemanticMerge(reason) => {
+                write!(f, "unsafe semantic merge: {reason}")
+            }
         }
     }
 }

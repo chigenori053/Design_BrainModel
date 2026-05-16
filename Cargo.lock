@@ -1383,6 +1383,7 @@ dependencies = [
  "language_reasoning",
  "log",
  "memory_persistence",
+ "memory_space_core",
  "memory_space_phase14",
  "ratatui",
  "runtime_core",

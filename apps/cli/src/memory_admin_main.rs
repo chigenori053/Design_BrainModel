@@ -25,8 +25,8 @@ use std::io::{self};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use clap::Parser;
 use clap::error::ErrorKind;
+use clap::{Parser, Subcommand};
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode},
     execute,
@@ -34,6 +34,10 @@ use crossterm::{
 };
 use memory_persistence::{
     DecisionPolicy, GeneralizedMemory, IngestResult, OptimizationStats, PersistentMemoryStore,
+};
+use memory_space_core::{
+    SemanticIdentityCandidate, SemanticIdentityGraph, semantic_rewrite_transaction,
+    semantic_rollback_snapshot,
 };
 use memory_space_phase14::stable_v03::MemoryRecord;
 use ratatui::{
@@ -54,12 +58,46 @@ use ratatui::{
 )]
 struct Args {
     /// 永続化ファイルのパス (省略時はオンメモリのみ)
-    #[arg(long = "store", value_name = "PATH")]
+    #[arg(long = "store", value_name = "PATH", global = true)]
     store: Option<PathBuf>,
 
     /// デモデータでストアを初期化する
-    #[arg(long = "demo", default_value_t = false)]
+    #[arg(long = "demo", default_value_t = false, global = true)]
     demo: bool,
+
+    #[command(subcommand)]
+    command: Option<MemoryCommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum MemoryCommand {
+    /// Preview, validate, or apply a semantic rewrite transaction.
+    Rewrite {
+        #[arg(long = "preview", conflicts_with_all = ["validate", "apply"])]
+        preview: bool,
+
+        #[arg(long = "validate", conflicts_with_all = ["preview", "apply"])]
+        validate: bool,
+
+        #[arg(long = "apply", conflicts_with_all = ["preview", "validate"])]
+        apply: bool,
+
+        /// Required operator confirmation for semantic apply.
+        #[arg(long = "yes", default_value_t = false)]
+        yes: bool,
+    },
+
+    /// Restore the current semantic rollback snapshot through runtime rollback.
+    Rollback,
+
+    /// Inspect the deterministic semantic topology projection.
+    Topology,
+
+    /// Inspect deterministic semantic drift projection.
+    Drift,
+
+    /// Inspect deterministic semantic attractors.
+    Attractors,
 }
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -976,6 +1014,10 @@ fn run_app(args: Args) -> Result<(), String> {
         }
     };
 
+    if let Some(command) = args.command {
+        return run_memory_command(command, &store);
+    }
+
     enable_raw_mode().expect("Failed to enable raw mode");
     let mut stdout = io::stdout();
     execute!(stdout, EnterAlternateScreen, EnableMouseCapture)
@@ -1009,4 +1051,179 @@ fn run_app(args: Args) -> Result<(), String> {
 
     result?;
     Ok(())
+}
+
+fn run_memory_command(command: MemoryCommand, store: &PersistentMemoryStore) -> Result<(), String> {
+    match command {
+        MemoryCommand::Rewrite {
+            preview: _,
+            validate,
+            apply,
+            yes,
+        } => run_memory_rewrite(store, validate, apply, yes),
+        MemoryCommand::Rollback => run_memory_rollback(store),
+        MemoryCommand::Topology => run_memory_topology(store),
+        MemoryCommand::Drift => run_memory_drift(store),
+        MemoryCommand::Attractors => run_memory_attractors(store),
+    }
+}
+
+fn run_memory_rewrite(
+    store: &PersistentMemoryStore,
+    validate: bool,
+    apply: bool,
+    yes: bool,
+) -> Result<(), String> {
+    let graph = semantic_graph_from_store(store);
+    let transaction = semantic_rewrite_transaction(&graph);
+
+    if apply && !yes {
+        return Err("memory rewrite --apply requires operator confirmation via --yes".to_string());
+    }
+
+    if apply {
+        let request = crate::runtime::semantic::RuntimeSemanticApplyRequest {
+            validation: transaction.validation.clone(),
+            runtime_checksum: transaction.deterministic_checksum,
+            transaction,
+            apply_mode: crate::runtime::semantic::SemanticApplyMode::Strict,
+        };
+        let result = crate::runtime::semantic::runtime_semantic_apply(request);
+        println!(
+            "semantic apply: applied={} topology_updated={} rollback_available={} checksum={} revision={}",
+            result.applied,
+            result.topology_updated,
+            result.rollback_available,
+            result.applied_checksum,
+            result.topology_revision
+        );
+        for warning in result.warnings {
+            println!("warning: {warning}");
+        }
+        return Ok(());
+    }
+
+    if validate {
+        println!(
+            "semantic validation: valid={} continuity={} anchors={} contradiction={} mass={} replay={} topology={}",
+            transaction.validation.valid,
+            transaction.validation.continuity_retained,
+            transaction.validation.anchors_preserved,
+            transaction.validation.contradiction_bounded,
+            transaction.validation.semantic_mass_bounded,
+            transaction.validation.replay_invariant,
+            transaction.validation.topology_invariant
+        );
+        for error in transaction.validation.validation_errors {
+            println!("validation_error: {error}");
+        }
+        return Ok(());
+    }
+
+    println!(
+        "semantic preview: identities={} merge_ops={} correction_ops={} compression_ops={} continuity_delta={:.6} mass_delta={:.6} contradiction_delta={:.6} anchor_preservation={:.6} checksum={}",
+        graph.identities.len(),
+        transaction.rewrite_plan.merge_operations.len(),
+        transaction.rewrite_plan.correction_operations.len(),
+        transaction.rewrite_plan.compression_operations.len(),
+        transaction.preview.continuity_delta,
+        transaction.preview.semantic_mass_delta,
+        transaction.preview.contradiction_delta,
+        transaction.preview.anchor_preservation_ratio,
+        transaction.deterministic_checksum
+    );
+    Ok(())
+}
+
+fn run_memory_rollback(store: &PersistentMemoryStore) -> Result<(), String> {
+    let graph = semantic_graph_from_store(store);
+    let snapshot = semantic_rollback_snapshot(&graph);
+    let result = crate::runtime::semantic::runtime_semantic_rollback(snapshot);
+    println!(
+        "semantic rollback: restored={} revision={} replay_invariant_retained={}",
+        result.restored, result.restored_revision, result.replay_invariant_retained
+    );
+    Ok(())
+}
+
+fn run_memory_topology(store: &PersistentMemoryStore) -> Result<(), String> {
+    let graph = semantic_graph_from_store(store);
+    let snapshot = crate::runtime::unified_projection::semantic_runtime_snapshot(&graph);
+    println!(
+        "semantic topology: identities={} lineages={} stabilizations={}",
+        snapshot.topology_snapshot.identities.len(),
+        snapshot.lineage_snapshot.len(),
+        snapshot.stabilization_snapshot.len()
+    );
+    for identity in snapshot.topology_snapshot.identities {
+        println!(
+            "identity: id={} continuity={:.6} invariant_core_overlap={:.6} drift_lineage={:?}",
+            identity.identity_id,
+            identity.continuity_score,
+            identity.invariant_core_overlap,
+            identity.drift_lineage
+        );
+    }
+    Ok(())
+}
+
+fn run_memory_drift(store: &PersistentMemoryStore) -> Result<(), String> {
+    let graph = semantic_graph_from_store(store);
+    let snapshot = crate::runtime::unified_projection::semantic_runtime_snapshot(&graph);
+    println!("semantic drift: events={}", snapshot.drift_snapshot.len());
+    for drift in snapshot.drift_snapshot {
+        println!(
+            "drift: identity={} previous={:.6} current={:.6} magnitude={:.6} recoverable={}",
+            drift.identity_id,
+            drift.previous_continuity,
+            drift.current_continuity,
+            drift.drift_magnitude,
+            drift.recoverable
+        );
+    }
+    Ok(())
+}
+
+fn run_memory_attractors(store: &PersistentMemoryStore) -> Result<(), String> {
+    let graph = semantic_graph_from_store(store);
+    let snapshot = crate::runtime::unified_projection::semantic_runtime_snapshot(&graph);
+    println!(
+        "semantic attractors: attractors={}",
+        snapshot.attractor_snapshot.len()
+    );
+    for attractor in snapshot.attractor_snapshot {
+        println!(
+            "attractor: id={} anchors={} strength={:.6} mass={:.6} stability={:.6}",
+            attractor.attractor_id,
+            attractor.anchor_set.len(),
+            attractor.attractor_strength,
+            attractor.semantic_mass,
+            attractor.stability_score
+        );
+    }
+    Ok(())
+}
+
+fn semantic_graph_from_store(store: &PersistentMemoryStore) -> SemanticIdentityGraph {
+    let mut identities = store
+        .list()
+        .iter()
+        .map(|memory| SemanticIdentityCandidate {
+            identity_id: stable_memory_identity(&memory.id),
+            continuity_score: 1.0,
+            invariant_core_overlap: 1.0,
+            drift_lineage: vec![memory.version as u64, memory.source_count as u64],
+        })
+        .collect::<Vec<_>>();
+    identities.sort_by(|a, b| a.identity_id.cmp(&b.identity_id));
+    SemanticIdentityGraph { identities }
+}
+
+fn stable_memory_identity(value: &str) -> u64 {
+    let mut hash = 0xcbf29ce484222325_u64;
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
 }

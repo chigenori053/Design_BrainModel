@@ -741,12 +741,15 @@ mod tests {
                 .runtime
                 .runtime_panel_lines(false)
                 .iter()
-                .any(|l: &String| l.contains("trace 1"))
+                .any(|l: &String| l.contains("[INTENT] checking runtime state"))
         );
 
         // Simulating a "redraw" by creating a new snapshot
         let snapshot2 = RenderSnapshot::from(&state);
-        assert_eq!(snapshot1.runtime.chat_lines, snapshot2.runtime.chat_lines);
+        assert_eq!(
+            snapshot1.runtime.narrative_lines,
+            snapshot2.runtime.narrative_lines
+        );
     }
 
     /// DBM-NARRATIVE-PROJECTION-BINDING-SPEC §12.5 — narrative is scrollable.

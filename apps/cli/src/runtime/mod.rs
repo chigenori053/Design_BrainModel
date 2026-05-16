@@ -11,3 +11,4 @@ pub mod runtime_state;
 pub mod semantic;
 pub mod shell;
 pub mod synthesis;
+pub mod unified_projection;

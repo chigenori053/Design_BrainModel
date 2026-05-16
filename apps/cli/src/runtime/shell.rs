@@ -903,6 +903,12 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
                 summary: "transaction reverted".to_string(),
             },
         );
+        insert_before_system(
+            &mut events,
+            RuntimeNarrativeEvent::System {
+                summary: "runtime stabilized".to_string(),
+            },
+        );
         return events;
     }
 
@@ -918,6 +924,12 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
                 &mut events,
                 RuntimeNarrativeEvent::Rollback {
                     summary: "transaction reverted".to_string(),
+                },
+            );
+            insert_before_system(
+                &mut events,
+                RuntimeNarrativeEvent::System {
+                    summary: "runtime stabilized".to_string(),
                 },
             );
             return events;
@@ -959,6 +971,12 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
         &mut events,
         RuntimeNarrativeEvent::Rollback {
             summary: "transaction reverted".to_string(),
+        },
+    );
+    insert_before_system(
+        &mut events,
+        RuntimeNarrativeEvent::System {
+            summary: "runtime stabilized".to_string(),
         },
     );
     events
@@ -1047,6 +1065,43 @@ mod tests {
 
     fn write_core(root: &Path) {
         std::fs::write(root.join("core.rs"), "fn core() {}\n").expect("write core");
+    }
+
+    #[test]
+    fn runtime_state_transitions_are_governed() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"));
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+
+        let output = runtime_rollback(&mut state)
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert!(output.contains("runtime stabilized"));
+        assert!(output.contains("runtime idle"));
+    }
+
+    #[test]
+    fn stabilization_phase_is_present() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        runtime_preview(&mut state, root.path(), PathBuf::from("core.rs"));
+        let apply_output = runtime_apply(&mut state)
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(apply_output.contains("transaction committed successfully"));
+        assert!(apply_output.contains("runtime stabilized"));
     }
 
     #[test]

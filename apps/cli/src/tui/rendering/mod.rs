@@ -8,6 +8,7 @@ use crate::tui::state::{
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderSnapshot {
+    pub projection: ProjectionSnapshot,
     pub runtime: RuntimeProjection,
     pub status: StatusModel,
     pub input: InputModel,
@@ -15,6 +16,50 @@ pub struct RenderSnapshot {
     pub identity: RuntimeIdentity,
     pub is_expanded: bool,
     pub diagnostics: Option<DiagnosticModel>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionSnapshot {
+    pub narrative: Vec<String>,
+    pub workspace: WorkspaceProjectionModel,
+    pub diagnostics: Option<DiagnosticModel>,
+    pub runtime_state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceProjectionModel {
+    pub target: Option<String>,
+    pub operation: String,
+    pub status: String,
+}
+
+impl WorkspaceProjectionModel {
+    pub fn from_state(state: &TuiState) -> Self {
+        let target = resolved_target_label(state);
+        let has_preview = state.active_transaction.is_some();
+        Self {
+            target,
+            operation: if has_preview {
+                "preview".to_string()
+            } else {
+                "none".to_string()
+            },
+            status: system_summary(&projection_state_label_from_runtime(state)),
+        }
+    }
+
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            "Target:".to_string(),
+            format!("  {}", self.target.as_deref().unwrap_or("(none)")),
+            String::new(),
+            "Operation:".to_string(),
+            format!("  {}", self.operation),
+            String::new(),
+            "Status:".to_string(),
+            format!("  {}", self.status),
+        ]
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,13 +77,14 @@ pub struct RuntimeProjection {
     pub transaction_label: Option<String>,
     pub diff_projection: DiffProjection,
     pub rejection_label: Option<String>,
-    pub chat_lines: Vec<String>,
+    pub narrative_lines: Vec<String>,
     pub scroll_offset: usize,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiffProjection {
     pub target_label: Option<String>,
+    pub workspace: WorkspaceProjectionModel,
     pub lines: Vec<String>,
     pub semantic_projection: Option<crate::tui::cognitive_workspace::WorkspaceSemanticProjection>,
 }
@@ -142,7 +188,36 @@ impl FrameComposer {
 impl From<&TuiState> for RenderSnapshot {
     fn from(state: &TuiState) -> Self {
         let runtime = RuntimeProjection::from_state(state);
+        let diagnostics = if state.diagnostic_mode {
+            Some(DiagnosticModel {
+                last_event: state
+                    .diagnostics
+                    .last_event
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
+                last_focus: state
+                    .diagnostics
+                    .last_focus_transition
+                    .clone()
+                    .unwrap_or_else(|| format!("{:?}", state.focus)),
+                last_mutation: state
+                    .diagnostics
+                    .last_mutation
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
+                raw_mode: state.diagnostics.raw_mode_active,
+            })
+        } else {
+            None
+        };
+        let projection = ProjectionSnapshot {
+            narrative: runtime.narrative_lines.clone(),
+            workspace: runtime.diff_projection.workspace.clone(),
+            diagnostics: diagnostics.clone(),
+            runtime_state: runtime.state_label.clone(),
+        };
         Self {
+            projection,
             status: StatusModel {
                 line: runtime.status_line(),
             },
@@ -155,28 +230,7 @@ impl From<&TuiState> for RenderSnapshot {
             focus: state.focus,
             identity: RuntimeIdentity::default(),
             is_expanded: state.narrative_expanded,
-            diagnostics: if state.diagnostic_mode {
-                Some(DiagnosticModel {
-                    last_event: state
-                        .diagnostics
-                        .last_event
-                        .clone()
-                        .unwrap_or_else(|| "(none)".to_string()),
-                    last_focus: state
-                        .diagnostics
-                        .last_focus_transition
-                        .clone()
-                        .unwrap_or_else(|| format!("{:?}", state.focus)),
-                    last_mutation: state
-                        .diagnostics
-                        .last_mutation
-                        .clone()
-                        .unwrap_or_else(|| "(none)".to_string()),
-                    raw_mode: state.diagnostics.raw_mode_active,
-                })
-            } else {
-                None
-            },
+            diagnostics,
         }
     }
 }
@@ -192,25 +246,28 @@ impl RuntimeProjection {
             )
         });
 
-        Self {
+        let mut projection = Self {
             state_label: projection_state_label_from_runtime(state),
             target_label,
             transaction_label: resolved_transaction_label(state),
             diff_projection,
             rejection_label,
-            chat_lines: state.flattened_chat_lines(),
+            narrative_lines: Vec::new(),
             scroll_offset: state.chat_scroll.offset,
-        }
+        };
+        projection.narrative_lines =
+            RuntimeNarrativeReducer::render(runtime_semantic_events_from_projection(&projection));
+        projection
     }
 
     pub fn runtime_panel_lines(&self, _expanded: bool) -> Vec<String> {
-        self.chat_lines.clone()
+        self.narrative_lines.clone()
     }
 
     pub fn status_line(&self) -> String {
         format!(
             "state={} tx={} target={}",
-            self.state_label,
+            system_summary(&self.state_label),
             self.transaction_label.as_deref().unwrap_or("(none)"),
             self.target_label.as_deref().unwrap_or("(none)")
         )
@@ -219,10 +276,12 @@ impl RuntimeProjection {
 
 impl DiffProjection {
     pub fn from_state(state: &TuiState, target_label: Option<String>) -> Self {
+        let workspace = WorkspaceProjectionModel::from_state(state);
         let Some(transaction) = state.active_transaction.as_ref() else {
             return Self {
                 target_label,
-                lines: vec!["No preview available.".to_string()],
+                workspace: workspace.clone(),
+                lines: workspace.lines(),
                 semantic_projection: None,
             };
         };
@@ -235,72 +294,62 @@ impl DiffProjection {
         };
         let semantic_projection = Some(engine.project_impact(&transaction.target_path));
 
-        let diff = &transaction.diff;
         let target_label = target_label.or_else(|| semantic_label(&transaction.target_path));
-        let mut lines = Vec::new();
-        if let Some(target) = target_label.as_deref() {
-            lines.push(format!("Target: {target}"));
-        }
-        lines.push("--- preview".to_string());
-        for change in &diff.changes {
-            if let Some(old) = sanitize_line(change.old.as_deref().unwrap_or_default()) {
-                if !old.is_empty() {
-                    lines.push(format!("-{old}"));
-                }
-            }
-            if let Some(new) = sanitize_line(change.new.as_deref().unwrap_or_default()) {
-                if !new.is_empty() {
-                    let line =
-                        if new.starts_with('+') || new.starts_with('-') || new.starts_with(' ') {
-                            new
-                        } else {
-                            format!("+{new}")
-                        };
-                    lines.push(line);
-                }
-            }
-        }
         Self {
             target_label,
-            lines: sanitize_lines(lines),
+            workspace: workspace.clone(),
+            lines: sanitize_lines(workspace.lines()),
             semantic_projection,
         }
     }
 }
 
+pub struct RuntimeNarrativeReducer;
+
+impl RuntimeNarrativeReducer {
+    pub fn render(events: Vec<RuntimeNarrativeEvent>) -> Vec<String> {
+        let mut lines = Vec::new();
+        for event in events {
+            let line = render_narrative_event(normalize_narrative_event(event));
+            if lines.last() != Some(&line) {
+                lines.push(line);
+            }
+        }
+        lines
+    }
+}
+
 pub fn runtime_semantic_events(state: &TuiState) -> Vec<RuntimeNarrativeEvent> {
-    let mut events = Vec::new();
     let projection = RuntimeProjection::from_state(state);
+    runtime_semantic_events_from_projection(&projection)
+}
+
+fn runtime_semantic_events_from_projection(
+    projection: &RuntimeProjection,
+) -> Vec<RuntimeNarrativeEvent> {
+    let mut events = Vec::new();
 
     events.push(RuntimeNarrativeEvent::Intent {
-        summary: intent_summary(&projection),
+        summary: intent_summary(projection),
     });
     events.push(RuntimeNarrativeEvent::Thinking {
         summary: "resolving target graph".to_string(),
     });
     events.push(RuntimeNarrativeEvent::Analysis {
-        summary: analysis_summary(&projection),
+        summary: analysis_summary(projection),
     });
     events.push(RuntimeNarrativeEvent::Validation {
-        summary: validation_summary(&projection),
+        summary: validation_summary(projection),
     });
-    if projection.state_label == "READY_TO_APPLY" || projection.state_label == "AWAITING_APPLY" {
-        events.push(RuntimeNarrativeEvent::Planning {
-            summary: "preparing governed mutation".to_string(),
-        });
-    }
     events.push(RuntimeNarrativeEvent::Execution {
-        summary: execution_summary(&projection),
+        summary: execution_summary(projection),
     });
-    if let Some(target) = projection.target_label.clone() {
-        events.push(RuntimeNarrativeEvent::Preview { target });
-    }
     if projection.state_label == "APPLIED" {
         events.push(RuntimeNarrativeEvent::Apply {
             summary: "transaction committed successfully".to_string(),
         });
     }
-    if let Some(rejection) = projection.rejection_label {
+    if let Some(rejection) = projection.rejection_label.clone() {
         events.push(RuntimeNarrativeEvent::GovernanceReject { reason: rejection });
     }
     events.push(RuntimeNarrativeEvent::System {
@@ -324,7 +373,7 @@ fn intent_summary(projection: &RuntimeProjection) -> String {
         "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => {
             "preparing governed transaction".to_string()
         }
-        _ => "observing runtime cognition".to_string(),
+        _ => "checking runtime state".to_string(),
     }
 }
 
@@ -358,7 +407,7 @@ fn system_summary(state_label: &str) -> String {
     match state_label {
         "IDLE" => "runtime idle".to_string(),
         "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => "preview ready".to_string(),
-        "APPLIED" => "transaction committed".to_string(),
+        "APPLIED" => "runtime stabilized".to_string(),
         "APPLYING" => "mutation in progress".to_string(),
         "FAILED_RECOVERABLE" => "runtime recovery available".to_string(),
         "RUNAWAY_COGNITION_HALT" => "governance halt active".to_string(),
@@ -396,15 +445,16 @@ fn resolved_target_label(state: &TuiState) -> Option<String> {
         .active_transaction
         .as_ref()
         .map(|tx| tx.target_path.as_str())
+        .or(state.active_target.as_deref())
         .and_then(semantic_label)
 }
 
 fn resolved_transaction_label(state: &TuiState) -> Option<String> {
-    state
-        .active_transaction
-        .as_ref()
-        .map(|tx| tx.tx_id.as_str())
-        .and_then(semantic_label)
+    if state.active_transaction.is_some() || state.active_transaction_id.is_some() {
+        Some("transaction active".to_string())
+    } else {
+        None
+    }
 }
 
 fn semantic_label(raw: &str) -> Option<String> {
@@ -422,7 +472,7 @@ fn semantic_label(raw: &str) -> Option<String> {
                         .map(|relative| relative.to_path_buf())
                 })
             })
-            .unwrap_or_else(|| path.to_path_buf())
+            .unwrap_or_else(|| compressed_absolute_path(path))
     } else {
         path.to_path_buf()
     };
@@ -440,6 +490,12 @@ fn semantic_workspace_relative_path(path: &std::path::Path) -> Option<std::path:
         }
     }
     None
+}
+
+fn compressed_absolute_path(path: &std::path::Path) -> std::path::PathBuf {
+    let components = path.components().collect::<Vec<_>>();
+    let start = components.len().saturating_sub(3);
+    components[start..].iter().collect()
 }
 
 fn cursor_model(snapshot: &RenderSnapshot, input_area: Rect) -> Option<CursorModel> {
@@ -478,6 +534,48 @@ fn sanitize_lines(lines: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter_map(|line| sanitize_line(&line))
         .collect()
+}
+
+fn normalize_narrative_event(event: RuntimeNarrativeEvent) -> RuntimeNarrativeEvent {
+    match event {
+        RuntimeNarrativeEvent::Intent { summary }
+            if summary == "observing runtime cognition" || summary == "checking runtime state" =>
+        {
+            RuntimeNarrativeEvent::Intent {
+                summary: "checking runtime state".to_string(),
+            }
+        }
+        RuntimeNarrativeEvent::Planning { summary } => RuntimeNarrativeEvent::Thinking { summary },
+        RuntimeNarrativeEvent::Preview { .. } => RuntimeNarrativeEvent::Execution {
+            summary: "preparing transaction preview".to_string(),
+        },
+        RuntimeNarrativeEvent::Commit { summary } => RuntimeNarrativeEvent::Apply { summary },
+        RuntimeNarrativeEvent::Error { message } => RuntimeNarrativeEvent::System {
+            summary: format!("runtime error: {message}"),
+        },
+        other => other,
+    }
+}
+
+fn render_narrative_event(event: RuntimeNarrativeEvent) -> String {
+    match event {
+        RuntimeNarrativeEvent::Intent { summary } => format!("[INTENT] {summary}"),
+        RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
+        RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
+        RuntimeNarrativeEvent::Planning { summary } => format!("[THINKING] {summary}"),
+        RuntimeNarrativeEvent::Validation { summary } => format!("[VALIDATION] {summary}"),
+        RuntimeNarrativeEvent::Execution { summary } => format!("[EXECUTION] {summary}"),
+        RuntimeNarrativeEvent::Preview { target } => {
+            format!("[EXECUTION] preparing transaction preview for {target}")
+        }
+        RuntimeNarrativeEvent::Apply { summary } | RuntimeNarrativeEvent::Commit { summary } => {
+            format!("[APPLY] {summary}")
+        }
+        RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
+        RuntimeNarrativeEvent::System { summary } => format!("[SYSTEM] {summary}"),
+        RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
+        RuntimeNarrativeEvent::Error { message } => format!("[SYSTEM] runtime error: {message}"),
+    }
 }
 
 #[cfg(test)]
@@ -584,7 +682,7 @@ mod tests {
         let lines = event_lines(&state);
 
         assert!(lines.contains(&"[APPLY] transaction committed successfully".to_string()));
-        assert!(lines.contains(&"[SYSTEM] transaction committed".to_string()));
+        assert!(lines.contains(&"[SYSTEM] runtime stabilized".to_string()));
     }
 
     #[test]
@@ -611,9 +709,7 @@ mod tests {
                 "[THINKING]",
                 "[ANALYSIS]",
                 "[VALIDATION]",
-                "[PLANNING]",
                 "[EXECUTION]",
-                "[PREVIEW]",
                 "[SYSTEM]",
             ]
         );
@@ -630,7 +726,7 @@ mod tests {
             diff: vec!["fn main() {}".to_string()],
         });
 
-        let surface = event_lines(&state).join("\n");
+        let surface = projection_surface(&RenderSnapshot::from(&state));
 
         assert!(!surface.contains("[NEXT]"));
         assert!(!surface.contains("[RUNTIME] status:"));
@@ -736,8 +832,8 @@ mod tests {
             projection
                 .diff_projection
                 .lines
-                .iter()
-                .any(|line| line == "Target: apps/cli/src/core.rs")
+                .windows(2)
+                .any(|lines| lines == ["Target:", "  apps/cli/src/core.rs"])
         );
     }
 
@@ -773,10 +869,13 @@ mod tests {
             snapshot.runtime.target_label.as_deref(),
             Some("apps/cli/src/core.rs")
         );
-        assert_eq!(snapshot.runtime.transaction_label.as_deref(), Some("tx-42"));
+        assert_eq!(
+            snapshot.runtime.transaction_label.as_deref(),
+            Some("transaction active")
+        );
         assert_eq!(
             snapshot.status.line,
-            "state=READY_TO_APPLY tx=tx-42 target=apps/cli/src/core.rs"
+            "state=preview ready tx=transaction active target=apps/cli/src/core.rs"
         );
     }
 
@@ -818,7 +917,10 @@ mod tests {
 
         assert_eq!(first, second);
         assert_eq!(first.state_label, "APPLYING");
-        assert_eq!(first.transaction_label.as_deref(), Some("tx-apply"));
+        assert_eq!(
+            first.transaction_label.as_deref(),
+            Some("transaction active")
+        );
     }
 
     #[test]
@@ -841,9 +943,17 @@ mod tests {
 
         assert_eq!(projection.state_label, "IDLE");
         assert_eq!(projection.transaction_label, None);
-        assert_eq!(
-            projection.diff_projection.lines,
-            vec!["No preview available.".to_string()]
+        assert!(
+            projection
+                .diff_projection
+                .lines
+                .contains(&"Target:".to_string())
+        );
+        assert!(
+            projection
+                .diff_projection
+                .lines
+                .contains(&"  (none)".to_string())
         );
     }
 
@@ -875,14 +985,14 @@ mod tests {
             projection
                 .transaction_label
                 .as_deref()
-                .is_some_and(|tx| tx.starts_with("tx-"))
+                .is_some_and(|tx| tx == "transaction active")
         );
         assert!(
             projection
                 .diff_projection
                 .lines
-                .iter()
-                .any(|line| line == "Target: apps/cli/src/core.rs")
+                .windows(2)
+                .any(|lines| lines == ["Target:", "  apps/cli/src/core.rs"])
         );
     }
 
@@ -895,9 +1005,136 @@ mod tests {
 
         assert_eq!(projection.state_label, "IDLE");
         assert_eq!(projection.transaction_label, None);
+        assert!(
+            projection
+                .diff_projection
+                .lines
+                .contains(&"Target:".to_string())
+        );
+        assert!(
+            projection
+                .diff_projection
+                .lines
+                .contains(&"  (none)".to_string())
+        );
+    }
+
+    #[test]
+    fn absolute_paths_are_not_projected() {
+        let mut state = TuiState::new(empty_payload());
+        let target = std::env::current_dir()
+            .expect("cwd")
+            .join("apps/cli/src/main.rs");
+        state.active_target = Some(target.display().to_string());
+
+        let surface = projection_surface(&RenderSnapshot::from(&state));
+
+        assert!(!surface.contains("/Users/"));
+        assert!(surface.contains("apps/cli/src/main.rs"));
+    }
+
+    #[test]
+    fn transaction_internal_ids_are_hidden() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_transaction_id = Some("tx-users-secret-runtime-token".to_string());
+
+        let surface = projection_surface(&RenderSnapshot::from(&state));
+
+        assert!(!surface.contains("tx-users-secret-runtime-token"));
+        assert!(surface.contains("transaction active"));
+    }
+
+    #[test]
+    fn workspace_projection_is_semantic() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/main.rs".to_string());
+
+        let projection = RenderSnapshot::from(&state).projection.workspace;
+
+        assert_eq!(projection.target.as_deref(), Some("apps/cli/src/main.rs"));
+        assert_eq!(projection.operation, "none");
+        assert_eq!(projection.status, "runtime idle");
+    }
+
+    #[test]
+    fn workspace_projection_has_no_transport_leaks() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("runtime.active_preview".to_string());
+        state.append_chat(UiEvent::Diff {
+            file: "/Users/chigenori/development/Design_BrainModel/apps/cli/src/main.rs".to_string(),
+            changes: vec![DiffChunk {
+                old: None,
+                new: Some(
+                    "+preview /Users/chigenori/development/Design_BrainModel/apps/cli/src/main.rs"
+                        .to_string(),
+                ),
+                old_line: None,
+                new_line: Some(1),
+            }],
+        });
+
+        let surface = projection_surface(&RenderSnapshot::from(&state));
+
+        assert!(!surface.contains("+preview /Users/"));
+        assert!(!surface.contains("raw diff"));
+        assert!(!surface.contains("runtime.active_preview"));
+    }
+
+    #[test]
+    fn duplicate_runtime_idle_is_collapsed() {
+        let events = vec![
+            RuntimeNarrativeEvent::System {
+                summary: "runtime idle".to_string(),
+            },
+            RuntimeNarrativeEvent::System {
+                summary: "runtime idle".to_string(),
+            },
+        ];
+
         assert_eq!(
-            projection.diff_projection.lines,
-            vec!["No preview available.".to_string()]
+            RuntimeNarrativeReducer::render(events),
+            vec!["[SYSTEM] runtime idle".to_string()]
+        );
+    }
+
+    #[test]
+    fn semantic_echoes_are_reduced() {
+        let events = vec![RuntimeNarrativeEvent::Intent {
+            summary: "observing runtime cognition".to_string(),
+        }];
+
+        assert_eq!(
+            RuntimeNarrativeReducer::render(events),
+            vec!["[INTENT] checking runtime state".to_string()]
+        );
+    }
+
+    #[test]
+    fn projection_snapshot_is_atomic() {
+        let state = TuiState::new(empty_payload());
+        let snapshot = RenderSnapshot::from(&state);
+
+        assert_eq!(
+            snapshot.projection.narrative,
+            snapshot.runtime.narrative_lines
+        );
+        assert_eq!(
+            snapshot.projection.workspace,
+            snapshot.runtime.diff_projection.workspace
+        );
+        assert_eq!(
+            snapshot.projection.runtime_state,
+            snapshot.runtime.state_label
+        );
+    }
+
+    #[test]
+    fn projection_order_is_deterministic() {
+        let state = TuiState::new(empty_payload());
+
+        assert_eq!(
+            RenderSnapshot::from(&state).projection,
+            RenderSnapshot::from(&state).projection
         );
     }
 

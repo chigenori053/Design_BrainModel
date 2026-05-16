@@ -37,6 +37,7 @@ enum Commands {
     #[command(name = "run-dsl")]
     RunDsl(CoreArgs),
     Rules(CoreArgs),
+    Runtime(CoreArgs),
     Memory(CoreArgs),
     Simulate(CoreArgs),
     #[command(name = "phase-analyze")]
@@ -70,6 +71,29 @@ fn main() {
     .expect("Error setting Ctrl-C handler");
 
     let cli = Cli::parse();
+
+    if let Commands::Runtime(args) = &cli.command {
+        if let Err(err) = run_runtime_command(&args.args) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Commands::Memory(args) = &cli.command
+        && matches!(
+            args.args.first().map(String::as_str),
+            Some("rewrite" | "rollback" | "topology" | "drift" | "attractors")
+        )
+    {
+        let forwarded = std::iter::once(OsString::from("design_cli"))
+            .chain(args.args.iter().map(OsString::from));
+        if let Err(err) = design_cli::memory_admin_main::run_with_args(forwarded) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
 
     match runtime_intent(&cli.command) {
         Some(RuntimeIntent::Repl | RuntimeIntent::Workspace | RuntimeIntent::LegacyRepl) => {
@@ -122,6 +146,7 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Run(args) => join_core("run", &args.args),
         Commands::RunDsl(args) => join_core("run-dsl", &args.args),
         Commands::Rules(args) => join_core("rules", &args.args),
+        Commands::Runtime(args) => join_core("runtime", &args.args),
         Commands::Memory(args) => join_core("memory", &args.args),
         Commands::Simulate(args) => join_core("simulate", &args.args),
         Commands::PhaseAnalyze(args) => join_core("phase-analyze", &args.args),
@@ -134,6 +159,28 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Repl | Commands::Workspace | Commands::LegacyRepl => String::new(),
     };
     Ok(input)
+}
+
+fn run_runtime_command(args: &[String]) -> Result<(), String> {
+    use design_cli::runtime::unified_projection::{
+        Runtime, render_revision, render_unified_snapshot, unified_runtime_snapshot,
+    };
+
+    let snapshot = unified_runtime_snapshot(&Runtime::default());
+    match args.first().map(String::as_str) {
+        Some("snapshot") => {
+            println!("{}", render_unified_snapshot(&snapshot));
+            Ok(())
+        }
+        Some("revisions") => {
+            println!("{}", render_revision(&snapshot));
+            Ok(())
+        }
+        Some(other) => Err(format!(
+            "unrecognized runtime command `{other}`. Available: snapshot, revisions"
+        )),
+        None => Err("runtime command required. Available: snapshot, revisions".to_string()),
+    }
 }
 
 fn join_core(command: &str, args: &[String]) -> String {
@@ -214,6 +261,16 @@ mod tests {
         let cli = Cli::try_parse_from(["dbm", "analyze", "."]).expect("parse analyze");
         assert_eq!(runtime_intent(&cli.command), None);
         assert_eq!(core_input(&cli.command).expect("core input"), "analyze .");
+    }
+
+    #[test]
+    fn test_runtime_command_parses_without_tui_activation() {
+        let cli = Cli::try_parse_from(["dbm", "runtime", "snapshot"]).expect("parse runtime");
+        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "runtime snapshot"
+        );
     }
 
     #[test]

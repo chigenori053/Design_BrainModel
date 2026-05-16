@@ -47,6 +47,7 @@ fs_extra = "1.3"
 uuid = { version = "1", features = ["v4", "v7", "serde"] }
 wait-timeout = "0.2"
 memory_persistence = { workspace = true }
+memory_space_core = { workspace = true }
 world_model_core = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = "3.4"

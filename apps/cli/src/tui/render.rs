@@ -405,7 +405,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         full_repaint(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("PREVIOUS_FRAME_RESIDUE"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Target:"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
@@ -414,7 +414,8 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(!surface.contains("PREVIOUS_FRAME_RESIDUE"));
-        assert!(surface.contains("No preview available."));
+        assert!(surface.contains("Target:"));
+        assert!(surface.contains("Status:"));
     }
 
     #[test]
@@ -425,14 +426,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("APPLYING"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("mutation in progress"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("PREVIEW_READY"));
-        assert!(!surface.contains("APPLYING"));
+        assert!(surface.contains("preview ready"));
+        assert!(!surface.contains("mutation in progress"));
     }
 
     #[test]
@@ -443,15 +444,15 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("APPLIED"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("transaction committed"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("PREVIEW_READY"));
-        assert!(!surface.contains("APPLIED"));
-        assert!(!surface.contains("APPLYING"));
+        assert!(surface.contains("preview ready"));
+        assert!(!surface.contains("transaction committed"));
+        assert!(!surface.contains("mutation in progress"));
     }
 
     #[test]
@@ -462,13 +463,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("APPLYING"));
+        assert!(first.contains("mutation in progress"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("PREVIEW_READY"));
-        assert!(!second.contains("APPLYING"));
+        assert!(second.contains("preview ready"));
+        assert!(!second.contains("mutation in progress"));
         assert_ne!(first, second);
     }
 
@@ -503,14 +504,14 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
-        assert!(surface.contains("state=APPLY"));
+        assert!(surface.contains("state=mutation in progress"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface2 = buffer_text(terminal.backend().buffer());
 
-        assert!(surface2.contains("state=IDLE"));
-        assert!(!surface2.contains("state=APPLY"));
+        assert!(surface2.contains("state=runtime idle"));
+        assert!(!surface2.contains("state=mutation in progress"));
     }
 
     #[test]
@@ -523,14 +524,14 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("state=APPLY"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("state=mutation in progress"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("state=IDLE"));
-        assert!(!surface.contains("state=APPLY"));
+        assert!(surface.contains("state=runtime idle"));
+        assert!(!surface.contains("state=mutation in progress"));
     }
 
     #[test]
@@ -566,15 +567,15 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let first = buffer_text(terminal.backend().buffer());
-        assert!(first.contains("state=APPLY"));
+        assert!(first.contains("state=mutation in progress"));
 
         state.runtime_state = RuntimeShellState::Idle;
         state.active_target = None;
         redraw_without_terminal_clear(&mut terminal, &state);
         let second = buffer_text(terminal.backend().buffer());
 
-        assert!(second.contains("state=IDLE"));
-        assert!(!second.contains("state=APPLY"));
+        assert!(second.contains("state=runtime idle"));
+        assert!(!second.contains("state=mutation in progress"));
         assert!(!second.contains("very_long_previous_runtime_target"));
     }
 
@@ -588,13 +589,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("state=APPLY"));
+        assert!(first.contains("state=mutation in progress"));
 
         state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("state=IDLE"));
-        assert!(!second.contains("state=APPLY"));
+        assert!(second.contains("state=runtime idle"));
+        assert!(!second.contains("state=mutation in progress"));
     }
 
     #[test]
@@ -612,8 +613,8 @@ mod tests {
         let third = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
         assert_eq!(second, third);
-        assert!(third.contains("state=IDLE"));
-        assert!(!third.contains("state=APPLY"));
+        assert!(third.contains("state=runtime idle"));
+        assert!(!third.contains("state=mutation in progress"));
     }
 
     #[test]
@@ -631,10 +632,11 @@ mod tests {
             .expect("draw");
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("state=IDLE"));
+        assert!(surface.contains("state=runtime idle"));
         assert!(surface.contains(&snapshot.status.line));
-        assert!(surface.contains("No preview available."));
-        assert!(!surface.contains("state=APPLY"));
+        assert!(surface.contains("Target:"));
+        assert!(surface.contains("Status:"));
+        assert!(!surface.contains("state=mutation in progress"));
     }
 
     #[test]
@@ -660,7 +662,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("STALE_DIFF_PANEL_TEXT"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Target:"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
@@ -669,7 +671,8 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(!surface.contains("STALE_DIFF_PANEL_TEXT"));
-        assert!(surface.contains("No preview available."));
+        assert!(surface.contains("Target:"));
+        assert!(surface.contains("Status:"));
     }
 
     #[test]
@@ -758,7 +761,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         full_repaint(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("WIDE_FRAME_ONLY_TEXT"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Target:"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),

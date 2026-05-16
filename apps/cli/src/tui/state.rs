@@ -64,6 +64,9 @@ pub const BANNED_SURFACE_TOKENS: &[&str] = &[
     "runtime.active_preview",
     "RuntimeState",
     "ActivePreview",
+    "PreviewDiff",
+    "Rect {",
+    "tx-users-",
     "active_preview",
 ];
 
