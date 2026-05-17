@@ -30,7 +30,7 @@ use crate::git::dirty_tree::{
 use crate::git::executor::{
     add_file as git_add_file, commit_fixed as git_commit_fixed, execute_read as git_execute_read,
 };
-use crate::git::policy::{CommandPolicy, classify as git_command_policy};
+use crate::git::policy::{CommandType, classify as git_command_policy};
 use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_record_json};
 use crate::git::transaction::{ExecutionTransaction, GitPhase};
 use crate::pipeline::PipelineState;
@@ -1147,7 +1147,10 @@ impl RuntimeCoreBridge {
         working_dir: &Path,
     ) -> CoreResponse {
         let policy = git_command_policy(&command);
-        if policy == CommandPolicy::Dangerous {
+        if matches!(
+            policy.command_type,
+            CommandType::Dangerous | CommandType::Forbidden
+        ) {
             return error_response("ExecutionRejected", &command.canonical(), id);
         }
 
@@ -2838,14 +2841,16 @@ fn normalize_git_output(output: &str) -> String {
 }
 
 fn is_forbidden_command(lower: &str) -> bool {
-    lower == "git push"
-        || lower.starts_with("git push ")
-        || lower == "git reset"
-        || lower.starts_with("git reset ")
-        || lower == "git clean"
-        || lower.starts_with("git clean ")
-        || lower == "rm -rf"
-        || lower.starts_with("rm -rf ")
+    matches!(
+        crate::runtime::execution_governance::classify_command(lower),
+        crate::runtime::execution_governance::CommandType::Forbidden
+            | crate::runtime::execution_governance::CommandType::Dangerous
+    ) && (lower.starts_with("git ")
+        || lower.starts_with("gh ")
+        || lower.starts_with("rm ")
+        || lower.starts_with("sudo ")
+        || lower.starts_with("shutdown")
+        || lower.starts_with("reboot"))
 }
 
 fn checksum_bytes(bytes: &[u8]) -> String {

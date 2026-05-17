@@ -24,6 +24,17 @@ pub struct ExecutionDiff {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalTarget {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedExecutionTarget {
+    pub canonical_target: CanonicalTarget,
+    pub semantic_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionRollbackSnapshot {
     pub execution_snapshot: ExecutionRuntimeSnapshot,
     pub transaction_snapshot: RuntimeTransactionSnapshot,
@@ -32,6 +43,7 @@ pub struct ExecutionRollbackSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExecutionApplyTransaction {
     pub transaction_id: u64,
+    pub resolved_target: ResolvedExecutionTarget,
     pub diff: ExecutionDiff,
     pub rollback_snapshot: ExecutionRollbackSnapshot,
     pub execution_revision: u64,
@@ -127,6 +139,12 @@ pub struct UnifiedRollbackResult {
     pub errors: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct RollbackProjection {
+    pub projection_before: crate::runtime::unified_projection::UnifiedRuntimeSnapshot,
+    pub projection_after: crate::runtime::unified_projection::UnifiedRuntimeSnapshot,
+}
+
 pub fn unified_mutation_transaction(
     runtime: &Runtime,
     execution_mutation: Option<ExecutionApplyTransaction>,
@@ -177,7 +195,8 @@ pub fn execution_apply_transaction(
     target: impl Into<String>,
     operation_count: usize,
 ) -> ExecutionApplyTransaction {
-    let target = target.into();
+    let resolved_target = resolve_execution_target(target.into());
+    let target = resolved_target.canonical_target.path.clone();
     let diff = ExecutionDiff {
         deterministic_hash: stable_hash_strs([target.as_str()])
             ^ stable_hash_u64s([operation_count as u64]),
@@ -195,6 +214,7 @@ pub fn execution_apply_transaction(
     ]);
     let mut transaction = ExecutionApplyTransaction {
         transaction_id,
+        resolved_target,
         diff,
         rollback_snapshot,
         execution_revision: runtime.runtime_revision,
@@ -338,13 +358,20 @@ pub fn validate_unified_mutation(
         .map(|execution| {
             let checksum_matches =
                 deterministic_execution_checksum(execution) == execution.deterministic_checksum;
+            let target_locked = execution.diff.target
+                == execution.resolved_target.canonical_target.path
+                && execution.resolved_target.semantic_hash
+                    == semantic_hash_for_target(&execution.resolved_target.canonical_target.path);
             if execution.diff.operation_count == 0 {
                 errors.push("empty execution diff".to_string());
             }
             if !checksum_matches {
                 errors.push("execution checksum mismatch".to_string());
             }
-            execution.diff.operation_count > 0 && checksum_matches
+            if !target_locked {
+                errors.push("execution target lock mismatch".to_string());
+            }
+            execution.diff.operation_count > 0 && checksum_matches && target_locked
         })
         .unwrap_or(true);
 
@@ -602,6 +629,8 @@ fn deterministic_execution_checksum(transaction: &ExecutionApplyTransaction) -> 
     stable_hash_u64s([
         transaction.transaction_id,
         transaction.execution_revision,
+        stable_hash_strs([transaction.resolved_target.canonical_target.path.as_str()]),
+        stable_hash_strs([transaction.resolved_target.semantic_hash.as_str()]),
         transaction.diff.deterministic_hash,
         transaction.diff.operation_count as u64,
         deterministic_execution_rollback_checksum(&transaction.rollback_snapshot),
@@ -652,6 +681,39 @@ fn stable_hash_u64s(values: impl IntoIterator<Item = u64>) -> u64 {
         }
     }
     hash
+}
+
+fn resolve_execution_target(target: String) -> ResolvedExecutionTarget {
+    let canonical = normalize_execution_target(&target);
+    let semantic_hash = semantic_hash_for_target(&canonical);
+    ResolvedExecutionTarget {
+        canonical_target: CanonicalTarget { path: canonical },
+        semantic_hash,
+    }
+}
+
+fn normalize_execution_target(target: &str) -> String {
+    let trimmed = target.trim();
+    if trimmed.is_empty() {
+        return "(none)".to_string();
+    }
+    let path = std::path::Path::new(trimmed);
+    if path.is_absolute() {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| {
+                path.strip_prefix(cwd)
+                    .ok()
+                    .map(|relative| relative.display().to_string())
+            })
+            .unwrap_or_else(|| trimmed.to_string())
+    } else {
+        trimmed.to_string()
+    }
+}
+
+fn semantic_hash_for_target(target: &str) -> String {
+    format!("{:016x}", stable_hash_strs([target]))
 }
 
 #[cfg(test)]

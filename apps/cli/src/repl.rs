@@ -14,6 +14,7 @@ use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
 use crate::tui::core::to_ui_event;
+use crate::tui::rendering::{ProjectionSnapshot, RenderSnapshot};
 use crate::tui::state::TuiState;
 
 /// Thin UI cache for the REPL.  Phase 4.5: all pipeline/design/proposal state
@@ -22,6 +23,7 @@ use crate::tui::state::TuiState;
 struct ReplUiState {
     core_snapshot: CoreState,
     runtime: TuiState,
+    semantic_state: ReplSemanticState,
 }
 
 impl Default for ReplUiState {
@@ -29,8 +31,40 @@ impl Default for ReplUiState {
         Self {
             core_snapshot: CoreState::default(),
             runtime: TuiState::new(empty_runtime_payload()),
+            semantic_state: ReplSemanticState::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ReplSemanticState {
+    pub last_preview: Option<PreviewState>,
+    pub last_validation: Option<ValidationState>,
+    pub last_apply: Option<ApplyState>,
+    pub rollback_checkpoint: Option<RollbackCheckpoint>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewState {
+    pub projection: ProjectionSnapshot,
+    pub rendered_output: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationState {
+    pub projection_hash: String,
+    pub valid: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyState {
+    pub projection: ProjectionSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackCheckpoint {
+    pub projection_before: ProjectionSnapshot,
+    pub projection_after: ProjectionSnapshot,
 }
 
 /// REPLを起動して入力ループを実行する。
@@ -81,6 +115,8 @@ where
         if let Some(events) =
             RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
         {
+            ui.semantic_state
+                .capture_runtime_command(trimmed, &ui.runtime);
             for event in events {
                 writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
             }
@@ -140,6 +176,8 @@ pub fn dispatch_repl_input<W: Write>(
     if let Some(events) =
         RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
     {
+        ui.semantic_state
+            .capture_runtime_command(trimmed, &ui.runtime);
         for event in events {
             writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
         }
@@ -155,6 +193,59 @@ pub fn dispatch_repl_input<W: Write>(
         writer,
     )?;
     Ok(false)
+}
+
+impl ReplSemanticState {
+    fn capture_runtime_command(&mut self, input: &str, runtime: &TuiState) {
+        let snapshot = RenderSnapshot::from(runtime).projection;
+        let rendered_output = runtime
+            .active_transaction
+            .as_ref()
+            .map(|_| snapshot.narrative.lines.clone())
+            .unwrap_or_default();
+        match input.split_whitespace().next().unwrap_or_default() {
+            "preview" => {
+                self.last_preview = Some(PreviewState {
+                    projection: snapshot.clone(),
+                    rendered_output,
+                });
+                self.last_validation = Some(ValidationState {
+                    projection_hash: snapshot.projection_hash.semantic_hash.clone(),
+                    valid: runtime.rejection.is_none(),
+                });
+                self.rollback_checkpoint = Some(RollbackCheckpoint {
+                    projection_before: snapshot.clone(),
+                    projection_after: snapshot,
+                });
+            }
+            "apply" | "commit" => {
+                self.last_apply = Some(ApplyState {
+                    projection: snapshot.clone(),
+                });
+                self.last_validation = Some(ValidationState {
+                    projection_hash: snapshot.projection_hash.semantic_hash.clone(),
+                    valid: runtime.rejection.is_none(),
+                });
+            }
+            "rollback" => {
+                let before = self
+                    .rollback_checkpoint
+                    .as_ref()
+                    .map(|checkpoint| checkpoint.projection_before.clone())
+                    .or_else(|| {
+                        self.last_preview
+                            .as_ref()
+                            .map(|preview| preview.projection.clone())
+                    })
+                    .unwrap_or_else(|| snapshot.clone());
+                self.rollback_checkpoint = Some(RollbackCheckpoint {
+                    projection_before: before,
+                    projection_after: snapshot,
+                });
+            }
+            _ => {}
+        }
+    }
 }
 
 pub fn reset_review_session(view: &mut ComposerViewState, session: &mut AgentSession) {

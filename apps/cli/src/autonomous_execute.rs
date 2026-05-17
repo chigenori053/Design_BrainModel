@@ -185,6 +185,7 @@ pub enum CommandType {
     SafeRead,
     SafeWrite,
     Dangerous,
+    Forbidden,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -1471,12 +1472,12 @@ mod tests {
             GitExecutor::classify(&["commit", "-m", "auto fix"]),
             CommandType::SafeWrite
         );
-        assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Dangerous);
+        assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Forbidden);
         assert_eq!(
             GitExecutor::classify(&["commit", "--amend"]),
-            CommandType::Dangerous
+            CommandType::Forbidden
         );
-        assert_eq!(GitExecutor::classify(&["rebase"]), CommandType::Dangerous);
+        assert_eq!(GitExecutor::classify(&["rebase"]), CommandType::Forbidden);
     }
 
     #[test]
@@ -1516,7 +1517,7 @@ mod tests {
         );
         assert_eq!(
             RemoteGuard::classify_gh(&["repo", "delete", "sample"]),
-            CommandType::Dangerous
+            CommandType::Forbidden
         );
         assert_eq!(
             RemoteGuard::classify_gh(&["api", "repos/test"]),

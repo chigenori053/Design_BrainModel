@@ -481,6 +481,7 @@ pub struct SessionState {
 pub struct RuntimeTransaction {
     pub tx_id: String,
     pub target_path: String,
+    pub resolved_target: crate::runtime::shell::ResolvedExecutionTarget,
     pub diff: Diff,
     pub failed_recoverable: bool,
 }
@@ -825,11 +826,14 @@ impl TuiState {
             .active_transaction_id
             .clone()
             .unwrap_or_else(|| self.next_transaction_id(&target_path));
+        let resolved_target =
+            crate::runtime::shell::ResolvedExecutionTarget::from_canonical_path(&target_path);
         self.active_target = Some(target_path.clone());
         self.active_transaction_id = Some(tx_id.clone());
         self.active_transaction = Some(RuntimeTransaction {
             tx_id,
             target_path,
+            resolved_target,
             diff,
             failed_recoverable: false,
         });

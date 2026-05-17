@@ -269,7 +269,7 @@ pub fn runtime_memory_evolution_events(
 
 pub fn render_persistent_runtime_memory(memory: &PersistentRuntimeMemory) -> String {
     format!(
-        "memory_id: {}\nrevision_count: {}\ntopology_history: {}\nattractor_history: {}\nrollback_history: {}\npersistence_checksum: {}\nvalid: {}",
+        "memory_checksum: {}\nrevision_count: {}\ntopology_history: {}\nattractor_history: {}\nrollback_history: {}\npersistence_checksum: {}\nvalid: {}",
         memory.memory_id,
         memory.runtime_revision_chain.len(),
         memory.topology_history.len(),
@@ -282,7 +282,7 @@ pub fn render_persistent_runtime_memory(memory: &PersistentRuntimeMemory) -> Str
 
 pub fn render_cognitive_session_state(state: &CognitiveSessionState) -> String {
     format!(
-        "session_id: {}\ncurrent_revision: {}\nactive_identities: {}\nactive_attractors: {}\ncontinuity_score: {:.6}\nstabilized: {}",
+        "session_checksum: {}\ncurrent_revision: {}\nactive_identities: {}\nactive_attractors: {}\ncontinuity_score: {:.6}\nstabilized: {}",
         state.session_id,
         state.current_revision,
         state.active_topology.identities.len(),
@@ -294,7 +294,7 @@ pub fn render_cognitive_session_state(state: &CognitiveSessionState) -> String {
 
 pub fn render_checkpoint(checkpoint: &RuntimeMemoryCheckpoint) -> String {
     format!(
-        "checkpoint_id: {}\nrevision: {}\ntopology_identities: {}\nattractors: {}\nrollback_id: {}",
+        "checkpoint_checksum: {}\nrevision: {}\ntopology_identities: {}\nattractors: {}\nrollback_checksum: {}",
         checkpoint.checkpoint_id,
         checkpoint.revision_snapshot.revision_id,
         checkpoint.topology_snapshot.identities.len(),
@@ -305,7 +305,7 @@ pub fn render_checkpoint(checkpoint: &RuntimeMemoryCheckpoint) -> String {
 
 pub fn render_lineage(lineage: &PersistentRevisionLineage) -> String {
     format!(
-        "lineage_id: {}\nrevisions: {}\nhash_chain: {:?}",
+        "lineage_checksum: {}\nrevisions: {}\nhash_chain: {:?}",
         lineage.lineage_id,
         lineage.revisions.len(),
         lineage.deterministic_hash_chain,
@@ -316,7 +316,7 @@ pub fn render_evolution_events(events: &[RuntimeMemoryEvolutionEvent]) -> String
     let mut lines = vec![format!("evolution_events: {}", events.len())];
     for event in events {
         lines.push(format!(
-            "event: id={} revision={} type={:?} timestamp={}",
+            "event: checksum={} revision={} type={:?} timestamp={}",
             event.event_id, event.revision_id, event.evolution_type, event.deterministic_timestamp
         ));
     }

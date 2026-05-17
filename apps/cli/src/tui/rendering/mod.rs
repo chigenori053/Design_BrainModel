@@ -20,10 +20,36 @@ pub struct RenderSnapshot {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectionSnapshot {
-    pub narrative: Vec<String>,
-    pub workspace: WorkspaceProjectionModel,
-    pub diagnostics: Option<DiagnosticModel>,
+    pub workspace: WorkspaceProjection,
+    pub diagnostics: DiagnosticProjection,
+    pub narrative: NarrativeProjection,
     pub runtime_state: String,
+    pub projection_hash: ProjectionHash,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct WorkspaceProjection {
+    pub target: Option<String>,
+    pub operation: String,
+    pub status: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticProjection {
+    pub last_event: Option<String>,
+    pub last_focus: Option<String>,
+    pub last_mutation: Option<String>,
+    pub visible: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct NarrativeProjection {
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ProjectionHash {
+    pub semantic_hash: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -35,7 +61,7 @@ pub struct WorkspaceProjectionModel {
 
 impl WorkspaceProjectionModel {
     pub fn from_state(state: &TuiState) -> Self {
-        let target = resolved_target_label(state);
+        let target = locked_target_label(state).or_else(|| resolved_target_label(state));
         let has_preview = state.active_transaction.is_some();
         Self {
             target,
@@ -59,6 +85,16 @@ impl WorkspaceProjectionModel {
             "Status:".to_string(),
             format!("  {}", self.status),
         ]
+    }
+}
+
+impl From<WorkspaceProjectionModel> for WorkspaceProjection {
+    fn from(model: WorkspaceProjectionModel) -> Self {
+        Self {
+            target: model.target,
+            operation: model.operation,
+            status: model.status,
+        }
     }
 }
 
@@ -210,11 +246,23 @@ impl From<&TuiState> for RenderSnapshot {
         } else {
             None
         };
-        let projection = ProjectionSnapshot {
-            narrative: runtime.narrative_lines.clone(),
-            workspace: runtime.diff_projection.workspace.clone(),
-            diagnostics: diagnostics.clone(),
+        let diagnostic_projection = DiagnosticProjection {
+            last_event: diagnostics.as_ref().map(|d| d.last_event.clone()),
+            last_focus: diagnostics.as_ref().map(|d| d.last_focus.clone()),
+            last_mutation: diagnostics.as_ref().map(|d| d.last_mutation.clone()),
+            visible: diagnostics.is_some(),
+        };
+        let mut projection = ProjectionSnapshot {
+            workspace: runtime.diff_projection.workspace.clone().into(),
+            diagnostics: diagnostic_projection,
+            narrative: NarrativeProjection {
+                lines: runtime.narrative_lines.clone(),
+            },
             runtime_state: runtime.state_label.clone(),
+            projection_hash: ProjectionHash::default(),
+        };
+        projection.projection_hash = ProjectionHash {
+            semantic_hash: projection_semantic_hash(&projection),
         };
         Self {
             projection,
@@ -237,7 +285,7 @@ impl From<&TuiState> for RenderSnapshot {
 
 impl RuntimeProjection {
     pub fn from_state(state: &TuiState) -> Self {
-        let target_label = resolved_target_label(state);
+        let target_label = locked_target_label(state).or_else(|| resolved_target_label(state));
         let diff_projection = DiffProjection::from_state(state, target_label.clone());
         let rejection_label = state.rejection.as_ref().map(|rej| {
             format!(
@@ -449,6 +497,14 @@ fn resolved_target_label(state: &TuiState) -> Option<String> {
         .and_then(semantic_label)
 }
 
+fn locked_target_label(state: &TuiState) -> Option<String> {
+    state
+        .branch_runtime
+        .as_ref()
+        .map(|runtime| runtime.surface_snapshot().target.clone())
+        .and_then(|target| semantic_label(&target))
+}
+
 fn resolved_transaction_label(state: &TuiState) -> Option<String> {
     if state.active_transaction.is_some() || state.active_transaction_id.is_some() {
         Some("transaction active".to_string())
@@ -477,6 +533,67 @@ fn semantic_label(raw: &str) -> Option<String> {
         path.to_path_buf()
     };
     sanitize_line(&display.display().to_string())
+}
+
+pub fn projection_semantic_hash(snapshot: &ProjectionSnapshot) -> String {
+    let mut hasher = StableProjectionHasher::new();
+    hasher.write_opt_str(snapshot.workspace.target.as_deref());
+    hasher.write_str(&snapshot.workspace.operation);
+    hasher.write_str(&snapshot.workspace.status);
+    hasher.write_bool(snapshot.diagnostics.visible);
+    hasher.write_opt_str(snapshot.diagnostics.last_event.as_deref());
+    hasher.write_opt_str(snapshot.diagnostics.last_focus.as_deref());
+    hasher.write_opt_str(snapshot.diagnostics.last_mutation.as_deref());
+    for line in &snapshot.narrative.lines {
+        hasher.write_str(line);
+    }
+    hasher.write_str(&snapshot.runtime_state);
+    format!("{:016x}", hasher.finish())
+}
+
+struct StableProjectionHasher {
+    hash: u64,
+}
+
+impl StableProjectionHasher {
+    fn new() -> Self {
+        Self {
+            hash: 0xcbf29ce484222325_u64,
+        }
+    }
+
+    fn write_str(&mut self, value: &str) {
+        self.write_u64(value.len() as u64);
+        for byte in value.as_bytes() {
+            self.hash ^= u64::from(*byte);
+            self.hash = self.hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn write_opt_str(&mut self, value: Option<&str>) {
+        match value {
+            Some(value) => {
+                self.write_bool(true);
+                self.write_str(value);
+            }
+            None => self.write_bool(false),
+        }
+    }
+
+    fn write_bool(&mut self, value: bool) {
+        self.write_u64(u64::from(value));
+    }
+
+    fn write_u64(&mut self, value: u64) {
+        for byte in value.to_le_bytes() {
+            self.hash ^= u64::from(byte);
+            self.hash = self.hash.wrapping_mul(0x100000001b3);
+        }
+    }
+
+    fn finish(self) -> u64 {
+        self.hash
+    }
 }
 
 fn semantic_workspace_relative_path(path: &std::path::Path) -> Option<std::path::PathBuf> {
@@ -1115,12 +1232,12 @@ mod tests {
         let snapshot = RenderSnapshot::from(&state);
 
         assert_eq!(
-            snapshot.projection.narrative,
+            snapshot.projection.narrative.lines,
             snapshot.runtime.narrative_lines
         );
         assert_eq!(
             snapshot.projection.workspace,
-            snapshot.runtime.diff_projection.workspace
+            WorkspaceProjection::from(snapshot.runtime.diff_projection.workspace.clone())
         );
         assert_eq!(
             snapshot.projection.runtime_state,

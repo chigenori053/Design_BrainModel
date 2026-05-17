@@ -1,18 +1,8 @@
-use std::path::Path;
-
 use super::commands::GitCommand;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandPolicy {
-    SafeRead,
-    SafeWrite,
-    Dangerous,
-}
+pub use crate::runtime::execution_governance::{CommandPolicy, CommandType};
 
 pub fn classify(command: &GitCommand) -> CommandPolicy {
-    match command {
-        GitCommand::Status | GitCommand::Diff | GitCommand::Log => CommandPolicy::SafeRead,
-        GitCommand::AddFile(path) if path == Path::new(".") => CommandPolicy::Dangerous,
-        GitCommand::AddFile(_) | GitCommand::Commit { .. } => CommandPolicy::SafeWrite,
-    }
+    let command_type = crate::runtime::execution_governance::classify_command(&command.canonical());
+    crate::runtime::execution_governance::command_policy(command_type)
 }

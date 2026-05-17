@@ -291,8 +291,7 @@ pub fn validate_workspace_topology(snapshot: &WorkspaceTopologySnapshot) -> bool
 
 pub fn render_workspace_snapshot(snapshot: &WorkspaceTopologySnapshot) -> String {
     format!(
-        "workspace_id: {}\ncrates: {}\nmodules: {}\ndependency_edges: {}\ncyclic: {}\nchecksum: {}\nvalid: {}",
-        snapshot.workspace_id,
+        "workspace snapshot\ncrates: {}\nmodules: {}\ndependency_edges: {}\ncyclic: {}\ntopology_checksum: {}\nvalid: {}",
         snapshot.crates.len(),
         snapshot.modules.len(),
         snapshot.dependency_graph.edges.len(),
@@ -328,7 +327,7 @@ pub fn render_workspace_architecture(map: &WorkspaceSemanticMap) -> String {
     let mut lines = vec![
         format!("architecture_domains: {:?}", map.architecture_domains),
         format!("semantic_connections: {}", map.semantic_connections.len()),
-        format!("lineage_id: {}", map.persistent_lineage.lineage_id),
+        format!("lineage_checksum: {}", map.persistent_lineage.lineage_id),
         format!(
             "topology_revisions: {:?}",
             map.persistent_lineage.topology_revisions

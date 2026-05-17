@@ -25,7 +25,15 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Commands {
     Repl,
-    Workspace(CoreArgs),
+    Workspace {
+        #[command(subcommand)]
+        command: Option<WorkspaceCommand>,
+    },
+    #[command(name = "self")]
+    SelfCommand {
+        #[command(subcommand)]
+        command: SelfCommand,
+    },
     #[command(name = "legacy-repl")]
     LegacyRepl,
     Analyze(CoreArgs),
@@ -37,7 +45,10 @@ enum Commands {
     #[command(name = "run-dsl")]
     RunDsl(CoreArgs),
     Rules(CoreArgs),
-    Runtime(CoreArgs),
+    Runtime {
+        #[command(subcommand)]
+        command: RuntimeCommand,
+    },
     Memory(CoreArgs),
     Simulate(CoreArgs),
     #[command(name = "phase-analyze")]
@@ -49,6 +60,49 @@ enum Commands {
     Export(CoreArgs),
     #[command(external_subcommand)]
     External(Vec<OsString>),
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCommand {
+    Snapshot,
+    Revisions,
+    Lineage,
+    Evolution,
+    Memory,
+    Checkpoint,
+    Restore {
+        #[arg(long)]
+        yes: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkspaceCommand {
+    Snapshot,
+    Graph,
+    Boundaries,
+    Architecture,
+    Risks,
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfCommand {
+    Repair {
+        #[command(subcommand)]
+        command: SelfRepairCommand,
+    },
+    Rollback,
+}
+
+#[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SelfRepairCommand {
+    Preview,
+    Validate,
+    Sandbox,
+    Apply {
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[derive(Args, Debug)]
@@ -72,8 +126,8 @@ fn main() {
 
     let cli = Cli::parse();
 
-    if let Commands::Runtime(args) = &cli.command {
-        if let Err(err) = run_runtime_command(&args.args) {
+    if let Commands::Runtime { command } = &cli.command {
+        if let Err(err) = run_runtime_command(*command) {
             eprintln!("{err}");
             std::process::exit(1);
         }
@@ -95,10 +149,19 @@ fn main() {
         return;
     }
 
-    if let Commands::Workspace(args) = &cli.command
-        && !args.args.is_empty()
+    if let Commands::Workspace {
+        command: Some(command),
+    } = &cli.command
     {
-        if let Err(err) = run_workspace_command(&args.args) {
+        if let Err(err) = run_workspace_command(*command) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+
+    if let Commands::SelfCommand { command } = &cli.command {
+        if let Err(err) = run_self_command(*command) {
             eprintln!("{err}");
             std::process::exit(1);
         }
@@ -122,7 +185,7 @@ fn main() {
 fn runtime_intent(command: &Commands) -> Option<RuntimeIntent> {
     match command {
         Commands::Repl => Some(RuntimeIntent::Repl),
-        Commands::Workspace(args) if args.args.is_empty() => Some(RuntimeIntent::Workspace),
+        Commands::Workspace { command: None } => Some(RuntimeIntent::Workspace),
         Commands::LegacyRepl => Some(RuntimeIntent::LegacyRepl),
         _ => None,
     }
@@ -156,7 +219,7 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Run(args) => join_core("run", &args.args),
         Commands::RunDsl(args) => join_core("run-dsl", &args.args),
         Commands::Rules(args) => join_core("rules", &args.args),
-        Commands::Runtime(args) => join_core("runtime", &args.args),
+        Commands::Runtime { command } => runtime_core_input(*command),
         Commands::Memory(args) => join_core("memory", &args.args),
         Commands::Simulate(args) => join_core("simulate", &args.args),
         Commands::PhaseAnalyze(args) => join_core("phase-analyze", &args.args),
@@ -166,85 +229,137 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Reject(args) => join_core("reject", &args.args),
         Commands::Export(args) => join_core("export", &args.args),
         Commands::External(args) => external_core_input(args)?,
-        Commands::Workspace(args) => join_core("workspace", &args.args),
+        Commands::Workspace { command } => workspace_core_input(*command),
+        Commands::SelfCommand { command } => self_core_input(*command),
         Commands::Repl | Commands::LegacyRepl => String::new(),
     };
     Ok(input)
 }
 
-fn run_workspace_command(args: &[String]) -> Result<(), String> {
+fn run_self_command(command: SelfCommand) -> Result<(), String> {
+    use design_cli::runtime::self_repair::{
+        apply_self_mutation, render_sandbox_mutation_result, render_self_mutation_preview,
+        render_self_mutation_result, render_self_mutation_validation, render_self_rollback_result,
+        rollback_self_mutation, sandbox_self_mutation, self_mutation_transaction,
+    };
+    use design_cli::runtime::workspace_awareness::workspace_topology_snapshot;
+
+    let root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let workspace = workspace_topology_snapshot(&root);
+    let transaction = self_mutation_transaction(&workspace);
+
+    match command {
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Preview,
+        } => {
+            println!("{}", render_self_mutation_preview(&transaction));
+            Ok(())
+        }
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Validate,
+        } => {
+            println!(
+                "{}",
+                render_self_mutation_validation(&transaction.validation)
+            );
+            Ok(())
+        }
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Sandbox,
+        } => {
+            println!(
+                "{}",
+                render_sandbox_mutation_result(&sandbox_self_mutation(&transaction))
+            );
+            Ok(())
+        }
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Apply { yes },
+        } => {
+            if !yes {
+                return Err("self repair apply requires explicit --yes confirmation".to_string());
+            }
+            println!(
+                "{}",
+                render_self_mutation_result(&apply_self_mutation(transaction))
+            );
+            Ok(())
+        }
+        SelfCommand::Rollback => {
+            println!(
+                "{}",
+                render_self_rollback_result(&rollback_self_mutation(transaction.rollback_snapshot))
+            );
+            Ok(())
+        }
+    }
+}
+
+fn run_workspace_command(command: WorkspaceCommand) -> Result<(), String> {
     use design_cli::runtime::workspace_awareness::{
         render_dependency_graph, render_mutation_risks, render_runtime_boundaries,
         render_workspace_architecture, render_workspace_snapshot, runtime_boundary_map,
-        validate_workspace_topology, workspace_dependency_graph, workspace_semantic_map,
-        workspace_topology_snapshot,
+        workspace_dependency_graph, workspace_semantic_map, workspace_topology_snapshot,
     };
 
     let root = std::env::current_dir().map_err(|err| err.to_string())?;
     let snapshot = workspace_topology_snapshot(&root);
-    match args.first().map(String::as_str) {
-        Some("snapshot") => {
+    match command {
+        WorkspaceCommand::Snapshot => {
             println!("{}", render_workspace_snapshot(&snapshot));
             Ok(())
         }
-        Some("graph") => {
-            println!("{}", render_dependency_graph(&workspace_dependency_graph(&snapshot)));
+        WorkspaceCommand::Graph => {
+            println!(
+                "{}",
+                render_dependency_graph(&workspace_dependency_graph(&snapshot))
+            );
             Ok(())
         }
-        Some("boundaries") => {
-            println!("{}", render_runtime_boundaries(&runtime_boundary_map(&snapshot)));
+        WorkspaceCommand::Boundaries => {
+            println!(
+                "{}",
+                render_runtime_boundaries(&runtime_boundary_map(&snapshot))
+            );
             Ok(())
         }
-        Some("architecture") => {
+        WorkspaceCommand::Architecture => {
             println!(
                 "{}",
                 render_workspace_architecture(&workspace_semantic_map(&snapshot))
             );
             Ok(())
         }
-        Some("risks") => {
+        WorkspaceCommand::Risks => {
             println!("{}", render_mutation_risks(&snapshot));
             Ok(())
         }
-        Some("validate") => {
-            println!("workspace topology valid: {}", validate_workspace_topology(&snapshot));
-            Ok(())
-        }
-        Some(other) => Err(format!(
-            "unrecognized workspace command `{other}`. Available: snapshot, graph, boundaries, architecture, risks"
-        )),
-        None => Err("workspace command required. Available: snapshot, graph, boundaries, architecture, risks".to_string()),
     }
 }
 
-fn run_runtime_command(args: &[String]) -> Result<(), String> {
+fn run_runtime_command(command: RuntimeCommand) -> Result<(), String> {
     use design_cli::runtime::persistence::{
         cognitive_session_state, persistent_revision_lineage, persistent_runtime_memory,
         render_checkpoint, render_cognitive_session_state, render_evolution_events, render_lineage,
         render_persistent_runtime_memory, restore_runtime_checkpoint, runtime_memory_checkpoint,
         runtime_memory_evolution_events,
     };
-    use design_cli::runtime::unified_apply::{
-        execution_apply_transaction, unified_mutation_transaction, unified_runtime_apply,
-        unified_runtime_rollback,
-    };
     use design_cli::runtime::unified_projection::{
         Runtime, render_revision, render_unified_snapshot, unified_runtime_snapshot,
     };
-    use memory_space_core::{SemanticIdentityGraph, semantic_rewrite_transaction};
 
-    let mut runtime = Runtime::default();
+    let runtime = Runtime::default();
     let snapshot = unified_runtime_snapshot(&runtime);
-    match args.first().map(String::as_str) {
-        Some("snapshot") => {
+    match command {
+        RuntimeCommand::Snapshot => {
             println!("{}", render_unified_snapshot(&snapshot));
             Ok(())
         }
-        Some("revisions") => {
+        RuntimeCommand::Revisions => {
             println!("{}", render_revision(&snapshot));
             Ok(())
         }
-        Some("memory") => {
+        RuntimeCommand::Memory => {
             let memory = persistent_runtime_memory(&runtime);
             let session = cognitive_session_state(&runtime);
             println!("{}", render_persistent_runtime_memory(&memory));
@@ -252,13 +367,13 @@ fn run_runtime_command(args: &[String]) -> Result<(), String> {
             println!("{}", render_cognitive_session_state(&session));
             Ok(())
         }
-        Some("checkpoint") => {
+        RuntimeCommand::Checkpoint => {
             let checkpoint = runtime_memory_checkpoint(&runtime);
             println!("{}", render_checkpoint(&checkpoint));
             Ok(())
         }
-        Some("restore") => {
-            if !args.iter().any(|arg| arg == "--yes") {
+        RuntimeCommand::Restore { yes } => {
+            if !yes {
                 return Err("runtime restore requires explicit --yes confirmation".to_string());
             }
             let checkpoint = runtime_memory_checkpoint(&runtime);
@@ -274,85 +389,70 @@ fn run_runtime_command(args: &[String]) -> Result<(), String> {
             );
             Ok(())
         }
-        Some("lineage") => {
+        RuntimeCommand::Lineage => {
             let lineage = persistent_revision_lineage(&runtime);
             println!("{}", render_lineage(&lineage));
             Ok(())
         }
-        Some("evolution") => {
+        RuntimeCommand::Evolution => {
             let memory = persistent_runtime_memory(&runtime);
             let events = runtime_memory_evolution_events(&memory);
             println!("{}", render_evolution_events(&events));
             Ok(())
         }
-        Some("apply") => {
-            let execution = execution_apply_transaction(&runtime, "runtime/unified-apply", 1);
-            let semantic = semantic_rewrite_transaction(&SemanticIdentityGraph::default());
-            let transaction =
-                unified_mutation_transaction(&runtime, Some(execution), Some(semantic));
-            if args.iter().any(|arg| arg == "--preview") {
-                println!(
-                    "unified preview: execution_diff={} topology_diff={} continuity_delta={:.6} semantic_mass_delta={:.6} revision_delta={}->{}",
-                    transaction.unified_preview.execution_diff.is_some(),
-                    transaction.unified_preview.topology_diff.is_some(),
-                    transaction.unified_preview.continuity_delta,
-                    transaction.unified_preview.semantic_mass_delta,
-                    transaction
-                        .unified_preview
-                        .runtime_state_delta
-                        .revision_before,
-                    transaction
-                        .unified_preview
-                        .runtime_state_delta
-                        .revision_after
-                );
-                Ok(())
-            } else if args.iter().any(|arg| arg == "--validate") {
-                println!(
-                    "unified validation: execution_safe={} semantic_safe={} rollback_safe={} replay_invariant={} topology_invariant={} revision_consistent={} errors={}",
-                    transaction.unified_validation.execution_safe,
-                    transaction.unified_validation.semantic_safe,
-                    transaction.unified_validation.rollback_safe,
-                    transaction.unified_validation.replay_invariant,
-                    transaction.unified_validation.topology_invariant,
-                    transaction.unified_validation.revision_consistent,
-                    transaction.unified_validation.validation_errors.join(", ")
-                );
-                Ok(())
-            } else if args.iter().any(|arg| arg == "--yes") {
-                let result = unified_runtime_apply(&mut runtime, transaction);
-                println!(
-                    "unified apply: applied={} rolled_back={} revision={} projection_synchronized={} checksum={} errors={}",
-                    result.applied,
-                    result.rolled_back,
-                    result.runtime_revision,
-                    result.projection_synchronized,
-                    result.checksum,
-                    result.errors.join(", ")
-                );
-                Ok(())
+    }
+}
+
+fn runtime_core_input(command: RuntimeCommand) -> String {
+    match command {
+        RuntimeCommand::Snapshot => "runtime snapshot".to_string(),
+        RuntimeCommand::Revisions => "runtime revisions".to_string(),
+        RuntimeCommand::Lineage => "runtime lineage".to_string(),
+        RuntimeCommand::Evolution => "runtime evolution".to_string(),
+        RuntimeCommand::Memory => "runtime memory".to_string(),
+        RuntimeCommand::Checkpoint => "runtime checkpoint".to_string(),
+        RuntimeCommand::Restore { yes } => {
+            if yes {
+                "runtime restore --yes".to_string()
             } else {
-                Err("runtime apply requires --preview, --validate, or --yes".to_string())
+                "runtime restore".to_string()
             }
         }
-        Some("rollback") => {
-            let transaction = unified_mutation_transaction(&runtime, None, None);
-            let result = unified_runtime_rollback(&mut runtime, transaction.rollback_chain);
-            println!(
-                "unified rollback: rolled_back={} revision={} projection_synchronized={} replay_invariant={} topology_invariant={} errors={}",
-                result.rolled_back,
-                result.runtime_revision,
-                result.projection_synchronized,
-                result.replay_invariant,
-                result.topology_invariant,
-                result.errors.join(", ")
-            );
-            Ok(())
+    }
+}
+
+fn workspace_core_input(command: Option<WorkspaceCommand>) -> String {
+    match command {
+        Some(WorkspaceCommand::Snapshot) => "workspace snapshot".to_string(),
+        Some(WorkspaceCommand::Graph) => "workspace graph".to_string(),
+        Some(WorkspaceCommand::Boundaries) => "workspace boundaries".to_string(),
+        Some(WorkspaceCommand::Architecture) => "workspace architecture".to_string(),
+        Some(WorkspaceCommand::Risks) => "workspace risks".to_string(),
+        None => "workspace".to_string(),
+    }
+}
+
+fn self_core_input(command: SelfCommand) -> String {
+    match command {
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Preview,
+        } => "self repair preview".to_string(),
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Validate,
+        } => "self repair validate".to_string(),
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Sandbox,
+        } => "self repair sandbox".to_string(),
+        SelfCommand::Repair {
+            command: SelfRepairCommand::Apply { yes },
+        } => {
+            if yes {
+                "self repair apply --yes".to_string()
+            } else {
+                "self repair apply".to_string()
+            }
         }
-        Some(other) => Err(format!(
-            "unrecognized runtime command `{other}`. Available: snapshot, revisions, memory, checkpoint, restore, lineage, evolution, apply, rollback"
-        )),
-        None => Err("runtime command required. Available: snapshot, revisions, memory, checkpoint, restore, lineage, evolution, apply, rollback".to_string()),
+        SelfCommand::Rollback => "self rollback".to_string(),
     }
 }
 
@@ -454,6 +554,129 @@ mod tests {
             core_input(&cli.command).expect("core input"),
             "runtime snapshot"
         );
+    }
+
+    #[test]
+    fn test_self_repair_command_parses_without_tui_activation() {
+        let cli =
+            Cli::try_parse_from(["dbm", "self", "repair", "preview"]).expect("parse self repair");
+        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "self repair preview"
+        );
+    }
+
+    #[test]
+    fn test_self_repair_apply_requires_yes() {
+        let err = run_self_command(SelfCommand::Repair {
+            command: SelfRepairCommand::Apply { yes: false },
+        })
+        .expect_err("apply without --yes should fail");
+        assert!(err.contains("--yes"));
+    }
+
+    #[test]
+    fn test_runtime_restore_requires_yes() {
+        let err = run_runtime_command(RuntimeCommand::Restore { yes: false })
+            .expect_err("restore without --yes should fail");
+        assert!(err.contains("--yes"));
+    }
+
+    #[test]
+    fn test_runtime_command_tree_parses() {
+        let cli = Cli::try_parse_from(["dbm", "runtime", "lineage"]).expect("parse runtime");
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "runtime lineage"
+        );
+    }
+
+    #[test]
+    fn test_workspace_command_tree_parses() {
+        let cli = Cli::try_parse_from(["dbm", "workspace", "risks"]).expect("parse workspace");
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "workspace risks"
+        );
+    }
+
+    #[test]
+    fn test_self_apply_command_tree_parses() {
+        let cli =
+            Cli::try_parse_from(["dbm", "self", "repair", "apply", "--yes"]).expect("parse self");
+        assert_eq!(
+            core_input(&cli.command).expect("core input"),
+            "self repair apply --yes"
+        );
+    }
+
+    #[test]
+    fn test_help_surfaces_are_stable() {
+        let runtime = Cli::command()
+            .find_subcommand_mut("runtime")
+            .expect("runtime command")
+            .render_long_help()
+            .to_string();
+        assert!(runtime.contains("snapshot"));
+        assert!(runtime.contains("revisions"));
+        assert!(runtime.contains("lineage"));
+        assert!(runtime.contains("evolution"));
+        assert!(runtime.contains("memory"));
+        assert!(runtime.contains("checkpoint"));
+        assert!(runtime.contains("restore"));
+
+        let workspace = Cli::command()
+            .find_subcommand_mut("workspace")
+            .expect("workspace command")
+            .render_long_help()
+            .to_string();
+        assert!(workspace.contains("snapshot"));
+        assert!(workspace.contains("graph"));
+        assert!(workspace.contains("boundaries"));
+        assert!(workspace.contains("architecture"));
+        assert!(workspace.contains("risks"));
+
+        let self_help = Cli::command()
+            .find_subcommand_mut("self")
+            .expect("self command")
+            .render_long_help()
+            .to_string();
+        assert!(self_help.contains("repair"));
+        assert!(self_help.contains("rollback"));
+    }
+
+    #[test]
+    fn test_projection_output_does_not_use_raw_leak_labels() {
+        let runtime = design_cli::runtime::unified_projection::Runtime::default();
+        let snapshot = design_cli::runtime::unified_projection::unified_runtime_snapshot(&runtime);
+        let rendered = [
+            design_cli::runtime::unified_projection::render_unified_snapshot(&snapshot),
+            design_cli::runtime::persistence::render_checkpoint(
+                &design_cli::runtime::persistence::runtime_memory_checkpoint(&runtime),
+            ),
+            design_cli::runtime::persistence::render_lineage(
+                &design_cli::runtime::persistence::persistent_revision_lineage(&runtime),
+            ),
+        ]
+        .join("\n");
+        assert!(!rendered.contains("transaction_id"));
+        assert!(!rendered.contains("active_transaction_id"));
+        assert!(!rendered.contains("checkpoint_id:"));
+        assert!(!rendered.contains("rollback_id:"));
+    }
+
+    #[test]
+    fn test_runtime_projection_replay_is_invariant() {
+        let runtime = design_cli::runtime::unified_projection::Runtime::default();
+        let first = design_cli::runtime::unified_projection::render_unified_snapshot(
+            &design_cli::runtime::unified_projection::unified_runtime_snapshot(&runtime),
+        );
+        let second = design_cli::runtime::unified_projection::render_unified_snapshot(
+            &design_cli::runtime::unified_projection::unified_runtime_snapshot(&runtime),
+        );
+        assert_eq!(first, second);
+        assert!(first.contains("projection_checksum:"));
     }
 
     #[test]

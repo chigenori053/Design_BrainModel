@@ -353,3 +353,4 @@ mod tests {
         assert!(!rendered.contains("status: IDLE"), "{rendered}");
     }
 }
+// DBM clarification execution guarantee

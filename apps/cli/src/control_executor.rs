@@ -38,6 +38,24 @@ pub const MAX_ATTEMPTS_LIMIT: u8 = 10;
 pub const MAX_LOOPS_LIMIT: u8 = 20;
 pub const MIN_TIMEOUT_MS: u64 = 1_000;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FallbackReason {
+    RetryExhausted,
+    ParseFailed,
+    ValidationFailed,
+    Timeout,
+    UnknownTarget,
+    SemanticMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FallbackTelemetry {
+    pub source: String,
+    pub reason: FallbackReason,
+    pub semantic_context: String,
+}
+
 /// Safe default action when no executor is provided (abort is the safest
 /// no-op for most decision branches).
 pub const DEFAULT_FALLBACK_ACTION: &str = "abort";
@@ -312,6 +330,10 @@ pub enum RunLogEntry {
         run_id: String,
         step_id: String,
         request_id: RequestId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<FallbackReason>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        telemetry: Option<FallbackTelemetry>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         last_raw: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

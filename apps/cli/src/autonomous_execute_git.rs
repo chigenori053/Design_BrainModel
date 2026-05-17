@@ -284,11 +284,13 @@ impl GitExecutor {
             ["add", path] if is_explicit_single_file(path) => CommandType::SafeWrite,
             ["commit", "-m", message] if is_valid_commit_message(message) => CommandType::SafeWrite,
             ["add", _]
+            | ["push", "--force", ..]
+            | ["push", "-f", ..]
             | ["reset", ..]
             | ["commit", "--amend", ..]
             | ["commit", ..]
             | ["rebase", ..]
-            | ["clean", ..] => CommandType::Dangerous,
+            | ["clean", ..] => CommandType::Forbidden,
             _ => CommandType::Dangerous,
         }
     }
@@ -338,7 +340,7 @@ impl GitExecutor {
     pub(super) fn run_checked(root: &Path, args: &[&str]) -> Result<(), String> {
         match Self::classify(args) {
             CommandType::SafeRead | CommandType::SafeWrite => {}
-            CommandType::Dangerous => {
+            CommandType::Dangerous | CommandType::Forbidden => {
                 return Err(format!(
                     "dangerous git command rejected: git {}",
                     args.join(" ")
@@ -764,10 +766,10 @@ mod tests {
             GitExecutor::classify(&["commit", "-m", "auto fix"]),
             CommandType::SafeWrite
         );
-        assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Dangerous);
+        assert_eq!(GitExecutor::classify(&["add", "."]), CommandType::Forbidden);
         assert_eq!(
             GitExecutor::classify(&["commit", "-m", "custom"]),
-            CommandType::Dangerous
+            CommandType::Forbidden
         );
     }
 }

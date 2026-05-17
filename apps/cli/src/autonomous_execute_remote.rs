@@ -290,6 +290,7 @@ impl RemoteGuard {
                 CommandType::SafeWrite
             }
             ["push", "origin", branch] if !is_protected_branch(branch) => CommandType::SafeWrite,
+            ["push", "--force", ..] | ["push", "-f", ..] => CommandType::Forbidden,
             _ => CommandType::Dangerous,
         }
     }
@@ -299,6 +300,7 @@ impl RemoteGuard {
             ["auth", "status"] | ["pr", "status"] => CommandType::SafeRead,
             ["pr", "view", ..] => CommandType::SafeRead,
             _ if args.starts_with(&["pr", "create"]) => CommandType::SafeWrite,
+            ["repo", "delete", ..] | ["secret", "set", ..] => CommandType::Forbidden,
             _ => CommandType::Dangerous,
         }
     }

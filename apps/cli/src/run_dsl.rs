@@ -9,7 +9,9 @@ use crate::control_event::{
     ControlEvent, ControlOutcome, ControlPayload, ControlResponse, DecisionAction, DecisionSource,
     RequestId, timestamp_now,
 };
-use crate::control_executor::{RunLogEntry, RunLogger, SafetySnapshot};
+use crate::control_executor::{
+    FallbackReason, FallbackTelemetry, RunLogEntry, RunLogger, SafetySnapshot,
+};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -398,6 +400,12 @@ fn run_agent_loop(
             run_id: event.run_id.clone(),
             step_id: event.step_id.clone(),
             request_id: event.request_id,
+            reason: Some(classify_fallback_reason(last_error.as_deref())),
+            telemetry: Some(FallbackTelemetry {
+                source: "run_dsl".to_string(),
+                reason: classify_fallback_reason(last_error.as_deref()),
+                semantic_context: event.event.as_str().to_string(),
+            }),
             last_raw,
             last_error_kind: Some("validation_error".to_string()),
             last_error,
@@ -411,6 +419,26 @@ fn run_agent_loop(
         })
         .map_err(|err| err.to_string())?;
     response_to_outcome(event, &response)
+}
+
+fn classify_fallback_reason(last_error: Option<&str>) -> FallbackReason {
+    let Some(error) = last_error else {
+        return FallbackReason::RetryExhausted;
+    };
+    let normalized = error.to_ascii_lowercase();
+    if normalized.contains("json") {
+        FallbackReason::ParseFailed
+    } else if normalized.contains("validation") || normalized.contains("schema") {
+        FallbackReason::ValidationFailed
+    } else if normalized.contains("target") {
+        FallbackReason::UnknownTarget
+    } else if normalized.contains("mismatch") {
+        FallbackReason::SemanticMismatch
+    } else if normalized.contains("timeout") {
+        FallbackReason::Timeout
+    } else {
+        FallbackReason::RetryExhausted
+    }
 }
 
 fn build_control_event(plan: &RunDslPlan, step: &PlanStep) -> ControlEvent {

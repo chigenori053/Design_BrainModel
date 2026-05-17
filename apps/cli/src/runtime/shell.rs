@@ -26,9 +26,32 @@ use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{Diff, DiffChunk, RuntimeNarrativeEvent, RuntimeTransaction, TuiState};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CanonicalTarget {
+    pub path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedExecutionTarget {
+    pub canonical_target: CanonicalTarget,
+    pub semantic_hash: String,
+}
+
+impl ResolvedExecutionTarget {
+    pub fn from_canonical_path(path: &str) -> Self {
+        let canonical = normalize_target_path(path);
+        let semantic_hash = stable_semantic_hash(&canonical);
+        Self {
+            canonical_target: CanonicalTarget { path: canonical },
+            semantic_hash,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PreviewCandidate {
     pub target_path: String,
     pub tx_id: String,
+    pub resolved_target: ResolvedExecutionTarget,
     pub diff: Diff,
 }
 
@@ -70,6 +93,7 @@ impl ValidationResult {
 pub struct StagedTransaction {
     pub tx_id: String,
     pub target: String,
+    pub resolved_target: ResolvedExecutionTarget,
     pub staged_projection: Diff,
     pub staged_runtime_state: RuntimeShellState,
     pub validation: ValidationResult,
@@ -270,6 +294,7 @@ pub fn commit_preview_candidate(state: &mut TuiState, candidate: PreviewCandidat
     let staged = StagedTransaction {
         tx_id: candidate.tx_id,
         target: candidate.target_path,
+        resolved_target: candidate.resolved_target,
         staged_projection: candidate.diff,
         staged_runtime_state: RuntimeShellState::PreviewReady,
         validation: ValidationResult::ok(),
@@ -284,13 +309,15 @@ pub fn stage_preview_transaction(target_path: &Path) -> Option<StagedTransaction
     }
 
     let target_label = target_path.display().to_string();
+    let resolved_target = ResolvedExecutionTarget::from_canonical_path(&target_label);
     let candidate = PreviewCandidate {
         tx_id: transaction_id_for(&target_label),
         diff: Diff {
-            file: target_label.clone(),
+            file: resolved_target.canonical_target.path.clone(),
             changes: preview_changes(target_path),
         },
-        target_path: target_label,
+        target_path: resolved_target.canonical_target.path.clone(),
+        resolved_target,
     };
     Some(validate_preview_candidate(candidate))
 }
@@ -307,6 +334,7 @@ pub fn validate_preview_candidate(candidate: PreviewCandidate) -> StagedTransact
     StagedTransaction {
         tx_id: candidate.tx_id,
         target: candidate.target_path,
+        resolved_target: candidate.resolved_target,
         staged_projection: candidate.diff,
         staged_runtime_state: RuntimeShellState::PreviewReady,
         validation,
@@ -333,6 +361,7 @@ pub fn commit_staged_transaction(
     state.active_transaction = Some(RuntimeTransaction {
         tx_id: staged.tx_id.clone(),
         target_path: staged.target.clone(),
+        resolved_target: staged.resolved_target.clone(),
         diff: staged.staged_projection.clone(),
         failed_recoverable: false,
     });
@@ -842,6 +871,7 @@ fn cleanup_projection_before_governance_publication(state: &mut TuiState) {
     state.active_transaction = None;
     state.active_transaction_id = None;
     state.active_target = None;
+    state.branch_runtime = None;
     state.autonomous_session = None;
 }
 
@@ -877,6 +907,9 @@ pub fn runtime_commit(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
             state.active_transaction = Some(RuntimeTransaction {
                 tx_id: committed_snap.tx_id.clone(),
                 target_path: committed_snap.target.clone(),
+                resolved_target: ResolvedExecutionTarget::from_canonical_path(
+                    &committed_snap.target,
+                ),
                 diff: committed_snap.projection.clone(),
                 failed_recoverable: false,
             });
@@ -942,6 +975,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
             state.active_transaction = Some(RuntimeTransaction {
                 tx_id: committed.tx_id.clone(),
                 target_path: committed.target.clone(),
+                resolved_target: ResolvedExecutionTarget::from_canonical_path(&committed.target),
                 diff: committed.projection.clone(),
                 failed_recoverable: false,
             });
@@ -1042,6 +1076,48 @@ fn transaction_id_for(target: &str) -> String {
     } else {
         format!("tx-{normalized}")
     }
+}
+
+fn normalize_target_path(path: &str) -> String {
+    let trimmed = path.trim();
+    if trimmed.is_empty() {
+        return "preview".to_string();
+    }
+    let path = Path::new(trimmed);
+    let display = if path.is_absolute() {
+        std::env::current_dir()
+            .ok()
+            .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+            .or_else(|| semantic_workspace_relative_path(path))
+            .unwrap_or_else(|| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    display.display().to_string()
+}
+
+fn semantic_workspace_relative_path(path: &Path) -> Option<PathBuf> {
+    let components = path.components().collect::<Vec<_>>();
+    for anchor in ["apps", "crates", "docs", "specs", "tests"] {
+        if let Some(idx) = components
+            .iter()
+            .position(|component| component.as_os_str() == anchor)
+        {
+            return Some(components[idx..].iter().collect());
+        }
+    }
+    None
+}
+
+fn stable_semantic_hash(value: &str) -> String {
+    let mut hash = 0xcbf29ce484222325_u64;
+    hash ^= value.len() as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+    for byte in value.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 #[cfg(test)]
@@ -1821,6 +1897,7 @@ mod tests {
         let invalid_candidate = PreviewCandidate {
             target_path: String::new(),
             tx_id: String::new(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(""),
             diff: Diff {
                 file: "invalid".to_string(),
                 changes: Vec::new(),
