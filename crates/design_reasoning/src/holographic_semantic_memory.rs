@@ -957,12 +957,16 @@ mod tests {
         b.causal_patterns = vec!["throughput_drop_triggers_rebalance".to_string()];
 
         let merged = DuplicateEliminationEngine::merge(a, b);
-        assert!(merged
-            .semantic_roles
-            .contains(&"CacheCoordinator".to_string()));
-        assert!(merged
-            .semantic_roles
-            .contains(&"ThroughputOptimizer".to_string()));
+        assert!(
+            merged
+                .semantic_roles
+                .contains(&"CacheCoordinator".to_string())
+        );
+        assert!(
+            merged
+                .semantic_roles
+                .contains(&"ThroughputOptimizer".to_string())
+        );
         assert!(
             merged.causal_patterns.len() == 2,
             "Both causal patterns preserved"
@@ -1072,10 +1076,12 @@ mod tests {
         let result = store.insert(m2);
         assert!(result.is_err(), "Duplicate insert must be rejected");
         assert_eq!(store.memories().len(), 1);
-        assert!(store
-            .governance_events
-            .iter()
-            .any(|e| matches!(e, GovernanceEvent::DuplicateRejected { .. })));
+        assert!(
+            store
+                .governance_events
+                .iter()
+                .any(|e| matches!(e, GovernanceEvent::DuplicateRejected { .. }))
+        );
     }
 
     #[test]
@@ -1092,10 +1098,12 @@ mod tests {
             store.attractors().len() >= 1,
             "At least one attractor must form"
         );
-        assert!(store
-            .governance_events
-            .iter()
-            .any(|e| matches!(e, GovernanceEvent::AttractorFormed { .. })));
+        assert!(
+            store
+                .governance_events
+                .iter()
+                .any(|e| matches!(e, GovernanceEvent::AttractorFormed { .. }))
+        );
     }
 
     #[test]
@@ -1110,10 +1118,12 @@ mod tests {
         store.run_generalization_pass();
         let drifted = vec!["quantum".to_string(), "blockchain".to_string()];
         store.detect_attractor_drifts(&drifted);
-        assert!(store
-            .governance_events
-            .iter()
-            .any(|e| matches!(e, GovernanceEvent::AttractorDriftDetected { .. })));
+        assert!(
+            store
+                .governance_events
+                .iter()
+                .any(|e| matches!(e, GovernanceEvent::AttractorDriftDetected { .. }))
+        );
     }
 
     #[test]

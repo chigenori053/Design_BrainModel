@@ -25,7 +25,16 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
         RuntimeIntent::GitDiff
     } else if lower == "undo" {
         RuntimeIntent::Rollback
-    } else if lower.starts_with("preview") || raw.contains(" preview") || raw.contains("を preview")
+    } else if lower.starts_with("preview")
+        || raw.contains(" preview")
+        || raw.contains("を preview")
+        || lower.contains("generate")
+        || lower.contains("create")
+        || lower.contains("implement")
+        || raw.contains("生成")
+        || raw.contains("作成")
+        || raw.contains("実装")
+        || raw.contains("修正")
     {
         RuntimeIntent::Preview
     } else if lower == "apply"
@@ -119,5 +128,25 @@ mod tests {
                 .intent,
             RuntimeIntent::Apply
         );
+    }
+
+    #[test]
+    fn normalizes_japanese_generate_target_as_preview_intent() {
+        let normalized =
+            normalize_runtime_input("apps/cli/src/test_runtime.rs を生成。").expect("intent");
+
+        assert_eq!(normalized.command.intent, RuntimeIntent::Preview);
+        assert_eq!(
+            normalized.command.target,
+            Some(PathBuf::from("apps/cli/src/test_runtime.rs"))
+        );
+    }
+
+    #[test]
+    fn normalizes_empty_japanese_fix_as_unresolved_preview_intent() {
+        let normalized = normalize_runtime_input("修正してください").expect("intent");
+
+        assert_eq!(normalized.command.intent, RuntimeIntent::Preview);
+        assert_eq!(normalized.command.target, None);
     }
 }

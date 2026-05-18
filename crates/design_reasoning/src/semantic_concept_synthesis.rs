@@ -889,9 +889,11 @@ mod tests {
         let engine = SemanticAbstractionEngine::default();
         let abstractions = engine.synthesize(&repeated_recovery_patterns());
         assert!(abstractions.iter().all(|a| a.stability_score >= 0.8));
-        assert!(abstractions
-            .iter()
-            .any(|a| a.abstraction_signature.contains("repair")));
+        assert!(
+            abstractions
+                .iter()
+                .any(|a| a.abstraction_signature.contains("repair"))
+        );
     }
 
     #[test]
@@ -931,10 +933,12 @@ mod tests {
         let abstractions =
             SemanticAbstractionEngine::default().synthesize(&repeated_recovery_patterns());
         let graph = ConceptSynthesisEngine::new(1).synthesize(&abstractions);
-        assert!(graph
-            .concepts
-            .iter()
-            .any(|concept| concept.concept_id.starts_with("META_CONCEPT")));
+        assert!(
+            graph
+                .concepts
+                .iter()
+                .any(|concept| concept.concept_id.starts_with("META_CONCEPT"))
+        );
         let replay = ConceptSynthesisEngine::new(1).synthesize(&abstractions);
         assert_eq!(graph, replay);
     }
@@ -1090,12 +1094,14 @@ mod tests {
     #[test]
     fn verification_a_repeated_recovery_patterns() {
         let report = ConceptCognitionRuntime::default().run(&repeated_recovery_patterns(), &[]);
-        assert!(report
-            .concept_graph
-            .concepts
-            .iter()
-            .any(|concept| concept.conceptual_signature.contains("recovery")
-                || concept.conceptual_signature.contains("repair")));
+        assert!(
+            report
+                .concept_graph
+                .concepts
+                .iter()
+                .any(|concept| concept.conceptual_signature.contains("recovery")
+                    || concept.conceptual_signature.contains("repair"))
+        );
     }
 
     #[test]
@@ -1115,10 +1121,12 @@ mod tests {
             compression_engine: SemanticCompressionEngine::default(),
         };
         let report = runtime.run(&repeated_recovery_patterns(), &[]);
-        assert!(report
-            .events
-            .iter()
-            .any(|event| matches!(event, ConceptFormationEvent::MetaConceptEmerged { .. })));
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, ConceptFormationEvent::MetaConceptEmerged { .. }))
+        );
     }
 
     #[test]

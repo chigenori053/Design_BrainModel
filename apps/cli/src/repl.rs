@@ -9,7 +9,11 @@ use std::path::{Path, PathBuf};
 use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
-use crate::runtime::shell::{RuntimeCommandDispatcher, empty_runtime_payload};
+use crate::nl::normalization::normalize_runtime_input;
+use crate::nl::runtime_intent::RuntimeIntent;
+use crate::runtime::shell::{
+    RuntimeCommandDispatcher, empty_runtime_payload, runtime_preview_from_intent,
+};
 use crate::session::AgentSession;
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
@@ -124,6 +128,16 @@ where
             continue;
         }
 
+        if let Some(events) =
+            dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
+        {
+            for event in events {
+                writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
+            }
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+
         eprintln!("[UI] Input received");
         handle_submit(
             trimmed.to_string(),
@@ -184,6 +198,15 @@ pub fn dispatch_repl_input<W: Write>(
         return Ok(false);
     }
 
+    if let Some(events) =
+        dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
+    {
+        for event in events {
+            writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
+        }
+        return Ok(false);
+    }
+
     eprintln!("[UI] Input received");
     handle_submit(
         trimmed.to_string(),
@@ -193,6 +216,44 @@ pub fn dispatch_repl_input<W: Write>(
         writer,
     )?;
     Ok(false)
+}
+
+fn dispatch_normalized_runtime_intent(
+    ui: &mut ReplUiState,
+    workspace_root: &Path,
+    input: &str,
+) -> Option<Vec<crate::tui::state::RuntimeNarrativeEvent>> {
+    let normalized = normalize_runtime_input(input)?;
+    match normalized.command.intent {
+        RuntimeIntent::Preview => {
+            let Some(target) = normalized.command.target else {
+                ui.runtime.rejection = Some(crate::tui::state::RejectionInfo {
+                    reason: "unresolved target".to_string(),
+                    originating_mutation: "runtime_intent_bridge".to_string(),
+                    governance_source: None,
+                    convergence_source: None,
+                });
+                return Some(vec![crate::tui::state::RuntimeNarrativeEvent::Error {
+                    message: "unresolved target".to_string(),
+                }]);
+            };
+
+            let target_label = target.display().to_string();
+            let mut events = runtime_preview_from_intent(&mut ui.runtime, workspace_root, target);
+            if ui.runtime.active_transaction.is_some() {
+                events.insert(
+                    0,
+                    crate::tui::state::RuntimeNarrativeEvent::System {
+                        summary: format!("Target: {target_label}"),
+                    },
+                );
+            }
+            ui.semantic_state
+                .capture_runtime_command("preview", &ui.runtime);
+            Some(events)
+        }
+        _ => None,
+    }
 }
 
 impl ReplSemanticState {
@@ -460,6 +521,44 @@ mod tests {
         assert!(!output.contains("[RESULT]"), "{output}");
         assert!(!output.contains("APPLYING"), "{output}");
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
+    }
+
+    #[test]
+    fn nl_runtime_intent_binds_target_to_preview_transaction() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("apps/cli/src/test_runtime.rs を生成。\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("preview ready"), "{output}");
+        assert!(output.contains("transaction active"), "{output}");
+        assert!(
+            output.contains("Target: apps/cli/src/test_runtime.rs"),
+            "{output}"
+        );
+        assert!(!output.contains("Target: (none)"), "{output}");
+    }
+
+    #[test]
+    fn nl_runtime_intent_rejects_empty_target_preview() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("修正してください\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("[ERROR] unresolved target"), "{output}");
+        assert!(!output.contains("preview ready"), "{output}");
+        assert!(!output.contains("transaction active"), "{output}");
     }
 
     #[test]

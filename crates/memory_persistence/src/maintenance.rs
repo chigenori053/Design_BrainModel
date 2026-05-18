@@ -146,9 +146,12 @@ fn hex_sha256(data: &[u8]) -> String {
 /// - `"runtime"  = "true"` (ランタイム)
 pub fn is_protected(mem: &GeneralizedMemory) -> bool {
     const PROTECTION_KEYS: &[&str] = &["pinned", "active", "referenced", "runtime"];
-    PROTECTION_KEYS
-        .iter()
-        .any(|key| mem.attributes.get(*key).map(|v| v == "true").unwrap_or(false))
+    PROTECTION_KEYS.iter().any(|key| {
+        mem.attributes
+            .get(*key)
+            .map(|v| v == "true")
+            .unwrap_or(false)
+    })
 }
 
 // ── 重複検出 ──────────────────────────────────────────────────────────────────
@@ -398,7 +401,13 @@ mod tests {
     fn detects_exact_spectrum_hash_duplicate() {
         // abstract_tags が同一だが他フィールドが異なる → Step 2 で検出
         let m1 = make_memory("m1", "REST API design", &["api", "rest"], &[1.0, 0.0], 1000);
-        let m2 = make_memory("m2", "Different summary", &["api", "rest"], &[0.5, 0.5], 2000);
+        let m2 = make_memory(
+            "m2",
+            "Different summary",
+            &["api", "rest"],
+            &[0.5, 0.5],
+            2000,
+        );
         let memories = vec![m1, m2];
         let dups = find_duplicates(&memories);
         assert_eq!(dups.len(), 1);
@@ -435,7 +444,8 @@ mod tests {
     fn pinned_memory_is_not_removed() {
         let m1 = make_memory("m1", "summary", &["tag1"], &[0.5], 1000);
         let mut m2 = make_memory("m2", "summary", &["tag1"], &[0.5], 2000);
-        m2.attributes.insert("pinned".to_string(), "true".to_string());
+        m2.attributes
+            .insert("pinned".to_string(), "true".to_string());
         let memories = vec![m1, m2];
         // m2 は pinned なので重複判定から除外 → 検出なし
         assert!(find_duplicates(&memories).is_empty());

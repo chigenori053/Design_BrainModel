@@ -120,7 +120,7 @@ impl RuntimeNarrativeEvent {
             | Self::System { summary } => summary.clone(),
             Self::Preview { target } => format!("changes prepared for {target}"),
             Self::GovernanceReject { reason } => format!("rejected: {}", reason),
-            Self::Error { message } => format!("error: {}", message),
+            Self::Error { message } => format!("[ERROR] {}", message),
         }
     }
 }
@@ -822,6 +822,17 @@ impl TuiState {
     }
 
     fn install_runtime_transaction(&mut self, target_path: String, diff: Diff) {
+        if target_path.trim().is_empty() || target_path == "preview" {
+            self.rejection = Some(RejectionInfo {
+                reason: "unresolved target".to_string(),
+                originating_mutation: "install_runtime_transaction".to_string(),
+                governance_source: None,
+                convergence_source: None,
+            });
+            self.clear_runtime_transaction();
+            self.runtime_state = RuntimeShellState::Rejected;
+            return;
+        }
         let tx_id = self
             .active_transaction_id
             .clone()

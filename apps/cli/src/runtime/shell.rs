@@ -58,6 +58,7 @@ pub struct PreviewCandidate {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PreviewValidationError {
     TargetMissing { target: PathBuf },
+    TargetUnresolved,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -145,10 +146,7 @@ impl RuntimeCommandDispatcher {
         let command = parts.next()?;
         match command {
             "preview" => {
-                let target = parts
-                    .next()
-                    .map(PathBuf::from)
-                    .unwrap_or_else(|| ".".into());
+                let target = parts.next().map(PathBuf::from).unwrap_or_default();
                 Some(RuntimeCommand::Preview { target })
             }
             "apply" => Some(RuntimeCommand::Apply),
@@ -234,6 +232,23 @@ pub fn runtime_preview(
     workspace_root: &Path,
     target: PathBuf,
 ) -> Vec<RuntimeNarrativeEvent> {
+    runtime_preview_internal(state, workspace_root, target, false)
+}
+
+pub fn runtime_preview_from_intent(
+    state: &mut TuiState,
+    workspace_root: &Path,
+    target: PathBuf,
+) -> Vec<RuntimeNarrativeEvent> {
+    runtime_preview_internal(state, workspace_root, target, true)
+}
+
+fn runtime_preview_internal(
+    state: &mut TuiState,
+    workspace_root: &Path,
+    target: PathBuf,
+    allow_missing_target: bool,
+) -> Vec<RuntimeNarrativeEvent> {
     if state.runtime_state == RuntimeShellState::BoundedHalt {
         commit_runtime_mutation(
             state,
@@ -244,8 +259,23 @@ pub fn runtime_preview(
         return runtime_semantic_events(state);
     }
 
+    if target.as_os_str().is_empty() || !is_workspace_relative_target(&target, workspace_root) {
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "unresolved target".to_string(),
+            originating_mutation: "runtime_preview".to_string(),
+            governance_source: None,
+            convergence_source: None,
+        });
+        if state.active_transaction.is_none() {
+            state.runtime_state = RuntimeShellState::Rejected;
+        }
+        return vec![RuntimeNarrativeEvent::Error {
+            message: "unresolved target".to_string(),
+        }];
+    }
+
     let target_path = resolve_target(workspace_root, target);
-    let staged_opt = stage_preview_transaction(&target_path);
+    let staged_opt = stage_preview_transaction_with_policy(&target_path, allow_missing_target);
 
     if staged_opt.is_none() {
         state.rejection = Some(crate::tui::state::RejectionInfo {
@@ -304,7 +334,14 @@ pub fn commit_preview_candidate(state: &mut TuiState, candidate: PreviewCandidat
 }
 
 pub fn stage_preview_transaction(target_path: &Path) -> Option<StagedTransaction> {
-    if validate_preview_target(target_path).is_err() {
+    stage_preview_transaction_with_policy(target_path, false)
+}
+
+fn stage_preview_transaction_with_policy(
+    target_path: &Path,
+    allow_missing_target: bool,
+) -> Option<StagedTransaction> {
+    if !allow_missing_target && validate_preview_target(target_path).is_err() {
         return None;
     }
 
@@ -324,7 +361,9 @@ pub fn stage_preview_transaction(target_path: &Path) -> Option<StagedTransaction
 
 pub fn validate_preview_candidate(candidate: PreviewCandidate) -> StagedTransaction {
     let validation = ValidationResult {
-        target_valid: !candidate.target_path.trim().is_empty(),
+        target_valid: !candidate.target_path.trim().is_empty()
+            && candidate.target_path != "preview"
+            && candidate.diff.file == candidate.target_path,
         diff_valid: candidate.diff.file == candidate.target_path
             && !candidate.diff.changes.is_empty(),
         ownership_valid: true,
@@ -1052,6 +1091,18 @@ fn resolve_target(workspace_root: &Path, target: PathBuf) -> PathBuf {
     } else {
         workspace_root.join(target)
     }
+}
+
+fn is_workspace_relative_target(target: &Path, workspace_root: &Path) -> bool {
+    if target.as_os_str().is_empty() {
+        return false;
+    }
+    if target.is_absolute() {
+        return target.starts_with(workspace_root);
+    }
+    !target
+        .components()
+        .any(|component| matches!(component, std::path::Component::ParentDir))
 }
 
 fn preview_changes(target: &Path) -> Vec<DiffChunk> {

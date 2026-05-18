@@ -1,6 +1,7 @@
 pub mod execution_model;
 pub mod geometry_model;
 pub mod math_model;
+pub mod semantic_causal_runtime;
 pub mod simulation_engine;
 pub mod stable_v03;
 pub mod system_model;

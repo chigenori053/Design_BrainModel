@@ -729,10 +729,12 @@ mod tests {
             &stable_steps(),
         );
         assert!(report.identity.continuity_score >= 0.5);
-        assert!(report
-            .identity
-            .persistent_concepts
-            .contains(&"C_RESILIENCE".to_string()));
+        assert!(
+            report
+                .identity
+                .persistent_concepts
+                .contains(&"C_RESILIENCE".to_string())
+        );
     }
 
     #[test]

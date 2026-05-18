@@ -31,13 +31,13 @@ pub mod snapshot;
 pub mod trace;
 
 // Convenience re-exports at crate root
+pub use checksum::{Checksum, ChecksumBuilder, ExecutionTraceHash};
+pub use effect::{Effect, StagedEffectManager};
+pub use error::HardeningError;
 pub use real_execution_substrate::{
     EnvironmentState, ExecutionSubstrateEngine, ExecutionTransaction, FilesystemMutation,
     GovernedProcess, RollbackSnapshot, VerificationExecutionResult,
 };
-pub use checksum::{Checksum, ChecksumBuilder, ExecutionTraceHash};
-pub use effect::{Effect, StagedEffectManager};
-pub use error::HardeningError;
 pub use replay::ReplayValidator;
 pub use sandbox::{SandboxedCommand, SandboxedOutput};
 pub use snapshot::{SerializedState, SnapshotId, StateSnapshot};

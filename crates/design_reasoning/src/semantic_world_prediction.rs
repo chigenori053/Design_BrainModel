@@ -748,10 +748,12 @@ mod tests {
             &[],
         );
         assert!(report.world_state.world_consistency_score >= 0.8);
-        assert!(report
-            .trajectories
-            .iter()
-            .any(|t| t.semantic_viability >= 0.5));
+        assert!(
+            report
+                .trajectories
+                .iter()
+                .any(|t| t.semantic_viability >= 0.5)
+        );
     }
 
     #[test]
@@ -776,9 +778,11 @@ mod tests {
         let changes = vec!["six month deployment scaling evolution".to_string()];
         let consequences =
             WorldPredictionEngine::default().forecast_consequences(&world(), &changes);
-        assert!(consequences[0]
-            .predicted_effects
-            .contains(&"deployment topology expands".to_string()));
+        assert!(
+            consequences[0]
+                .predicted_effects
+                .contains(&"deployment topology expands".to_string())
+        );
     }
 
     #[test]
@@ -816,10 +820,12 @@ mod tests {
             "catastrophic contradiction collapse",
             &[],
         );
-        assert!(report
-            .events
-            .iter()
-            .any(|event| matches!(event, PredictionEvent::SemanticFutureCollapse { .. })));
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, PredictionEvent::SemanticFutureCollapse { .. }))
+        );
     }
 
     #[test]
@@ -845,9 +851,11 @@ mod tests {
             "architecture resilience distributed deployment",
             &[],
         );
-        assert!(report.trajectories.iter().any(|trajectory| trajectory
-            .future_concepts
-            .contains(&"resilience".to_string())));
+        assert!(report.trajectories.iter().any(|trajectory| {
+            trajectory
+                .future_concepts
+                .contains(&"resilience".to_string())
+        }));
     }
 
     #[test]
@@ -898,12 +906,16 @@ mod tests {
             &identity(),
             "architecture resilience distributed scale deployment",
         );
-        assert!(forecast
-            .predicted_topology
-            .contains(&"distributed boundary".to_string()));
-        assert!(forecast
-            .predicted_topology
-            .contains(&"elastic scaling".to_string()));
+        assert!(
+            forecast
+                .predicted_topology
+                .contains(&"distributed boundary".to_string())
+        );
+        assert!(
+            forecast
+                .predicted_topology
+                .contains(&"elastic scaling".to_string())
+        );
     }
 
     #[test]
@@ -964,9 +976,11 @@ mod tests {
             "catastrophic contradiction collapse",
             &[],
         );
-        assert!(report
-            .events
-            .iter()
-            .any(|event| matches!(event, PredictionEvent::SemanticFutureCollapse { .. })));
+        assert!(
+            report
+                .events
+                .iter()
+                .any(|event| matches!(event, PredictionEvent::SemanticFutureCollapse { .. }))
+        );
     }
 }

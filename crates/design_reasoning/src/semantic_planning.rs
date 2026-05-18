@@ -80,11 +80,11 @@ impl IntentContinuityEngine {
                 matches += 1;
             }
         }
-        
+
         if root_keywords.is_empty() {
             return 0.0;
         }
-        
+
         1.0 - (matches as f64 / root_keywords.len() as f64)
     }
 
@@ -106,7 +106,7 @@ impl SemanticPlanningEngine {
     pub fn build_graph(root_intent: &str, goals: Vec<String>) -> SemanticPlanningGraph {
         let mut nodes = Vec::new();
         let mut dependencies = Vec::new();
-        
+
         for (i, goal) in goals.into_iter().enumerate() {
             let node_id = format!("PLAN_{}", i);
             nodes.push(SemanticPlanningNode {
@@ -116,19 +116,23 @@ impl SemanticPlanningEngine {
                 responsibility_units: vec![format!("RESP_{}", i)],
                 abstraction_level: 1.0,
                 continuity_score: 1.0,
-                parent_nodes: if i > 0 { vec![format!("PLAN_{}", i - 1)] } else { vec![] },
+                parent_nodes: if i > 0 {
+                    vec![format!("PLAN_{}", i - 1)]
+                } else {
+                    vec![]
+                },
                 child_nodes: vec![],
             });
-            
+
             if i > 0 {
                 dependencies.push((format!("PLAN_{}", i - 1), node_id));
             }
         }
-        
+
         // Update child nodes
         for i in 0..nodes.len() {
             if i + 1 < nodes.len() {
-                let next_id = nodes[i+1].node_id.clone();
+                let next_id = nodes[i + 1].node_id.clone();
                 nodes[i].child_nodes.push(next_id);
             }
         }
@@ -144,11 +148,17 @@ impl SemanticPlanningEngine {
     pub fn sort_planning_nodes(nodes: &mut [SemanticPlanningNode]) {
         // ordering: continuity desc -> contradiction asc (omitted for now) -> convergence desc (omitted) -> abstraction stability desc -> node_id asc
         nodes.sort_by(|a, b| {
-            let cont_cmp = b.continuity_score.partial_cmp(&a.continuity_score).unwrap_or(Ordering::Equal);
+            let cont_cmp = b
+                .continuity_score
+                .partial_cmp(&a.continuity_score)
+                .unwrap_or(Ordering::Equal);
             if cont_cmp != Ordering::Equal {
                 return cont_cmp;
             }
-            let abs_cmp = b.abstraction_level.partial_cmp(&a.abstraction_level).unwrap_or(Ordering::Equal);
+            let abs_cmp = b
+                .abstraction_level
+                .partial_cmp(&a.abstraction_level)
+                .unwrap_or(Ordering::Equal);
             if abs_cmp != Ordering::Equal {
                 return abs_cmp;
             }
@@ -178,7 +188,10 @@ mod tests {
         let goals = vec!["G1".to_string(), "G2".to_string()];
         let graph = SemanticPlanningEngine::build_graph(root, goals);
         assert_eq!(graph.semantic_dependencies.len(), 1);
-        assert_eq!(graph.semantic_dependencies[0], ("PLAN_0".to_string(), "PLAN_1".to_string()));
+        assert_eq!(
+            graph.semantic_dependencies[0],
+            ("PLAN_0".to_string(), "PLAN_1".to_string())
+        );
     }
 
     #[test]
@@ -204,7 +217,11 @@ mod tests {
         };
         engine.track_lineage(&mut lineage, "キャッシュ 最適化".to_string());
         assert_eq!(lineage.root_intent, "キャッシュ 高速化");
-        assert!(lineage.evolving_intents.contains(&"キャッシュ 最適化".to_string()));
+        assert!(
+            lineage
+                .evolving_intents
+                .contains(&"キャッシュ 最適化".to_string())
+        );
     }
 
     #[test]

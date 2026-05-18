@@ -50,7 +50,9 @@ impl Default for FuzzyJudgeLogic {
 
 impl FuzzyJudgeLogic {
     pub fn new(clarification_threshold: f64) -> Self {
-        Self { clarification_threshold }
+        Self {
+            clarification_threshold,
+        }
     }
 
     pub fn estimate_ambiguity(&self, input: &str) -> FuzzyIntentScore {
@@ -66,8 +68,16 @@ impl FuzzyJudgeLogic {
         };
 
         let confidence = 1.0 - ambiguity;
-        let contradiction = if input.contains("矛盾") || input.contains("不可能") { 0.8 } else { 0.1 };
-        let clarification_necessity = if confidence > 0.8 { 0.1 } else { ambiguity * 0.9 };
+        let contradiction = if input.contains("矛盾") || input.contains("不可能") {
+            0.8
+        } else {
+            0.1
+        };
+        let clarification_necessity = if confidence > 0.8 {
+            0.1
+        } else {
+            ambiguity * 0.9
+        };
 
         FuzzyIntentScore {
             semantic_confidence: confidence,
@@ -124,12 +134,18 @@ impl DesignConvergenceEngine {
         // ordering: confidence desc -> contradiction asc -> continuity desc (omitted in candidate for now) -> clarification necessity asc -> candidate_id asc
         candidates.sort_by(|a, b| {
             // confidence desc
-            let conf_cmp = b.confidence.partial_cmp(&a.confidence).unwrap_or(Ordering::Equal);
+            let conf_cmp = b
+                .confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(Ordering::Equal);
             if conf_cmp != Ordering::Equal {
                 return conf_cmp;
             }
             // contradiction asc
-            let contra_cmp = a.contradiction_weight.partial_cmp(&b.contradiction_weight).unwrap_or(Ordering::Equal);
+            let contra_cmp = a
+                .contradiction_weight
+                .partial_cmp(&b.contradiction_weight)
+                .unwrap_or(Ordering::Equal);
             if contra_cmp != Ordering::Equal {
                 return contra_cmp;
             }
@@ -249,16 +265,14 @@ mod tests {
     #[test]
     fn design_convergence_stable() {
         let engine = DesignConvergenceEngine::new();
-        let mut candidates = vec![
-            IntentCandidate {
-                candidate_id: "C1".to_string(),
-                inferred_intent: "".to_string(),
-                confidence: 0.8,
-                semantic_dependencies: vec![],
-                contradiction_weight: 0.2,
-                latent_constraints: vec![],
-            }
-        ];
+        let mut candidates = vec![IntentCandidate {
+            candidate_id: "C1".to_string(),
+            inferred_intent: "".to_string(),
+            confidence: 0.8,
+            semantic_dependencies: vec![],
+            contradiction_weight: 0.2,
+            latent_constraints: vec![],
+        }];
         let converged = engine.converge(&mut candidates).unwrap();
         assert_eq!(converged.candidate_id, "C1");
     }
@@ -298,16 +312,14 @@ mod tests {
     // 13.4 Observability Tests
     #[test]
     fn intent_candidates_observable() {
-        let candidates = vec![
-            IntentCandidate {
-                candidate_id: "C1".to_string(),
-                inferred_intent: "".to_string(),
-                confidence: 0.8,
-                semantic_dependencies: vec![],
-                contradiction_weight: 0.0,
-                latent_constraints: vec![],
-            }
-        ];
+        let candidates = vec![IntentCandidate {
+            candidate_id: "C1".to_string(),
+            inferred_intent: "".to_string(),
+            confidence: 0.8,
+            semantic_dependencies: vec![],
+            contradiction_weight: 0.0,
+            latent_constraints: vec![],
+        }];
         // Ensure struct can be serialized/logged (Debug is derived)
         let _s = format!("{:?}", candidates);
     }
