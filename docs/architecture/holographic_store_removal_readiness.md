@@ -5,9 +5,6 @@
 This document records whether `crates/memory_space_legacy/src/holographic_store.rs`
 can be deleted after the adapter and public API deprecation work.
 
-This step does not delete `holographic_store.rs`, remove `pub mod holographic_store`,
-move `MemoryEntry`, or remove the deprecated public re-export.
-
 ## Reference Inventory
 
 Command:
@@ -24,50 +21,80 @@ Remaining references:
 
 | Location | Classification | Notes |
 | --- | --- | --- |
-| `crates/memory_space_legacy/src/holographic_store.rs` | Allowed | Legacy implementation and its local tests. |
-| `crates/memory_space_legacy/src/store_adapter.rs` | Allowed | Adapter implementation wraps the legacy store. |
-| `crates/memory_space_legacy/src/lib.rs` | Allowed | Deprecated compatibility re-export, public adapter exports, and compatibility boundary tests. |
-| `crates/memory_space_legacy/src/interference_memory.rs` | Allowed for `holographic_store::MemoryEntry` only | Runtime store access is through `LegacyStoreAdapter`; `MemoryEntry` remains public compatibility data. |
+| `crates/memory_space_legacy/src/holographic_store.rs` | Allowed | Compatibility layer delegating to `HolographicVectorStoreAdapter`. |
+| `crates/memory_space_legacy/src/store_adapter.rs` | Allowed | Adapter definition and tests. No dependency on `HolographicVectorStore`. |
+| `crates/memory_space_legacy/src/lib.rs` | Allowed | Deprecated `HolographicVectorStore` re-export and adapter exports. |
 
-No references were found in:
+No references remain in:
 
 - `crates/dhm/src/lib.rs`
+- `crates/memory_space_legacy/src/interference_memory.rs`
 - `apps`
 - other crate implementation files outside `memory_space_legacy`
 - `Cargo.toml` dependency aliases
 
 ## Deletion Blockers
 
-Current blocker status: blocked.
+### Resolved blockers (as of `Split legacy holographic store blockers`)
 
-Blocking references:
+1. **Adapter backend dependency** — resolved.
+   `HolographicVectorStoreAdapter` no longer wraps `HolographicVectorStore`.
+   It owns its own file I/O using the same `HVSTORE0` binary format.
+   Dependency direction is now:
+   ```
+   holographic_store → store_adapter → memory_entry
+   ```
 
-- `store_adapter.rs` still depends on `holographic_store::{HolographicVectorStore, MemoryEntry}`.
-- `lib.rs` still exposes `pub mod holographic_store`.
-- `lib.rs` still has the deprecated `pub use holographic_store::HolographicVectorStore`.
-- `MemoryEntry` is still defined in `holographic_store.rs` and is used by `store_adapter.rs`, `interference_memory.rs`, and public API tests.
-- Legacy compatibility tests still instantiate or type-check `HolographicVectorStore`.
+2. **MemoryEntry location** — resolved.
+   `MemoryEntry` has been moved to `crates/memory_space_legacy/src/memory_entry.rs`.
+   It is re-exported from the crate root as `memory_space::MemoryEntry` without deprecation.
+   `interference_memory.rs` imports it from `crate::memory_entry`.
 
-These blockers are intentional at this stage because compatibility is still required.
+### Remaining blocker
 
-## Required Work Before Deletion
-
-Before `holographic_store.rs` can be deleted:
-
-1. Move `MemoryEntry` to a non-legacy module, or replace it with a new public data type.
-2. Replace `HolographicVectorStoreAdapter` internals so they no longer wrap `HolographicVectorStore`.
-3. Remove or rewrite adapter tests that compare against the legacy store implementation.
-4. Remove the deprecated `HolographicVectorStore` public re-export after confirming external references are zero.
-5. Remove `pub mod holographic_store` only in the actual removal step.
-6. Run full workspace reference checks again, including downstream apps and docs.
+3. **Deprecated public re-export** — partially blocking.
+   `lib.rs` still exposes:
+   ```rust
+   #[deprecated] pub use holographic_store::HolographicVectorStore;
+   pub mod holographic_store;
+   ```
+   Removing these is the next step.
 
 ## Readiness Decision
 
-Decision: blocked.
+Decision: **partially ready**.
 
-Reason: the legacy implementation remains the storage backend behind
-`HolographicVectorStoreAdapter`, and `MemoryEntry` still lives in
-`holographic_store.rs`. The public API boundary has been narrowed, but the file is
-not yet independently removable.
+Reason: the adapter is now independent of the legacy store, and `MemoryEntry` lives
+in its own module. `holographic_store.rs` is a thin compatibility layer that fully
+delegates to `HolographicVectorStoreAdapter`. The only remaining work before deletion
+is removing the deprecated public re-export of `HolographicVectorStore` and the
+`pub mod holographic_store` declaration in `lib.rs`, which should be done after
+confirming zero external callers.
 
-Next specification: `DBM_MEMORY_SPACE_LEGACY_HOLOGRAPHIC_STORE_BLOCKER_REMOVAL_SPEC v1.0`.
+## Required Work Before Deletion
+
+1. Remove `pub use holographic_store::HolographicVectorStore` from `lib.rs`.
+2. Remove `pub mod holographic_store` from `lib.rs`.
+3. Run full workspace reference checks, including downstream apps and docs.
+4. Delete `holographic_store.rs`.
+
+## Verification Commands
+
+```sh
+# No bare HolographicVectorStore import in store_adapter.rs
+grep -n "HolographicVectorStore[^A]" \
+  crates/memory_space_legacy/src/store_adapter.rs || true
+# Expected: (no output)
+
+# No references in dhm or interference_memory
+grep -n "HolographicVectorStore\|holographic_store" \
+  crates/dhm/src/lib.rs \
+  crates/memory_space_legacy/src/interference_memory.rs || true
+# Expected: (no output)
+
+# Tests and clippy pass
+cargo test -p memory_space && cargo test -p dhm
+cargo clippy -p memory_space -p dhm --all-targets -- -D warnings
+```
+
+Next specification: `DBM_MEMORY_SPACE_LEGACY_HOLOGRAPHIC_STORE_PUBLIC_REEXPORT_REMOVAL_SPEC v1.0`.

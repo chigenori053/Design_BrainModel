@@ -2,6 +2,7 @@ pub mod exploration;
 pub mod graph;
 pub mod holographic_store;
 pub mod interference_memory;
+pub mod memory_entry;
 pub mod node;
 pub mod state;
 pub mod store_adapter;
@@ -14,8 +15,8 @@ pub use graph::StructuralGraph;
     note = "Use HolographicVectorStoreAdapter and LegacyMemoryStore instead."
 )]
 pub use holographic_store::HolographicVectorStore;
-pub use holographic_store::MemoryEntry;
 pub use interference_memory::{InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
+pub use memory_entry::MemoryEntry;
 pub use node::DesignNode;
 pub use state::DesignState;
 pub use store_adapter::{
@@ -70,6 +71,22 @@ mod tests {
         assert_eq!(entry.depth, 2);
         assert_eq!(entry.timestamp, 3);
         assert_eq!(entry.vector.len(), 4);
+    }
+
+    #[test]
+    fn memory_entry_remains_public_after_store_split() {
+        // MemoryEntry must be importable from the crate root independently of
+        // holographic_store.  After the split it lives in memory_entry.rs.
+        let _entry: crate::MemoryEntry = crate::MemoryEntry {
+            id: 10,
+            depth: 5,
+            timestamp: 20,
+            vector: vec![0.5, 0.6, 0.7, 0.8],
+        };
+        assert_eq!(_entry.id, 10);
+        assert_eq!(_entry.depth, 5);
+        assert_eq!(_entry.timestamp, 20);
+        assert_eq!(_entry.vector.len(), 4);
     }
 
     #[test]

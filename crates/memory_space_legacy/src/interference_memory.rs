@@ -2,7 +2,7 @@ use std::io;
 
 use core_types::ObjectiveVector;
 
-use crate::holographic_store::MemoryEntry;
+use crate::memory_entry::MemoryEntry;
 use crate::{LegacyMemoryStore, LegacyStoreAdapter};
 
 const TAU_MEM_MIN: f64 = 1e-9;
