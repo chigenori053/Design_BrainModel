@@ -94,17 +94,9 @@ impl GovernanceRecursionGuard {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq)]
 pub struct ExecutionPermitEngine {
     pub recursion_guard: GovernanceRecursionGuard,
-}
-
-impl Default for ExecutionPermitEngine {
-    fn default() -> Self {
-        Self {
-            recursion_guard: GovernanceRecursionGuard::default(),
-        }
-    }
 }
 
 impl ExecutionPermitEngine {
@@ -114,7 +106,7 @@ impl ExecutionPermitEngine {
         capability: ExecutionCapability,
         rollback_ready: bool,
     ) -> GovernanceDecision {
-        if let Err(_) = self.recursion_guard.increment() {
+        if self.recursion_guard.increment().is_err() {
             let explanation = CognitiveExplanation {
                 severity: CognitiveSeverity::Critical,
                 category: CognitiveCategory::Execution,
@@ -350,7 +342,7 @@ mod tests {
         let proj = test_projection(WorkspaceRiskLevel::Minimal, true, false);
         let decision =
             engine.evaluate_execution(&proj, ExecutionCapability::WorkspaceMutation, true);
-        assert_eq!(decision.permit.approved, true);
+        assert!(decision.permit.approved);
         assert_eq!(
             decision.execution_state,
             RuntimeExecutionState::PermitGranted

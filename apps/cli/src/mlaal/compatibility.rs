@@ -257,10 +257,12 @@ mod tests {
 
         let mut session = AgentSession::new();
         session.workspace_root = Some(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = restore_or_initialize_ir_state(temp.path())
-            .expect("restore")
-            .state;
+        let conversation = ConversationState {
+            ir_state: restore_or_initialize_ir_state(temp.path())
+                .expect("restore")
+                .state,
+            ..ConversationState::default()
+        };
 
         let ctx = build_context("executor を見て", &session, &conversation);
         assert!(ctx.ir_checkpoint.is_some());

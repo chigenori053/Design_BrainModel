@@ -422,6 +422,7 @@ pub fn restore_intent(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::branch::BranchSnapshotInput;
     use crate::runtime::branch::{
         BranchId, BranchSnapshot, ContradictionSet, ConvergenceScore, RuntimeEffectSet,
         WorldStateSnapshot,
@@ -434,24 +435,24 @@ mod tests {
     };
 
     fn make_empty_snapshot(id: &str) -> BranchSnapshot {
-        BranchSnapshot::new(
-            BranchId(id.into()),
-            None,
-            format!("tx-{id}"),
-            "target".into(),
-            RuntimeShellState::PreviewReady,
-            crate::core::Diff {
+        BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId(id.into()),
+            parent_branch: None,
+            tx_id: format!("tx-{id}"),
+            target: "target".into(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: crate::core::Diff {
                 file: "t".into(),
                 changes: vec![],
             },
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            0,
-            0,
-        )
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: 0,
+            created_at: 0,
+        })
     }
 
     fn runtime_request() -> RuntimeSemanticApplyRequest {

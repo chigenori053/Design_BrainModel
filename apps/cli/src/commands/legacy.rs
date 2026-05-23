@@ -8,11 +8,11 @@ impl CommandPlugin for LegacyPlugin {
         phase1.register_subcommand(SubCommandHandler::new("run", |args, _| {
             let forwarded = args
                 .iter()
-                .map(|s| std::ffi::OsString::from(s))
+                .map(std::ffi::OsString::from)
                 .collect::<Vec<_>>();
             crate::cli::commands::phase1::run(forwarded)
                 .map(|_| Output::text("Phase1 completed"))
-                .map_err(|e| crate::command::CommandError::ExecutionError(e))
+                .map_err(crate::command::CommandError::ExecutionError)
         }));
         registry.register(phase1);
 
@@ -22,10 +22,10 @@ impl CommandPlugin for LegacyPlugin {
                 std::ffi::OsString::from("design_cli"),
                 std::ffi::OsString::from("phase-analyze"),
             ];
-            forwarded.extend(args.iter().map(|s| std::ffi::OsString::from(s)));
+            forwarded.extend(args.iter().map(std::ffi::OsString::from));
             crate::design_main::run_with_args(forwarded)
                 .map(|_| Output::text("PhaseAnalyze completed"))
-                .map_err(|e| crate::command::CommandError::ExecutionError(e))
+                .map_err(crate::command::CommandError::ExecutionError)
         }));
         registry.register(phase_analyze);
     }

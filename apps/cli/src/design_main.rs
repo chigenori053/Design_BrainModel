@@ -683,7 +683,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             intent,
             json,
             design_json,
-        } => run_unified_analyze(
+        } => run_unified_analyze(UnifiedAnalyzeArgs {
             path,
             detailed,
             report,
@@ -692,7 +692,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             intent,
             json,
             design_json,
-        ),
+        }),
         Commands::PhaseAnalyze {
             target,
             seed,
@@ -764,7 +764,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn run_unified_analyze(
+struct UnifiedAnalyzeArgs {
     path: String,
     detailed: bool,
     report: bool,
@@ -773,7 +773,19 @@ fn run_unified_analyze(
     intent: Option<String>,
     json: bool,
     design_json: bool,
-) -> Result<(), String> {
+}
+
+fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
+    let UnifiedAnalyzeArgs {
+        path,
+        detailed,
+        report,
+        design,
+        lang,
+        intent,
+        json,
+        design_json,
+    } = args;
     let mode = if detailed {
         AnalyzeMode::Detailed
     } else {

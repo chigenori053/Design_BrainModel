@@ -292,30 +292,30 @@ mod tests {
     use super::*;
     use crate::core::Diff;
     use crate::runtime::branch::{
-        BranchId, BranchSnapshot, ContradictionSet, ConvergenceScore, RuntimeEffectSet,
-        WorldStateSnapshot,
+        BranchId, BranchSnapshot, BranchSnapshotInput, ContradictionSet, ConvergenceScore,
+        RuntimeEffectSet, WorldStateSnapshot,
     };
     use crate::runtime::synthesis::ArchitectureTopology;
 
     fn snapshot(id: &str) -> BranchSnapshot {
-        BranchSnapshot::new(
-            BranchId(id.to_string()),
-            None,
-            format!("tx-{id}"),
-            "target".to_string(),
-            RuntimeShellState::PreviewReady,
-            Diff {
+        BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId(id.to_string()),
+            parent_branch: None,
+            tx_id: format!("tx-{id}"),
+            target: "target".to_string(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: Diff {
                 file: "target".to_string(),
                 changes: vec![],
             },
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            0,
-            0,
-        )
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: 0,
+            created_at: 0,
+        })
     }
 
     fn observation() -> CognitiveObservation {

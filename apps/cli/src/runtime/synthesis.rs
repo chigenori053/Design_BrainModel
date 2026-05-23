@@ -112,6 +112,7 @@ pub fn topology_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::branch::BranchSnapshotInput;
     use crate::runtime::branch::{
         BranchId, BranchRuntime, BranchSnapshot, ContradictionSet, ConvergenceScore,
         RuntimeEffectSet, WorldStateSnapshot,
@@ -158,8 +159,10 @@ mod tests {
     /// Rule 9.2: execution ordering deterministic.
     #[test]
     fn execution_graph_consistency_verified() {
-        let mut topology = ArchitectureTopology::default();
-        topology.execution_order = vec!["b".into(), "a".into(), "c".into()];
+        let topology = ArchitectureTopology {
+            execution_order: vec!["b".into(), "a".into(), "c".into()],
+            ..ArchitectureTopology::default()
+        };
         let graph = generate_execution_graph(&topology);
         assert_eq!(graph, vec!["a", "b", "c"]);
     }
@@ -167,24 +170,24 @@ mod tests {
     /// Rule 2: repair recovers topology continuity.
     #[test]
     fn topology_repair_restores_stability() {
-        let snapshot = BranchSnapshot::new(
-            BranchId("root".into()),
-            None,
-            "tx-root".into(),
-            "target".into(),
-            RuntimeShellState::PreviewReady,
-            crate::core::Diff {
+        let snapshot = BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId("root".into()),
+            parent_branch: None,
+            tx_id: "tx-root".into(),
+            target: "target".into(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: crate::core::Diff {
                 file: "t".into(),
                 changes: vec![],
             },
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            0,
-            0,
-        );
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: 0,
+            created_at: 0,
+        });
         let mut runtime = BranchRuntime::new(snapshot);
         let topology = ArchitectureTopology::default();
 

@@ -135,6 +135,7 @@ pub fn distributed_repair(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::runtime::branch::BranchSnapshotInput;
     use crate::runtime::branch::{
         BranchId, BranchRuntime, BranchSnapshot, ContradictionSet, ConvergenceScore,
         RuntimeEffectSet, WorldStateSnapshot,
@@ -166,24 +167,24 @@ mod tests {
     /// Rule 10.3: shared world state synchronized.
     #[test]
     fn shared_world_state_synchronized() {
-        let mut snapshot = BranchSnapshot::new(
-            BranchId("root".into()),
-            None,
-            "tx-root".into(),
-            "target".into(),
-            RuntimeShellState::PreviewReady,
-            crate::core::Diff {
+        let mut snapshot = BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId("root".into()),
+            parent_branch: None,
+            tx_id: "tx-root".into(),
+            target: "target".into(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: crate::core::Diff {
                 file: "t".into(),
                 changes: vec![],
             },
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            0,
-            0,
-        );
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: 0,
+            created_at: 0,
+        });
         let shared_state = SharedWorldState {
             filesystem_hash: "0".into(), // Matches zero snapshot.
             ..SharedWorldState::default()
@@ -195,24 +196,24 @@ mod tests {
     /// Rule 2: repair recovers synchronization.
     #[test]
     fn distributed_repair_restores_coordination() {
-        let snapshot = BranchSnapshot::new(
-            BranchId("root".into()),
-            None,
-            "tx-root".into(),
-            "target".into(),
-            RuntimeShellState::PreviewReady,
-            crate::core::Diff {
+        let snapshot = BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId("root".into()),
+            parent_branch: None,
+            tx_id: "tx-root".into(),
+            target: "target".into(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: crate::core::Diff {
                 file: "t".into(),
                 changes: vec![],
             },
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            0,
-            0,
-        );
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: 0,
+            created_at: 0,
+        });
         let mut runtime = BranchRuntime::new(snapshot);
         let shared_state = SharedWorldState::default();
 

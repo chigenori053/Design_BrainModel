@@ -496,16 +496,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                 });
                 return Ok(build_report(
                     adapter,
-                    input,
-                    &plan,
-                    attempts,
-                    error_history,
-                    context,
-                    false,
-                    Some(report.error_type),
-                    retry_count,
-                    None,
-                    None,
+                    BuildReportInput {
+                        input,
+                        plan: &plan,
+                        attempts,
+                        error_history,
+                        context,
+                        completed: false,
+                        reason: Some(report.error_type),
+                        retry_count,
+                        git: None,
+                        remote: None,
+                    },
                 ));
             }
 
@@ -523,16 +525,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                 });
                 return Ok(build_report(
                     adapter,
-                    input,
-                    &plan,
-                    attempts,
-                    error_history,
-                    context,
-                    false,
-                    Some(report.error_type),
-                    retry_count,
-                    None,
-                    None,
+                    BuildReportInput {
+                        input,
+                        plan: &plan,
+                        attempts,
+                        error_history,
+                        context,
+                        completed: false,
+                        reason: Some(report.error_type),
+                        retry_count,
+                        git: None,
+                        remote: None,
+                    },
                 ));
             }
 
@@ -547,16 +551,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                 });
                 return Ok(build_report(
                     adapter,
-                    input,
-                    &plan,
-                    attempts,
-                    error_history,
-                    context,
-                    false,
-                    Some(report.error_type),
-                    retry_count,
-                    None,
-                    None,
+                    BuildReportInput {
+                        input,
+                        plan: &plan,
+                        attempts,
+                        error_history,
+                        context,
+                        completed: false,
+                        reason: Some(report.error_type),
+                        retry_count,
+                        git: None,
+                        remote: None,
+                    },
                 ));
             }
 
@@ -571,16 +577,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                 });
                 return Ok(build_report(
                     adapter,
-                    input,
-                    &plan,
-                    attempts,
-                    error_history,
-                    context,
-                    false,
-                    Some(report.error_type),
-                    retry_count,
-                    None,
-                    None,
+                    BuildReportInput {
+                        input,
+                        plan: &plan,
+                        attempts,
+                        error_history,
+                        context,
+                        completed: false,
+                        reason: Some(report.error_type),
+                        retry_count,
+                        git: None,
+                        remote: None,
+                    },
                 ));
             }
 
@@ -597,16 +605,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                 });
                 return Ok(build_report(
                     adapter,
-                    input,
-                    &plan,
-                    attempts,
-                    error_history,
-                    context,
-                    false,
-                    Some(report.error_type),
-                    retry_count,
-                    None,
-                    None,
+                    BuildReportInput {
+                        input,
+                        plan: &plan,
+                        attempts,
+                        error_history,
+                        context,
+                        completed: false,
+                        reason: Some(report.error_type),
+                        retry_count,
+                        git: None,
+                        remote: None,
+                    },
                 ));
             };
 
@@ -635,16 +645,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
                     });
                     return Ok(build_report(
                         adapter,
-                        input,
-                        &plan,
-                        attempts,
-                        error_history,
-                        context,
-                        false,
-                        Some(report.error_type),
-                        retry_count,
-                        None,
-                        None,
+                        BuildReportInput {
+                            input,
+                            plan: &plan,
+                            attempts,
+                            error_history,
+                            context,
+                            completed: false,
+                            reason: Some(report.error_type),
+                            retry_count,
+                            git: None,
+                            remote: None,
+                        },
                     ));
                 }
             }
@@ -668,16 +680,18 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
             )?;
             return Ok(build_report(
                 adapter,
-                input,
-                &plan,
-                attempts,
-                error_history,
-                context,
-                true,
-                None,
-                retry_count,
-                git,
-                remote,
+                BuildReportInput {
+                    input,
+                    plan: &plan,
+                    attempts,
+                    error_history,
+                    context,
+                    completed: true,
+                    reason: None,
+                    retry_count,
+                    git,
+                    remote,
+                },
             ));
         }
     }
@@ -688,23 +702,24 @@ fn execute_with_adapter_and_confirmation<A: ExecuteAdapter, C: ConfirmationHandl
         .or_else(|| Some("Unknown".to_string()));
     Ok(build_report(
         adapter,
-        input,
-        &plan,
-        attempts,
-        error_history,
-        context,
-        false,
-        reason,
-        retry_count,
-        None,
-        None,
+        BuildReportInput {
+            input,
+            plan: &plan,
+            attempts,
+            error_history,
+            context,
+            completed: false,
+            reason,
+            retry_count,
+            git: None,
+            remote: None,
+        },
     ))
 }
 
-fn build_report<A: ExecuteAdapter>(
-    adapter: &A,
-    input: &str,
-    plan: &TaskPlan,
+struct BuildReportInput<'a> {
+    input: &'a str,
+    plan: &'a TaskPlan,
     attempts: Vec<ExecuteAttempt>,
     error_history: Vec<String>,
     context: ContextState,
@@ -713,7 +728,24 @@ fn build_report<A: ExecuteAdapter>(
     retry_count: usize,
     git: Option<GitIntegrationReport>,
     remote: Option<RemoteIntegrationReport>,
+}
+
+fn build_report<A: ExecuteAdapter>(
+    adapter: &A,
+    report: BuildReportInput<'_>,
 ) -> AutonomousExecuteReport {
+    let BuildReportInput {
+        input,
+        plan,
+        attempts,
+        error_history,
+        context,
+        completed,
+        reason,
+        retry_count,
+        git,
+        remote,
+    } = report;
     let metrics = ExecutionMetrics::from_run(
         &attempts,
         retry_count,
@@ -965,7 +997,7 @@ mod tests {
         ExecReport {
             root: ".".to_string(),
             project_type,
-            action: if args.iter().any(|arg| *arg == "test") {
+            action: if args.contains(&"test") {
                 ExecAction::Test
             } else {
                 ExecAction::Build

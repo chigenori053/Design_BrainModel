@@ -191,6 +191,12 @@ impl ConvergenceTrajectory {
     }
 }
 
+impl Default for ConvergenceTrajectory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// Set of conflicts detected in a branch.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ContradictionSet {
@@ -239,22 +245,40 @@ pub struct BranchSnapshot {
     pub created_at: u64,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct BranchSnapshotInput {
+    pub branch_id: BranchId,
+    pub parent_branch: Option<BranchId>,
+    pub tx_id: String,
+    pub target: String,
+    pub runtime_state: RuntimeShellState,
+    pub projection: Diff,
+    pub score: ConvergenceScore,
+    pub contradictions: ContradictionSet,
+    pub world_state: WorldStateSnapshot,
+    pub runtime_effects: RuntimeEffectSet,
+    pub topology: ArchitectureTopology,
+    pub depth: usize,
+    pub created_at: u64,
+}
+
 impl BranchSnapshot {
-    pub fn new(
-        branch_id: BranchId,
-        parent_branch: Option<BranchId>,
-        tx_id: String,
-        target: String,
-        runtime_state: RuntimeShellState,
-        projection: Diff,
-        score: ConvergenceScore,
-        contradictions: ContradictionSet,
-        world_state: WorldStateSnapshot,
-        runtime_effects: RuntimeEffectSet,
-        topology: ArchitectureTopology,
-        depth: usize,
-        created_at: u64,
-    ) -> Self {
+    pub fn new(input: BranchSnapshotInput) -> Self {
+        let BranchSnapshotInput {
+            branch_id,
+            parent_branch,
+            tx_id,
+            target,
+            runtime_state,
+            projection,
+            score,
+            contradictions,
+            world_state,
+            runtime_effects,
+            topology,
+            depth,
+            created_at,
+        } = input;
         Self {
             branch_id,
             parent_branch,
@@ -510,21 +534,21 @@ mod tests {
     }
 
     fn make_snapshot(id: &str, parent: Option<&str>, target: &str) -> BranchSnapshot {
-        BranchSnapshot::new(
-            BranchId(id.to_string()),
-            parent.map(|p| BranchId(p.to_string())),
-            format!("tx-{id}"),
-            target.to_string(),
-            RuntimeShellState::PreviewReady,
-            make_diff(target),
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            parent.map(|_| 1).unwrap_or(0),
-            0,
-        )
+        BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId(id.to_string()),
+            parent_branch: parent.map(|p| BranchId(p.to_string())),
+            tx_id: format!("tx-{id}"),
+            target: target.to_string(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: make_diff(target),
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: parent.map(|_| 1).unwrap_or(0),
+            created_at: 0,
+        })
     }
 
     fn make_runtime(committed_id: &str, target: &str) -> BranchRuntime {

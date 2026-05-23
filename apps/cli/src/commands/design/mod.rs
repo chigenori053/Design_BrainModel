@@ -40,7 +40,7 @@ fn structure_handler(
     args: &[String],
     session: &mut AgentSession,
 ) -> Result<CommandResult, CommandError> {
-    match args.get(0).map(|s| s.as_str()) {
+    match args.first().map(|s| s.as_str()) {
         Some("view") => structure_view(args, session),
         _ => Err(CommandError::ExecutionError(
             "unknown structure subcommand".to_string(),

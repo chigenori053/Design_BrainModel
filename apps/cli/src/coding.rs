@@ -584,8 +584,10 @@ enum LineDiffOp {
 }
 
 #[cfg(test)]
-static BEFORE_REAL_APPLY_HOOK: std::sync::OnceLock<std::sync::Mutex<Option<fn(&Path)>>> =
-    std::sync::OnceLock::new();
+type BeforeRealApplyHook = std::sync::OnceLock<std::sync::Mutex<Option<fn(&Path)>>>;
+
+#[cfg(test)]
+static BEFORE_REAL_APPLY_HOOK: BeforeRealApplyHook = std::sync::OnceLock::new();
 
 #[cfg(test)]
 static COMMIT_CONFIRMATION_RESPONSE: std::sync::OnceLock<std::sync::Mutex<Option<bool>>> =
@@ -9067,7 +9069,7 @@ mod tests {
                 to: "world".to_string(),
             },
         };
-        persist_refactor_candidates(root, &[candidate.clone()]).expect("persist");
+        persist_refactor_candidates(root, std::slice::from_ref(&candidate)).expect("persist");
         assert!(candidate_snapshot_path(root, &candidate.candidate_id).exists());
         candidate
     }

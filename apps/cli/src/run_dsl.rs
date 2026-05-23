@@ -290,28 +290,28 @@ fn run_agent_loop(
     }
 
     for (attempt, raw) in responses.iter().enumerate() {
-        if attempt > 0 {
-            if let Some(validation_error) = validation_error.as_deref() {
-                logger
-                    .append(&RunLogEntry::RetryReason {
-                        run_id: event.run_id.clone(),
-                        step_id: event.step_id.clone(),
-                        request_id: event.request_id,
-                        attempt: attempt as u8,
-                        reason: validation_error.to_string(),
-                    })
-                    .map_err(|err| err.to_string())?;
-                logger
-                    .append(&RunLogEntry::FixAttempt {
-                        run_id: event.run_id.clone(),
-                        step_id: event.step_id.clone(),
-                        request_id: event.request_id,
-                        attempt: attempt as u8,
-                        validation_error: validation_error.to_string(),
-                        strategy: fix_strategy(validation_error).to_string(),
-                    })
-                    .map_err(|err| err.to_string())?;
-            }
+        if attempt > 0
+            && let Some(validation_error) = validation_error.as_deref()
+        {
+            logger
+                .append(&RunLogEntry::RetryReason {
+                    run_id: event.run_id.clone(),
+                    step_id: event.step_id.clone(),
+                    request_id: event.request_id,
+                    attempt: attempt as u8,
+                    reason: validation_error.to_string(),
+                })
+                .map_err(|err| err.to_string())?;
+            logger
+                .append(&RunLogEntry::FixAttempt {
+                    run_id: event.run_id.clone(),
+                    step_id: event.step_id.clone(),
+                    request_id: event.request_id,
+                    attempt: attempt as u8,
+                    validation_error: validation_error.to_string(),
+                    strategy: fix_strategy(validation_error).to_string(),
+                })
+                .map_err(|err| err.to_string())?;
         }
         logger
             .append(&RunLogEntry::AgentPrompt {

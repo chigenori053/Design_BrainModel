@@ -994,7 +994,7 @@ mod tests {
         mgr.build_project(&root).unwrap();
         mgr.mark_dirty(&util);
 
-        assert!(MAX_PROPAGATION_DEPTH <= 2);
+        const { assert!(MAX_PROPAGATION_DEPTH <= 2) };
         assert!(mgr.is_drifted(&util));
         assert!(mgr.is_drifted(&mid));
         assert!(mgr.is_drifted(&top));
@@ -1019,7 +1019,7 @@ mod tests {
         mgr.mark_dirty(&util);
         mgr.reload_recursive(&util).unwrap();
 
-        assert!(MAX_PROPAGATION_NODES >= 100);
+        const { assert!(MAX_PROPAGATION_NODES >= 100) };
         assert!(mgr.is_synced(&util));
         assert!(mgr.is_synced(&mid));
         assert!(mgr.is_synced(&top));

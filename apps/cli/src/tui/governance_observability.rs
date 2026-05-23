@@ -168,6 +168,12 @@ impl GovernanceObservabilitySystem {
     }
 }
 
+impl Default for GovernanceObservabilitySystem {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

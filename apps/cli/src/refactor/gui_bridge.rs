@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use crate::service::{AnalysisReport, analyze_path};
 
 use super::{
-    RefactorActionKind, RefactorCandidate, RefactorPlan, RefactorTarget, StructureEdge,
-    candidate_from_module, create_refactor_plan, persist_refactor_candidates,
+    CandidateFromModuleInput, RefactorActionKind, RefactorCandidate, RefactorPlan, RefactorTarget,
+    StructureEdge, candidate_from_module, create_refactor_plan, persist_refactor_candidates,
     planner::default_target,
 };
 
@@ -71,30 +71,35 @@ pub fn build_refactor_candidates(
         candidates.push(candidate_from_module(
             analysis,
             &edge.from,
-            RefactorActionKind::ExtractInterface,
-            format!("Extract interface {} -> {}", edge.from, edge.to),
-            "Break direct dependency and route through an interface boundary".to_string(),
-            RefactorTarget::ExtractInterface {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::ExtractInterface,
+                title: format!("Extract interface {} -> {}", edge.from, edge.to),
+                rationale: "Break direct dependency and route through an interface boundary"
+                    .to_string(),
+                target: RefactorTarget::ExtractInterface {
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                },
+                target_nodes: vec![edge.from.clone(), edge.to.clone()],
+                target_edges: vec![edge.clone()],
+                confidence_milli: 910,
             },
-            vec![edge.from.clone(), edge.to.clone()],
-            vec![edge.clone()],
-            910,
         ));
         candidates.push(candidate_from_module(
             analysis,
             &edge.from,
-            RefactorActionKind::RemoveDependency,
-            format!("Remove dependency {} -> {}", edge.from, edge.to),
-            "Reduce coupling on the selected dependency path".to_string(),
-            RefactorTarget::RemoveDependency {
-                from: edge.from.clone(),
-                to: edge.to.clone(),
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::RemoveDependency,
+                title: format!("Remove dependency {} -> {}", edge.from, edge.to),
+                rationale: "Reduce coupling on the selected dependency path".to_string(),
+                target: RefactorTarget::RemoveDependency {
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                },
+                target_nodes: vec![edge.from.clone(), edge.to.clone()],
+                target_edges: vec![edge.clone()],
+                confidence_milli: 760,
             },
-            vec![edge.from.clone(), edge.to.clone()],
-            vec![edge.clone()],
-            760,
         ));
     }
 
@@ -102,35 +107,42 @@ pub fn build_refactor_candidates(
         candidates.push(candidate_from_module(
             analysis,
             primary,
-            RefactorActionKind::SplitModule,
-            format!("Split module {primary}"),
-            "Partition a dense cluster into smaller responsibilities".to_string(),
-            RefactorTarget::ModuleSplit(primary.clone()),
-            vec![primary.clone()],
-            Vec::new(),
-            820,
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::SplitModule,
+                title: format!("Split module {primary}"),
+                rationale: "Partition a dense cluster into smaller responsibilities".to_string(),
+                target: RefactorTarget::ModuleSplit(primary.clone()),
+                target_nodes: vec![primary.clone()],
+                target_edges: Vec::new(),
+                confidence_milli: 820,
+            },
         ));
         candidates.push(candidate_from_module(
             analysis,
             primary,
-            RefactorActionKind::RenameBoundary,
-            format!("Rename boundary {primary}"),
-            "Clarify the edge-facing role of the selected module".to_string(),
-            RefactorTarget::RenameBoundary(primary.clone()),
-            vec![primary.clone()],
-            Vec::new(),
-            700,
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::RenameBoundary,
+                title: format!("Rename boundary {primary}"),
+                rationale: "Clarify the edge-facing role of the selected module".to_string(),
+                target: RefactorTarget::RenameBoundary(primary.clone()),
+                target_nodes: vec![primary.clone()],
+                target_edges: Vec::new(),
+                confidence_milli: 700,
+            },
         ));
         candidates.push(candidate_from_module(
             analysis,
             primary,
-            RefactorActionKind::IntroduceService,
-            format!("Introduce service for {primary}"),
-            "Move orchestration into a service node without mutating the core node".to_string(),
-            RefactorTarget::IntroduceService(primary.clone()),
-            vec![primary.clone()],
-            Vec::new(),
-            730,
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::IntroduceService,
+                title: format!("Introduce service for {primary}"),
+                rationale: "Move orchestration into a service node without mutating the core node"
+                    .to_string(),
+                target: RefactorTarget::IntroduceService(primary.clone()),
+                target_nodes: vec![primary.clone()],
+                target_edges: Vec::new(),
+                confidence_milli: 730,
+            },
         ));
     }
 
@@ -138,13 +150,15 @@ pub fn build_refactor_candidates(
         candidates.push(candidate_from_module(
             analysis,
             &selected_nodes[0],
-            RefactorActionKind::MergeModule,
-            format!("Merge {}", selected_nodes.join(" + ")),
-            "Collapse tightly coupled nodes into a single boundary".to_string(),
-            RefactorTarget::MergeModule(selected_nodes.clone()),
-            selected_nodes.clone(),
-            Vec::new(),
-            660,
+            CandidateFromModuleInput {
+                kind: RefactorActionKind::MergeModule,
+                title: format!("Merge {}", selected_nodes.join(" + ")),
+                rationale: "Collapse tightly coupled nodes into a single boundary".to_string(),
+                target: RefactorTarget::MergeModule(selected_nodes.clone()),
+                target_nodes: selected_nodes.clone(),
+                target_edges: Vec::new(),
+                confidence_milli: 660,
+            },
         ));
     }
 
@@ -215,13 +229,15 @@ fn default_candidate(analysis: &AnalysisReport) -> RefactorCandidate {
     candidate_from_module(
         analysis,
         &primary,
-        RefactorActionKind::ExtractInterface,
-        "Default cycle remediation".to_string(),
-        "Fallback to the highest-priority architecture remediation".to_string(),
-        target,
-        Vec::new(),
-        Vec::new(),
-        640,
+        CandidateFromModuleInput {
+            kind: RefactorActionKind::ExtractInterface,
+            title: "Default cycle remediation".to_string(),
+            rationale: "Fallback to the highest-priority architecture remediation".to_string(),
+            target,
+            target_nodes: Vec::new(),
+            target_edges: Vec::new(),
+            confidence_milli: 640,
+        },
     )
 }
 
@@ -265,7 +281,7 @@ mod tests {
         root
     }
 
-    fn sample_analysis(root: &PathBuf) -> AnalysisReport {
+    fn sample_analysis(root: &std::path::Path) -> AnalysisReport {
         AnalysisReport {
             root: root.display().to_string(),
             total_files: 2,

@@ -834,7 +834,7 @@ fn plan_for_determinism_input(input: &str) -> Result<ExecutionPlan, String> {
 
 fn parse_file_route_target(input: &str) -> Result<&str, String> {
     if let Some(rest) = input.strip_prefix("@file") {
-        let target = rest.trim_start().split_whitespace().next().unwrap_or("");
+        let target = rest.split_whitespace().next().unwrap_or("");
         if target.is_empty() {
             return Err("error: @file requires a path".to_string());
         }

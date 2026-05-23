@@ -574,10 +574,10 @@ fn has_goal_contradiction(goals: &[GoalState]) -> bool {
     let mut seen = BTreeMap::<String, GoalStatus>::new();
     for goal in goals {
         let normalized = goal.semantic_goal.trim().to_ascii_lowercase();
-        if let Some(previous_status) = seen.insert(normalized, goal.status) {
-            if previous_status != goal.status {
-                return true;
-            }
+        if let Some(previous_status) = seen.insert(normalized, goal.status)
+            && previous_status != goal.status
+        {
+            return true;
         }
     }
     false

@@ -576,13 +576,13 @@ impl ControlExecutor for StdioControlExecutor {
                 Err(err) => return Err(err),
             };
             validate_response_identity(&event, &resp)?;
-            if let Some(logger) = &self.logger {
-                if let Ok(resp_json) = serde_json::to_value(&resp) {
-                    let _ = logger.append(&RunLogEntry::Response {
-                        response: resp_json,
-                        timestamp: timestamp_now(),
-                    });
-                }
+            if let Some(logger) = &self.logger
+                && let Ok(resp_json) = serde_json::to_value(&resp)
+            {
+                let _ = logger.append(&RunLogEntry::Response {
+                    response: resp_json,
+                    timestamp: timestamp_now(),
+                });
             }
             validate_and_resolve(&event, resp)?
         };
@@ -921,7 +921,7 @@ mod tests {
     use tempfile::tempdir;
 
     fn req(n: u128) -> RequestId {
-        RequestId::from_u128(0x018f_6a2d_1b2c_7abc_8def_000000000000 + n)
+        RequestId::from_u128(0x018f_6a2d_1b2c_7abc_8def_0000_0000_0000 + n)
     }
 
     fn decision_event() -> ControlEvent {

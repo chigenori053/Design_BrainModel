@@ -38,7 +38,7 @@ impl RequestIdRegistry {
         self.seen.insert(request_id)
     }
 
-    pub fn next(&mut self) -> RequestId {
+    pub fn next_request_id(&mut self) -> RequestId {
         loop {
             let request_id = new_request_id();
             if self.reserve(request_id) {
@@ -340,7 +340,7 @@ impl ControlOutcome {
 
     pub fn source(&self) -> DecisionSource {
         match self {
-            Self::Decision { source, .. } | Self::Input { source, .. } => source.clone(),
+            Self::Decision { source, .. } | Self::Input { source, .. } => *source,
         }
     }
 
@@ -563,7 +563,7 @@ mod tests {
         let id = request_id();
         assert!(registry.reserve(id));
         assert!(!registry.reserve(id));
-        assert_eq!(registry.next().get_version_num(), 7);
+        assert_eq!(registry.next_request_id().get_version_num(), 7);
     }
 
     #[test]

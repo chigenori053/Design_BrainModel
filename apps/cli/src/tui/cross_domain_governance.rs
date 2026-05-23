@@ -103,20 +103,15 @@ impl CrossDomainGovernanceSystem {
 
         // Cross-Domain Escalation
         let mut escalated = false;
-        if has_deployment && has_credential {
+        if (has_deployment && has_credential)
+            || (has_self_mod && has_remote)
+            || (has_runtime_mut && has_deployment)
+        {
             highest_risk = UnifiedRiskLevel::Critical;
             escalated = true;
-        } else if has_self_mod && has_remote {
-            highest_risk = UnifiedRiskLevel::Critical;
+        } else if has_git && has_remote && highest_risk < UnifiedRiskLevel::High {
+            highest_risk = UnifiedRiskLevel::High;
             escalated = true;
-        } else if has_runtime_mut && has_deployment {
-            highest_risk = UnifiedRiskLevel::Critical;
-            escalated = true;
-        } else if has_git && has_remote {
-            if highest_risk < UnifiedRiskLevel::High {
-                highest_risk = UnifiedRiskLevel::High;
-                escalated = true;
-            }
         }
 
         // 8. Cross-Domain Arbitration logic

@@ -180,7 +180,6 @@ fn render_diff_preview(frame: &mut Frame, immutable: &ImmutableFrame) {
             .lines
             .iter()
             .cloned()
-            .into_iter()
             .map(Line::from)
             .collect::<Vec<_>>(),
     );

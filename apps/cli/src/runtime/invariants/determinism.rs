@@ -6,17 +6,11 @@ use crate::tui::rendering::{ProjectionSnapshot, projection_semantic_hash};
 pub struct DeterminismInvariantSuite;
 
 impl DeterminismInvariantSuite {
-    pub fn assert_runtime_determinism() {
-        assert!(true);
-    }
+    pub fn assert_runtime_determinism() {}
 
-    pub fn assert_projection_determinism() {
-        assert!(true);
-    }
+    pub fn assert_projection_determinism() {}
 
-    pub fn assert_branch_determinism() {
-        assert!(true);
-    }
+    pub fn assert_branch_determinism() {}
 
     pub fn assert_same_projection_hash(snapshot: &ProjectionSnapshot) {
         assert_eq!(
