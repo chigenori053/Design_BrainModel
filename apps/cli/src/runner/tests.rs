@@ -4,7 +4,7 @@ use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use super::process::{build_result, execute_process, sample_memory_usage_kb};
+use super::process::{ExecutionResultInput, build_result, execute_process, sample_memory_usage_kb};
 use super::*;
 
 // ── stability telemetry helpers ──────────────────────────────────────────────
@@ -318,17 +318,20 @@ fn sandbox_reuse_and_incremental_are_detected() {
 #[test]
 fn truncate_output_caps_large_streams() {
     let large = vec![b'a'; 1_000_000 + 128];
-    let result = build_result(
-        std::process::ExitStatus::from_raw(0),
-        false,
-        1,
-        large,
-        Vec::new(),
-        MemoryUsage::Unknown,
-        baseline_cpu_release(),
-        OutputMode::Streaming,
-        SandboxMode::FullCopy,
-    );
+    let result = build_result(ExecutionResultInput {
+        status: Some(std::process::ExitStatus::from_raw(0)),
+        timeout_triggered: false,
+        kill_sent: false,
+        process_group_kill_sent: false,
+        cleanup_error: None,
+        duration_ms: 1,
+        stdout_bytes: large,
+        stderr_bytes: Vec::new(),
+        memory_usage_kb: MemoryUsage::Unknown,
+        cpu_release: baseline_cpu_release(),
+        output_mode: OutputMode::Streaming,
+        sandbox_mode: SandboxMode::FullCopy,
+    });
     assert_eq!(result.stdout.len(), 1_000_000);
 }
 
@@ -377,17 +380,20 @@ fn streaming_reader_preserves_output_order() {
 #[test]
 fn streaming_and_truncate_report_consistent_meta() {
     let bytes = vec![b'x'; 1_000_000 + 1];
-    let result = build_result(
-        std::process::ExitStatus::from_raw(0),
-        false,
-        1,
-        bytes,
-        Vec::new(),
-        MemoryUsage::Unknown,
-        baseline_cpu_release(),
-        OutputMode::Streaming,
-        SandboxMode::FullCopy,
-    );
+    let result = build_result(ExecutionResultInput {
+        status: Some(std::process::ExitStatus::from_raw(0)),
+        timeout_triggered: false,
+        kill_sent: false,
+        process_group_kill_sent: false,
+        cleanup_error: None,
+        duration_ms: 1,
+        stdout_bytes: bytes,
+        stderr_bytes: Vec::new(),
+        memory_usage_kb: MemoryUsage::Unknown,
+        cpu_release: baseline_cpu_release(),
+        output_mode: OutputMode::Streaming,
+        sandbox_mode: SandboxMode::FullCopy,
+    });
     assert!(result.output_meta.streamed);
     assert!(result.output_meta.truncated);
     assert_eq!(result.output_meta.original_size, 1_000_001);
@@ -622,14 +628,14 @@ fn child_process_not_orphaned_after_normal_completion() {
 
     assert_eq!(result.status, "success");
 
-    if let Ok(content) = fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            std::thread::sleep(std::time::Duration::from_millis(80));
-            assert!(
-                !pid_alive(pid),
-                "Child process {pid} is still alive after runner returned"
-            );
-        }
+    if let Ok(content) = fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(80));
+        assert!(
+            !pid_alive(pid),
+            "Child process {pid} is still alive after runner returned"
+        );
     }
 }
 
@@ -660,11 +666,11 @@ fn timed_out_process_is_fully_reaped() {
 
     assert_eq!(result.status, "timeout");
 
-    if let Ok(content) = fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            std::thread::sleep(std::time::Duration::from_millis(150));
-            assert!(!pid_alive(pid), "Timed-out process {pid} was not reaped");
-        }
+    if let Ok(content) = fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(150));
+        assert!(!pid_alive(pid), "Timed-out process {pid} was not reaped");
     }
 }
 
@@ -1265,14 +1271,14 @@ fn direct_child_fully_reaped_after_normal_exit() {
     .expect("execute");
 
     assert_eq!(result.status, "success");
-    if let Ok(content) = fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            std::thread::sleep(std::time::Duration::from_millis(60));
-            assert!(
-                !pid_alive(pid),
-                "Direct child {pid} still alive after runner returned"
-            );
-        }
+    if let Ok(content) = fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(60));
+        assert!(
+            !pid_alive(pid),
+            "Direct child {pid} still alive after runner returned"
+        );
     }
 }
 
@@ -1303,17 +1309,17 @@ fn killed_child_is_not_a_zombie() {
 
     assert_eq!(result.status, "timeout");
 
-    if let Ok(content) = fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            if let Some(stat) = process_stat(pid) {
-                assert!(
-                    !stat.contains('Z'),
-                    "Process {pid} is a zombie (stat={stat})"
-                );
-            }
-            assert!(!pid_alive(pid), "Killed child {pid} still alive after reap");
+    if let Ok(content) = fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        if let Some(stat) = process_stat(pid) {
+            assert!(
+                !stat.contains('Z'),
+                "Process {pid} is a zombie (stat={stat})"
+            );
         }
+        assert!(!pid_alive(pid), "Killed child {pid} still alive after reap");
     }
 }
 
@@ -1584,15 +1590,15 @@ fn child_pgid_is_observable_during_execution() {
     );
 
     // Even after exit the PID was written; confirm it was a real PID with a PGID.
-    if let Ok(content) = fs::read_to_string(&pid_file) {
-        if let Ok(pid) = content.trim().parse::<u32>() {
-            // The process is gone, but during its lifetime it had a valid PGID.
-            // We verify indirectly: the PID itself must have been > 0.
-            assert!(pid > 0, "child PID {pid} is not positive");
-            // If still alive (timing), PGID must be non-zero.
-            if let Some(pgid) = pgid_of(pid) {
-                assert!(pgid > 0, "child PGID must be positive, got {pgid}");
-            }
+    if let Ok(content) = fs::read_to_string(&pid_file)
+        && let Ok(pid) = content.trim().parse::<u32>()
+    {
+        // The process is gone, but during its lifetime it had a valid PGID.
+        // We verify indirectly: the PID itself must have been > 0.
+        assert!(pid > 0, "child PID {pid} is not positive");
+        // If still alive (timing), PGID must be non-zero.
+        if let Some(pgid) = pgid_of(pid) {
+            assert!(pgid > 0, "child PGID must be positive, got {pgid}");
         }
     }
 }
@@ -1819,13 +1825,13 @@ fn grandchild_does_not_survive_parent_timeout() {
     // Allow the kill signal to propagate to all members of the process group.
     std::thread::sleep(std::time::Duration::from_millis(400));
 
-    if let Ok(content) = fs::read_to_string(&gc_pid_file) {
-        if let Ok(gc_pid) = content.trim().parse::<u32>() {
-            assert!(
-                !pid_alive(gc_pid),
-                "Grandchild {gc_pid} survived parent timeout — process group kill not effective"
-            );
-        }
+    if let Ok(content) = fs::read_to_string(&gc_pid_file)
+        && let Ok(gc_pid) = content.trim().parse::<u32>()
+    {
+        assert!(
+            !pid_alive(gc_pid),
+            "Grandchild {gc_pid} survived parent timeout — process group kill not effective"
+        );
     }
 }
 
@@ -1913,23 +1919,21 @@ fn child_runs_in_isolated_process_group() {
     if let (Ok(pid_str), Ok(pgid_str)) = (
         fs::read_to_string(&pid_file),
         fs::read_to_string(&pgid_file),
+    ) && let (Ok(child_pid), Ok(child_pgid)) = (
+        pid_str.trim().parse::<u32>(),
+        pgid_str.trim().parse::<u32>(),
     ) {
-        if let (Ok(child_pid), Ok(child_pgid)) = (
-            pid_str.trim().parse::<u32>(),
-            pgid_str.trim().parse::<u32>(),
-        ) {
-            // With process_group(0), child's PGID must equal its own PID.
-            assert_eq!(
-                child_pgid, child_pid,
-                "Child PGID ({child_pgid}) should equal child PID ({child_pid}) when process_group(0) is used"
+        // With process_group(0), child's PGID must equal its own PID.
+        assert_eq!(
+            child_pgid, child_pid,
+            "Child PGID ({child_pgid}) should equal child PID ({child_pid}) when process_group(0) is used"
+        );
+        // Child must NOT share the runner's PGID.
+        if let Some(runner_pg) = runner_pgid {
+            assert_ne!(
+                child_pgid, runner_pg,
+                "Child is in the same PGID as the test runner — process isolation not working"
             );
-            // Child must NOT share the runner's PGID.
-            if let Some(runner_pg) = runner_pgid {
-                assert_ne!(
-                    child_pgid, runner_pg,
-                    "Child is in the same PGID as the test runner — process isolation not working"
-                );
-            }
         }
     }
 }
@@ -1961,7 +1965,7 @@ fn multiple_parallel_runner_instances_do_not_interfere() {
                     &base_policy(&d),
                     SandboxMode::FullCopy,
                 )
-                .expect(&format!("parallel instance {i}"));
+                .unwrap_or_else(|_| panic!("parallel instance {i}"));
                 r.lock().unwrap().push(result.stdout);
             })
         })
@@ -2032,7 +2036,7 @@ fn sigkill_followed_by_healthy_telemetry() {
             &base_policy(&dir),
             SandboxMode::FullCopy,
         )
-        .expect(&format!("healthy exec {i}"));
+        .unwrap_or_else(|_| panic!("healthy exec {i}"));
         assert_eq!(r.status, "success");
     }
 
@@ -2309,7 +2313,7 @@ fn terminal_safety_final_gate() {
             &base_policy(&dir),
             SandboxMode::FullCopy,
         )
-        .expect(&format!("gate iteration {i}"));
+        .unwrap_or_else(|_| panic!("gate iteration {i}"));
         assert_eq!(r.status, "success", "Gate iteration {i} failed");
         assert!(
             r.stdout.contains(&format!("gate-{i}")),
@@ -2341,13 +2345,13 @@ fn terminal_safety_final_gate() {
     assert_eq!(timed.status, "timeout");
 
     std::thread::sleep(std::time::Duration::from_millis(300));
-    if let Ok(gc_pid_str) = fs::read_to_string(&pid_file) {
-        if let Ok(gc_pid) = gc_pid_str.trim().parse::<u32>() {
-            assert!(
-                !pid_alive(gc_pid),
-                "Gate: grandchild {gc_pid} survived group kill"
-            );
-        }
+    if let Ok(gc_pid_str) = fs::read_to_string(&pid_file)
+        && let Ok(gc_pid) = gc_pid_str.trim().parse::<u32>()
+    {
+        assert!(
+            !pid_alive(gc_pid),
+            "Gate: grandchild {gc_pid} survived group kill"
+        );
     }
 
     // ── 5. Terminal & Resource Safety — final check ─────────────────────────
@@ -2361,4 +2365,98 @@ fn terminal_safety_final_gate() {
         fds_after <= fds_before + 20,
         "Gate: FD leak: before={fds_before} after={fds_after}"
     );
+}
+
+// ── 新規追加テスト ──
+
+#[test]
+fn timeout_classification_survives_sigkill_wait_status() {
+    let dir = temp_dir("timeout_survives_sigkill");
+    let result = execute_process(
+        &base_config(
+            "/bin/sh",
+            vec!["-c".to_string(), "sleep 10".to_string()],
+            &dir,
+        ),
+        &TimeoutConfig {
+            timeout_ms: 200,
+            kill_signal: "kill".to_string(),
+        },
+        &base_policy(&dir),
+        SandboxMode::FullCopy,
+    )
+    .expect("execute");
+
+    assert_eq!(result.status, "timeout");
+    assert!(result.timeout_triggered);
+    assert!(result.kill_sent);
+    assert!(result.process_group_kill_sent);
+}
+
+#[test]
+fn timeout_priority_over_nonzero_exit_after_kill() {
+    let dir = temp_dir("timeout_priority_nonzero");
+    let result = execute_process(
+        &base_config(
+            "/bin/sh",
+            vec!["-c".to_string(), "trap 'exit 5' TERM; sleep 10".to_string()],
+            &dir,
+        ),
+        &TimeoutConfig {
+            timeout_ms: 200,
+            kill_signal: "kill".to_string(),
+        },
+        &base_policy(&dir),
+        SandboxMode::FullCopy,
+    )
+    .expect("execute");
+
+    assert_eq!(result.status, "timeout");
+    assert!(result.timeout_triggered);
+    assert_eq!(result.exit_code, -1);
+}
+
+#[test]
+fn process_group_cleanup_error_does_not_override_timeout() {
+    let dir = temp_dir("pg_cleanup_error_timeout");
+    let result = execute_process(
+        &base_config(
+            "/bin/sh",
+            vec!["-c".to_string(), "sleep 5".to_string()],
+            &dir,
+        ),
+        &TimeoutConfig {
+            timeout_ms: 200,
+            kill_signal: "kill".to_string(),
+        },
+        &base_policy(&dir),
+        SandboxMode::FullCopy,
+    )
+    .expect("execute");
+
+    assert_eq!(result.status, "timeout");
+    assert!(result.timeout_triggered);
+}
+
+#[test]
+fn non_timeout_nonzero_exit_remains_failure() {
+    let dir = temp_dir("non_timeout_nonzero_failure");
+    let result = execute_process(
+        &base_config(
+            "/bin/sh",
+            vec!["-c".to_string(), "exit 3".to_string()],
+            &dir,
+        ),
+        &TimeoutConfig {
+            timeout_ms: 5000,
+            kill_signal: "kill".to_string(),
+        },
+        &base_policy(&dir),
+        SandboxMode::FullCopy,
+    )
+    .expect("execute");
+
+    assert_eq!(result.status, "failure");
+    assert!(!result.timeout_triggered);
+    assert_eq!(result.exit_code, 3);
 }

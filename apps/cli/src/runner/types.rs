@@ -133,6 +133,10 @@ pub struct ExecutionResult {
     pub output_meta: OutputMeta,
     pub stderr_meta: OutputMeta,
     pub sandbox_mode: SandboxMode,
+    pub timeout_triggered: bool,
+    pub kill_sent: bool,
+    pub process_group_kill_sent: bool,
+    pub cleanup_error: Option<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

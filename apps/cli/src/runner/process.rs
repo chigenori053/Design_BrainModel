@@ -61,28 +61,70 @@ pub(crate) fn execute_process(
 
     let mut peak_memory_kb = sample_memory_usage_kb(pid);
     let timeout_duration = Duration::from_millis(timeout.timeout_ms.max(1));
-    let status = loop {
+    let mut timeout_triggered = false;
+    let mut kill_sent = false;
+    let mut process_group_kill_sent = false;
+    let mut cleanup_error = None;
+
+    let loop_result = loop {
+        if start.elapsed() >= timeout_duration {
+            timeout_triggered = true;
+            break Ok(None);
+        }
+
         match child
             .wait_timeout(Duration::from_millis(25))
             .map_err(|err| {
                 RunnerError::ExecutionError(format!("failed to wait for process: {err}"))
             })? {
-            Some(status) => break Ok((status, false)),
-            None if start.elapsed() >= timeout_duration => {
-                child.kill().map_err(|err| {
-                    RunnerError::TimeoutError(format!("failed to kill timed out process: {err}"))
-                })?;
-                cleanup_process_group(pid, "-9");
-                let waited = child.wait().map_err(|err| {
-                    RunnerError::TimeoutError(format!("failed to reap timed out process: {err}"))
-                })?;
-                break Ok((waited, true));
+            Some(status) => {
+                if start.elapsed() >= timeout_duration {
+                    timeout_triggered = true;
+                    break Ok(Some(status));
+                } else {
+                    break Ok(Some(status));
+                }
             }
             None => {
                 peak_memory_kb = merge_memory_usage(peak_memory_kb, sample_memory_usage_kb(pid));
             }
         }
-    }?;
+    };
+
+    let exit_status_opt = loop_result?;
+
+    if timeout_triggered {
+        match child.kill() {
+            Ok(_) => {
+                kill_sent = true;
+            }
+            Err(err) => {
+                cleanup_error = Some(format!("failed to kill timed out process: {err}"));
+            }
+        }
+
+        cleanup_process_group(pid, "-9");
+        process_group_kill_sent = true;
+
+        match child.wait() {
+            Ok(_) => {}
+            Err(err) => {
+                let err_msg = format!("failed to reap timed out process: {err}");
+                if cleanup_error.is_none() {
+                    cleanup_error = Some(err_msg);
+                } else {
+                    cleanup_error =
+                        Some(format!("{}; {}", cleanup_error.as_ref().unwrap(), err_msg));
+                }
+            }
+        }
+    } else {
+        // Even after a normal exit, descendants can remain alive in the child's
+        // process group. Best-effort cleanup avoids orphaned grandchildren and
+        // keeps repeated runner tests from accumulating stray processes.
+        cleanup_process_group(pid, "-15");
+        cleanup_process_group(pid, "-9");
+    }
 
     let stdout_bytes = stdout_handle
         .join()
@@ -91,27 +133,22 @@ pub(crate) fn execute_process(
         .join()
         .map_err(|_| RunnerError::ExecutionError("stderr reader thread panicked".to_string()))?;
 
-    if !status.1 {
-        // Even after a normal exit, descendants can remain alive in the child's
-        // process group. Best-effort cleanup avoids orphaned grandchildren and
-        // keeps repeated runner tests from accumulating stray processes.
-        cleanup_process_group(pid, "-15");
-        cleanup_process_group(pid, "-9");
-    }
-
     let cpu_release = collect_cpu_release_telemetry(pid, baseline_threads);
 
-    Ok(build_result(
-        status.0,
-        status.1,
-        start.elapsed().as_millis(),
+    Ok(build_result(ExecutionResultInput {
+        status: exit_status_opt,
+        timeout_triggered,
+        kill_sent,
+        process_group_kill_sent,
+        cleanup_error,
+        duration_ms: start.elapsed().as_millis(),
         stdout_bytes,
         stderr_bytes,
-        peak_memory_kb,
+        memory_usage_kb: peak_memory_kb,
         cpu_release,
-        config.output_mode,
+        output_mode: config.output_mode,
         sandbox_mode,
-    ))
+    }))
 }
 
 struct ExecutionPermit;
@@ -186,17 +223,36 @@ fn cleanup_process_group(pid: u32, signal: &str) {
     }
 }
 
-pub(crate) fn build_result(
-    status: ProcessExitStatus,
-    timed_out: bool,
-    duration_ms: u128,
-    stdout_bytes: Vec<u8>,
-    stderr_bytes: Vec<u8>,
-    memory_usage_kb: MemoryUsage,
-    cpu_release: CpuReleaseTelemetry,
-    output_mode: OutputMode,
-    sandbox_mode: SandboxMode,
-) -> ExecutionResult {
+pub(crate) struct ExecutionResultInput {
+    pub status: Option<ProcessExitStatus>,
+    pub timeout_triggered: bool,
+    pub kill_sent: bool,
+    pub process_group_kill_sent: bool,
+    pub cleanup_error: Option<String>,
+    pub duration_ms: u128,
+    pub stdout_bytes: Vec<u8>,
+    pub stderr_bytes: Vec<u8>,
+    pub memory_usage_kb: MemoryUsage,
+    pub cpu_release: CpuReleaseTelemetry,
+    pub output_mode: OutputMode,
+    pub sandbox_mode: SandboxMode,
+}
+
+pub(crate) fn build_result(input: ExecutionResultInput) -> ExecutionResult {
+    let ExecutionResultInput {
+        status,
+        timeout_triggered,
+        kill_sent,
+        process_group_kill_sent,
+        cleanup_error,
+        duration_ms,
+        stdout_bytes,
+        stderr_bytes,
+        memory_usage_kb,
+        cpu_release,
+        output_mode,
+        sandbox_mode,
+    } = input;
     let duration_ms = duration_ms.max(1);
     let stdout_meta = OutputMeta {
         streamed: matches!(output_mode, OutputMode::Streaming),
@@ -211,10 +267,10 @@ pub(crate) fn build_result(
     let stdout = truncate_output(stdout_bytes);
     let mut stderr = truncate_output(stderr_bytes);
 
-    let exit_status = if timed_out {
+    let exit_status = if timeout_triggered {
         ExitStatus::Signaled
     } else {
-        match status.code() {
+        match status.as_ref().and_then(|s| s.code()) {
             Some(code) => ExitStatus::Code(code),
             None => ExitStatus::Signaled,
         }
@@ -223,7 +279,7 @@ pub(crate) fn build_result(
         ExitStatus::Code(code) => code,
         ExitStatus::Signaled => -1,
     };
-    let status_text = if timed_out {
+    let status_text = if timeout_triggered {
         if stderr.is_empty() {
             stderr = "process timed out".to_string();
         } else {
@@ -231,6 +287,8 @@ pub(crate) fn build_result(
             stderr.push_str("process timed out");
         }
         "timeout".to_string()
+    } else if status.is_none() {
+        "failure".to_string()
     } else if exit_code == 0 {
         "success".to_string()
     } else {
@@ -255,6 +313,10 @@ pub(crate) fn build_result(
         output_meta: stdout_meta,
         stderr_meta,
         sandbox_mode,
+        timeout_triggered,
+        kill_sent,
+        process_group_kill_sent,
+        cleanup_error,
     }
 }
 
