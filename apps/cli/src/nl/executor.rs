@@ -53,11 +53,6 @@ pub fn execute_ir_plan(
     let step_id = emit_step_scheduled_with_id(&conversation.ir_state, step_id, plan_id, 0, label)
         .unwrap_or(step_id);
 
-    // memory context は PlannedStep ベースの IR API を内部アダプタ経由で呼ぶ
-    let ir_step = execution_plan_to_planned_step(plan);
-    let _memory_context =
-        crate::ir::query_memory_context(&conversation.ir_state, &ir_step, 0).unwrap_or_default();
-    let _ = emit_step_started(&conversation.ir_state, step_id);
     if !plan.has_effect() {
         let output = "[NOOP]\nReason: plan has no executable effect".to_string();
         let _ = emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Skipped);
@@ -69,6 +64,7 @@ pub fn execute_ir_plan(
             artifacts: Vec::new(),
         };
         let _ = emit_execution_result(&conversation.ir_state, payload.clone());
+        let ir_step = execution_plan_to_planned_step(plan);
         let _ = store_execution_memory(&conversation.ir_state, &ir_step, 0, &payload);
         return vec![format!("[step 0] {label}\n{output}")];
     }
@@ -86,12 +82,19 @@ pub fn execute_ir_plan(
         let output = format!("[VALIDATION:before]\nExecution blocked\n{violations}");
         return vec![format!("[step 0] {label}\n{output}")];
     }
+
+    // memory context は PlannedStep ベースの IR API を内部アダプタ経由で呼ぶ
+    let ir_step = execution_plan_to_planned_step(plan);
+    let _memory_context =
+        crate::ir::query_memory_context(&conversation.ir_state, &ir_step, 0).unwrap_or_default();
+    let _ = emit_step_started(&conversation.ir_state, step_id);
     execution_state.advance(ExecutionStage::Execute, "execution started");
 
-    let target = plan.target.clone().unwrap_or_else(|| PathBuf::from("."));
-
     let output = match &plan.operation {
-        Operation::Analyze => handle_analyze(&target, session, conversation),
+        Operation::Analyze => match explicit_plan_target(plan) {
+            Ok(target) => handle_analyze(&target, session, conversation),
+            Err(err) => err,
+        },
 
         Operation::Validate => {
             let result = validate_before_execution(plan);
@@ -108,13 +111,21 @@ pub fn execute_ir_plan(
 
         Operation::Refactor => {
             let request = plan.args.query.as_deref().unwrap_or("");
-            if request.to_lowercase().contains("unused imports") || request.is_empty() {
-                execute_refactor(RefactorRule::RemoveUnusedImports, &target, conversation)
-            } else {
-                let err = format!("ERROR: Unsupported refactor request: {request}");
-                let _ =
-                    emit_step_completed(&conversation.ir_state, step_id, ExecutionStatus::Failure);
-                return vec![format!("[step 0] refactor\n{err}")];
+            match explicit_plan_target(plan) {
+                Ok(target) => {
+                    if request.to_lowercase().contains("unused imports") || request.is_empty() {
+                        execute_refactor(RefactorRule::RemoveUnusedImports, &target, conversation)
+                    } else {
+                        let err = format!("ERROR: Unsupported refactor request: {request}");
+                        let _ = emit_step_completed(
+                            &conversation.ir_state,
+                            step_id,
+                            ExecutionStatus::Failure,
+                        );
+                        return vec![format!("[step 0] refactor\n{err}")];
+                    }
+                }
+                Err(err) => err,
             }
         }
 
@@ -130,11 +141,14 @@ pub fn execute_ir_plan(
                 Ok(result) => {
                     let applied: Vec<String> =
                         result.applied.iter().map(|f| f.describe()).collect();
-                    format!(
-                        "[REPAIR] applied fixes for {}:\n{}",
-                        target.display(),
-                        applied.join("\n")
-                    )
+                    match explicit_plan_target(plan) {
+                        Ok(target) => format!(
+                            "[REPAIR] applied fixes for {}:\n{}",
+                            target.display(),
+                            applied.join("\n")
+                        ),
+                        Err(err) => err,
+                    }
                 }
                 Err(err) => format!("[ERROR] repair failed: {err}"),
             }
@@ -158,7 +172,10 @@ pub fn execute_ir_plan(
             "Rolled back current transaction".to_string()
         }
 
-        Operation::Reload => execute_ir_reload_all(&target, conversation),
+        Operation::Reload => match explicit_plan_target(plan) {
+            Ok(target) => execute_ir_reload_all(&target, conversation),
+            Err(err) => err,
+        },
 
         Operation::NoOp => "[NOOP]".to_string(),
     };
@@ -195,7 +212,9 @@ pub fn execute_ir_plan(
         }
     }
 
-    update_state_after_operation(&plan.operation, &target, conversation);
+    if let Some(target) = plan.target.as_ref() {
+        update_state_after_operation(&plan.operation, target, conversation);
+    }
 
     let success = !output.contains("ERROR:") && !output.contains("[ERROR]");
     let status = if success {
@@ -231,28 +250,51 @@ pub fn execute_ir_plan(
 
 /// ExecutionPlan.operation → PlannedStep（ir.rs の内部 API へのアダプタ）
 fn execution_plan_to_planned_step(plan: &ExecutionPlan) -> PlannedStep {
-    let target = plan.target.clone().unwrap_or_else(|| PathBuf::from("."));
     match &plan.operation {
-        Operation::Analyze => PlannedStep::Analyze(target),
+        Operation::Analyze => plan
+            .target
+            .clone()
+            .map(PlannedStep::Analyze)
+            .unwrap_or(PlannedStep::Reload),
         Operation::Refactor => PlannedStep::Refactor(RefactorSpec {
-            target,
+            target: match plan.target.clone() {
+                Some(target) => target,
+                None => return PlannedStep::Reload,
+            },
             request: plan.args.query.clone().unwrap_or_default(),
         }),
-        Operation::Repair => PlannedStep::Repair(RepairSpec { target }),
-        Operation::Validate => PlannedStep::Validate(target),
+        Operation::Repair => match plan.target.clone() {
+            Some(target) => PlannedStep::Repair(RepairSpec { target }),
+            None => PlannedStep::Reload,
+        },
+        Operation::Validate => plan
+            .target
+            .clone()
+            .map(PlannedStep::Validate)
+            .unwrap_or(PlannedStep::Reload),
         Operation::Composite(ops) => {
             let Some(first) = ops.first() else {
                 return PlannedStep::Reload;
             };
             let mut child = plan.clone();
             child.operation = first.clone();
-            return execution_plan_to_planned_step(&child);
+            execution_plan_to_planned_step(&child)
         }
         Operation::Apply => PlannedStep::Apply,
         Operation::Rollback => PlannedStep::RollbackCurrentTransaction,
-        Operation::Reload => PlannedStep::Reload,
+        Operation::Reload => plan
+            .target
+            .clone()
+            .map(PlannedStep::IrReloadAll)
+            .unwrap_or(PlannedStep::Reload),
         Operation::NoOp => PlannedStep::Reload,
     }
+}
+
+fn explicit_plan_target(plan: &ExecutionPlan) -> Result<PathBuf, String> {
+    plan.target
+        .clone()
+        .ok_or_else(|| "[ERROR] unresolved target".to_string())
 }
 
 fn execute_composite_plan(
@@ -276,10 +318,10 @@ fn execute_composite_plan(
             label,
         );
         let child_output = match op {
-            Operation::Analyze => {
-                let target = child.target.clone().unwrap_or_else(|| PathBuf::from("."));
-                handle_analyze(&target, session, conversation)
-            }
+            Operation::Analyze => match explicit_plan_target(&child) {
+                Ok(target) => handle_analyze(&target, session, conversation),
+                Err(err) => err,
+            },
             Operation::Validate => {
                 let validation = validate_before_execution(&child);
                 if validation.is_valid {
@@ -289,28 +331,38 @@ fn execute_composite_plan(
                 }
             }
             Operation::Refactor => {
-                let target = child.target.clone().unwrap_or_else(|| PathBuf::from("."));
                 let request = child.args.query.as_deref().unwrap_or("");
-                if request.to_lowercase().contains("unused imports") || request.is_empty() {
-                    execute_refactor(RefactorRule::RemoveUnusedImports, &target, conversation)
-                } else {
-                    format!("ERROR: Unsupported refactor request: {request}")
+                match explicit_plan_target(&child) {
+                    Ok(target) => {
+                        if request.to_lowercase().contains("unused imports") || request.is_empty() {
+                            execute_refactor(
+                                RefactorRule::RemoveUnusedImports,
+                                &target,
+                                conversation,
+                            )
+                        } else {
+                            format!("ERROR: Unsupported refactor request: {request}")
+                        }
+                    }
+                    Err(err) => err,
                 }
             }
-            Operation::Repair => {
-                let target = child.target.clone().unwrap_or_else(|| PathBuf::from("."));
-                update_state_after_operation(op, &target, conversation);
-                "[REPAIR] composite repair scheduled".to_string()
-            }
+            Operation::Repair => match explicit_plan_target(&child) {
+                Ok(target) => {
+                    update_state_after_operation(op, &target, conversation);
+                    "[REPAIR] composite repair scheduled".to_string()
+                }
+                Err(err) => err,
+            },
             Operation::Apply => execute_apply_previous_coding_step(conversation),
             Operation::Rollback => {
                 conversation.rollback_current_transaction();
                 "Rolled back current transaction".to_string()
             }
-            Operation::Reload => {
-                let target = child.target.clone().unwrap_or_else(|| PathBuf::from("."));
-                execute_ir_reload_all(&target, conversation)
-            }
+            Operation::Reload => match explicit_plan_target(&child) {
+                Ok(target) => execute_ir_reload_all(&target, conversation),
+                Err(err) => err,
+            },
             Operation::Composite(_) => "[ERROR] nested composite rejected".to_string(),
             Operation::NoOp => "[NOOP]".to_string(),
         };
@@ -363,18 +415,6 @@ fn execute_refactor(
             }
             conversation.start_preview_transaction(path.to_path_buf());
             let diff = diff_result.diff.unwrap_or_default();
-            if let Some(tx) = conversation.active_transaction_mut() {
-                tx.latest_diff_ref = Some(crate::service::dto::SessionAppliedDiff {
-                    summary: "remove unused imports".to_string(),
-                    files: vec![crate::service::dto::SessionAppliedFileDiff {
-                        file_path: path.display().to_string(),
-                        unified_diff_excerpt: diff.clone(),
-                    }],
-                    files_changed: 1,
-                    lines_added: 0,
-                    lines_removed: diff_result.removed_lines,
-                });
-            }
             format!("[DIFF]\n{diff}")
         }
         Err(err) => format!("[ERROR] refactor failed: {err}"),
@@ -532,8 +572,10 @@ mod tests {
         let store = crate::ir::IRPersistenceStore::new(temp.path());
         let recovered = store.recover_or_create().unwrap();
         let mut session = AgentSession::with_root(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = recovered.state;
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
         let (plan, plan_id) = make_plan_and_id(
             Operation::Analyze,
             Some(PathBuf::from("src/lib.rs")),
@@ -550,8 +592,10 @@ mod tests {
         let store = crate::ir::IRPersistenceStore::new(temp.path());
         let recovered = store.recover_or_create().unwrap();
         let mut session = AgentSession::with_root(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = recovered.state;
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
         let (plan, plan_id) = make_plan_and_id(
             Operation::Analyze,
             Some(PathBuf::from("src/lib.rs")),
@@ -571,14 +615,35 @@ mod tests {
         let store = crate::ir::IRPersistenceStore::new(temp.path());
         let recovered = store.recover_or_create().unwrap();
         let mut session = AgentSession::with_root(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = recovered.state;
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
         let (plan, plan_id) = make_plan_and_id(Operation::Refactor, Some(file), &mut conversation);
 
         let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
 
         assert!(output.iter().any(|line| line.contains("[NOOP]")));
         assert!(!conversation.has_pending_transaction());
+    }
+
+    #[test]
+    fn executor_rejects_missing_target_without_workspace_fallback() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let store = crate::ir::IRPersistenceStore::new(temp.path());
+        let recovered = store.recover_or_create().unwrap();
+        let mut session = AgentSession::with_root(temp.path().to_path_buf());
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
+        let (plan, plan_id) = make_plan_and_id(Operation::Refactor, None, &mut conversation);
+
+        let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
+        let rendered = output.join("\n");
+
+        assert!(rendered.contains("missing_target"), "{rendered}");
+        assert!(conversation.last_target.is_none());
     }
 
     // §10.1 — No-op 時に execution が走らない
@@ -590,8 +655,10 @@ mod tests {
         let store = crate::ir::IRPersistenceStore::new(temp.path());
         let recovered = store.recover_or_create().unwrap();
         let mut session = AgentSession::with_root(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = recovered.state;
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
         let (plan, plan_id) = make_plan_and_id(Operation::Refactor, Some(file), &mut conversation);
 
         let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
@@ -613,8 +680,10 @@ mod tests {
         let store = crate::ir::IRPersistenceStore::new(temp.path());
         let recovered = store.recover_or_create().unwrap();
         let mut session = AgentSession::with_root(temp.path().to_path_buf());
-        let mut conversation = ConversationState::default();
-        conversation.ir_state = recovered.state;
+        let mut conversation = ConversationState {
+            ir_state: recovered.state,
+            ..ConversationState::default()
+        };
         let (plan, plan_id) = make_plan_and_id(Operation::Refactor, Some(file), &mut conversation);
 
         let output = execute_ir_plan(plan_id, &plan, &mut session, &mut conversation);
@@ -638,8 +707,10 @@ mod tests {
             let store = crate::ir::IRPersistenceStore::new(temp.path());
             let recovered = store.recover_or_create().unwrap();
             let mut session = AgentSession::with_root(temp.path().to_path_buf());
-            let mut conversation = ConversationState::default();
-            conversation.ir_state = recovered.state;
+            let mut conversation = ConversationState {
+                ir_state: recovered.state,
+                ..ConversationState::default()
+            };
             let (plan, plan_id) =
                 make_plan_and_id(Operation::Refactor, Some(file.clone()), &mut conversation);
             execute_ir_plan(plan_id, &plan, &mut session, &mut conversation).join("\n")

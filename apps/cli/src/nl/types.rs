@@ -153,17 +153,12 @@ pub struct PlanArgs {
     pub flags: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum PlanSource {
+    #[default]
     ReplInput,
     FileRoute,
     System,
-}
-
-impl Default for PlanSource {
-    fn default() -> Self {
-        PlanSource::ReplInput
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -193,16 +188,11 @@ impl PlanMetadata {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValidationPolicy {
+    #[default]
     Strict,
     Advisory,
-}
-
-impl Default for ValidationPolicy {
-    fn default() -> Self {
-        Self::Strict
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -343,14 +333,22 @@ impl From<CommandPlan> for ExecutionPlan {
 /// ExecutionPlan → CommandPlan（IR内部ストレージ・mlaal互換レイヤー用）
 impl From<&ExecutionPlan> for CommandPlan {
     fn from(plan: &ExecutionPlan) -> Self {
-        let target = plan.target.clone().unwrap_or_else(|| PathBuf::from("."));
         let step = match &plan.operation {
-            Operation::Analyze => PlannedStep::Analyze(target),
+            Operation::Analyze => match plan.target.clone() {
+                Some(target) => PlannedStep::Analyze(target),
+                None => return CommandPlan::default(),
+            },
             Operation::Refactor => PlannedStep::Refactor(RefactorSpec {
-                target,
+                target: match plan.target.clone() {
+                    Some(target) => target,
+                    None => return CommandPlan::default(),
+                },
                 request: plan.args.query.clone().unwrap_or_default(),
             }),
-            Operation::Validate => PlannedStep::Validate(target),
+            Operation::Validate => match plan.target.clone() {
+                Some(target) => PlannedStep::Validate(target),
+                None => return CommandPlan::default(),
+            },
             Operation::Composite(ops) => {
                 let Some(first) = ops.first() else {
                     return CommandPlan::default();
@@ -367,8 +365,14 @@ impl From<&ExecutionPlan> for CommandPlan {
             }
             Operation::Apply => PlannedStep::Apply,
             Operation::Rollback => PlannedStep::RollbackCurrentTransaction,
-            Operation::Reload => PlannedStep::Reload,
-            Operation::Repair => PlannedStep::Repair(RepairSpec { target }),
+            Operation::Reload => match plan.target.clone() {
+                Some(target) => PlannedStep::IrReloadAll(target),
+                None => PlannedStep::Reload,
+            },
+            Operation::Repair => match plan.target.clone() {
+                Some(target) => PlannedStep::Repair(RepairSpec { target }),
+                None => return CommandPlan::default(),
+            },
             Operation::NoOp => return CommandPlan::default(),
         };
         CommandPlan {

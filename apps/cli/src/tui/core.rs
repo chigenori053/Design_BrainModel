@@ -9,6 +9,15 @@ use crate::tui::runtime::RuntimeShellState;
 
 use super::state::{EventQueue, TuiState, UiEvent};
 
+pub fn resolve_projection_target(state: &TuiState) -> Option<String> {
+    state
+        .active_transaction
+        .as_ref()
+        .map(|tx| tx.target_path.clone())
+        .or_else(|| state.active_target.clone())
+        .filter(|target| !target.trim().is_empty() && target != "preview")
+}
+
 pub fn to_ui_event(event: CoreEvent) -> UiEvent {
     match event {
         CoreEvent::Thinking { summary } => UiEvent::Thinking { summary },
@@ -126,6 +135,7 @@ mod tests {
     };
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
     use crate::tui::rendering::RenderSnapshot;
+    use crate::tui::state::{Diff, RuntimeTransaction};
 
     #[derive(Default)]
     struct FakeCore {
@@ -163,6 +173,64 @@ mod tests {
                 text: "test constraint".to_string(),
             }],
         )
+    }
+
+    fn runtime_transaction(target: &str) -> RuntimeTransaction {
+        RuntimeTransaction {
+            tx_id: "tx-workspace-projection".to_string(),
+            target_path: target.to_string(),
+            resolved_target: crate::runtime::shell::ResolvedExecutionTarget::from_canonical_path(
+                target,
+            ),
+            diff: Diff {
+                file: target.to_string(),
+                changes: vec![],
+            },
+            failed_recoverable: false,
+        }
+    }
+
+    #[test]
+    fn workspace_projection_uses_transaction_authority() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = None;
+        state.active_transaction = Some(runtime_transaction("apps/cli/src/repl.rs"));
+
+        assert_eq!(
+            resolve_projection_target(&state).as_deref(),
+            Some("apps/cli/src/repl.rs")
+        );
+        assert_eq!(
+            RenderSnapshot::from(&state)
+                .projection
+                .workspace
+                .target
+                .as_deref(),
+            Some("apps/cli/src/repl.rs")
+        );
+    }
+
+    #[test]
+    fn projection_target_persists_while_transaction_active() {
+        let mut state = TuiState::new(empty_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_target = Some("apps/cli/src/repl.rs".to_string());
+        state.active_transaction = Some(runtime_transaction("apps/cli/src/repl.rs"));
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
+
+        assert!(state.active_transaction.is_some());
+        assert_eq!(state.active_target.as_deref(), Some("apps/cli/src/repl.rs"));
+        assert_eq!(
+            RenderSnapshot::from(&state)
+                .projection
+                .workspace
+                .target
+                .as_deref(),
+            Some("apps/cli/src/repl.rs")
+        );
     }
 
     #[test]

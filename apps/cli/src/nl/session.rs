@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::design_delta::{
     CodingPatchPlan, DesignDelta, MutationCandidate, MutationPlan, MutationSearchResult,
@@ -58,16 +58,7 @@ impl ConversationState {
         self.ir_state.active_transaction.as_ref()
     }
 
-    pub fn active_transaction_mut(&mut self) -> Option<&mut IRActiveTransaction> {
-        self.ir_state.active_transaction.as_mut()
-    }
-
-    pub fn set_active_transaction(&mut self, tx: IRActiveTransaction) {
-        self.ir_state.active_transaction = Some(tx);
-    }
-
     pub fn clear_active_transaction(&mut self) {
-        self.ir_state.active_transaction = None;
         self.ir_state.next_allowed_actions.clear();
     }
 
@@ -83,31 +74,12 @@ impl ConversationState {
     }
 
     pub fn start_preview_transaction(&mut self, target: PathBuf) {
-        let transaction_id = format!("tx:{}", target.display());
         self.note_target(target.clone());
-        self.ir_state.active_transaction = Some(IRActiveTransaction {
-            transaction_id,
-            canonical_target: target,
-            pending: true,
-            applied: false,
-            validated: false,
-            rollback_available: false,
-            latest_diff_ref: None,
-            latest_build_ok: None,
-            file_hash: None,
-        });
         self.ir_state.next_allowed_actions =
             vec![ActionKind::Apply, ActionKind::Refactor, ActionKind::Analyze];
     }
 
-    pub fn mark_transaction_applied(&mut self, snapshot: Option<SessionAppliedDiff>) {
-        if let Some(tx) = self.ir_state.active_transaction.as_mut() {
-            tx.pending = false;
-            tx.applied = true;
-            tx.validated = false;
-            tx.rollback_available = true;
-            tx.latest_diff_ref = snapshot;
-        }
+    pub fn mark_transaction_applied(&mut self, _snapshot: Option<SessionAppliedDiff>) {
         self.ir_state.next_allowed_actions = vec![
             ActionKind::Validate,
             ActionKind::Refactor,
@@ -116,30 +88,17 @@ impl ConversationState {
     }
 
     pub fn apply_transaction(&mut self) -> Result<Option<SessionAppliedDiff>, String> {
-        let snapshot = self
-            .ir_state
-            .active_transaction
-            .as_ref()
-            .ok_or_else(|| "no active transaction".to_string())?
-            .latest_diff_ref
-            .clone();
-        self.mark_transaction_applied(snapshot.clone());
-        Ok(snapshot)
+        self.mark_transaction_applied(None);
+        Ok(None)
     }
 
     pub fn mark_transaction_validated(&mut self) {
-        self.ir_state.validation_scope = PathBuf::from(".");
-        if let Some(tx) = self.ir_state.active_transaction.as_mut() {
-            tx.validated = true;
-            tx.latest_build_ok = Some(true);
-        }
         self.ir_state.next_allowed_actions = vec![ActionKind::Refactor, ActionKind::Analyze];
     }
 
     pub fn rollback_current_transaction(&mut self) {
-        self.ir_state.active_transaction = None;
-        self.ir_state.current_target = Some(PathBuf::from("."));
-        self.last_target = Some(PathBuf::from("."));
+        self.ir_state.current_target = None;
+        self.last_target = None;
         self.ir_state.next_allowed_actions = vec![
             ActionKind::CodingPreview,
             ActionKind::Analyze,
@@ -147,16 +106,8 @@ impl ConversationState {
         ];
     }
 
-    pub fn clear_transaction_for_new_target(&mut self, target: &PathBuf) {
-        let should_clear = self
-            .ir_state
-            .active_transaction
-            .as_ref()
-            .map(|tx| tx.canonical_target != *target && (tx.validated || tx.applied))
-            .unwrap_or(false);
-        if should_clear {
-            self.ir_state.active_transaction = None;
-        }
+    pub fn clear_transaction_for_new_target(&mut self, target: &Path) {
+        self.ir_state.current_target = Some(target.to_path_buf());
     }
 }
 
@@ -190,27 +141,10 @@ impl IRStateStore {
             match step {
                 TransactionLifecycleStep::Preview { target } => {
                     store.state.current_target = Some(target.clone());
-                    store.state.active_transaction = Some(IRActiveTransaction {
-                        transaction_id: format!("tx:{}", target.display()),
-                        canonical_target: target.clone(),
-                        pending: true,
-                        applied: false,
-                        validated: false,
-                        rollback_available: false,
-                        latest_diff_ref: None,
-                        latest_build_ok: None,
-                        file_hash: None,
-                    });
                     store.state.next_allowed_actions =
                         vec![ActionKind::Apply, ActionKind::Refactor, ActionKind::Analyze];
                 }
-                TransactionLifecycleStep::Apply { latest_diff_ref } => {
-                    if let Some(tx) = store.state.active_transaction.as_mut() {
-                        tx.pending = false;
-                        tx.applied = true;
-                        tx.rollback_available = true;
-                        tx.latest_diff_ref = latest_diff_ref.clone();
-                    }
+                TransactionLifecycleStep::Apply { latest_diff_ref: _ } => {
                     store.state.next_allowed_actions = vec![
                         ActionKind::Validate,
                         ActionKind::Refactor,
@@ -218,17 +152,11 @@ impl IRStateStore {
                     ];
                 }
                 TransactionLifecycleStep::Validate => {
-                    store.state.validation_scope = PathBuf::from(".");
-                    if let Some(tx) = store.state.active_transaction.as_mut() {
-                        tx.validated = true;
-                        tx.latest_build_ok = Some(true);
-                    }
                     store.state.next_allowed_actions =
                         vec![ActionKind::Refactor, ActionKind::Analyze];
                 }
                 TransactionLifecycleStep::Rollback => {
-                    store.state.active_transaction = None;
-                    store.state.current_target = Some(PathBuf::from("."));
+                    store.state.current_target = None;
                     store.state.next_allowed_actions = vec![
                         ActionKind::CodingPreview,
                         ActionKind::Analyze,
@@ -237,15 +165,6 @@ impl IRStateStore {
                 }
                 TransactionLifecycleStep::AnalyzeNewTarget { target }
                 | TransactionLifecycleStep::RefactorContinuation { target } => {
-                    let clear = store
-                        .state
-                        .active_transaction
-                        .as_ref()
-                        .map(|tx| tx.canonical_target != *target && (tx.validated || tx.applied))
-                        .unwrap_or(false);
-                    if clear {
-                        store.state.active_transaction = None;
-                    }
                     store.state.current_target = Some(target.clone());
                 }
             }
@@ -258,8 +177,8 @@ impl IRStateStore {
 mod tests {
     use std::path::PathBuf;
 
-    use super::{IRStateStore, TransactionLifecycleStep};
-    use crate::service::dto::ActionKind;
+    use super::{ConversationState, IRStateStore, TransactionLifecycleStep};
+    use crate::service::dto::{ActionKind, IRActiveTransaction};
 
     #[test]
     fn ir_next_actions_match_transition_rules() {
@@ -277,10 +196,7 @@ mod tests {
             state.next_allowed_actions,
             vec![ActionKind::Refactor, ActionKind::Analyze]
         );
-        let tx = state.active_transaction.expect("active transaction");
-        assert!(tx.applied);
-        assert!(tx.validated);
-        assert_eq!(tx.latest_build_ok, Some(true));
+        assert!(state.active_transaction.is_none());
     }
 
     #[test]
@@ -303,5 +219,68 @@ mod tests {
             state.current_target,
             Some(PathBuf::from("src/new_target.rs"))
         );
+    }
+
+    #[test]
+    fn session_sync_does_not_destroy_existing_runtime_projection() {
+        let mut conversation = ConversationState {
+            ir_state: crate::service::dto::IRState {
+                active_transaction: Some(IRActiveTransaction {
+                    transaction_id: "runtime-owned-tx".to_string(),
+                    canonical_target: PathBuf::from("src/repl.rs"),
+                    pending: true,
+                    applied: false,
+                    validated: false,
+                    rollback_available: false,
+                    latest_diff_ref: None,
+                    latest_build_ok: None,
+                    file_hash: None,
+                }),
+                ..crate::service::dto::IRState::default()
+            },
+            ..ConversationState::default()
+        };
+
+        conversation.start_preview_transaction(PathBuf::from("src/repl.rs"));
+        conversation.mark_transaction_applied(None);
+        conversation.mark_transaction_validated();
+        conversation.clear_transaction_for_new_target(&PathBuf::from("src/other.rs"));
+        conversation.rollback_current_transaction();
+        conversation.clear_active_transaction();
+
+        assert_eq!(
+            conversation
+                .ir_state
+                .active_transaction
+                .as_ref()
+                .map(|tx| tx.transaction_id.as_str()),
+            Some("runtime-owned-tx")
+        );
+    }
+
+    #[test]
+    fn session_sync_preserves_none_target() {
+        let mut conversation = ConversationState::default();
+        assert!(conversation.last_target.is_none());
+        assert!(conversation.ir_state.current_target.is_none());
+
+        conversation.mark_transaction_validated();
+        conversation.rollback_current_transaction();
+        conversation.clear_active_transaction();
+
+        assert!(conversation.last_target.is_none());
+        assert!(conversation.ir_state.current_target.is_none());
+    }
+
+    #[test]
+    fn session_source_does_not_assign_active_transaction_authority() {
+        let source = include_str!("session.rs");
+        for forbidden in [
+            concat!("active_", "transaction = None"),
+            concat!("active_", "transaction = Some"),
+            concat!("active_", "transaction.as_mut"),
+        ] {
+            assert!(!source.contains(forbidden), "{forbidden}");
+        }
     }
 }

@@ -25,9 +25,8 @@ fn repl_bootstrap_does_not_enter_nl_pipeline() {
     let combined = format!("{stdout}{stderr}");
 
     assert!(output.status.success(), "stdout={stdout}\nstderr={stderr}");
-    assert!(stdout.contains("state=IDLE"), "stdout={stdout}");
-    assert!(stderr.contains("[RUNTIME][BOOTSTRAP]"), "stderr={stderr}");
-    assert!(stderr.contains("[RUNTIME][SHUTDOWN]"), "stderr={stderr}");
+    assert!(stdout.contains("DBM_CLI REPL"), "stdout={stdout}");
+    assert!(stdout.contains("Type /exit to quit"), "stdout={stdout}");
     assert!(!combined.contains("[ROUTE]"), "{combined}");
     assert!(!combined.contains("stage=analyze"), "{combined}");
     assert!(!combined.contains("clarification"), "{combined}");

@@ -1,6 +1,7 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::tui::cognitive_workspace::RuntimeIdentity;
+use crate::tui::core::resolve_projection_target;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{
     Focus, RuntimeNarrativeEvent, TuiState, contains_runtime_reference, sanitize_line,
@@ -61,7 +62,10 @@ pub struct WorkspaceProjectionModel {
 
 impl WorkspaceProjectionModel {
     pub fn from_state(state: &TuiState) -> Self {
-        let target = locked_target_label(state).or_else(|| resolved_target_label(state));
+        let target = resolve_projection_target(state)
+            .and_then(|target| semantic_label(&target))
+            .or_else(|| locked_target_label(state))
+            .or_else(|| resolved_target_label(state));
         let has_preview = state.active_transaction.is_some();
         Self {
             target,
@@ -353,17 +357,69 @@ impl DiffProjection {
 }
 
 pub struct RuntimeNarrativeReducer;
+#[derive(Debug, Default)]
+pub struct RuntimeNarrativeReducerState {
+    pub last_known_target: Option<String>,
+}
 
 impl RuntimeNarrativeReducer {
     pub fn render(events: Vec<RuntimeNarrativeEvent>) -> Vec<String> {
+        let mut reducer = RuntimeNarrativeReducerState::default();
+        reducer.render(events)
+    }
+}
+
+impl RuntimeNarrativeReducerState {
+    pub fn render(&mut self, events: Vec<RuntimeNarrativeEvent>) -> Vec<String> {
         let mut lines = Vec::new();
         for event in events {
+            let event = self.attach_inherited_target(event);
+            if let Some(target) = event.target_authority() {
+                self.last_known_target = Some(target.to_string());
+            }
             let line = render_narrative_event(normalize_narrative_event(event));
             if lines.last() != Some(&line) {
                 lines.push(line);
             }
         }
         lines
+    }
+
+    fn attach_inherited_target(&self, event: RuntimeNarrativeEvent) -> RuntimeNarrativeEvent {
+        let Some(inherited) = self.last_known_target.clone() else {
+            return event;
+        };
+        match event {
+            RuntimeNarrativeEvent::Validation {
+                summary,
+                target: None,
+            } => RuntimeNarrativeEvent::Validation {
+                summary,
+                target: Some(inherited),
+            },
+            RuntimeNarrativeEvent::Execution {
+                summary,
+                target: None,
+            } => RuntimeNarrativeEvent::Execution {
+                summary,
+                target: Some(inherited),
+            },
+            RuntimeNarrativeEvent::Apply {
+                summary,
+                target: None,
+            } => RuntimeNarrativeEvent::Apply {
+                summary,
+                target: Some(inherited),
+            },
+            RuntimeNarrativeEvent::System {
+                summary,
+                target: None,
+            } => RuntimeNarrativeEvent::System {
+                summary,
+                target: Some(inherited),
+            },
+            other => other,
+        }
     }
 }
 
@@ -376,6 +432,7 @@ fn runtime_semantic_events_from_projection(
     projection: &RuntimeProjection,
 ) -> Vec<RuntimeNarrativeEvent> {
     let mut events = Vec::new();
+    let target = projection.target_label.clone();
 
     events.push(RuntimeNarrativeEvent::Intent {
         summary: intent_summary(projection),
@@ -388,13 +445,16 @@ fn runtime_semantic_events_from_projection(
     });
     events.push(RuntimeNarrativeEvent::Validation {
         summary: validation_summary(projection),
+        target: target.clone(),
     });
     events.push(RuntimeNarrativeEvent::Execution {
         summary: execution_summary(projection),
+        target: target.clone(),
     });
     if projection.state_label == "APPLIED" {
         events.push(RuntimeNarrativeEvent::Apply {
             summary: "transaction committed successfully".to_string(),
+            target: target.clone(),
         });
     }
     if let Some(rejection) = projection.rejection_label.clone() {
@@ -402,6 +462,7 @@ fn runtime_semantic_events_from_projection(
     }
     events.push(RuntimeNarrativeEvent::System {
         summary: system_summary(&projection.state_label),
+        target,
     });
 
     events
@@ -444,7 +505,9 @@ fn validation_summary(projection: &RuntimeProjection) -> String {
 }
 
 fn execution_summary(projection: &RuntimeProjection) -> String {
-    if projection.transaction_label.is_some() {
+    if projection.state_label == "APPLIED" {
+        "transaction consumed".to_string()
+    } else if projection.transaction_label.is_some() {
         "transaction active".to_string()
     } else {
         "no active transaction".to_string()
@@ -663,12 +726,17 @@ fn normalize_narrative_event(event: RuntimeNarrativeEvent) -> RuntimeNarrativeEv
             }
         }
         RuntimeNarrativeEvent::Planning { summary } => RuntimeNarrativeEvent::Thinking { summary },
-        RuntimeNarrativeEvent::Preview { .. } => RuntimeNarrativeEvent::Execution {
+        RuntimeNarrativeEvent::Preview { target } => RuntimeNarrativeEvent::Execution {
             summary: "preparing transaction preview".to_string(),
+            target: Some(target),
         },
-        RuntimeNarrativeEvent::Commit { summary } => RuntimeNarrativeEvent::Apply { summary },
+        RuntimeNarrativeEvent::Commit { summary } => RuntimeNarrativeEvent::Apply {
+            summary,
+            target: None,
+        },
         RuntimeNarrativeEvent::Error { message } => RuntimeNarrativeEvent::System {
             summary: format!("runtime error: {message}"),
+            target: None,
         },
         other => other,
     }
@@ -680,16 +748,15 @@ fn render_narrative_event(event: RuntimeNarrativeEvent) -> String {
         RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
         RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
         RuntimeNarrativeEvent::Planning { summary } => format!("[THINKING] {summary}"),
-        RuntimeNarrativeEvent::Validation { summary } => format!("[VALIDATION] {summary}"),
-        RuntimeNarrativeEvent::Execution { summary } => format!("[EXECUTION] {summary}"),
+        RuntimeNarrativeEvent::Validation { summary, .. } => format!("[VALIDATION] {summary}"),
+        RuntimeNarrativeEvent::Execution { summary, .. } => format!("[EXECUTION] {summary}"),
         RuntimeNarrativeEvent::Preview { target } => {
             format!("[EXECUTION] preparing transaction preview for {target}")
         }
-        RuntimeNarrativeEvent::Apply { summary } | RuntimeNarrativeEvent::Commit { summary } => {
-            format!("[APPLY] {summary}")
-        }
+        RuntimeNarrativeEvent::Apply { summary, .. }
+        | RuntimeNarrativeEvent::Commit { summary } => format!("[APPLY] {summary}"),
         RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
-        RuntimeNarrativeEvent::System { summary } => format!("[SYSTEM] {summary}"),
+        RuntimeNarrativeEvent::System { summary, .. } => format!("[SYSTEM] {summary}"),
         RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
         RuntimeNarrativeEvent::Error { message } => format!("[SYSTEM] runtime error: {message}"),
     }
@@ -699,7 +766,7 @@ fn render_narrative_event(event: RuntimeNarrativeEvent) -> String {
 mod tests {
     use super::*;
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
-    use crate::tui::state::{DiffChunk, UiEvent};
+    use crate::tui::state::{Diff, DiffChunk, RuntimeTransaction, UiEvent};
 
     fn empty_payload() -> UiPayload {
         UiPayload {
@@ -727,21 +794,77 @@ mod tests {
                 RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
                 RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
                 RuntimeNarrativeEvent::Planning { summary } => format!("[PLANNING] {summary}"),
-                RuntimeNarrativeEvent::Validation { summary } => {
+                RuntimeNarrativeEvent::Validation { summary, .. } => {
                     format!("[VALIDATION] {summary}")
                 }
-                RuntimeNarrativeEvent::Execution { summary } => format!("[EXECUTION] {summary}"),
+                RuntimeNarrativeEvent::Execution { summary, .. } => {
+                    format!("[EXECUTION] {summary}")
+                }
                 RuntimeNarrativeEvent::Preview { target } => {
                     format!("[PREVIEW] changes prepared for {target}")
                 }
-                RuntimeNarrativeEvent::Apply { summary }
+                RuntimeNarrativeEvent::Apply { summary, .. }
                 | RuntimeNarrativeEvent::Commit { summary } => format!("[APPLY] {summary}"),
                 RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
-                RuntimeNarrativeEvent::System { summary } => format!("[SYSTEM] {summary}"),
+                RuntimeNarrativeEvent::System { summary, .. } => format!("[SYSTEM] {summary}"),
                 RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
                 RuntimeNarrativeEvent::Error { message } => format!("[ERROR] {message}"),
             })
             .collect()
+    }
+
+    fn runtime_transaction(target: &str) -> RuntimeTransaction {
+        RuntimeTransaction {
+            tx_id: "tx-projection-refresh".to_string(),
+            target_path: target.to_string(),
+            resolved_target: crate::runtime::shell::ResolvedExecutionTarget::from_canonical_path(
+                target,
+            ),
+            diff: Diff {
+                file: target.to_string(),
+                changes: vec![],
+            },
+            failed_recoverable: false,
+        }
+    }
+
+    #[test]
+    fn projection_refresh_does_not_drop_target_authority() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = None;
+        state.active_transaction = Some(runtime_transaction("apps/cli/src/repl.rs"));
+
+        let first = RenderSnapshot::from(&state);
+        let second = RenderSnapshot::from(&state);
+
+        assert_eq!(
+            first.projection.workspace.target.as_deref(),
+            Some("apps/cli/src/repl.rs")
+        );
+        assert_eq!(
+            second.projection.workspace.target.as_deref(),
+            Some("apps/cli/src/repl.rs")
+        );
+        assert!(!projection_surface(&second).contains("Target:\n  (none)"));
+    }
+
+    #[test]
+    fn narrative_reducer_inherits_previous_target_authority() {
+        let mut reducer = RuntimeNarrativeReducerState::default();
+
+        let inherited = reducer.attach_inherited_target(RuntimeNarrativeEvent::Preview {
+            target: "apps/cli/src/repl.rs".to_string(),
+        });
+        if let Some(target) = inherited.target_authority() {
+            reducer.last_known_target = Some(target.to_string());
+        }
+
+        let event = reducer.attach_inherited_target(RuntimeNarrativeEvent::Execution {
+            summary: "transaction authority available".to_string(),
+            target: None,
+        });
+
+        assert_eq!(event.target_authority(), Some("apps/cli/src/repl.rs"));
     }
 
     #[test]
@@ -1202,9 +1325,11 @@ mod tests {
         let events = vec![
             RuntimeNarrativeEvent::System {
                 summary: "runtime idle".to_string(),
+                target: None,
             },
             RuntimeNarrativeEvent::System {
                 summary: "runtime idle".to_string(),
+                target: None,
             },
         ];
 

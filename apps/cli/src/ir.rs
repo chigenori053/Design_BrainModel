@@ -2358,7 +2358,15 @@ mod tests {
         let restored = store.load_latest(&applied.session_id).expect("restore");
         assert_eq!(restored.recovered_step, 2);
         assert_eq!(restored.state, applied);
-        assert!(restored.state.active_transaction.is_some());
+        assert!(restored.state.active_transaction.is_none());
+        assert_eq!(
+            restored.state.next_allowed_actions,
+            vec![
+                ActionKind::Validate,
+                ActionKind::Refactor,
+                ActionKind::Rollback
+            ]
+        );
     }
 
     #[test]

@@ -273,8 +273,10 @@ pub fn run_goal_loop(
         outputs.push(format!("iteration {iteration}/{}", config.max_iterations));
         for step in &goal_steps {
             let exec_plan = ExecutionPlan::from(step.clone());
-            let plan_id = accepted_plan_id
-                .expect("Forbidden: direct execution path. Use IR-based execution.");
+            let Some(plan_id) = accepted_plan_id else {
+                outputs.push(planned_step_command(step));
+                continue;
+            };
             outputs.extend(execute_ir_plan(plan_id, &exec_plan, session, conversation));
 
             match maybe_promote_step(step, conversation) {
@@ -336,6 +338,72 @@ pub fn run_goal_loop(
         outputs,
         completed,
         iterations: config.max_iterations,
+    }
+}
+
+fn planned_step_command(step: &PlannedStep) -> String {
+    match step {
+        PlannedStep::Analyze(path) => format!("design_cli analyze {}", path.display()),
+        PlannedStep::Coding(path, options) => {
+            let mut command = format!("design_cli coding {}", path.display());
+            if options.safe {
+                command.push_str(" --safe");
+            }
+            if options.check {
+                command.push_str(" --check");
+            }
+            if let Some(request) = options.request.as_deref() {
+                command.push_str(" --request ");
+                command.push_str(request);
+            }
+            command
+        }
+        PlannedStep::Validate(path) => format!("design_cli validate {}", path.display()),
+        PlannedStep::StructureView(path) => format!("design_cli structure view {}", path.display()),
+        PlannedStep::StructureEdit(path) => format!("design_cli structure edit {}", path.display()),
+        PlannedStep::StructureDiff(path, Some(node)) => {
+            format!("design_cli structure diff {} --node {node}", path.display())
+        }
+        PlannedStep::StructureDiff(path, None) => {
+            format!("design_cli structure diff {}", path.display())
+        }
+        PlannedStep::StructureUndo(path) => format!("design_cli structure undo {}", path.display()),
+        PlannedStep::StructureRedo(path) => format!("design_cli structure redo {}", path.display()),
+        PlannedStep::Run(path) => format!("design_cli run {}", path.display()),
+        PlannedStep::Rules => "design_cli rules".to_string(),
+        PlannedStep::Memory(path) => format!("design_cli memory {}", path.display()),
+        PlannedStep::GitCommit(path) => format!(
+            "git -C {} commit --dry-run --json [confirmation required, branch != main]",
+            path.display()
+        ),
+        PlannedStep::GitPR(path) => format!(
+            "gh -R {} pr create --dry-run --json [confirmation required, branch != main]",
+            path.display()
+        ),
+        PlannedStep::AlternativeMutationSearch(query) => {
+            format!("design_cli coding . --search {}", query)
+        }
+        PlannedStep::DesignDeltaReasoning(topic) => format!("design_cli analyze . --delta {topic}"),
+        PlannedStep::ExplainDesignTradeoff(topic) => {
+            format!("design_cli analyze . --explain {topic}")
+        }
+        PlannedStep::ApplyPreviousCodingStep => "design_cli coding . --apply".to_string(),
+        PlannedStep::RollbackCurrentTransaction => "design_cli runtime rollback".to_string(),
+        PlannedStep::IrReload(path) => format!("design_cli replay {}", path.display()),
+        PlannedStep::IrReloadAll(path) => format!("design_cli replay {} --all", path.display()),
+        PlannedStep::ShowDeps(path) => format!("design_cli structure deps {}", path.display()),
+        PlannedStep::Refactor(spec) => {
+            format!(
+                "design_cli coding {} --refactor {}",
+                spec.target.display(),
+                spec.request
+            )
+        }
+        PlannedStep::Repair(spec) => {
+            format!("design_cli validate {} --repair", spec.target.display())
+        }
+        PlannedStep::Apply => "design_cli coding . --apply".to_string(),
+        PlannedStep::Reload => "design_cli replay . --reload".to_string(),
     }
 }
 

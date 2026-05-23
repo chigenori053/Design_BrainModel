@@ -161,20 +161,34 @@ fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeN
             self::state::RuntimeNarrativeEvent::Planning { summary } => {
                 self::state::UiEvent::Planning { summary }
             }
-            self::state::RuntimeNarrativeEvent::Validation { summary } => {
+            self::state::RuntimeNarrativeEvent::Validation { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
                 self::state::UiEvent::Validation { summary }
             }
-            self::state::RuntimeNarrativeEvent::Execution { summary } => {
+            self::state::RuntimeNarrativeEvent::Execution { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
                 self::state::UiEvent::Execution { step: summary }
             }
-            self::state::RuntimeNarrativeEvent::Apply { summary }
-            | self::state::RuntimeNarrativeEvent::Commit { summary } => {
+            self::state::RuntimeNarrativeEvent::Apply { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
+                self::state::UiEvent::Apply { summary }
+            }
+            self::state::RuntimeNarrativeEvent::Commit { summary } => {
                 self::state::UiEvent::Apply { summary }
             }
             self::state::RuntimeNarrativeEvent::Rollback { summary } => {
                 self::state::UiEvent::Rollback { summary }
             }
-            self::state::RuntimeNarrativeEvent::System { summary } => {
+            self::state::RuntimeNarrativeEvent::System { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
                 self::state::UiEvent::System { summary }
             }
             self::state::RuntimeNarrativeEvent::GovernanceReject { reason } => {

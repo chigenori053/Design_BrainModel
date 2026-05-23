@@ -15,11 +15,37 @@ pub enum RuntimeIntent {
 pub struct RuntimeIntentCommand {
     pub intent: RuntimeIntent,
     pub target: Option<PathBuf>,
+    pub operations: Vec<MutationOperation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MutationOperation {
+    Modify,
+    AddConst { name: String },
+    InsertLine { text: String },
+    ReplaceBlock { text: String },
+    DeleteLine { text: String },
 }
 
 impl RuntimeIntentCommand {
     pub fn new(intent: RuntimeIntent, target: Option<PathBuf>) -> Self {
-        Self { intent, target }
+        Self {
+            intent,
+            target,
+            operations: Vec::new(),
+        }
+    }
+
+    pub fn with_operations(
+        intent: RuntimeIntent,
+        target: Option<PathBuf>,
+        operations: Vec<MutationOperation>,
+    ) -> Self {
+        Self {
+            intent,
+            target,
+            operations,
+        }
     }
 
     pub fn to_runtime_input(&self) -> String {

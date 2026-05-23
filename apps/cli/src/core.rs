@@ -33,6 +33,7 @@ use crate::git::executor::{
 use crate::git::policy::{CommandType, classify as git_command_policy};
 use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_record_json};
 use crate::git::transaction::{ExecutionTransaction, GitPhase};
+use crate::nl::normalization::target_only_input_target;
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
 use crate::state_graph::StateGraph;
@@ -639,6 +640,10 @@ impl RuntimeCoreBridge {
             kind,
             context: context.clone(),
         };
+
+        if let Some(target) = target_only_input_target(input) {
+            return Some(target_context_response(target, id));
+        }
 
         let has_followup_context = kind == CoreRequestKind::Followup || !state.proposals.is_empty();
         if has_followup_context {
@@ -2479,10 +2484,10 @@ fn candidate_to_execution_plan(
     if candidate.steps.is_empty() {
         return Err("candidate has no steps".to_string());
     }
-    if let Some(ref target) = candidate.target {
-        if target.file.is_empty() {
-            return Err("unresolved target file".to_string());
-        }
+    if let Some(ref target) = candidate.target
+        && target.file.is_empty()
+    {
+        return Err("unresolved target file".to_string());
     }
     let steps: Vec<String> = candidate.steps.iter().map(|op| op.label()).collect();
     Ok(SelectionPlan { steps })
@@ -2578,6 +2583,22 @@ fn error_response(kind: &str, message: &str, id: u64) -> CoreResponse {
             },
         ],
         status: ExecutionStatus::Failed,
+        design: None,
+        core_state: None,
+    }
+}
+
+fn target_context_response(target: PathBuf, _id: u64) -> CoreResponse {
+    CoreResponse {
+        events: vec![
+            CoreEvent::Result {
+                message: format!("[TARGET] context set: {}", target.display()),
+            },
+            CoreEvent::Pipeline {
+                state: PipelineState::Idle.label().to_string(),
+            },
+        ],
+        status: ExecutionStatus::Idle,
         design: None,
         core_state: None,
     }
@@ -3020,6 +3041,38 @@ mod tests {
 
         assert_eq!(response.status, ExecutionStatus::Failed);
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ExecutionRejected"))));
+    }
+
+    #[test]
+    fn target_only_input_does_not_enter_coding_pipeline() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("Target: apps/cli/src/git_guard.rs"));
+
+        assert_eq!(response.status, ExecutionStatus::Idle);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Result { message } if message.contains("[TARGET] context set: apps/cli/src/git_guard.rs"))
+        ));
+        assert!(
+            !response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Plan { .. }))
+        );
+        assert!(
+            !response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Preview { .. }))
+        );
+        assert!(
+            !response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Diff { .. }))
+        );
+        assert!(!response.events.iter().any(
+            |event| matches!(event, CoreEvent::Result { message } if message.contains("Applied"))
+        ));
     }
 
     #[test]

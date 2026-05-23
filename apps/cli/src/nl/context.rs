@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use crate::session::AgentSession;
 
@@ -15,7 +15,7 @@ pub fn merge_target(
     let has_explicit = has_explicit_target_reference(input);
 
     ResolvedTarget {
-        path: if has_explicit || current.path != PathBuf::from(".") {
+        path: if has_explicit || current.path != Path::new(".") {
             current.path
         } else if let Some(path) = conversation.last_target.clone() {
             path
