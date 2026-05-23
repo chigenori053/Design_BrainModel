@@ -2,7 +2,8 @@ use std::io;
 
 use core_types::ObjectiveVector;
 
-use crate::holographic_store::{HolographicVectorStore, MemoryEntry};
+use crate::holographic_store::MemoryEntry;
+use crate::store_adapter::{HolographicVectorStoreAdapter, LegacyMemoryStore};
 
 const TAU_MEM_MIN: f64 = 1e-9;
 const DELTA_EPS: f64 = 1e-12;
@@ -31,7 +32,7 @@ struct InterferenceStepStats {
 
 #[derive(Debug)]
 pub struct MemorySpace {
-    store: HolographicVectorStore,
+    store: HolographicVectorStoreAdapter,
     decay: f64,
     lambda: f64,
     mode: InterferenceMode,
@@ -46,7 +47,7 @@ pub struct MemorySpace {
 
 impl MemorySpace {
     pub fn new(
-        store: HolographicVectorStore,
+        store: HolographicVectorStoreAdapter,
         decay: f64,
         lambda: f64,
         mode: InterferenceMode,
@@ -283,12 +284,12 @@ fn median(mut values: Vec<f64>) -> f64 {
 mod tests {
     use core_types::ObjectiveVector;
 
-    use crate::{HolographicVectorStore, InterferenceMode, MemorySpace};
+    use crate::{HolographicVectorStoreAdapter, InterferenceMode, MemorySpace};
 
     #[test]
     fn memory_space_stores_and_adjusts() {
         let path = std::env::temp_dir().join("memory_space_test_store.bin");
-        let store = HolographicVectorStore::open(&path, 4).expect("open");
+        let store = HolographicVectorStoreAdapter::open(&path, 4).expect("open");
         let mut memory =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 256).expect("new");
         let base = ObjectiveVector {
@@ -307,5 +308,27 @@ mod tests {
         assert!(telemetry.samples > 0);
         let _ = std::fs::remove_file(path);
         let _ = std::fs::remove_file(std::env::temp_dir().join("memory_space_test_store.lock"));
+    }
+
+    #[test]
+    fn memory_space_uses_adapter_boundary() {
+        let path = std::env::temp_dir().join("memory_space_adapter_boundary.bin");
+        let store = HolographicVectorStoreAdapter::open(&path, 4).expect("open");
+        let mut memory =
+            MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 2).expect("new");
+        let base = ObjectiveVector {
+            f_struct: 0.3,
+            f_field: 0.4,
+            f_risk: 0.5,
+            f_shape: 0.6,
+        };
+
+        memory.store(&base, 1).expect("store");
+        let adjusted = memory.apply_interference(&base);
+        assert!((0.0..=1.0).contains(&adjusted.f_struct));
+
+        let _ = std::fs::remove_file(path);
+        let _ =
+            std::fs::remove_file(std::env::temp_dir().join("memory_space_adapter_boundary.lock"));
     }
 }
