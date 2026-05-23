@@ -18,6 +18,8 @@ pub mod design_output;
 pub mod execution_foundation;
 pub mod executor;
 pub mod git;
+pub mod git_guard;
+pub mod github_guard;
 pub mod input;
 pub mod ir;
 pub mod ir_state;

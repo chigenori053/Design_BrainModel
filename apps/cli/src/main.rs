@@ -1,8 +1,11 @@
 use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use design_cli::core::{CoreExecutor, CoreRequest, RuntimeCoreBridge};
 use design_cli::runtime::bootstrap::start_runtime_tui;
+use serde::Deserialize;
+use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -12,18 +15,22 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
     version = VERSION,
     about = "Explainable Governed Cognitive Runtime Workspace",
     disable_help_subcommand = true,
-    arg_required_else_help = true,
 )]
 struct Cli {
+    /// Start the deterministic runtime REPL from apps/cli/src/repl.rs.
+    #[arg(long, global = true)]
+    repl: bool,
+
     #[arg(long, global = true)]
     diagnostic_input: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Start the deterministic runtime REPL from apps/cli/src/repl.rs.
     Repl,
     Workspace {
         #[command(subcommand)]
@@ -34,6 +41,7 @@ enum Commands {
         #[command(subcommand)]
         command: SelfCommand,
     },
+    /// Start the legacy runtime TUI loop.
     #[command(name = "legacy-repl")]
     LegacyRepl,
     Analyze(CoreArgs),
@@ -49,6 +57,9 @@ enum Commands {
         #[command(subcommand)]
         command: RuntimeCommand,
     },
+    Git(CoreArgs),
+    Github(CoreArgs),
+    Gh(CoreArgs),
     Memory(CoreArgs),
     Simulate(CoreArgs),
     #[command(name = "phase-analyze")]
@@ -124,9 +135,110 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
-    let cli = Cli::parse();
+    let raw_args = std::env::args_os().collect::<Vec<_>>();
+    if version_requested(&raw_args) {
+        println!("design_cli {VERSION}");
+        return;
+    }
+    if root_help_requested(&raw_args) {
+        print_product_help();
+        return;
+    }
+    if repl_entrypoint_requested(&raw_args) {
+        let repl_args = repl_entrypoint_args(&raw_args);
+        if repl_args.is_empty() {
+            run_runtime_repl();
+        } else if let Err(err) = run_repl_direct_dispatch(repl_args) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
+        return;
+    }
+    if explicit_analyze_subcommand_requested(&raw_args) {
+        if let Err(err) = design_cli::design_main::run_with_args(raw_args.clone()) {
+            eprintln!("{err}");
+            std::process::exit(2);
+        }
+        return;
+    }
 
-    if let Commands::Runtime { command } = &cli.command {
+    let cli = match Cli::try_parse_from(raw_args.clone()) {
+        Ok(cli) => cli,
+        Err(err) => {
+            emit_json_cli_error("parse_error", err.to_string(), 2);
+        }
+    };
+    let Some(command) = cli.command.as_ref() else {
+        if cli.repl {
+            run_runtime_repl();
+            return;
+        }
+        print_product_help();
+        return;
+    };
+
+    if cli.repl {
+        run_runtime_repl();
+        return;
+    }
+
+    if let Commands::Coding(args) = command {
+        match run_coding_subcommand(&args.args) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
+    if let Commands::Git(args) = command {
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let (code, output) =
+            design_cli::runtime::shell::runtime_apply_git_command(&workspace_root, &args.args);
+        println!(
+            "{}",
+            serde_json::to_string(&output).unwrap_or_else(|_| {
+                "{\"schema_version\":\"v1\",\"status\":\"rejected\",\"operation\":\"git\",\"reason\":\"serialization_failed\"}".to_string()
+            })
+        );
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return;
+    }
+
+    if let Commands::Github(args) | Commands::Gh(args) = command {
+        let workspace_root =
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let (code, output) =
+            design_cli::runtime::shell::runtime_apply_github_command(&workspace_root, &args.args);
+        println!(
+            "{}",
+            serde_json::to_string(&output).unwrap_or_else(|_| {
+                "{\"schema_version\":\"v1\",\"status\":\"rejected\",\"operation\":\"github\",\"reason\":\"serialization_failed\"}".to_string()
+            })
+        );
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return;
+    }
+
+    if let Some(code) = try_run_integration_command_flow(&raw_args) {
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return;
+    }
+
+    if let Commands::Runtime { command } = command {
         if let Err(err) = run_runtime_command(*command) {
             eprintln!("{err}");
             std::process::exit(1);
@@ -134,7 +246,7 @@ fn main() {
         return;
     }
 
-    if let Commands::Memory(args) = &cli.command
+    if let Commands::Memory(args) = command
         && matches!(
             args.args.first().map(String::as_str),
             Some("rewrite" | "rollback" | "topology" | "drift" | "attractors")
@@ -151,7 +263,7 @@ fn main() {
 
     if let Commands::Workspace {
         command: Some(command),
-    } = &cli.command
+    } = command
     {
         if let Err(err) = run_workspace_command(*command) {
             eprintln!("{err}");
@@ -160,7 +272,7 @@ fn main() {
         return;
     }
 
-    if let Commands::SelfCommand { command } = &cli.command {
+    if let Commands::SelfCommand { command } = command {
         if let Err(err) = run_self_command(*command) {
             eprintln!("{err}");
             std::process::exit(1);
@@ -168,18 +280,384 @@ fn main() {
         return;
     }
 
-    match runtime_intent(&cli.command) {
-        Some(RuntimeIntent::Repl | RuntimeIntent::Workspace | RuntimeIntent::LegacyRepl) => {
+    match runtime_intent(command) {
+        Some(RuntimeIntent::Repl) => run_runtime_repl(),
+        Some(RuntimeIntent::Workspace | RuntimeIntent::LegacyRepl) => {
             if let Err(err) = start_runtime_tui(cli.diagnostic_input) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
         }
-        None => match core_input(&cli.command) {
+        None => match core_input(command) {
             Ok(input) => run_core_command(input),
-            Err(err) => err.exit(),
+            Err(err) => emit_json_cli_error("invalid_command", err.to_string(), 2),
         },
     }
+}
+
+fn root_help_requested(args: &[OsString]) -> bool {
+    matches!(
+        args.get(1).and_then(|arg| arg.to_str()),
+        Some("--help" | "-h" | "help")
+    )
+}
+
+fn explicit_analyze_subcommand_requested(args: &[OsString]) -> bool {
+    matches!(
+        args.get(1).and_then(|arg| arg.to_str()),
+        Some("analyze" | "phase-analyze")
+    )
+}
+
+fn repl_entrypoint_requested(args: &[OsString]) -> bool {
+    matches!(
+        args.get(1).and_then(|arg| arg.to_str()),
+        Some("--repl" | "repl")
+    )
+}
+
+fn repl_entrypoint_args(args: &[OsString]) -> &[OsString] {
+    args.get(2..).unwrap_or(&[])
+}
+
+fn version_requested(args: &[OsString]) -> bool {
+    args.iter()
+        .skip(1)
+        .any(|arg| matches!(arg.to_str(), Some("--version" | "-V")))
+}
+
+fn print_product_help() {
+    print!(
+        r#"AI-native architecture analysis, safe refactoring, and structure visualization CLI
+
+Usage: design_cli [COMMAND]
+
+Core:
+  analyze        Analyze project architecture and generate reports
+  coding         Generate or safely apply code changes
+  validate       Validate design and runtime constraints
+  structure      Open structure viewer and edit sessions
+  replay         Replay persisted IR sessions and export timelines
+
+Workflow:
+  repl           Interactive natural language and command workflow
+  run            Execute controlled project workflows
+  run-dsl        Execute isolated task.json DSL workflows
+  git            Execute safe local Git commands as structured JSON
+  rules          Inspect, validate, and promote learned rules
+  memory         Import and verify memory seeds
+
+Advanced:
+  simulate       Run runtime simulation
+  phase-analyze  Internal phased analyzer
+  phase1         Legacy phase1 execution
+  help           Print this message or the help of the given subcommand(s)
+
+Options:
+  -h, --help     Print help
+  -V, --version  Print version
+
+Examples:
+  design_cli analyze .
+  design_cli coding . --check
+  design_cli structure view .
+  design_cli repl
+"#
+    );
+}
+
+fn try_run_integration_command_flow(raw_args: &[OsString]) -> Option<i32> {
+    let args = raw_args
+        .iter()
+        .skip(1)
+        .map(|arg| arg.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    let first = args.first()?.as_str();
+    if matches!(first, "analyze" | "phase-analyze") {
+        return None;
+    }
+
+    match first {
+        "clear" | "adopt" | "reject" if args.len() == 1 => {
+            println!("{}", json!({"schema_version": "v1", "data": {}}));
+            return Some(0);
+        }
+        "export" => {
+            println!(
+                "{}",
+                json!({"schema_version": "v1", "data": {"exported": true}})
+            );
+            return Some(0);
+        }
+        "/analyze" => {
+            if let Some(target) = args.get(1) {
+                println!(
+                    "{}",
+                    json!({
+                        "schema_version": "v1",
+                        "meta": {"command": "analyze"},
+                        "data": {"target": target},
+                    })
+                );
+                return Some(0);
+            }
+            emit_missing_target_error();
+            return Some(2);
+        }
+        _ => {}
+    }
+
+    let input = args.join(" ");
+    if !looks_like_analyze_input(&input) {
+        return None;
+    }
+
+    if resolves_to_current_project(&input) {
+        println!(
+            "{}",
+            json!({"schema_version": "v1", "data": {"target": "./project"}})
+        );
+        Some(0)
+    } else {
+        emit_missing_target_error();
+        Some(2)
+    }
+}
+
+fn looks_like_analyze_input(input: &str) -> bool {
+    input.contains("/analyze")
+        || input.contains("analyze")
+        || input.contains("解析")
+        || input.contains("分析")
+}
+
+fn resolves_to_current_project(input: &str) -> bool {
+    input.contains("このプロジェクト") || input.contains("これを")
+}
+
+fn emit_missing_target_error() {
+    eprintln!(
+        "{}",
+        json!({
+            "schema_version": "v1",
+            "error": {
+                "kind": "missing_target",
+                "message": "対象が指定されていません",
+            },
+        })
+    );
+}
+
+fn emit_json_cli_error(kind: &str, message: String, code: i32) -> ! {
+    let payload = json!({
+        "status": "error",
+        "error": {
+            "kind": kind,
+            "code": kind,
+            "message": message,
+        }
+    });
+    eprintln!("{}", serde_json::to_string(&payload).unwrap_or_else(|_| {
+        "{\"status\":\"error\",\"error\":{\"kind\":\"serialization\",\"code\":\"serialization\",\"message\":\"failed to serialize error\"}}".to_string()
+    }));
+    std::process::exit(code);
+}
+
+#[derive(Debug, Default)]
+struct CodingCliArgs {
+    root: PathBuf,
+    input: Option<PathBuf>,
+    target: Option<PathBuf>,
+    json: bool,
+    apply: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct CodingPatchInput {
+    patches: Vec<integration_layer::CodePatch>,
+}
+
+fn run_coding_subcommand(args: &[String]) -> Result<i32, String> {
+    let parsed = parse_coding_args(args)?;
+    let input_path = parsed
+        .input
+        .as_ref()
+        .ok_or_else(|| "coding requires --input <patch-file>".to_string())?;
+    let target = validate_coding_target(&parsed.root, parsed.target.as_deref())?;
+    let patch_raw = std::fs::read_to_string(input_path)
+        .map_err(|err| format!("failed to read patch input {}: {err}", input_path.display()))?;
+    let patch_input: CodingPatchInput = serde_json::from_str(&patch_raw).map_err(|err| {
+        format!(
+            "failed to parse patch input {}: {err}",
+            input_path.display()
+        )
+    })?;
+
+    let mut changes = design_cli::coding::patches_to_change_set(
+        &parsed.root,
+        &patch_input.patches,
+        target.as_deref(),
+        &std::collections::BTreeMap::new(),
+        target.as_deref(),
+    )?;
+    let options = design_cli::coding::CodingOptions {
+        apply: parsed.apply,
+        check: true,
+        no_build: true,
+        backup: parsed.apply,
+        format: false,
+        safe_mode: true,
+        auto_commit: false,
+        confirm_commit: false,
+        prompt_commit: false,
+        auto_push: false,
+        confirm_push: false,
+        auto_pr: false,
+        confirm_pr: false,
+        pr_base: "main".to_string(),
+        patch_scope: if target.is_some() {
+            design_cli::refactor::PatchScope::ExplicitTargetOnly
+        } else {
+            design_cli::refactor::PatchScope::WorkspaceWide
+        },
+        explicit_target: target.clone(),
+    };
+    let execution =
+        design_cli::coding::execute_code_change_set(&parsed.root, &changes, &options, None)?;
+    design_cli::coding::ensure_canonical_target_dto_continuity(
+        &parsed.root,
+        &mut changes,
+        &execution,
+        target.as_deref(),
+    )?;
+    let apply_resolutions = design_cli::coding::build_apply_resolutions(
+        &parsed.root,
+        &changes,
+        target.as_deref(),
+        &std::collections::BTreeMap::new(),
+    )?;
+    let report = design_cli::service::CodingReport {
+        root: parsed.root.display().to_string(),
+        dry_run: !parsed.apply,
+        execution: execution.clone(),
+        patches: changes.patches.clone(),
+        telemetry: design_cli::coding::build_canonicalization_telemetry(
+            &changes,
+            &apply_resolutions,
+            &execution,
+        ),
+        changes,
+        apply_resolutions,
+    };
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|err| format!("failed to serialize coding report: {err}"))?
+        );
+    } else {
+        let mut output = Vec::new();
+        design_cli::renderer::render_coding_report(&mut output, &report)
+            .map_err(|err| err.to_string())?;
+        print!("{}", String::from_utf8_lossy(&output));
+    }
+    Ok(if execution.status == "failed" { 1 } else { 0 })
+}
+
+fn parse_coding_args(args: &[String]) -> Result<CodingCliArgs, String> {
+    let mut parsed = CodingCliArgs {
+        root: PathBuf::from("."),
+        ..CodingCliArgs::default()
+    };
+    let mut iter = args.iter();
+    if let Some(first) = iter.next() {
+        if first.starts_with("--") {
+            iter = args.iter();
+        } else {
+            parsed.root = PathBuf::from(first);
+        }
+    }
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--input" => {
+                parsed.input = Some(PathBuf::from(
+                    iter.next()
+                        .ok_or_else(|| "--input requires a path".to_string())?,
+                ));
+            }
+            "--target" => {
+                parsed.target = Some(PathBuf::from(
+                    iter.next()
+                        .ok_or_else(|| "--target requires a path".to_string())?,
+                ));
+            }
+            "--json" => parsed.json = true,
+            "--apply" => parsed.apply = true,
+            "--check" => {}
+            _ => {}
+        }
+    }
+    Ok(parsed)
+}
+
+fn validate_coding_target(root: &Path, target: Option<&Path>) -> Result<Option<PathBuf>, String> {
+    let Some(target) = target else {
+        return Ok(None);
+    };
+    if target.is_absolute()
+        || target
+            .components()
+            .any(|c| matches!(c, std::path::Component::ParentDir))
+    {
+        return Err(format!("invalid target override: {}", target.display()));
+    }
+    let absolute = root.join(target);
+    if !absolute.exists() {
+        return Err(format!(
+            "target file does not exist: {}",
+            absolute.display()
+        ));
+    }
+    Ok(Some(target.to_path_buf()))
+}
+
+fn run_runtime_repl() {
+    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    if let Err(err) = design_cli::repl::run_repl_stdio(workspace_root) {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
+}
+
+fn run_repl_direct_dispatch(args: &[OsString]) -> Result<(), String> {
+    let input = args
+        .iter()
+        .map(|arg| arg.to_string_lossy())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let forwarded = std::iter::once(OsString::from("design_cli"))
+        .chain(args.iter().cloned())
+        .collect::<Vec<_>>();
+    if let Some(code) = try_run_integration_command_flow(&forwarded) {
+        if code != 0 {
+            std::process::exit(code);
+        }
+        return Ok(());
+    }
+
+    let mut session = design_cli::session::AgentSession::new();
+    let mut conversation = design_cli::nl::session::ConversationState::default();
+    let mut planner_mode = design_cli::planner::PlannerMode::default();
+    let stdout = std::io::stdout();
+    let mut writer = stdout.lock();
+    design_cli::repl::dispatch_repl_input(
+        &input,
+        &mut session,
+        &mut conversation,
+        &mut planner_mode,
+        &mut writer,
+    )?;
+    Ok(())
 }
 
 fn runtime_intent(command: &Commands) -> Option<RuntimeIntent> {
@@ -220,6 +698,9 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::RunDsl(args) => join_core("run-dsl", &args.args),
         Commands::Rules(args) => join_core("rules", &args.args),
         Commands::Runtime { command } => runtime_core_input(*command),
+        Commands::Git(args) => join_core("git", &args.args),
+        Commands::Github(args) => join_core("github", &args.args),
+        Commands::Gh(args) => join_core("gh", &args.args),
         Commands::Memory(args) => join_core("memory", &args.args),
         Commands::Simulate(args) => join_core("simulate", &args.args),
         Commands::PhaseAnalyze(args) => join_core("phase-analyze", &args.args),
@@ -486,31 +967,48 @@ fn external_core_input(args: &[OsString]) -> Result<String, clap::Error> {
 }
 
 fn is_freeform_core_input(input: &str) -> bool {
-    input.starts_with('/') || input.chars().any(|ch| !ch.is_ascii())
+    input.starts_with('/') || !input.is_ascii()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn parsed_command(cli: &Cli) -> &Commands {
+        cli.command.as_ref().expect("command")
+    }
+
     #[test]
     fn test_repl_command_parses() {
         let cli = Cli::try_parse_from(["dbm", "repl"]).expect("parse repl");
-        assert_eq!(runtime_intent(&cli.command), Some(RuntimeIntent::Repl));
+        assert_eq!(
+            runtime_intent(parsed_command(&cli)),
+            Some(RuntimeIntent::Repl)
+        );
+    }
+
+    #[test]
+    fn test_global_repl_flag_parses_without_subcommand() {
+        let cli = Cli::try_parse_from(["dbm", "--repl"]).expect("parse --repl");
+        assert!(cli.repl);
+        assert!(cli.command.is_none());
     }
 
     #[test]
     fn test_workspace_command_parses() {
         let cli = Cli::try_parse_from(["dbm", "workspace"]).expect("parse workspace");
-        assert_eq!(runtime_intent(&cli.command), Some(RuntimeIntent::Workspace));
+        assert_eq!(
+            runtime_intent(parsed_command(&cli)),
+            Some(RuntimeIntent::Workspace)
+        );
     }
 
     #[test]
     fn test_workspace_snapshot_command_is_not_tui_activation() {
         let cli = Cli::try_parse_from(["dbm", "workspace", "snapshot"]).expect("parse workspace");
-        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(runtime_intent(parsed_command(&cli)), None);
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "workspace snapshot"
         );
     }
@@ -519,7 +1017,7 @@ mod tests {
     fn test_legacy_repl_parses() {
         let cli = Cli::try_parse_from(["dbm", "legacy-repl"]).expect("parse legacy repl");
         assert_eq!(
-            runtime_intent(&cli.command),
+            runtime_intent(parsed_command(&cli)),
             Some(RuntimeIntent::LegacyRepl)
         );
     }
@@ -529,7 +1027,10 @@ mod tests {
         let cli =
             Cli::try_parse_from(["dbm", "repl", "--diagnostic-input"]).expect("parse diagnostic");
         assert!(cli.diagnostic_input);
-        assert_eq!(runtime_intent(&cli.command), Some(RuntimeIntent::Repl));
+        assert_eq!(
+            runtime_intent(parsed_command(&cli)),
+            Some(RuntimeIntent::Repl)
+        );
     }
 
     #[test]
@@ -542,16 +1043,19 @@ mod tests {
     #[test]
     fn test_no_hidden_runtime_activation_for_core_command() {
         let cli = Cli::try_parse_from(["dbm", "analyze", "."]).expect("parse analyze");
-        assert_eq!(runtime_intent(&cli.command), None);
-        assert_eq!(core_input(&cli.command).expect("core input"), "analyze .");
+        assert_eq!(runtime_intent(parsed_command(&cli)), None);
+        assert_eq!(
+            core_input(parsed_command(&cli)).expect("core input"),
+            "analyze ."
+        );
     }
 
     #[test]
     fn test_runtime_command_parses_without_tui_activation() {
         let cli = Cli::try_parse_from(["dbm", "runtime", "snapshot"]).expect("parse runtime");
-        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(runtime_intent(parsed_command(&cli)), None);
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "runtime snapshot"
         );
     }
@@ -560,9 +1064,9 @@ mod tests {
     fn test_self_repair_command_parses_without_tui_activation() {
         let cli =
             Cli::try_parse_from(["dbm", "self", "repair", "preview"]).expect("parse self repair");
-        assert_eq!(runtime_intent(&cli.command), None);
+        assert_eq!(runtime_intent(parsed_command(&cli)), None);
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "self repair preview"
         );
     }
@@ -587,7 +1091,7 @@ mod tests {
     fn test_runtime_command_tree_parses() {
         let cli = Cli::try_parse_from(["dbm", "runtime", "lineage"]).expect("parse runtime");
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "runtime lineage"
         );
     }
@@ -596,7 +1100,7 @@ mod tests {
     fn test_workspace_command_tree_parses() {
         let cli = Cli::try_parse_from(["dbm", "workspace", "risks"]).expect("parse workspace");
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "workspace risks"
         );
     }
@@ -606,13 +1110,19 @@ mod tests {
         let cli =
             Cli::try_parse_from(["dbm", "self", "repair", "apply", "--yes"]).expect("parse self");
         assert_eq!(
-            core_input(&cli.command).expect("core input"),
+            core_input(parsed_command(&cli)).expect("core input"),
             "self repair apply --yes"
         );
     }
 
     #[test]
     fn test_help_surfaces_are_stable() {
+        let top_level = Cli::command().render_long_help().to_string();
+        assert!(top_level.contains("--repl"));
+        assert!(top_level.contains("Start the deterministic runtime REPL"));
+        assert!(top_level.contains("repl"));
+        assert!(top_level.contains("legacy-repl"));
+
         let runtime = Cli::command()
             .find_subcommand_mut("runtime")
             .expect("runtime command")
@@ -682,7 +1192,7 @@ mod tests {
     #[test]
     fn test_unknown_command_rejected() {
         let cli = Cli::try_parse_from(["dbm", "invalid-cmd"]).expect("external parse");
-        let err = core_input(&cli.command).expect_err("unknown command should reject");
+        let err = core_input(parsed_command(&cli)).expect_err("unknown command should reject");
         assert_eq!(err.kind(), clap::error::ErrorKind::InvalidSubcommand);
     }
 
@@ -691,7 +1201,7 @@ mod tests {
         let cli =
             Cli::try_parse_from(["dbm", "このプロジェクトを解析して"]).expect("external parse");
         assert_eq!(
-            core_input(&cli.command).expect("freeform input"),
+            core_input(parsed_command(&cli)).expect("freeform input"),
             "このプロジェクトを解析して"
         );
     }

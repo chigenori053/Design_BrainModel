@@ -18,7 +18,7 @@ fn onboarding_help_surface_exposes_product_commands_and_matches_snapshot() {
     let (ok, stdout, stderr) = run(&["--help"]);
     assert!(ok, "stderr: {stderr}");
 
-    for command in ["coding", "structure", "repl", "rules", "run"] {
+    for command in ["coding", "structure", "repl", "rules", "run", "git"] {
         assert!(stdout.contains(command), "missing {command} in {stdout}");
     }
 

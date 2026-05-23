@@ -13,6 +13,7 @@ Workflow:
   repl           Interactive natural language and command workflow
   run            Execute controlled project workflows
   run-dsl        Execute isolated task.json DSL workflows
+  git            Execute safe local Git commands as structured JSON
   rules          Inspect, validate, and promote learned rules
   memory         Import and verify memory seeds
 
