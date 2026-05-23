@@ -6,7 +6,7 @@ use crate::limits::Limits;
 use crate::planner::AdaptivePlanner;
 use crate::policy::StrategyPolicy;
 use crate::selector::StrategySelector;
-use crate::trace::{StrategyOutcome, StrategyTrace};
+use crate::trace::{StrategyAttemptInput, StrategyOutcome, StrategyTrace};
 use crate::types::{ExecutionMode, Intent, RunIntegrator, StrategyInput, StrategyOutput};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -106,16 +106,16 @@ impl StrategyEngine {
 
             if result.success {
                 history.add_success(&plan, &result);
-                trace.record(
+                trace.record(StrategyAttemptInput {
                     attempt_index,
-                    current_strategy,
-                    cs,
-                    true,
-                    None,
-                    ts,
-                    result.stdout.clone(),
-                    result.stderr.clone(),
-                );
+                    strategy_kind: current_strategy,
+                    plan_checksum: cs,
+                    success: true,
+                    failure_context: None,
+                    timestamp_ms: ts,
+                    stdout: result.stdout.clone(),
+                    stderr: result.stderr.clone(),
+                });
                 trace.finish(StrategyOutcome::Success);
                 return StrategyOutput {
                     selected_plan: plan,
@@ -127,16 +127,16 @@ impl StrategyEngine {
             // ── Failure path ─────────────────────────────────────────────────
             let failure_ctx = self.analyzer.analyze(&result);
 
-            trace.record(
+            trace.record(StrategyAttemptInput {
                 attempt_index,
-                current_strategy.clone(),
-                cs,
-                false,
-                failure_ctx.clone(),
-                ts,
-                result.stdout.clone(),
-                result.stderr.clone(),
-            );
+                strategy_kind: current_strategy.clone(),
+                plan_checksum: cs,
+                success: false,
+                failure_context: failure_ctx.clone(),
+                timestamp_ms: ts,
+                stdout: result.stdout.clone(),
+                stderr: result.stderr.clone(),
+            });
 
             let failure = match failure_ctx {
                 Some(f) => f,

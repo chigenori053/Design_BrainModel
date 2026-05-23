@@ -476,20 +476,11 @@ impl SemanticCompressionEngine {
     }
 }
 
+#[derive(Default)]
 pub struct ConceptCognitionRuntime {
     abstraction_engine: SemanticAbstractionEngine,
     synthesis_engine: ConceptSynthesisEngine,
     compression_engine: SemanticCompressionEngine,
-}
-
-impl Default for ConceptCognitionRuntime {
-    fn default() -> Self {
-        Self {
-            abstraction_engine: SemanticAbstractionEngine::default(),
-            synthesis_engine: ConceptSynthesisEngine::default(),
-            compression_engine: SemanticCompressionEngine::default(),
-        }
-    }
 }
 
 impl ConceptCognitionRuntime {

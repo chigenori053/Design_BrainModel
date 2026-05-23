@@ -62,7 +62,7 @@ impl SemanticCausalEngine {
     pub fn new(causal_graph: CausalGraph) -> Self {
         Self {
             causal_graph,
-            consequence_predictor: ConsequencePredictor::default(),
+            consequence_predictor: ConsequencePredictor,
         }
     }
 

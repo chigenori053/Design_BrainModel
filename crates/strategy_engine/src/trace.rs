@@ -50,6 +50,18 @@ pub struct StrategyAttempt {
     pub stderr: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct StrategyAttemptInput {
+    pub attempt_index: usize,
+    pub strategy_kind: StrategyKind,
+    pub plan_checksum: Checksum,
+    pub success: bool,
+    pub failure_context: Option<FailureContext>,
+    pub timestamp_ms: u64,
+    pub stdout: String,
+    pub stderr: String,
+}
+
 // ── StrategyTrace ─────────────────────────────────────────────────────────────
 
 /// Complete audit trail of a strategy engine run.
@@ -79,26 +91,16 @@ impl StrategyTrace {
     }
 
     /// Append a new attempt record.
-    pub fn record(
-        &mut self,
-        attempt_index: usize,
-        strategy_kind: StrategyKind,
-        plan_checksum: Checksum,
-        success: bool,
-        failure_context: Option<FailureContext>,
-        timestamp_ms: u64,
-        stdout: String,
-        stderr: String,
-    ) {
+    pub fn record(&mut self, input: StrategyAttemptInput) {
         self.attempts.push(StrategyAttempt {
-            attempt_index,
-            strategy_kind,
-            plan_checksum,
-            success,
-            failure_context,
-            timestamp_ms,
-            stdout,
-            stderr,
+            attempt_index: input.attempt_index,
+            strategy_kind: input.strategy_kind,
+            plan_checksum: input.plan_checksum,
+            success: input.success,
+            failure_context: input.failure_context,
+            timestamp_ms: input.timestamp_ms,
+            stdout: input.stdout,
+            stderr: input.stderr,
         });
     }
 
@@ -146,26 +148,26 @@ mod tests {
     #[test]
     fn record_and_finish() {
         let mut t = StrategyTrace::new("test intent");
-        t.record(
-            0,
-            StrategyKind::Retry,
-            dummy_cs(),
-            false,
-            None,
-            0,
-            String::new(),
-            "err".into(),
-        );
-        t.record(
-            1,
-            StrategyKind::Repair,
-            dummy_cs(),
-            true,
-            None,
-            1,
-            "ok".into(),
-            String::new(),
-        );
+        t.record(StrategyAttemptInput {
+            attempt_index: 0,
+            strategy_kind: StrategyKind::Retry,
+            plan_checksum: dummy_cs(),
+            success: false,
+            failure_context: None,
+            timestamp_ms: 0,
+            stdout: String::new(),
+            stderr: "err".into(),
+        });
+        t.record(StrategyAttemptInput {
+            attempt_index: 1,
+            strategy_kind: StrategyKind::Repair,
+            plan_checksum: dummy_cs(),
+            success: true,
+            failure_context: None,
+            timestamp_ms: 1,
+            stdout: "ok".into(),
+            stderr: String::new(),
+        });
         t.finish(StrategyOutcome::Success);
 
         assert_eq!(t.attempt_count(), 2);
@@ -176,36 +178,36 @@ mod tests {
     #[test]
     fn strategies_used_deduplicates() {
         let mut t = StrategyTrace::new("x");
-        t.record(
-            0,
-            StrategyKind::Retry,
-            dummy_cs(),
-            false,
-            None,
-            0,
-            String::new(),
-            String::new(),
-        );
-        t.record(
-            1,
-            StrategyKind::Retry,
-            dummy_cs(),
-            false,
-            None,
-            1,
-            String::new(),
-            String::new(),
-        );
-        t.record(
-            2,
-            StrategyKind::Repair,
-            dummy_cs(),
-            true,
-            None,
-            2,
-            String::new(),
-            String::new(),
-        );
+        t.record(StrategyAttemptInput {
+            attempt_index: 0,
+            strategy_kind: StrategyKind::Retry,
+            plan_checksum: dummy_cs(),
+            success: false,
+            failure_context: None,
+            timestamp_ms: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        t.record(StrategyAttemptInput {
+            attempt_index: 1,
+            strategy_kind: StrategyKind::Retry,
+            plan_checksum: dummy_cs(),
+            success: false,
+            failure_context: None,
+            timestamp_ms: 1,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
+        t.record(StrategyAttemptInput {
+            attempt_index: 2,
+            strategy_kind: StrategyKind::Repair,
+            plan_checksum: dummy_cs(),
+            success: true,
+            failure_context: None,
+            timestamp_ms: 2,
+            stdout: String::new(),
+            stderr: String::new(),
+        });
         let kinds = t.strategies_used();
         assert_eq!(kinds.len(), 2);
         assert_eq!(kinds[0], StrategyKind::Retry);

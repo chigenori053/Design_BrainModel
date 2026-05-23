@@ -301,10 +301,7 @@ impl SemanticGeneralizationEngine {
     }
 
     /// Extract common token patterns across a set of memory signatures.
-    pub fn extract_common_patterns<'a>(
-        &self,
-        memories: &'a [HolographicSemanticMemory],
-    ) -> Vec<String> {
+    pub fn extract_common_patterns(&self, memories: &[HolographicSemanticMemory]) -> Vec<String> {
         if memories.is_empty() {
             return vec![];
         }
@@ -325,7 +322,7 @@ impl SemanticGeneralizationEngine {
                 *freq.entry(t).or_insert(0) += 1;
             }
         }
-        let majority = (memories.len() + 1) / 2;
+        let majority = memories.len().div_ceil(2);
         let mut common: Vec<String> = freq
             .into_iter()
             .filter(|(_, count)| *count >= majority)
@@ -1095,7 +1092,7 @@ mod tests {
             .unwrap();
         store.run_generalization_pass();
         assert!(
-            store.attractors().len() >= 1,
+            !store.attractors().is_empty(),
             "At least one attractor must form"
         );
         assert!(

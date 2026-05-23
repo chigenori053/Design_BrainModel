@@ -77,13 +77,13 @@ impl AdaptivePlanner {
         }
 
         // ── Repair (local modification) ───────────────────────────────────────
-        if self.allow_repair {
-            if let Some(repaired) = self.repair(plan, failure) {
-                // Only include if the repaired plan is different from the original
-                // and hasn't already failed.
-                if repaired.plan != *plan && !history.has_failed(&repaired.plan) {
-                    candidates.push(repaired);
-                }
+        if self.allow_repair
+            && let Some(repaired) = self.repair(plan, failure)
+        {
+            // Only include if the repaired plan is different from the original
+            // and hasn't already failed.
+            if repaired.plan != *plan && !history.has_failed(&repaired.plan) {
+                candidates.push(repaired);
             }
         }
 

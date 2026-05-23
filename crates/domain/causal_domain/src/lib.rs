@@ -8,17 +8,12 @@ use std::{
 pub const MIN_GRAPHS: usize = 2;
 pub const MAX_GRAPHS: usize = 5;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Ord, PartialOrd)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub enum IntentType {
+    #[default]
     Refactor,
     FixBug,
     Rename,
-}
-
-impl Default for IntentType {
-    fn default() -> Self {
-        Self::Refactor
-    }
 }
 
 impl IntentType {

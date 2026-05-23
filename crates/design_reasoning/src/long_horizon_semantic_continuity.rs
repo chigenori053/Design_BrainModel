@@ -301,16 +301,9 @@ impl TemporalContinuityEngine {
     }
 }
 
+#[derive(Default)]
 pub struct LongHorizonContinuityRuntime {
     engine: TemporalContinuityEngine,
-}
-
-impl Default for LongHorizonContinuityRuntime {
-    fn default() -> Self {
-        Self {
-            engine: TemporalContinuityEngine::default(),
-        }
-    }
 }
 
 impl LongHorizonContinuityRuntime {

@@ -38,8 +38,8 @@
 //!
 //! ## Module overview
 //!
-//! - [`types`]     — `CodeIrProgram`, `Intent`, `ExecutionContext`, `StrategyInput/Output`,
-//!                   `RunIntegrator` trait + adapters
+//! - [`types`] — `CodeIrProgram`, `Intent`, `ExecutionContext`, `StrategyInput/Output`,
+//!   `RunIntegrator` trait + adapters
 //! - [`policy`]    — `StrategyPolicy` (max_retries, beam_width, allow_repair, …)
 //! - [`failure`]   — `FailureKind`, `FailureContext`, `StrategyFailureAnalyzer`
 //! - [`history`]   — `ExecutionHistory` (deduplication + pattern learning)
@@ -78,7 +78,7 @@ pub use proposal::{
     requires_clarification,
 };
 pub use selector::StrategySelector;
-pub use trace::{StrategyAttempt, StrategyOutcome, StrategyTrace};
+pub use trace::{StrategyAttempt, StrategyAttemptInput, StrategyOutcome, StrategyTrace};
 pub use types::{
     Action, CodeIrProgram, DryRunIntegrator, ExecutionContext, ExecutionMode,
     FIXED_GIT_COMMIT_MESSAGE, FailThenSucceedIntegrator, HardenedRunIntegrator, Intent,

@@ -370,16 +370,9 @@ impl WorldPredictionEngine {
     }
 }
 
+#[derive(Default)]
 pub struct SemanticWorldPredictionRuntime {
     engine: WorldPredictionEngine,
-}
-
-impl Default for SemanticWorldPredictionRuntime {
-    fn default() -> Self {
-        Self {
-            engine: WorldPredictionEngine::default(),
-        }
-    }
 }
 
 impl SemanticWorldPredictionRuntime {

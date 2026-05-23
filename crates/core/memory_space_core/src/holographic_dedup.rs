@@ -766,22 +766,22 @@ impl HolographicDeduplicationManager {
         if self.exact_index.get(&old_exact_key) == Some(&memory_id) {
             self.exact_index.remove(&old_exact_key);
         }
-        if let Some(canonical_id) = self.exact_index.get(&new_exact_key).copied() {
-            if canonical_id != memory_id {
-                let duplicate = self
-                    .nodes
-                    .remove(&memory_id)
-                    .ok_or(MemorySpaceError::MissingCanonicalMemory(memory_id))?;
-                let canonical = self
-                    .nodes
-                    .get_mut(&canonical_id)
-                    .ok_or(MemorySpaceError::MissingCanonicalMemory(canonical_id))?;
-                canonical.references.extend(duplicate.references);
-                return Ok(DedupEvent::ExactDuplicateMerged {
-                    duplicate_id: memory_id,
-                    canonical_id,
-                });
-            }
+        if let Some(canonical_id) = self.exact_index.get(&new_exact_key).copied()
+            && canonical_id != memory_id
+        {
+            let duplicate = self
+                .nodes
+                .remove(&memory_id)
+                .ok_or(MemorySpaceError::MissingCanonicalMemory(memory_id))?;
+            let canonical = self
+                .nodes
+                .get_mut(&canonical_id)
+                .ok_or(MemorySpaceError::MissingCanonicalMemory(canonical_id))?;
+            canonical.references.extend(duplicate.references);
+            return Ok(DedupEvent::ExactDuplicateMerged {
+                duplicate_id: memory_id,
+                canonical_id,
+            });
         }
         self.exact_index.insert(new_exact_key, memory_id);
         Ok(DedupEvent::TransitionCommitted {
@@ -3204,7 +3204,7 @@ fn sorted_links(links: &[(MemoryId, MemoryId)]) -> Vec<String> {
 }
 
 fn sorted_u64s(values: &[u64]) -> Vec<String> {
-    let mut normalized = values.iter().copied().collect::<Vec<_>>();
+    let mut normalized = values.to_vec();
     normalized.sort();
     normalized.dedup();
     normalized
