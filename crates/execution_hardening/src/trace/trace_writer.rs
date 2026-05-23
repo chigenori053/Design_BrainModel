@@ -58,22 +58,22 @@ impl Default for TraceWriter {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::trace::hardened_trace::HardenedStepTrace;
+    use crate::trace::hardened_trace::{HardenedStepTrace, HardenedTraceInput};
 
     fn sample_trace(index: usize) -> HardenedStepTrace {
-        HardenedStepTrace::new(
-            index,
-            "build",
-            vec!["cargo".into(), "build".into()],
-            "Compiling...".into(),
-            String::new(),
-            Some(0),
-            true,
-            1_000_000,
-            1_000_050,
-            vec![],
-            vec![],
-        )
+        HardenedStepTrace::new(HardenedTraceInput {
+            step_index: index,
+            phase: "build".to_string(),
+            command: vec!["cargo".into(), "build".into()],
+            stdout: "Compiling...".into(),
+            stderr: String::new(),
+            exit_code: Some(0),
+            success: true,
+            timestamp_ms: 1_000_000,
+            end_timestamp_ms: 1_000_050,
+            staged_effect_keys: vec![],
+            committed_effect_keys: vec![],
+        })
     }
 
     #[test]

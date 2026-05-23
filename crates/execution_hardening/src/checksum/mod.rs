@@ -1,5 +1,5 @@
-pub mod checksum;
+pub mod core;
 pub mod trace_hash;
 
-pub use checksum::{Checksum, ChecksumBuilder};
+pub use core::{Checksum, ChecksumBuilder};
 pub use trace_hash::ExecutionTraceHash;

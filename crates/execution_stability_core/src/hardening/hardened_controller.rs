@@ -9,7 +9,7 @@ use execution_hardening::{
     error::HardeningError,
     replay::ReplayValidator,
     snapshot::{SerializedState, StateSnapshot},
-    trace::{HardenedStepTrace, TraceWriter},
+    trace::{HardenedStepTrace, HardenedTraceInput, TraceWriter},
 };
 
 /// The result of a hardened execution run.
@@ -264,19 +264,19 @@ fn build_hardened_traces_jsonl(
     let mut traces: Vec<HardenedStepTrace> = Vec::new();
 
     for (idx, step) in result.trace.steps.iter().enumerate() {
-        let t = HardenedStepTrace::new(
-            idx,
-            &step.step_name,
-            step.command.clone(),
-            step.stdout.clone(),
-            step.stderr.clone(),
-            None, // exit code not stored in StepTrace
-            step.success,
-            step.start_time,
-            step.end_time,
-            vec![],
-            vec![],
-        );
+        let t = HardenedStepTrace::new(HardenedTraceInput {
+            step_index: idx,
+            phase: step.step_name.clone(),
+            command: step.command.clone(),
+            stdout: step.stdout.clone(),
+            stderr: step.stderr.clone(),
+            exit_code: None, // exit code not stored in StepTrace
+            success: step.success,
+            timestamp_ms: step.start_time,
+            end_timestamp_ms: step.end_time,
+            staged_effect_keys: vec![],
+            committed_effect_keys: vec![],
+        });
         let _ = writer.write_step(&t);
         traces.push(t);
     }
@@ -346,8 +346,10 @@ mod tests {
 
     #[test]
     fn hardened_controller_dry_run_succeeds() {
-        let mut ctrl = DefaultExecutionController::default();
-        ctrl.dry_run = true;
+        let ctrl = DefaultExecutionController {
+            dry_run: true,
+            ..Default::default()
+        };
         let hardened = HardenedExecutionController::new(ctrl);
         let result = hardened.execute_with_hardening(&dry_run_plan());
         assert!(result.is_ok(), "{result:?}");
@@ -355,8 +357,10 @@ mod tests {
 
     #[test]
     fn dry_run_post_snapshot_verifies() {
-        let mut ctrl = DefaultExecutionController::default();
-        ctrl.dry_run = true;
+        let ctrl = DefaultExecutionController {
+            dry_run: true,
+            ..Default::default()
+        };
         let hardened = HardenedExecutionController::new(ctrl);
         let result = hardened.execute_with_hardening(&dry_run_plan()).unwrap();
         assert!(result.post_snapshot.verify());
@@ -365,8 +369,10 @@ mod tests {
     #[test]
     fn trace_hash_is_stable_for_dry_run() {
         let mk = || {
-            let mut ctrl = DefaultExecutionController::default();
-            ctrl.dry_run = true;
+            let ctrl = DefaultExecutionController {
+                dry_run: true,
+                ..Default::default()
+            };
             HardenedExecutionController::new(ctrl)
                 .execute_with_hardening(&dry_run_plan())
                 .unwrap()

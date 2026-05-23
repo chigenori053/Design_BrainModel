@@ -1,4 +1,4 @@
-use super::checksum::{Checksum, ChecksumBuilder};
+use super::{Checksum, ChecksumBuilder};
 
 /// Combined checksum covering all four execution dimensions:
 /// plan, output, effect, and state.
@@ -33,7 +33,7 @@ impl ExecutionTraceHash {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::checksum::checksum::Checksum;
+    use crate::checksum::Checksum;
 
     fn dummy(seed: u8) -> Checksum {
         Checksum::of(&[seed; 32])

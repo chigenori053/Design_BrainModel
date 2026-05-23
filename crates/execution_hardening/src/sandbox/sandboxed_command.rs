@@ -81,12 +81,12 @@ impl SandboxedCommand {
     /// inline-execution flag such as `-c` or `--command`.
     pub fn arg(mut self, arg: impl Into<OsString>) -> Result<Self, HardeningError> {
         let arg: OsString = arg.into();
-        if let Some(s) = arg.to_str() {
-            if FORBIDDEN_ARG_PATTERNS.contains(&s) {
-                return Err(HardeningError::SandboxViolation(format!(
-                    "Forbidden argument '{s}': dynamic shell execution is prohibited (spec §5.5)"
-                )));
-            }
+        if let Some(s) = arg.to_str()
+            && FORBIDDEN_ARG_PATTERNS.contains(&s)
+        {
+            return Err(HardeningError::SandboxViolation(format!(
+                "Forbidden argument '{s}': dynamic shell execution is prohibited (spec §5.5)"
+            )));
         }
         self.args.push(arg);
         Ok(self)

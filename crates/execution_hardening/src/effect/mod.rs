@@ -1,5 +1,5 @@
-pub mod effect;
+pub mod core;
 pub mod staged_effect;
 
-pub use effect::Effect;
+pub use core::Effect;
 pub use staged_effect::StagedEffectManager;

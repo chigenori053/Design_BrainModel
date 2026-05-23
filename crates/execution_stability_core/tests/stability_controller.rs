@@ -47,11 +47,13 @@ fn rust_plan(root: PathBuf) -> ExecutionPlan {
 }
 
 fn deterministic_controller() -> DefaultExecutionController {
-    let mut controller = DefaultExecutionController::default();
-    controller.config = ExecutionConfig {
-        use_container: false,
-        network_mode: NetworkMode::Disabled,
-        enable_determinism_check: false,
+    let mut controller = DefaultExecutionController {
+        config: ExecutionConfig {
+            use_container: false,
+            network_mode: NetworkMode::Disabled,
+            enable_determinism_check: false,
+        },
+        ..Default::default()
     };
     controller.network_guard.mode = controller.config.network_mode.clone();
     controller

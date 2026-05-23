@@ -60,43 +60,47 @@ pub struct StepEffect {
     pub committed_effect_keys: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HardenedTraceInput {
+    pub step_index: usize,
+    pub phase: String,
+    pub command: Vec<String>,
+    pub stdout: String,
+    pub stderr: String,
+    pub exit_code: Option<i32>,
+    pub success: bool,
+    pub timestamp_ms: u64,
+    pub end_timestamp_ms: u64,
+    pub staged_effect_keys: Vec<String>,
+    pub committed_effect_keys: Vec<String>,
+}
+
 impl HardenedStepTrace {
     /// Build a `HardenedStepTrace` for a step that has already completed.
-    pub fn new(
-        step_index: usize,
-        phase: impl Into<String>,
-        command: Vec<String>,
-        stdout: String,
-        stderr: String,
-        exit_code: Option<i32>,
-        success: bool,
-        timestamp_ms: u64,
-        end_timestamp_ms: u64,
-        staged_effect_keys: Vec<String>,
-        committed_effect_keys: Vec<String>,
-    ) -> Self {
-        let phase = phase.into();
+    pub fn new(input: HardenedTraceInput) -> Self {
+        let phase = input.phase;
+        let command = input.command;
         let execution_op = if command.is_empty() {
             phase.clone()
         } else {
             format!("{phase}:{}", command.join(" "))
         };
         Self {
-            step_index,
+            step_index: input.step_index,
             execution_op,
             input: StepInput { command, phase },
             output: StepOutput {
-                stdout,
-                stderr,
-                exit_code,
+                stdout: input.stdout,
+                stderr: input.stderr,
+                exit_code: input.exit_code,
             },
             effect: StepEffect {
-                staged_effect_keys,
-                committed_effect_keys,
+                staged_effect_keys: input.staged_effect_keys,
+                committed_effect_keys: input.committed_effect_keys,
             },
-            timestamp_ms,
-            end_timestamp_ms,
-            success,
+            timestamp_ms: input.timestamp_ms,
+            end_timestamp_ms: input.end_timestamp_ms,
+            success: input.success,
         }
     }
 }

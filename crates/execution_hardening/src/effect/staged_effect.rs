@@ -1,4 +1,4 @@
-use super::effect::Effect;
+use super::Effect;
 use crate::checksum::{Checksum, ChecksumBuilder};
 use crate::error::HardeningError;
 
