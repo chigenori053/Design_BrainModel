@@ -10,11 +10,6 @@ pub mod types;
 
 pub use exploration::ExplorationMemory;
 pub use graph::StructuralGraph;
-#[deprecated(
-    since = "0.1.0",
-    note = "Use HolographicVectorStoreAdapter and LegacyMemoryStore instead."
-)]
-pub use holographic_store::HolographicVectorStore;
 pub use interference_memory::{InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
 pub use memory_entry::MemoryEntry;
 pub use node::DesignNode;
@@ -43,24 +38,29 @@ mod tests {
         assert_send_sync::<ExplorationMemory>();
     }
 
-    #[allow(deprecated)]
     #[test]
-    fn deprecated_holographic_vector_store_reexport_remains_available() {
-        fn assert_legacy_store_type<T>() {}
+    fn legacy_holographic_store_is_not_public_reexported() {
+        let lib_rs = include_str!("lib.rs");
+        let forbidden = concat!("pub use holographic_store::", "HolographicVectorStore");
 
-        assert_legacy_store_type::<crate::HolographicVectorStore>();
+        assert!(!lib_rs.contains(forbidden));
+        assert!(lib_rs.contains("pub mod holographic_store;"));
     }
 
     #[test]
-    fn adapter_is_preferred_public_store_api() {
+    fn adapter_remains_public_store_api() {
         fn assert_legacy_memory_store<T: LegacyMemoryStore>() {}
 
+        let _adapter_type: Option<crate::HolographicVectorStoreAdapter> = None;
+        fn assert_root_legacy_store<T: crate::LegacyMemoryStore>() {}
+
         assert_legacy_memory_store::<HolographicVectorStoreAdapter>();
+        assert_root_legacy_store::<crate::HolographicVectorStoreAdapter>();
     }
 
     #[test]
-    fn memory_entry_remains_public_without_deprecation() {
-        let entry = MemoryEntry {
+    fn memory_entry_remains_public_after_reexport_removal() {
+        let entry: crate::MemoryEntry = MemoryEntry {
             id: 1,
             depth: 2,
             timestamp: 3,
@@ -71,22 +71,6 @@ mod tests {
         assert_eq!(entry.depth, 2);
         assert_eq!(entry.timestamp, 3);
         assert_eq!(entry.vector.len(), 4);
-    }
-
-    #[test]
-    fn memory_entry_remains_public_after_store_split() {
-        // MemoryEntry must be importable from the crate root independently of
-        // holographic_store.  After the split it lives in memory_entry.rs.
-        let _entry: crate::MemoryEntry = crate::MemoryEntry {
-            id: 10,
-            depth: 5,
-            timestamp: 20,
-            vector: vec![0.5, 0.6, 0.7, 0.8],
-        };
-        assert_eq!(_entry.id, 10);
-        assert_eq!(_entry.depth, 5);
-        assert_eq!(_entry.timestamp, 20);
-        assert_eq!(_entry.vector.len(), 4);
     }
 
     #[test]
@@ -118,13 +102,10 @@ mod tests {
         );
     }
 
-    #[allow(deprecated)]
     #[test]
-    fn deprecated_store_is_compatibility_only() {
-        fn assert_compatibility_type<T>() {}
+    fn holographic_store_module_is_compatibility_only() {
         fn assert_legacy_memory_store<T: LegacyMemoryStore>() {}
 
-        assert_compatibility_type::<crate::HolographicVectorStore>();
         assert_legacy_memory_store::<HolographicVectorStoreAdapter>();
     }
 }
