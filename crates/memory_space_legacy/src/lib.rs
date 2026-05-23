@@ -71,6 +71,45 @@ mod tests {
         assert_eq!(entry.timestamp, 3);
         assert_eq!(entry.vector.len(), 4);
     }
+
+    #[test]
+    fn holographic_store_removal_readiness_boundary_is_adapter_only() {
+        use crate::{InterferenceMode, LegacyStoreAdapter, MemorySpace};
+        use core_types::ObjectiveVector;
+
+        let path = std::env::temp_dir().join("memory_space_removal_readiness_boundary.bin");
+        let store = LegacyStoreAdapter::open(&path, 4).expect("open adapter");
+        let mut memory =
+            MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 8).expect("new");
+        let base = ObjectiveVector {
+            f_struct: 0.2,
+            f_field: 0.3,
+            f_risk: 0.4,
+            f_shape: 0.5,
+        };
+
+        memory.store(&base, 1).expect("store");
+        let adjusted = memory.apply_interference(&base);
+        assert!((0.0..=1.0).contains(&adjusted.f_struct));
+        assert!((0.0..=1.0).contains(&adjusted.f_field));
+        assert!((0.0..=1.0).contains(&adjusted.f_risk));
+        assert!((0.0..=1.0).contains(&adjusted.f_shape));
+
+        let _ = std::fs::remove_file(path);
+        let _ = std::fs::remove_file(
+            std::env::temp_dir().join("memory_space_removal_readiness_boundary.lock"),
+        );
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn deprecated_store_is_compatibility_only() {
+        fn assert_compatibility_type<T>() {}
+        fn assert_legacy_memory_store<T: LegacyMemoryStore>() {}
+
+        assert_compatibility_type::<crate::HolographicVectorStore>();
+        assert_legacy_memory_store::<HolographicVectorStoreAdapter>();
+    }
 }
 
 #[cfg(test)]
