@@ -1,3 +1,4 @@
+pub mod plan_validation;
 mod process;
 mod resolver;
 mod sandbox;

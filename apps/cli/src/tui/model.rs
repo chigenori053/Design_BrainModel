@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// Full payload sent from runtime to UI.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct UiPayload {
     pub trace: TraceViewModel,
     pub hypotheses: Vec<HypothesisViewModel>,
@@ -12,14 +12,14 @@ pub struct UiPayload {
 
 // ── Trace ─────────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TraceViewModel {
     pub request_id: String,
     pub steps: Vec<TraceStepViewModel>,
     pub stats: TraceStatsViewModel,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TraceStepViewModel {
     pub depth: usize,
     pub beam_width: usize,
@@ -28,7 +28,7 @@ pub struct TraceStepViewModel {
     pub recall_hits: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct TraceStatsViewModel {
     pub total_nodes: usize,
     pub max_depth: usize,
@@ -38,7 +38,7 @@ pub struct TraceStatsViewModel {
 
 // ── Hypothesis ────────────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HypothesisViewModel {
     pub id: usize,
     pub parent: Option<usize>,
@@ -49,14 +49,14 @@ pub struct HypothesisViewModel {
     pub relations: Vec<HypothesisRelationViewModel>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct HypothesisRelationViewModel {
     pub to_id: usize,
     pub relation_type: String,
 }
 
 /// Score breakdown (all values 0.0–1.0).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ScorePartsViewModel {
     pub relevance: f32,
     pub goal: f32,
@@ -66,7 +66,7 @@ pub struct ScorePartsViewModel {
 
 // ── Memory / Recall ───────────────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MemoryCandidateViewModel {
     pub id: String,
     pub score: f32,

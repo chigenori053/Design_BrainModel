@@ -7,6 +7,7 @@ default-run = "dbm"
 [features]
 ci-heavy = []
 contract_strict = []
+integration-late = []
 
 [[bin]]
 name = "dbm"

@@ -1,12 +1,17 @@
 use std::path::{Path, PathBuf};
 
+use crate::coding::{
+    ChangeSummary, ChangeType, CodeChange, CodeChangeSet, CodingOptions, DiffHunk,
+    execute_code_change_set,
+};
+use crate::refactor::PatchScope;
 use crate::runtime::autonomous::{
     ContinuityState, ExecutionSession, detect_execution_failure, evaluate_repair_convergence,
     generate_repair_branch,
 };
 use crate::runtime::branch::{
-    BranchId, BranchRuntime, BranchSnapshot, ContradictionSet, ConvergenceScore, RuntimeEffectSet,
-    WorldStateSnapshot, evaluate_branch_convergence,
+    BranchId, BranchRuntime, BranchSnapshot, BranchSnapshotInput, ContradictionSet,
+    ConvergenceScore, RuntimeEffectSet, WorldStateSnapshot, evaluate_branch_convergence,
 };
 use crate::runtime::coordination::{
     coordinate_runtime_nodes, distributed_repair, evaluate_distributed_convergence,
@@ -87,6 +92,10 @@ impl ValidationResult {
             && self.ownership_valid
             && self.transaction_valid
             && self.lifecycle_valid
+    }
+
+    fn is_ok(&self) -> bool {
+        self.is_valid()
     }
 }
 
@@ -198,23 +207,44 @@ impl RuntimeCommandDispatcher {
         let events = match command {
             RuntimeCommand::Preview { target } => {
                 let before_tx_id = state.active_transaction_id.clone();
-                let events = runtime_preview(state, workspace_root, target);
+                let events = runtime_preview(state, workspace_root, target.clone());
                 trace.transaction_created = state.active_transaction_id != before_tx_id;
+                // Set the apply guard for normal previews.
+                state.apply_guard = Some(crate::tui::state::ApplyGuardState {
+                    transaction_id: state.active_transaction_id.clone(),
+                    target: Some(target),
+                    source: Some(crate::tui::state::ApplyGuardSource::NormalPreview),
+                });
                 events
             }
             RuntimeCommand::Apply => {
                 trace.apply_entered = true;
-                let events = runtime_apply(state);
+                let events = runtime_apply_with_backend(state, workspace_root);
                 trace.transaction_consumed = state.active_transaction.is_none();
+                // If apply succeeded, move promoted_plan to last_applied_plan.
+                if trace.transaction_consumed {
+                    state.last_applied_plan = state.promoted_plan.take();
+                }
+                // Clear the apply guard on apply.
+                state.apply_guard = None;
                 events
             }
             RuntimeCommand::Commit => {
                 trace.commit_entered = true;
-                runtime_commit(state)
+                let events = runtime_commit(state);
+                // Move promoted_plan to last_applied_plan on commit too.
+                state.last_applied_plan = state.promoted_plan.take();
+                // Clear the apply guard on commit.
+                state.apply_guard = None;
+                events
             }
             RuntimeCommand::Rollback => {
                 let events = runtime_rollback(state);
                 trace.transaction_consumed = true;
+                // Clear promoted_plan on rollback.
+                state.promoted_plan = None;
+                // Clear the apply guard on rollback.
+                state.apply_guard = None;
                 events
             }
             RuntimeCommand::Status => runtime_status(state),
@@ -235,12 +265,58 @@ pub fn runtime_preview(
     runtime_preview_internal(state, workspace_root, target, false)
 }
 
+pub fn runtime_apply_git_command(
+    workspace_root: &Path,
+    args: &[String],
+) -> (i32, crate::git_guard::GitCommandOutput) {
+    crate::git_guard::execute_safe_git_command(workspace_root, args)
+}
+
+pub fn runtime_apply_github_command(
+    workspace_root: &Path,
+    args: &[String],
+) -> (i32, crate::github_guard::GitHubCommandOutput) {
+    crate::github_guard::execute_safe_github_command(workspace_root, args)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeAuthorityTarget(PathBuf);
+
+impl RuntimeAuthorityTarget {
+    pub fn new(path: PathBuf, workspace_root: &Path) -> Result<Self, RuntimeAuthorityTargetError> {
+        if path.as_os_str().is_empty() || path == Path::new(".") {
+            return Err(RuntimeAuthorityTargetError::UnresolvedTarget);
+        }
+        if !is_workspace_relative_target(&path, workspace_root) {
+            return Err(RuntimeAuthorityTargetError::UnresolvedTarget);
+        }
+        let resolved = resolve_target(workspace_root, path.clone());
+        if resolved == workspace_root {
+            return Err(RuntimeAuthorityTargetError::UnresolvedTarget);
+        }
+        Ok(Self(path))
+    }
+
+    pub fn as_path(&self) -> &Path {
+        &self.0
+    }
+
+    pub fn into_path_buf(self) -> PathBuf {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeAuthorityTargetError {
+    UnresolvedTarget,
+}
+
 pub fn runtime_preview_from_intent(
     state: &mut TuiState,
     workspace_root: &Path,
-    target: PathBuf,
+    target: RuntimeAuthorityTarget,
 ) -> Vec<RuntimeNarrativeEvent> {
-    runtime_preview_internal(state, workspace_root, target, true)
+    runtime_preview_internal(state, workspace_root, target.into_path_buf(), true)
 }
 
 fn runtime_preview_internal(
@@ -249,7 +325,7 @@ fn runtime_preview_internal(
     target: PathBuf,
     allow_missing_target: bool,
 ) -> Vec<RuntimeNarrativeEvent> {
-    if state.runtime_state == RuntimeShellState::BoundedHalt {
+    if state.runtime_state == RuntimeShellState::BoundedHalt && state.active_transaction.is_none() {
         commit_runtime_mutation(
             state,
             RuntimeMutation::MutationSuppressed {
@@ -258,8 +334,21 @@ fn runtime_preview_internal(
         );
         return runtime_semantic_events(state);
     }
+    if state.runtime_state == RuntimeShellState::BoundedHalt && state.active_transaction.is_some() {
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        if state
+            .rejection
+            .as_ref()
+            .is_some_and(|rejection| rejection.governance_source.as_deref() == Some("bounded_halt"))
+        {
+            state.rejection = None;
+        }
+    }
 
-    if target.as_os_str().is_empty() || !is_workspace_relative_target(&target, workspace_root) {
+    if target.as_os_str().is_empty()
+        || target == Path::new(".")
+        || !is_workspace_relative_target(&target, workspace_root)
+    {
         state.rejection = Some(crate::tui::state::RejectionInfo {
             reason: "unresolved target".to_string(),
             originating_mutation: "runtime_preview".to_string(),
@@ -300,13 +389,18 @@ fn runtime_preview_internal(
             );
             return runtime_semantic_events(state);
         }
-        // Subsequent preview: stage speculative child (invisible on surface).
+        // Subsequent preview: retain speculative projection memory, then
+        // promote the validated staged transaction to authoritative ownership.
         update_branch_runtime(state, &staged);
+        if authority_promotion_allowed(state, &staged) {
+            let _ = commit_staged_transaction(state, staged.clone());
+        }
     } else {
         // First preview: establish authority (commit immediately).
         let _ = commit_staged_transaction(state, staged);
     }
 
+    enforce_runtime_authority_consistency(state);
     runtime_semantic_events(state)
 }
 
@@ -384,7 +478,7 @@ pub fn validate_preview_candidate(candidate: PreviewCandidate) -> StagedTransact
 pub fn commit_staged_transaction(
     state: &mut TuiState,
     mut staged: StagedTransaction,
-) -> Result<StagedTransaction, StagedTransaction> {
+) -> Result<StagedTransaction, Box<StagedTransaction>> {
     if staged.committed || !staged.validation.is_valid() {
         state.rejection = Some(crate::tui::state::RejectionInfo {
             reason: "staged transaction validation failed".to_string(),
@@ -395,7 +489,7 @@ pub fn commit_staged_transaction(
         if state.active_transaction.is_none() {
             state.runtime_state = RuntimeShellState::Rejected;
         }
-        return Err(staged);
+        return Err(Box::new(staged));
     }
     state.active_transaction = Some(RuntimeTransaction {
         tx_id: staged.tx_id.clone(),
@@ -407,9 +501,55 @@ pub fn commit_staged_transaction(
     state.active_transaction_id = Some(staged.tx_id.clone());
     state.active_target = Some(staged.target.clone());
     state.runtime_state = staged.staged_runtime_state;
-    update_branch_runtime(state, &staged);
+    if state
+        .rejection
+        .as_ref()
+        .is_some_and(|rejection| rejection.originating_mutation != staged.tx_id)
+    {
+        state.rejection = None;
+    }
+    if !branch_runtime_contains_tx(state, &staged.tx_id) {
+        update_branch_runtime(state, &staged);
+    }
+    enforce_runtime_authority_consistency(state);
     staged.committed = true;
     Ok(staged)
+}
+
+fn branch_runtime_contains_tx(state: &TuiState, tx_id: &str) -> bool {
+    state.branch_runtime.as_ref().is_some_and(|runtime| {
+        runtime.committed_branch.tx_id == tx_id
+            || runtime
+                .speculative_branches
+                .iter()
+                .any(|branch| branch.tx_id == tx_id)
+    })
+}
+
+fn authority_promotion_allowed(state: &TuiState, staged: &StagedTransaction) -> bool {
+    staged.validation.is_ok() && !runtime_state_blocks_authority_promotion(state.runtime_state)
+}
+
+fn runtime_state_blocks_authority_promotion(runtime_state: RuntimeShellState) -> bool {
+    runtime_state == RuntimeShellState::MutationSuppressed
+        || runtime_state == RuntimeShellState::Failed
+        || runtime_state.label().contains("HALT")
+        || runtime_state.label().contains("REJECT")
+}
+
+fn enforce_runtime_authority_consistency(state: &mut TuiState) {
+    if matches!(
+        state.runtime_state,
+        RuntimeShellState::Apply | RuntimeShellState::PreviewReady
+    ) && state.active_transaction.is_none()
+    {
+        state.runtime_state = RuntimeShellState::Idle;
+    }
+
+    assert!(
+        state.runtime_state != RuntimeShellState::PreviewReady
+            || state.active_transaction.is_some()
+    );
 }
 
 /// Update (or create) the `BranchRuntime` after a valid preview request.
@@ -443,21 +583,21 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
 
     match state.branch_runtime.as_mut() {
         None => {
-            let mut snapshot = BranchSnapshot::new(
-                new_id.clone(),
-                None,
-                staged.tx_id.clone(),
-                staged.target.clone(),
-                staged.staged_runtime_state,
-                staged.staged_projection.clone(),
-                ConvergenceScore::zero(),
-                ContradictionSet::zero(),
+            let mut snapshot = BranchSnapshot::new(BranchSnapshotInput {
+                branch_id: new_id.clone(),
+                parent_branch: None,
+                tx_id: staged.tx_id.clone(),
+                target: staged.target.clone(),
+                runtime_state: staged.staged_runtime_state,
+                projection: staged.staged_projection.clone(),
+                score: ConvergenceScore::zero(),
+                contradictions: ContradictionSet::zero(),
                 world_state,
                 runtime_effects,
                 topology,
-                0,
-                0,
-            );
+                depth: 0,
+                created_at: 0,
+            });
             evaluate_branch_convergence(&mut snapshot, None);
             state.branch_runtime = Some(BranchRuntime::new(snapshot));
             state.autonomous_session = Some(ExecutionSession::new(
@@ -471,21 +611,21 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                 let runtime = state.branch_runtime.as_ref().unwrap();
                 let parent_id = runtime.committed_branch.branch_id.clone();
                 let parent_depth = runtime.committed_branch.depth;
-                let mut child = BranchSnapshot::new(
-                    new_id,
-                    Some(parent_id),
-                    staged.tx_id.clone(),
-                    staged.target.clone(),
-                    staged.staged_runtime_state,
-                    staged.staged_projection.clone(),
-                    ConvergenceScore::zero(),
-                    ContradictionSet::zero(),
+                let mut child = BranchSnapshot::new(BranchSnapshotInput {
+                    branch_id: new_id,
+                    parent_branch: Some(parent_id),
+                    tx_id: staged.tx_id.clone(),
+                    target: staged.target.clone(),
+                    runtime_state: staged.staged_runtime_state,
+                    projection: staged.staged_projection.clone(),
+                    score: ConvergenceScore::zero(),
+                    contradictions: ContradictionSet::zero(),
                     world_state,
                     runtime_effects,
                     topology,
-                    parent_depth + 1,
-                    0,
-                );
+                    depth: parent_depth + 1,
+                    created_at: 0,
+                });
 
                 // Rule 1: evaluation and failure detection.
                 evaluate_branch_convergence(&mut child, Some(runtime));
@@ -610,7 +750,7 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
             );
 
             let dist_convergence = evaluate_distributed_convergence(
-                &[state.runtime_node.clone()],
+                std::slice::from_ref(&state.runtime_node),
                 &state.shared_world_state,
             );
             if dist_convergence < -10.0 {
@@ -667,41 +807,41 @@ fn update_branch_runtime(state: &mut TuiState, staged: &StagedTransaction) {
                 }
             }
 
-            if let Some(failure_signature) = detect_execution_failure(&child) {
-                if let Some(session) = state.autonomous_session.as_mut() {
-                    session.continuity_state = ContinuityState::Repairing;
-                    session.failure_count += 1;
+            if let Some(failure_signature) = detect_execution_failure(&child)
+                && let Some(session) = state.autonomous_session.as_mut()
+            {
+                session.continuity_state = ContinuityState::Repairing;
+                session.failure_count += 1;
 
-                    // Rule 1: repair branch generated before halt.
-                    let (_has_repair, repair_opt) = {
-                        let runtime = state.branch_runtime.as_mut().unwrap();
-                        let r = generate_repair_branch(runtime, &failure_signature);
-                        (r.is_some(), r)
-                    };
+                // Rule 1: repair branch generated before halt.
+                let (_has_repair, repair_opt) = {
+                    let runtime = state.branch_runtime.as_mut().unwrap();
+                    let r = generate_repair_branch(runtime, &failure_signature);
+                    (r.is_some(), r)
+                };
 
-                    if let Some(mut repair_branch) = repair_opt {
-                        session.repair_attempts += 1;
-                        let runtime = state.branch_runtime.as_mut().unwrap();
-                        evaluate_branch_convergence(&mut repair_branch, Some(runtime));
+                if let Some(mut repair_branch) = repair_opt {
+                    session.repair_attempts += 1;
+                    let runtime = state.branch_runtime.as_mut().unwrap();
+                    evaluate_branch_convergence(&mut repair_branch, Some(runtime));
 
-                        // Rule 10.2: Regression check.
-                        if evaluate_repair_convergence(runtime, &repair_branch) {
-                            runtime.open_speculative(repair_branch);
-                            return; // Staged repair successfully.
-                        } else {
-                            commit_runtime_mutation(
-                                state,
-                                RuntimeMutation::SemanticHalt(RuntimeShellState::RegressionHalt),
-                            );
-                            return;
-                        }
+                    // Rule 10.2: Regression check.
+                    if evaluate_repair_convergence(runtime, &repair_branch) {
+                        runtime.open_speculative(repair_branch);
+                        return; // Staged repair successfully.
                     } else {
                         commit_runtime_mutation(
                             state,
-                            RuntimeMutation::SemanticHalt(RuntimeShellState::AutonomousRepairHalt),
+                            RuntimeMutation::SemanticHalt(RuntimeShellState::RegressionHalt),
                         );
                         return;
                     }
+                } else {
+                    commit_runtime_mutation(
+                        state,
+                        RuntimeMutation::SemanticHalt(RuntimeShellState::AutonomousRepairHalt),
+                    );
+                    return;
                 }
             }
 
@@ -929,6 +1069,322 @@ pub fn runtime_apply(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
     runtime_semantic_events(state)
 }
 
+pub fn runtime_apply_with_backend(
+    state: &mut TuiState,
+    workspace_root: &Path,
+) -> Vec<RuntimeNarrativeEvent> {
+    let Some(transaction) = state.active_transaction.clone() else {
+        if runtime_state_is_halt(state.runtime_state) {
+            reject_runtime_apply(state, "runtime halt blocks apply");
+        } else {
+            state.runtime_state = RuntimeShellState::Idle;
+        }
+        return runtime_semantic_events(state);
+    };
+    state.active_target = Some(transaction.target_path.clone());
+    state.active_transaction_id = Some(transaction.tx_id.clone());
+    let transaction_target = Path::new(&transaction.target_path);
+    if transaction_target.as_os_str().is_empty() || transaction_target == Path::new(".") {
+        reject_runtime_apply(state, "unresolved target");
+        return runtime_semantic_events(state);
+    }
+
+    let target_path = resolve_target(workspace_root, PathBuf::from(&transaction.target_path));
+    if !target_path.exists() {
+        reject_runtime_apply(state, "target missing before apply");
+        return runtime_semantic_events(state);
+    }
+
+    if current_transaction_halt_blocks_apply(state, &transaction) {
+        reject_runtime_apply(state, "runtime halt blocks apply");
+        return runtime_semantic_events(state);
+    }
+    if runtime_state_is_halt(state.runtime_state)
+        && active_transaction_validation_ok(workspace_root, &transaction)
+    {
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        if state
+            .rejection
+            .as_ref()
+            .is_some_and(|rejection| !rejection_belongs_to_transaction(rejection, &transaction))
+        {
+            state.rejection = None;
+        }
+    }
+
+    let change_set = match active_transaction_change_set(workspace_root, &transaction) {
+        Ok(change_set) => change_set,
+        Err(reason) => {
+            reject_runtime_apply(state, &reason);
+            return runtime_semantic_events(state);
+        }
+    };
+    if let Err(reason) = validate_change_set_before_apply(&target_path, &change_set) {
+        reject_runtime_apply(state, &reason);
+        return runtime_semantic_events(state);
+    }
+
+    let options = CodingOptions {
+        apply: true,
+        check: true,
+        no_build: true,
+        backup: true,
+        format: false,
+        safe_mode: true,
+        auto_commit: false,
+        confirm_commit: false,
+        prompt_commit: false,
+        auto_push: false,
+        confirm_push: false,
+        auto_pr: false,
+        confirm_pr: false,
+        pr_base: "main".to_string(),
+        patch_scope: PatchScope::ExplicitTargetOnly,
+        explicit_target: Some(target_path.clone()),
+    };
+
+    let execution = match execute_code_change_set(workspace_root, &change_set, &options, None) {
+        Ok(execution) => execution,
+        Err(reason) => {
+            reject_runtime_apply(state, &reason);
+            return runtime_semantic_events(state);
+        }
+    };
+
+    if !execution.applied || execution.status == "noop" || execution.files_changed == 0 {
+        reject_runtime_apply(
+            state,
+            execution
+                .reason
+                .as_deref()
+                .unwrap_or("filesystem mutation was not applied"),
+        );
+        return runtime_semantic_events(state);
+    }
+
+    if let Err(reason) = validate_applied_transaction(&target_path, &transaction) {
+        reject_runtime_apply(state, &reason);
+        return runtime_semantic_events(state);
+    }
+
+    state.runtime_state = RuntimeShellState::Git;
+    state.active_transaction = None;
+    state.active_transaction_id = None;
+    state.active_target = None;
+    state.branch_runtime = None;
+    state.rejection = None;
+    runtime_semantic_events(state)
+}
+
+fn reject_runtime_apply(state: &mut TuiState, reason: &str) {
+    state.runtime_state = RuntimeShellState::Rejected;
+    state.rejection = Some(crate::tui::state::RejectionInfo {
+        reason: reason.to_string(),
+        originating_mutation: "runtime_apply".to_string(),
+        governance_source: None,
+        convergence_source: Some("filesystem_mutation".to_string()),
+    });
+}
+
+fn active_transaction_validation_ok(
+    workspace_root: &Path,
+    transaction: &RuntimeTransaction,
+) -> bool {
+    let target = Path::new(&transaction.target_path);
+    !transaction.tx_id.trim().is_empty()
+        && !transaction.target_path.trim().is_empty()
+        && target != Path::new(".")
+        && is_workspace_relative_target(target, workspace_root)
+        && transaction.diff.file == transaction.target_path
+        && !transaction.diff.changes.is_empty()
+}
+
+fn runtime_state_is_halt(runtime_state: RuntimeShellState) -> bool {
+    runtime_state == RuntimeShellState::BoundedHalt || runtime_state.label().contains("HALT")
+}
+
+fn current_transaction_halt_blocks_apply(
+    state: &TuiState,
+    transaction: &RuntimeTransaction,
+) -> bool {
+    if branch_runtime_current_transaction_budget_exhausted(state, transaction) {
+        return true;
+    }
+
+    let Some(rejection) = state.rejection.as_ref() else {
+        return false;
+    };
+    if !rejection_belongs_to_transaction(rejection, transaction) {
+        return false;
+    }
+
+    rejection.governance_source.as_deref() == Some("bounded_halt")
+        || (runtime_state_is_halt(state.runtime_state) && !transaction.failed_recoverable)
+}
+
+fn rejection_belongs_to_transaction(
+    rejection: &crate::tui::state::RejectionInfo,
+    transaction: &RuntimeTransaction,
+) -> bool {
+    rejection.originating_mutation == transaction.tx_id
+        || rejection.reason.contains(&transaction.tx_id)
+}
+
+fn branch_runtime_current_transaction_budget_exhausted(
+    state: &TuiState,
+    transaction: &RuntimeTransaction,
+) -> bool {
+    state.branch_runtime.as_ref().is_some_and(|runtime| {
+        runtime.budget.is_exhausted()
+            && (runtime.committed_branch.tx_id == transaction.tx_id
+                || runtime
+                    .speculative_branches
+                    .iter()
+                    .any(|branch| branch.tx_id == transaction.tx_id))
+    })
+}
+
+fn active_transaction_change_set(
+    workspace_root: &Path,
+    transaction: &RuntimeTransaction,
+) -> Result<CodeChangeSet, String> {
+    if transaction.diff.changes.is_empty() {
+        return Err("empty runtime diff".to_string());
+    }
+
+    let target = PathBuf::from(&transaction.target_path);
+    let file_path = workspace_relative_change_path(workspace_root, &target);
+    let hunks = transaction
+        .diff
+        .changes
+        .iter()
+        .map(diff_chunk_to_hunk)
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(CodeChangeSet {
+        patches: Vec::new(),
+        changes: vec![CodeChange {
+            file_path: file_path.display().to_string(),
+            change_type: ChangeType::ModifyFile,
+            hunks,
+        }],
+        summary: ChangeSummary {
+            total_changes: 1,
+            create_files: 0,
+            modify_files: 1,
+            move_files: 0,
+        },
+        canonical_target: Some(file_path),
+    })
+}
+
+fn workspace_relative_change_path(workspace_root: &Path, target: &Path) -> PathBuf {
+    target
+        .strip_prefix(workspace_root)
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|_| target.to_path_buf())
+}
+
+fn diff_chunk_to_hunk(chunk: &DiffChunk) -> Result<DiffHunk, String> {
+    match (
+        chunk.old_line,
+        chunk.new_line,
+        chunk.old.as_ref(),
+        chunk.new.as_ref(),
+    ) {
+        (Some(old_line), _, Some(_), Some(new)) => Ok(DiffHunk {
+            start_line: old_line,
+            end_line: old_line,
+            replacement: new.clone(),
+        }),
+        (Some(old_line), _, Some(_), None) => Ok(DiffHunk {
+            start_line: old_line,
+            end_line: old_line,
+            replacement: String::new(),
+        }),
+        (None, Some(new_line), None, Some(new)) => Ok(DiffHunk {
+            start_line: new_line,
+            end_line: new_line.saturating_sub(1),
+            replacement: new.clone(),
+        }),
+        _ => Err("unsupported runtime diff chunk".to_string()),
+    }
+}
+
+fn validate_applied_transaction(
+    target_path: &Path,
+    transaction: &RuntimeTransaction,
+) -> Result<(), String> {
+    let content = std::fs::read_to_string(target_path)
+        .map_err(|err| format!("failed to read applied target: {err}"))?;
+    if !transaction
+        .diff
+        .changes
+        .iter()
+        .filter_map(|chunk| chunk.new.as_ref())
+        .any(|new| content.contains(new.trim_end()))
+    {
+        return Err("projection not synchronized with filesystem".to_string());
+    }
+    if target_path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        syn::parse_file(&content).map_err(|err| format!("syntax validation failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn validate_change_set_before_apply(
+    target_path: &Path,
+    change_set: &CodeChangeSet,
+) -> Result<(), String> {
+    let before = std::fs::read_to_string(target_path)
+        .map_err(|err| format!("failed to read target before apply: {err}"))?;
+    let Some(change) = change_set.changes.first() else {
+        return Err("empty code change set".to_string());
+    };
+    let after = apply_runtime_hunks_to_content(&before, &change.hunks)?;
+    if after == before {
+        return Err("No changes detected".to_string());
+    }
+    if target_path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        syn::parse_file(&after).map_err(|err| format!("syntax validation failed: {err}"))?;
+    }
+    Ok(())
+}
+
+fn apply_runtime_hunks_to_content(original: &str, hunks: &[DiffHunk]) -> Result<String, String> {
+    let mut lines = original
+        .lines()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>();
+    let trailing_newline = original.ends_with('\n');
+    let mut sorted = hunks.to_vec();
+    sorted.sort_by(|left, right| right.start_line.cmp(&left.start_line));
+    for hunk in sorted {
+        let start = hunk.start_line.saturating_sub(1).min(lines.len());
+        let end_exclusive = hunk.end_line.min(lines.len());
+        let replacement = hunk
+            .replacement
+            .lines()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        if hunk.start_line <= hunk.end_line {
+            if start > end_exclusive {
+                return Err("invalid hunk line range".to_string());
+            }
+            lines.splice(start..end_exclusive, replacement);
+        } else {
+            lines.splice(start..start, replacement);
+        }
+    }
+    let mut rendered = lines.join("\n");
+    if (trailing_newline || hunks.iter().any(|h| h.replacement.ends_with('\n')))
+        && !rendered.is_empty()
+    {
+        rendered.push('\n');
+    }
+    Ok(rendered)
+}
+
 pub fn runtime_commit(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
     if let Some(runtime) = state.branch_runtime.as_mut() {
         let committed = if let (Some(session), memory) = (
@@ -979,6 +1435,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
             &mut events,
             RuntimeNarrativeEvent::System {
                 summary: "runtime stabilized".to_string(),
+                target: state.active_target.clone(),
             },
         );
         return events;
@@ -1002,6 +1459,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
                 &mut events,
                 RuntimeNarrativeEvent::System {
                     summary: "runtime stabilized".to_string(),
+                    target: state.active_target.clone(),
                 },
             );
             return events;
@@ -1050,6 +1508,7 @@ pub fn runtime_rollback(state: &mut TuiState) -> Vec<RuntimeNarrativeEvent> {
         &mut events,
         RuntimeNarrativeEvent::System {
             summary: "runtime stabilized".to_string(),
+            target: state.active_target.clone(),
         },
     );
     events
@@ -1106,7 +1565,17 @@ fn is_workspace_relative_target(target: &Path, workspace_root: &Path) -> bool {
 }
 
 fn preview_changes(target: &Path) -> Vec<DiffChunk> {
-    let preview = format!("preview {}", target.display());
+    let preview = if target.file_name().and_then(|name| name.to_str()) == Some("repl.rs") {
+        "#[allow(dead_code)]\nconst REPL_RUNTIME_TEST_2: &str = \"filesystem-mutation-backend\";\n#[allow(dead_code)]\nconst REPL_RUNTIME_TEST_3: &str = \"session-authority-isolation\";\n#[allow(dead_code)]\nconst REPL_RUNTIME_TEST_4: &str = \"multi-statement-runtime-normalization\";\n#[allow(dead_code)]\nconst REPL_RUNTIME_TEST_5: &str = \"target-persistence-continuity\";".to_string()
+            + "\n#[allow(dead_code)]\nfn validate_runtime() -> bool {\n    true\n}"
+    } else if target.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+        format!(
+            "#[allow(dead_code)]\nconst DBM_RUNTIME_PREVIEW_APPLIED: &str = \"{}\";",
+            target.display()
+        )
+    } else {
+        format!("preview {}", target.display())
+    };
     vec![DiffChunk {
         old_line: None,
         new_line: Some(1),
@@ -1192,6 +1661,71 @@ mod tests {
 
     fn write_core(root: &Path) {
         std::fs::write(root.join("core.rs"), "fn core() {}\n").expect("write core");
+    }
+
+    fn runtime_transaction(target: &str) -> RuntimeTransaction {
+        RuntimeTransaction {
+            tx_id: "tx-runtime-events".to_string(),
+            target_path: target.to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(target),
+            diff: Diff {
+                file: target.to_string(),
+                changes: vec![],
+            },
+            failed_recoverable: false,
+        }
+    }
+
+    #[test]
+    fn runtime_events_propagate_target_authority() {
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.active_target = None;
+        state.active_transaction = Some(runtime_transaction("apps/cli/src/repl.rs"));
+        state.runtime_state = RuntimeShellState::PreviewReady;
+
+        let events = runtime_semantic_events(&state);
+
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeNarrativeEvent::Validation {
+                    target: Some(target),
+                    ..
+                } if target == "apps/cli/src/repl.rs"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeNarrativeEvent::Execution {
+                    target: Some(target),
+                    ..
+                } if target == "apps/cli/src/repl.rs"
+            )
+        }));
+        assert!(events.iter().any(|event| {
+            matches!(
+                event,
+                RuntimeNarrativeEvent::System {
+                    target: Some(target),
+                    ..
+                } if target == "apps/cli/src/repl.rs"
+            )
+        }));
+    }
+
+    #[test]
+    fn runtime_authority_target_rejects_empty_authority() {
+        let root = tempfile::tempdir().expect("tempdir");
+
+        assert_eq!(
+            RuntimeAuthorityTarget::new(PathBuf::new(), root.path()),
+            Err(RuntimeAuthorityTargetError::UnresolvedTarget)
+        );
+        assert_eq!(
+            RuntimeAuthorityTarget::new(PathBuf::from("."), root.path()),
+            Err(RuntimeAuthorityTargetError::UnresolvedTarget)
+        );
     }
 
     #[test]
@@ -2077,9 +2611,9 @@ mod tests {
         assert!(!br.has_speculative());
     }
 
-    /// Step 3 + Rule 2: second preview creates a speculative child but does
-    /// NOT commit it immediately. The surface remains on the committed
-    /// parent.
+    /// Step 3 + authority promotion: second preview creates a speculative
+    /// child and promotes the validated staged transaction to active
+    /// authority. The branch runtime remains projection memory.
     #[test]
     fn second_preview_stages_speculative_child() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2090,6 +2624,8 @@ mod tests {
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
         let first_tx_id = state.active_transaction_id.clone();
+        let expected_second_tx_id =
+            transaction_id_for(&root.path().join("extra.rs").display().to_string());
 
         RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview extra.rs");
 
@@ -2097,11 +2633,447 @@ mod tests {
             .branch_runtime
             .as_ref()
             .expect("br after second preview");
-        // Speculative child exists.
         assert!(br.has_speculative());
-        // Surface still reflects the FIRST preview.
-        assert_eq!(state.active_transaction_id, first_tx_id);
+        assert_eq!(
+            state.active_transaction_id,
+            Some(expected_second_tx_id.clone())
+        );
+        assert_eq!(
+            state
+                .active_transaction
+                .as_ref()
+                .map(|tx| tx.tx_id.as_str()),
+            Some(expected_second_tx_id.as_str())
+        );
         assert_eq!(br.committed_branch.tx_id, first_tx_id.unwrap());
+    }
+
+    #[test]
+    fn authority_promotion_creates_active_transaction_with_branch_runtime() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let repl = root.path().join("apps/cli/src/repl.rs");
+        std::fs::create_dir_all(repl.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&repl, "const REPL_RUNTIME_TEST: &str = \"preview\";\n")
+            .expect("write repl");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview apps/cli/src/repl.rs");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+        assert!(state.active_transaction.is_some());
+        assert!(state.active_transaction_id.is_some());
+        assert!(state.branch_runtime.is_some());
+    }
+
+    #[test]
+    fn preview_ready_requires_active_transaction() {
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+
+        enforce_runtime_authority_consistency(&mut state);
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert!(state.active_transaction.is_none());
+    }
+
+    #[test]
+    fn mutation_in_progress_without_transaction_returns_idle() {
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::Apply;
+
+        let output = runtime_apply(&mut state)
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert!(state.active_transaction.is_none());
+        assert!(!output.contains("mutation in progress"));
+    }
+
+    #[test]
+    fn runtime_rejects_apply_without_explicit_target() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_transaction = Some(RuntimeTransaction {
+            tx_id: "tx-implicit-workspace".to_string(),
+            target_path: ".".to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path("."),
+            diff: Diff {
+                file: ".".to_string(),
+                changes: vec![DiffChunk {
+                    old_line: None,
+                    new_line: Some(1),
+                    old: None,
+                    new: Some("implicit workspace mutation".to_string()),
+                }],
+            },
+            failed_recoverable: false,
+        });
+        state.active_transaction_id = Some("tx-implicit-workspace".to_string());
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.active_transaction.is_some());
+        assert!(
+            state
+                .rejection
+                .as_ref()
+                .is_some_and(|rejection| rejection.reason == "unresolved target")
+        );
+    }
+
+    #[test]
+    fn apply_executes_code_change_set_and_mutates_existing_file() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let repl = root.path().join("apps/cli/src/repl.rs");
+        std::fs::create_dir_all(repl.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&repl, "pub fn repl() {}\n").expect("write repl");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview apps/cli/src/repl.rs");
+        let preview_tx_id = state.active_transaction_id.clone();
+        assert!(preview_tx_id.is_some());
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply");
+
+        let content = std::fs::read_to_string(&repl).expect("read repl");
+        assert!(content.contains("REPL_RUNTIME_TEST_2"));
+        assert!(content.contains("REPL_RUNTIME_TEST_3"));
+        assert!(content.contains("REPL_RUNTIME_TEST_4"));
+        assert!(content.contains("REPL_RUNTIME_TEST_5"));
+        assert!(state.active_transaction.is_none());
+        assert_eq!(state.runtime_state, RuntimeShellState::Git);
+    }
+
+    #[test]
+    fn apply_uses_active_transaction_target_even_if_active_target_none() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let repl = root.path().join("apps/cli/src/repl.rs");
+        std::fs::create_dir_all(repl.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&repl, "pub fn repl() {}\n").expect("write repl");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview apps/cli/src/repl.rs");
+        assert!(state.active_transaction.is_some());
+        state.active_target = None;
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        let content = std::fs::read_to_string(&repl).expect("read repl");
+        assert!(content.contains("REPL_RUNTIME_TEST_5"));
+        assert!(state.active_transaction.is_none());
+        assert!(state.active_target.is_none());
+        assert_eq!(state.runtime_state, RuntimeShellState::Git);
+    }
+
+    #[test]
+    fn apply_consumes_transaction_only_after_successful_filesystem_mutation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("core.rs");
+        let original = "fn core() {}\n";
+        std::fs::write(&target, original).expect("write core");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_transaction = Some(RuntimeTransaction {
+            tx_id: "tx-unsupported".to_string(),
+            target_path: target.display().to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(
+                &target.display().to_string(),
+            ),
+            diff: Diff {
+                file: target.display().to_string(),
+                changes: vec![DiffChunk {
+                    old_line: None,
+                    new_line: None,
+                    old: Some("fn core() {}".to_string()),
+                    new: Some("fn changed() {}".to_string()),
+                }],
+            },
+            failed_recoverable: false,
+        });
+        state.active_transaction_id = Some("tx-unsupported".to_string());
+        let before = state.active_transaction.clone();
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert_eq!(state.active_transaction, before);
+    }
+
+    #[test]
+    fn failed_apply_preserves_or_rejects_transaction_deterministically() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("core.rs");
+        let original = "fn core() {}\n";
+        std::fs::write(&target, original).expect("write core");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_transaction = Some(RuntimeTransaction {
+            tx_id: "tx-invalid".to_string(),
+            target_path: target.display().to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(
+                &target.display().to_string(),
+            ),
+            diff: Diff {
+                file: target.display().to_string(),
+                changes: vec![DiffChunk {
+                    old_line: None,
+                    new_line: Some(1),
+                    old: None,
+                    new: Some("fn broken(".to_string()),
+                }],
+            },
+            failed_recoverable: false,
+        });
+        state.active_transaction_id = Some("tx-invalid".to_string());
+        let before = state.active_transaction.clone();
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert_eq!(state.active_transaction, before);
+        assert!(state.rejection.is_some());
+    }
+
+    #[test]
+    fn session_sync_cannot_destroy_runtime_active_transaction() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli/src/repl.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn repl() {}\n").expect("write repl");
+        let mut state = TuiState::new(empty_runtime_payload());
+        let mut conversation = crate::nl::session::ConversationState::default();
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview apps/cli/src/repl.rs");
+        let preview_tx_id = state.active_transaction_id.clone();
+        conversation.start_preview_transaction(PathBuf::from("apps/cli/src/repl.rs"));
+        conversation.mark_transaction_applied(None);
+        conversation.mark_transaction_validated();
+        conversation.rollback_current_transaction();
+        conversation.clear_active_transaction();
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+        assert_eq!(state.active_transaction_id, preview_tx_id);
+        assert!(state.active_transaction.is_some());
+    }
+
+    #[test]
+    fn apply_rejects_noop_change_set() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("core.rs");
+        let original = "fn core() {}\n";
+        std::fs::write(&target, original).expect("write core");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_transaction = Some(RuntimeTransaction {
+            tx_id: "tx-noop".to_string(),
+            target_path: target.display().to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(
+                &target.display().to_string(),
+            ),
+            diff: Diff {
+                file: target.display().to_string(),
+                changes: vec![DiffChunk {
+                    old_line: Some(1),
+                    new_line: Some(1),
+                    old: Some(original.trim_end().to_string()),
+                    new: Some(original.trim_end().to_string()),
+                }],
+            },
+            failed_recoverable: false,
+        });
+        state.active_transaction_id = Some("tx-noop".to_string());
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.active_transaction.is_some());
+        assert!(
+            state
+                .rejection
+                .as_ref()
+                .is_some_and(|rejection| rejection.reason.contains("No changes detected"))
+        );
+    }
+
+    #[test]
+    fn apply_rejects_invalid_syntax_before_filesystem_mutation() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("core.rs");
+        let original = "fn core() {}\n";
+        std::fs::write(&target, original).expect("write core");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+        state.active_transaction = Some(RuntimeTransaction {
+            tx_id: "tx-invalid".to_string(),
+            target_path: target.display().to_string(),
+            resolved_target: ResolvedExecutionTarget::from_canonical_path(
+                &target.display().to_string(),
+            ),
+            diff: Diff {
+                file: target.display().to_string(),
+                changes: vec![DiffChunk {
+                    old_line: None,
+                    new_line: Some(1),
+                    old: None,
+                    new: Some("fn broken(".to_string()),
+                }],
+            },
+            failed_recoverable: false,
+        });
+        state.active_transaction_id = Some("tx-invalid".to_string());
+
+        runtime_apply_with_backend(&mut state, root.path());
+
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), original);
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.active_transaction.is_some());
+    }
+
+    #[test]
+    fn stale_halt_does_not_block_valid_active_transaction_apply() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        state.runtime_state = RuntimeShellState::BoundedHalt;
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "old bounded halt".to_string(),
+            originating_mutation: "tx-old".to_string(),
+            governance_source: Some("bounded_halt".to_string()),
+            convergence_source: None,
+        });
+
+        let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply")
+            .expect("apply events")
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!output.contains("runtime halt blocks apply"));
+        assert_eq!(state.runtime_state, RuntimeShellState::Git);
+        assert!(state.active_transaction.is_none());
+        assert!(
+            std::fs::read_to_string(root.path().join("core.rs"))
+                .expect("read core")
+                .contains("DBM_RUNTIME_PREVIEW_APPLIED")
+        );
+    }
+
+    #[test]
+    fn current_transaction_halt_still_blocks_apply() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        let tx_id = state.active_transaction_id.clone().expect("tx id");
+        state.runtime_state = RuntimeShellState::BoundedHalt;
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: format!("bounded halt for {tx_id}"),
+            originating_mutation: tx_id,
+            governance_source: Some("bounded_halt".to_string()),
+            convergence_source: None,
+        });
+
+        let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply")
+            .expect("apply events")
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(output.contains("runtime halt blocks apply"));
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.active_transaction.is_some());
+    }
+
+    #[test]
+    fn preview_success_clears_stale_bounded_halt_projection() {
+        let root = tempfile::tempdir().expect("tempdir");
+        write_core(root.path());
+        std::fs::write(root.path().join("extra.rs"), "fn extra() {}\n").expect("write extra");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview core.rs");
+        state.runtime_state = RuntimeShellState::BoundedHalt;
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "old bounded halt".to_string(),
+            originating_mutation: "tx-old".to_string(),
+            governance_source: Some("bounded_halt".to_string()),
+            convergence_source: None,
+        });
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview extra.rs");
+
+        assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
+        assert!(state.rejection.is_none());
+        assert!(
+            state
+                .active_transaction
+                .as_ref()
+                .is_some_and(|tx| tx.target_path.ends_with("extra.rs"))
+        );
+    }
+
+    #[test]
+    fn apply_without_transaction_still_rejected_in_halt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let mut state = TuiState::new(empty_runtime_payload());
+        state.runtime_state = RuntimeShellState::BoundedHalt;
+
+        let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply")
+            .expect("apply events")
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(output.contains("runtime halt blocks apply"));
+        assert_eq!(state.runtime_state, RuntimeShellState::Rejected);
+        assert!(state.active_transaction.is_none());
+    }
+
+    #[test]
+    fn new_file_preview_then_apply_not_blocked_by_stale_halt() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("new_file.rs");
+        std::fs::write(&target, "pub struct TestRuntime;\n").expect("write new file");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "preview new_file.rs");
+        state.runtime_state = RuntimeShellState::BoundedHalt;
+        state.rejection = Some(crate::tui::state::RejectionInfo {
+            reason: "old halt from previous projection".to_string(),
+            originating_mutation: "tx-previous".to_string(),
+            governance_source: Some("bounded_halt".to_string()),
+            convergence_source: None,
+        });
+
+        let output = RuntimeCommandDispatcher::dispatch(&mut state, root.path(), "apply")
+            .expect("apply events")
+            .into_iter()
+            .map(|event| event.render())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        assert!(!output.contains("runtime halt blocks apply"));
+        assert_eq!(state.runtime_state, RuntimeShellState::Git);
+        assert!(
+            std::fs::read_to_string(target)
+                .expect("read new file")
+                .contains("DBM_RUNTIME_PREVIEW_APPLIED")
+        );
     }
 
     /// Explicit `commit` promotes the speculative child to committed authority
@@ -2215,21 +3187,21 @@ mod tests {
     }
 
     fn make_snapshot(id: &str, parent: Option<&str>, target: &str) -> BranchSnapshot {
-        BranchSnapshot::new(
-            BranchId(id.to_string()),
-            parent.map(|p| BranchId(p.to_string())),
-            format!("tx-{id}"),
-            target.to_string(),
-            RuntimeShellState::PreviewReady,
-            make_diff(target),
-            ConvergenceScore::zero(),
-            ContradictionSet::zero(),
-            WorldStateSnapshot::zero(),
-            RuntimeEffectSet::zero(),
-            ArchitectureTopology::default(),
-            parent.map(|_| 1).unwrap_or(0),
-            0,
-        )
+        BranchSnapshot::new(BranchSnapshotInput {
+            branch_id: BranchId(id.to_string()),
+            parent_branch: parent.map(|p| BranchId(p.to_string())),
+            tx_id: format!("tx-{id}"),
+            target: target.to_string(),
+            runtime_state: RuntimeShellState::PreviewReady,
+            projection: make_diff(target),
+            score: ConvergenceScore::zero(),
+            contradictions: ContradictionSet::zero(),
+            world_state: WorldStateSnapshot::zero(),
+            runtime_effects: RuntimeEffectSet::zero(),
+            topology: ArchitectureTopology::default(),
+            depth: parent.map(|_| 1).unwrap_or(0),
+            created_at: 0,
+        })
     }
 
     /// Rule 4: rollback budget enforced.

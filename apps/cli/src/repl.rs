@@ -10,9 +10,11 @@ use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
 use crate::nl::normalization::normalize_runtime_input;
+use crate::nl::planner::InstructionPlan;
 use crate::nl::runtime_intent::RuntimeIntent;
 use crate::runtime::shell::{
-    RuntimeCommandDispatcher, empty_runtime_payload, runtime_preview_from_intent,
+    PreviewCandidate, ResolvedExecutionTarget, RuntimeAuthorityTarget, RuntimeCommandDispatcher,
+    commit_preview_candidate, empty_runtime_payload, runtime_preview_from_intent,
 };
 use crate::session::AgentSession;
 use crate::state::State;
@@ -94,6 +96,8 @@ where
     W: Write,
 {
     let mut ui = ReplUiState::default();
+    let mut spec_capture: Option<Vec<String>> = None;
+    let mut pending_plan: Option<InstructionPlan> = None;
 
     print_banner(writer)?;
 
@@ -105,6 +109,55 @@ where
         }
         if is_exit(trimmed) {
             break;
+        }
+        if trimmed == "/begin spec" {
+            spec_capture = Some(Vec::new());
+            writeln!(writer, "[PLAN] capture: spec").map_err(|err| err.to_string())?;
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+        if let Some(buffer) = spec_capture.as_mut() {
+            if trimmed == "/end" {
+                let plan = InstructionPlan::from_spec(&buffer.join("\n"));
+                for line in plan.render_lines() {
+                    writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+                }
+                pending_plan = Some(plan);
+                spec_capture = None;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
+            buffer.push(input);
+            continue;
+        }
+        if trimmed == "promote" {
+            promote_pending_plan(
+                &mut ui,
+                workspace_root.as_path(),
+                pending_plan.as_ref(),
+                writer,
+            )?;
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+        if trimmed == "validate-plan" {
+            validate_last_applied_plan(&ui, workspace_root.as_path(), writer)?;
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+        if trimmed == "apply" {
+            if pending_plan.is_some() && ui.runtime.promoted_plan.is_none() {
+                writeln!(writer, "[APPLY] rejected: pending plan not promoted")
+                    .map_err(|err| err.to_string())?;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
+            if ui.runtime.active_transaction.is_none() {
+                writeln!(writer, "[APPLY] rejected: no preview transaction")
+                    .map_err(|err| err.to_string())?;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
         }
         if trimmed == "/save design" {
             save_design(
@@ -150,6 +203,173 @@ where
     }
 
     Ok(())
+}
+
+fn promote_pending_plan<W: Write>(
+    ui: &mut ReplUiState,
+    workspace_root: &Path,
+    pending_plan: Option<&InstructionPlan>,
+    writer: &mut W,
+) -> Result<(), String> {
+    let Some(plan) = pending_plan else {
+        writeln!(writer, "[PROMOTE] rejected: no pending plan").map_err(|err| err.to_string())?;
+        return Ok(());
+    };
+    let Some(target) = plan.target.clone() else {
+        writeln!(writer, "[PROMOTE] rejected: no target").map_err(|err| err.to_string())?;
+        return Ok(());
+    };
+    let target_path = workspace_root.join(&target);
+    if !target_path.exists() {
+        writeln!(writer, "[PROMOTE] rejected: target missing").map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    let comment = render_plan_comment(plan);
+    if let Some(pattern) = unsafe_generated_marker_pattern(&comment) {
+        writeln!(
+            writer,
+            "[PROMOTE] rejected: unsafe generated pattern: {pattern}"
+        )
+        .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    let target_label = target_path.display().to_string();
+    let resolved_target = ResolvedExecutionTarget::from_canonical_path(&target_label);
+    let diff = crate::tui::state::Diff {
+        file: resolved_target.canonical_target.path.clone(),
+        changes: vec![crate::tui::state::DiffChunk {
+            old_line: None,
+            new_line: Some(1),
+            old: None,
+            new: Some(comment.clone()),
+        }],
+    };
+    if let Some(pattern) = unsafe_generated_marker_pattern(&diff_text(&diff)) {
+        writeln!(
+            writer,
+            "[PROMOTE] rejected: unsafe generated pattern: {pattern}"
+        )
+        .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+
+    commit_preview_candidate(
+        &mut ui.runtime,
+        PreviewCandidate {
+            target_path: resolved_target.canonical_target.path.clone(),
+            tx_id: format!(
+                "tx-promoted-plan-{}",
+                stable_plan_suffix(&target.display().to_string())
+            ),
+            resolved_target,
+            diff,
+        },
+    );
+    ui.runtime.promoted_plan = Some(plan.clone());
+    ui.runtime.apply_guard = Some(crate::tui::state::ApplyGuardState {
+        transaction_id: ui.runtime.active_transaction_id.clone(),
+        target: Some(target.clone()),
+        source: Some(crate::tui::state::ApplyGuardSource::PromotedPlan),
+    });
+    writeln!(writer, "[PROMOTE] preview: {}", target.display()).map_err(|err| err.to_string())
+}
+
+fn render_plan_comment(plan: &InstructionPlan) -> String {
+    let text = plan
+        .operations
+        .iter()
+        .find_map(|op| op.strip_prefix("InsertComment: "))
+        .unwrap_or(plan.summary.as_str())
+        .trim();
+    format!("// {text}")
+}
+
+fn diff_text(diff: &crate::tui::state::Diff) -> String {
+    diff.changes
+        .iter()
+        .filter_map(|chunk| chunk.new.as_deref())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn unsafe_generated_marker_pattern(text: &str) -> Option<&'static str> {
+    [
+        "REPL_RUNTIME_TEST",
+        "validate_runtime",
+        "test_marker",
+        "runtime marker",
+        "dummy function",
+        "#[allow(dead_code)]",
+    ]
+    .into_iter()
+    .find(|pattern| text.contains(pattern))
+}
+
+fn stable_plan_suffix(input: &str) -> String {
+    input
+        .chars()
+        .map(|ch| if ch.is_ascii_alphanumeric() { ch } else { '-' })
+        .collect::<String>()
+        .trim_matches('-')
+        .to_ascii_lowercase()
+}
+
+fn validate_last_applied_plan<W: Write>(
+    ui: &ReplUiState,
+    workspace_root: &Path,
+    writer: &mut W,
+) -> Result<(), String> {
+    let Some(plan) = ui.runtime.last_applied_plan.as_ref() else {
+        writeln!(writer, "[VALIDATE] rejected: no applied plan").map_err(|err| err.to_string())?;
+        return Ok(());
+    };
+    if plan.validation_plan.is_empty() {
+        writeln!(writer, "[VALIDATE] skipped: no validation plan")
+            .map_err(|err| err.to_string())?;
+        return Ok(());
+    }
+    for line in &plan.validation_plan {
+        let command = line
+            .split_once(':')
+            .map(|(_, rest)| rest.trim())
+            .unwrap_or(line.trim());
+        if !is_allowed_validation_command(command) {
+            writeln!(writer, "[VALIDATE] rejected: unsafe validation command")
+                .map_err(|err| err.to_string())?;
+            return Ok(());
+        }
+        writeln!(writer, "[VALIDATE] running: {command}").map_err(|err| err.to_string())?;
+        let mut parts = command.split_whitespace();
+        let Some(program) = parts.next() else {
+            continue;
+        };
+        let status = std::process::Command::new(program)
+            .args(parts)
+            .current_dir(workspace_root)
+            .status()
+            .map_err(|err| err.to_string())?;
+        if !status.success() {
+            writeln!(writer, "[VALIDATE] failed: {command}").map_err(|err| err.to_string())?;
+            return Ok(());
+        }
+    }
+    writeln!(writer, "[VALIDATE] ok").map_err(|err| err.to_string())
+}
+
+fn is_allowed_validation_command(command: &str) -> bool {
+    let lower = command.to_ascii_lowercase();
+    let safe_prefix = lower.starts_with("cargo test")
+        || lower.starts_with("cargo check")
+        || lower.starts_with("cargo clippy")
+        || lower.starts_with("cargo fmt");
+    safe_prefix
+        && ![
+            "&&", "||", ";", "|", ">", "<", "`", "$(", " rm ", " rm\n", "rm -",
+        ]
+        .iter()
+        .any(|token| lower.contains(token))
 }
 
 pub fn run_repl_stdio(workspace_root: PathBuf) -> Result<(), String> {
@@ -239,12 +459,25 @@ fn dispatch_normalized_runtime_intent(
             };
 
             let target_label = target.display().to_string();
-            let mut events = runtime_preview_from_intent(&mut ui.runtime, workspace_root, target);
+            let Ok(authority_target) = RuntimeAuthorityTarget::new(target, workspace_root) else {
+                ui.runtime.rejection = Some(crate::tui::state::RejectionInfo {
+                    reason: "unresolved target".to_string(),
+                    originating_mutation: "runtime_intent_bridge".to_string(),
+                    governance_source: None,
+                    convergence_source: None,
+                });
+                return Some(vec![crate::tui::state::RuntimeNarrativeEvent::Error {
+                    message: "unresolved target".to_string(),
+                }]);
+            };
+            let mut events =
+                runtime_preview_from_intent(&mut ui.runtime, workspace_root, authority_target);
             if ui.runtime.active_transaction.is_some() {
                 events.insert(
                     0,
                     crate::tui::state::RuntimeNarrativeEvent::System {
                         summary: format!("Target: {target_label}"),
+                        target: Some(target_label.clone()),
                     },
                 );
             }
@@ -601,6 +834,43 @@ mod tests {
             .expect("repl");
 
         assert_eq!(core.calls(), 0);
+    }
+
+    #[test]
+    fn unsafe_generated_marker_pattern_is_rejected() {
+        assert_eq!(
+            unsafe_generated_marker_pattern(
+                "#[allow(dead_code)]\nconst REPL_RUNTIME_TEST: &str = \"x\";"
+            ),
+            Some("REPL_RUNTIME_TEST")
+        );
+        assert_eq!(
+            unsafe_generated_marker_pattern("fn validate_runtime() -> bool { true }"),
+            Some("validate_runtime")
+        );
+    }
+
+    #[test]
+    fn apply_success_does_not_emit_no_active_transaction() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/coding.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn code() -> i32 { 0 }\n").expect("write target");
+        let mut input = io::Cursor::new(
+            "/begin spec\nTarget: src/coding.rs\nコメントを追加する。\n/end\npromote\napply\n",
+        );
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            output.contains("transaction committed successfully"),
+            "{output}"
+        );
+        assert!(!output.contains("no active transaction"), "{output}");
     }
 
     #[test]

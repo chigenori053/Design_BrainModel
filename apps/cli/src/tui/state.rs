@@ -1,4 +1,5 @@
 use std::collections::VecDeque;
+use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use strategy_engine::ExecutionPlanCandidate;
@@ -8,6 +9,7 @@ pub use crate::core::{
 };
 use crate::nl::language::detect_runtime_language;
 use crate::nl::normalization::normalize_runtime_input;
+use crate::nl::planner::InstructionPlan;
 use crate::nl::types::SupportedLanguage;
 use crate::pipeline::PipelineState;
 use crate::runtime::autonomous::{ExecutionMemory, ExecutionSession};
@@ -90,19 +92,49 @@ pub fn contains_runtime_reference(line: &str) -> bool {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeNarrativeEvent {
-    Intent { summary: String },
-    Thinking { summary: String },
-    Analysis { summary: String },
-    Planning { summary: String },
-    Validation { summary: String },
-    Execution { summary: String },
-    Preview { target: String },
-    Apply { summary: String },
-    Commit { summary: String },
-    Rollback { summary: String },
-    System { summary: String },
-    GovernanceReject { reason: String },
-    Error { message: String },
+    Intent {
+        summary: String,
+    },
+    Thinking {
+        summary: String,
+    },
+    Analysis {
+        summary: String,
+    },
+    Planning {
+        summary: String,
+    },
+    Validation {
+        summary: String,
+        target: Option<String>,
+    },
+    Execution {
+        summary: String,
+        target: Option<String>,
+    },
+    Preview {
+        target: String,
+    },
+    Apply {
+        summary: String,
+        target: Option<String>,
+    },
+    Commit {
+        summary: String,
+    },
+    Rollback {
+        summary: String,
+    },
+    System {
+        summary: String,
+        target: Option<String>,
+    },
+    GovernanceReject {
+        reason: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 impl RuntimeNarrativeEvent {
@@ -112,15 +144,26 @@ impl RuntimeNarrativeEvent {
             | Self::Thinking { summary }
             | Self::Analysis { summary }
             | Self::Planning { summary }
-            | Self::Validation { summary }
-            | Self::Execution { summary }
-            | Self::Apply { summary }
+            | Self::Validation { summary, .. }
+            | Self::Execution { summary, .. }
+            | Self::Apply { summary, .. }
             | Self::Commit { summary }
             | Self::Rollback { summary }
-            | Self::System { summary } => summary.clone(),
+            | Self::System { summary, .. } => summary.clone(),
             Self::Preview { target } => format!("changes prepared for {target}"),
             Self::GovernanceReject { reason } => format!("rejected: {}", reason),
             Self::Error { message } => format!("[ERROR] {}", message),
+        }
+    }
+
+    pub fn target_authority(&self) -> Option<&str> {
+        match self {
+            Self::Preview { target } => Some(target.as_str()),
+            Self::Validation { target, .. }
+            | Self::Execution { target, .. }
+            | Self::Apply { target, .. }
+            | Self::System { target, .. } => target.as_deref(),
+            _ => None,
         }
     }
 }
@@ -380,7 +423,7 @@ impl Default for ChatScrollState {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InputBuffer {
     pub text: String,
     pub cursor: usize,
@@ -455,15 +498,6 @@ impl InputBuffer {
     }
 }
 
-impl Default for InputBuffer {
-    fn default() -> Self {
-        Self {
-            text: String::new(),
-            cursor: 0,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatState {
     pub events: Vec<UiEvent>,
@@ -511,6 +545,19 @@ pub struct TuiDiagnostics {
     pub raw_mode_active: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyGuardSource {
+    NormalPreview,
+    PromotedPlan,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct ApplyGuardState {
+    pub transaction_id: Option<String>,
+    pub target: Option<PathBuf>,
+    pub source: Option<ApplyGuardSource>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct TuiState {
     pub diagnostic_mode: bool,
@@ -534,6 +581,9 @@ pub struct TuiState {
     pub active_target: Option<String>,
     pub active_transaction_id: Option<String>,
     pub active_transaction: Option<RuntimeTransaction>,
+    pub apply_guard: Option<ApplyGuardState>,
+    pub promoted_plan: Option<InstructionPlan>,
+    pub last_applied_plan: Option<InstructionPlan>,
     pub rejection: Option<RejectionInfo>,
     pub dirty_tree_state: String,
     pub language_mode: SupportedLanguage,
@@ -600,6 +650,9 @@ impl TuiState {
             active_target: None,
             active_transaction_id: None,
             active_transaction: None,
+            apply_guard: None,
+            promoted_plan: None,
+            last_applied_plan: None,
             rejection: None,
             dirty_tree_state: "clean".to_string(),
             language_mode: SupportedLanguage::Unknown,
@@ -648,6 +701,19 @@ impl TuiState {
                 .unwrap_or("(none)"),
             crate::nl::language::language_label(self.language_mode)
         )
+    }
+
+    pub fn sync_projection_authority(&mut self) {
+        if let Some(tx) = self.active_transaction.as_ref()
+            && !tx.target_path.trim().is_empty()
+            && tx.target_path != "preview"
+        {
+            self.active_target = Some(tx.target_path.clone());
+        }
+        debug_assert!(
+            self.active_transaction.is_none() || self.active_target.is_some(),
+            "active transaction requires active target authority"
+        );
     }
 
     pub fn handle_key_event(&mut self, key: KeyEvent) -> TuiAction {
@@ -717,6 +783,7 @@ impl TuiState {
         // Phase 4.5: proposal capture and history tracking removed — state lives
         // in Core.  Only UI-side effects (diffs, filter) are applied here.
         self.apply_event_to_session(&event);
+        self.sync_projection_authority();
         self.chat.append_chat(event);
         self.chat_scroll.apply_append();
     }
@@ -788,6 +855,11 @@ impl TuiState {
             UiEvent::Pipeline { state } => {
                 let next_state = runtime_state_from_pipeline_label(state);
                 if matches!(next_state, RuntimeShellState::Idle) {
+                    if self.active_transaction.is_some() {
+                        self.runtime_state = RuntimeShellState::Idle;
+                        self.sync_projection_authority();
+                        return;
+                    }
                     self.runtime_state = RuntimeShellState::Idle;
                     self.clear_runtime_transaction();
                     return;
@@ -851,9 +923,18 @@ impl TuiState {
     }
 
     fn clear_runtime_transaction(&mut self) {
-        self.active_transaction = None;
-        self.active_transaction_id = None;
-        self.active_target = None;
+        if self.active_transaction.is_none() {
+            self.active_transaction_id = None;
+            self.active_target = None;
+            return;
+        }
+        if runtime_transaction_clear_allowed(self.runtime_state) {
+            self.active_transaction = None;
+            self.active_transaction_id = None;
+            self.active_target = None;
+        } else {
+            self.sync_projection_authority();
+        }
     }
 
     fn next_transaction_id(&self, target_path: &str) -> String {
@@ -1234,6 +1315,20 @@ fn runtime_state_from_pipeline_label(label: &str) -> RuntimeShellState {
     }
 }
 
+fn runtime_transaction_clear_allowed(state: RuntimeShellState) -> bool {
+    matches!(
+        state,
+        RuntimeShellState::Git
+            | RuntimeShellState::Rejected
+            | RuntimeShellState::GovernanceRejected
+            | RuntimeShellState::SemanticRejected
+            | RuntimeShellState::ConvergenceRejected
+            | RuntimeShellState::SemanticDriftRejected
+            | RuntimeShellState::ExecutionRejected
+            | RuntimeShellState::RemoteExecutionRejected
+    ) || state.label().contains("HALT")
+}
+
 pub fn should_accept_runtime_transition(
     current: RuntimeShellState,
     next: RuntimeShellState,
@@ -1298,6 +1393,32 @@ mod tests {
                 text: "no unsafe unwrap".to_string(),
             }],
         )
+    }
+
+    fn runtime_transaction(target: &str) -> RuntimeTransaction {
+        RuntimeTransaction {
+            tx_id: "tx-projection-authority".to_string(),
+            target_path: target.to_string(),
+            resolved_target: crate::runtime::shell::ResolvedExecutionTarget::from_canonical_path(
+                target,
+            ),
+            diff: Diff {
+                file: target.to_string(),
+                changes: vec![],
+            },
+            failed_recoverable: false,
+        }
+    }
+
+    #[test]
+    fn projection_sync_preserves_active_target() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = None;
+        state.active_transaction = Some(runtime_transaction("apps/cli/src/repl.rs"));
+
+        state.sync_projection_authority();
+
+        assert_eq!(state.active_target.as_deref(), Some("apps/cli/src/repl.rs"));
     }
 
     #[test]
@@ -1415,7 +1536,7 @@ mod tests {
     }
 
     #[test]
-    fn pipeline_idle_clears_projection_lifecycle() {
+    fn pipeline_idle_preserves_projection_lifecycle_while_transaction_active() {
         let mut state = TuiState::new(empty_payload());
         state.active_target = Some("parser.rs".to_string());
         state.append_chat(UiEvent::Preview {
@@ -1427,9 +1548,47 @@ mod tests {
             state: "Idle".to_string(),
         });
 
-        assert!(state.active_transaction.is_none());
-        assert!(state.active_transaction_id.is_none());
-        assert!(state.active_target.is_none());
+        assert!(state.active_transaction.is_some());
+        assert!(state.active_transaction_id.is_some());
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert_eq!(state.active_target.as_deref(), Some("parser.rs"));
+    }
+
+    #[test]
+    fn preview_then_idle_projection_then_apply_preserves_transaction() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/repl.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn validate_runtime() {}".to_string()],
+        });
+        let before_tx = state.active_transaction.clone();
+        state.active_target = None;
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Idle".to_string(),
+        });
+
+        assert_eq!(state.runtime_state, RuntimeShellState::Idle);
+        assert_eq!(state.active_transaction, before_tx);
+        assert_eq!(state.active_target.as_deref(), Some("apps/cli/src/repl.rs"));
+    }
+
+    #[test]
+    fn runtime_projected_does_not_clear_active_transaction() {
+        let mut state = TuiState::new(empty_payload());
+        state.active_target = Some("apps/cli/src/repl.rs".to_string());
+        state.append_chat(UiEvent::Preview {
+            diff: vec!["+fn validate_runtime() {}".to_string()],
+        });
+        let tx_id = state.active_transaction_id.clone();
+
+        state.append_chat(UiEvent::Pipeline {
+            state: "Previewed".to_string(),
+        });
+
+        assert!(state.active_transaction.is_some());
+        assert_eq!(state.active_transaction_id, tx_id);
+        assert_eq!(state.active_target.as_deref(), Some("apps/cli/src/repl.rs"));
     }
 
     #[test]
