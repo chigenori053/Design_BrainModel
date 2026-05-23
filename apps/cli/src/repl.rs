@@ -169,6 +169,15 @@ where
             continue;
         }
 
+        if let Some(args) = parse_repl_git_command(trimmed) {
+            let (_code, output) =
+                crate::runtime::shell::runtime_apply_git_command(workspace_root.as_path(), &args);
+            let rendered = serde_json::to_string(&output).map_err(|err| err.to_string())?;
+            writeln!(writer, "{rendered}").map_err(|err| err.to_string())?;
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+
         if let Some(events) =
             RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
         {
@@ -203,6 +212,15 @@ where
     }
 
     Ok(())
+}
+
+fn parse_repl_git_command(input: &str) -> Option<Vec<String>> {
+    let mut parts = input.split_whitespace();
+    if parts.next()? != "git" {
+        return None;
+    }
+    let args = parts.map(ToOwned::to_owned).collect::<Vec<_>>();
+    if args.is_empty() { None } else { Some(args) }
 }
 
 fn promote_pending_plan<W: Write>(

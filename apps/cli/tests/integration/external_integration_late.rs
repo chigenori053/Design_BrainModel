@@ -90,6 +90,8 @@ mod repl_diff_render;
 mod repl_file_target_routing;
 #[path = "repl_followup_apply_promotion.rs"]
 mod repl_followup_apply_promotion;
+#[path = "repl_git_push.rs"]
+mod repl_git_push;
 #[path = "repl_multiline_instruction.rs"]
 mod repl_multiline_instruction;
 #[path = "repl_semantic_cluster_narrowing.rs"]
