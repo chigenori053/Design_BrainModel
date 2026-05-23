@@ -3,7 +3,7 @@ use std::path::Path;
 
 use core_types::ObjectiveVector;
 use memory_space::{
-    HolographicVectorStoreAdapter, InterferenceMode, MemoryInterferenceTelemetry, MemorySpace,
+    InterferenceMode, LegacyStoreAdapter, MemoryInterferenceTelemetry, MemorySpace,
 };
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
 
@@ -98,7 +98,7 @@ pub struct Dhm {
 
 impl Dhm {
     pub fn open(path: impl AsRef<Path>, mode: InterferenceMode) -> io::Result<Self> {
-        let store = HolographicVectorStoreAdapter::open(path, 4)?;
+        let store = LegacyStoreAdapter::open(path, 4)?;
         let lambda = match mode {
             InterferenceMode::Disabled => 0.0,
             InterferenceMode::Contractive => 0.1,

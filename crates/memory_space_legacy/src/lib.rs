@@ -9,16 +9,27 @@ pub mod types;
 
 pub use exploration::ExplorationMemory;
 pub use graph::StructuralGraph;
-pub use holographic_store::{HolographicVectorStore, MemoryEntry};
+#[deprecated(
+    since = "0.1.0",
+    note = "Use HolographicVectorStoreAdapter and LegacyMemoryStore instead."
+)]
+pub use holographic_store::HolographicVectorStore;
+pub use holographic_store::MemoryEntry;
 pub use interference_memory::{InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
 pub use node::DesignNode;
 pub use state::DesignState;
-pub use store_adapter::{HolographicVectorStoreAdapter, LegacyMemoryStore};
+pub use store_adapter::{
+    HolographicVectorStoreAdapter, HolographicVectorStoreAdapter as LegacyStoreAdapter,
+    LegacyMemoryStore,
+};
 pub use types::{NodeId, StateId, Uuid, Value};
 
 #[cfg(test)]
 mod tests {
-    use crate::{DesignNode, DesignState, ExplorationMemory, StructuralGraph, Value};
+    use crate::{
+        DesignNode, DesignState, ExplorationMemory, HolographicVectorStoreAdapter,
+        LegacyMemoryStore, MemoryEntry, StructuralGraph, Value,
+    };
 
     fn assert_send_sync<T: Send + Sync>() {}
 
@@ -29,6 +40,36 @@ mod tests {
         assert_send_sync::<StructuralGraph>();
         assert_send_sync::<DesignState>();
         assert_send_sync::<ExplorationMemory>();
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn deprecated_holographic_vector_store_reexport_remains_available() {
+        fn assert_legacy_store_type<T>() {}
+
+        assert_legacy_store_type::<crate::HolographicVectorStore>();
+    }
+
+    #[test]
+    fn adapter_is_preferred_public_store_api() {
+        fn assert_legacy_memory_store<T: LegacyMemoryStore>() {}
+
+        assert_legacy_memory_store::<HolographicVectorStoreAdapter>();
+    }
+
+    #[test]
+    fn memory_entry_remains_public_without_deprecation() {
+        let entry = MemoryEntry {
+            id: 1,
+            depth: 2,
+            timestamp: 3,
+            vector: vec![0.1, 0.2, 0.3, 0.4],
+        };
+
+        assert_eq!(entry.id, 1);
+        assert_eq!(entry.depth, 2);
+        assert_eq!(entry.timestamp, 3);
+        assert_eq!(entry.vector.len(), 4);
     }
 }
 

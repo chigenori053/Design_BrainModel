@@ -3,7 +3,7 @@ use std::io;
 use core_types::ObjectiveVector;
 
 use crate::holographic_store::MemoryEntry;
-use crate::store_adapter::{HolographicVectorStoreAdapter, LegacyMemoryStore};
+use crate::{LegacyMemoryStore, LegacyStoreAdapter};
 
 const TAU_MEM_MIN: f64 = 1e-9;
 const DELTA_EPS: f64 = 1e-12;
@@ -32,7 +32,7 @@ struct InterferenceStepStats {
 
 #[derive(Debug)]
 pub struct MemorySpace {
-    store: HolographicVectorStoreAdapter,
+    store: LegacyStoreAdapter,
     decay: f64,
     lambda: f64,
     mode: InterferenceMode,
@@ -47,7 +47,7 @@ pub struct MemorySpace {
 
 impl MemorySpace {
     pub fn new(
-        store: HolographicVectorStoreAdapter,
+        store: LegacyStoreAdapter,
         decay: f64,
         lambda: f64,
         mode: InterferenceMode,
@@ -284,12 +284,12 @@ fn median(mut values: Vec<f64>) -> f64 {
 mod tests {
     use core_types::ObjectiveVector;
 
-    use crate::{HolographicVectorStoreAdapter, InterferenceMode, MemorySpace};
+    use crate::{InterferenceMode, LegacyStoreAdapter, MemorySpace};
 
     #[test]
     fn memory_space_stores_and_adjusts() {
         let path = std::env::temp_dir().join("memory_space_test_store.bin");
-        let store = HolographicVectorStoreAdapter::open(&path, 4).expect("open");
+        let store = LegacyStoreAdapter::open(&path, 4).expect("open");
         let mut memory =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 256).expect("new");
         let base = ObjectiveVector {
@@ -313,7 +313,7 @@ mod tests {
     #[test]
     fn memory_space_uses_adapter_boundary() {
         let path = std::env::temp_dir().join("memory_space_adapter_boundary.bin");
-        let store = HolographicVectorStoreAdapter::open(&path, 4).expect("open");
+        let store = LegacyStoreAdapter::open(&path, 4).expect("open");
         let mut memory =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 2).expect("new");
         let base = ObjectiveVector {
