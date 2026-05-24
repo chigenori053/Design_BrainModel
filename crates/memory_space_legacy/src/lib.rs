@@ -14,8 +14,6 @@ pub use memory_entry::MemoryEntry;
 pub use node::DesignNode;
 pub use state::DesignState;
 pub use store_adapter::{FileMemoryStore, MemoryStore};
-#[allow(deprecated)]
-pub use store_adapter::{HolographicVectorStoreAdapter, LegacyMemoryStore, LegacyStoreAdapter};
 pub use types::{NodeId, StateId, Uuid, Value};
 
 #[cfg(test)]
@@ -47,20 +45,15 @@ mod tests {
         assert_root_memory_store::<crate::FileMemoryStore>();
     }
 
-    #[allow(deprecated)]
     #[test]
-    fn deprecated_aliases_remain_available_for_migration() {
-        fn assert_legacy_memory_store<T: crate::LegacyMemoryStore>() {}
-
-        let _holographic_alias: Option<crate::HolographicVectorStoreAdapter> = None;
-        let _legacy_alias: Option<crate::LegacyStoreAdapter> = None;
-
-        assert_legacy_memory_store::<crate::HolographicVectorStoreAdapter>();
-        assert_legacy_memory_store::<crate::LegacyStoreAdapter>();
+    fn file_memory_store_is_public_root_api() {
+        fn assert_memory_store<T: crate::MemoryStore>() {}
+        let _store_type: Option<crate::FileMemoryStore> = None;
+        assert_memory_store::<crate::FileMemoryStore>();
     }
 
     #[test]
-    fn memory_entry_remains_public_after_reexport_removal() {
+    fn memory_entry_remains_public() {
         let entry: crate::MemoryEntry = MemoryEntry {
             id: 1,
             depth: 2,

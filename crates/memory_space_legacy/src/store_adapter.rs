@@ -202,15 +202,6 @@ impl Drop for FileLockGuard {
     }
 }
 
-#[deprecated(note = "use MemoryStore")]
-pub use MemoryStore as LegacyMemoryStore;
-
-#[deprecated(note = "use FileMemoryStore")]
-pub use FileMemoryStore as HolographicVectorStoreAdapter;
-
-#[deprecated(note = "use FileMemoryStore")]
-pub use FileMemoryStore as LegacyStoreAdapter;
-
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -320,15 +311,5 @@ mod tests {
             assert_eq!(entries[0], entry);
         }
         let _ = std::fs::remove_file(path);
-    }
-
-    #[allow(deprecated)]
-    #[test]
-    fn deprecated_aliases_remain_available_for_migration() {
-        use super::{HolographicVectorStoreAdapter, LegacyMemoryStore, LegacyStoreAdapter};
-
-        fn assert_implements_legacy_store<T: LegacyMemoryStore>() {}
-        assert_implements_legacy_store::<HolographicVectorStoreAdapter>();
-        assert_implements_legacy_store::<LegacyStoreAdapter>();
     }
 }
