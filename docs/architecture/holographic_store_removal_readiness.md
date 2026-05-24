@@ -3,7 +3,7 @@
 ## Scope
 
 This document records the current `crates/memory_space_legacy` store boundary after
-the legacy store removal and naming cleanup.
+the legacy store removal and canonical API cleanup.
 
 ## Reference Inventory
 
@@ -21,7 +21,7 @@ Expected result:
 
 - no results
 
-The old compatibility module is gone. It must not be reintroduced.
+The old compatibility module is removed. It must not be reintroduced.
 
 ## Canonical Store API
 
@@ -29,6 +29,8 @@ The canonical names are:
 
 - `MemoryStore`
 - `FileMemoryStore`
+- `MemoryEntry`
+- `MemorySpace<S: MemoryStore = FileMemoryStore>`
 
 Temporary compatibility aliases remain:
 
@@ -36,8 +38,16 @@ Temporary compatibility aliases remain:
 - `LegacyStoreAdapter`
 - `HolographicVectorStoreAdapter`
 
-These aliases are deprecated and should appear only in alias definitions,
-compatibility tests, or migration documentation.
+These aliases are deprecated and migration-only. They should appear only in alias
+definitions, compatibility tests, or migration documentation.
+
+## Removal Candidate
+
+The next removal candidate is deprecated alias removal:
+
+- `LegacyMemoryStore`
+- `LegacyStoreAdapter`
+- `HolographicVectorStoreAdapter`
 
 ## Package Boundary
 
@@ -53,4 +63,4 @@ cargo test -p memory_space && cargo test -p dhm
 cargo clippy -p memory_space -p dhm --all-targets -- -D warnings
 ```
 
-Next specification: `DBM_MEMORY_SPACE_CANONICAL_API_CLEANUP_SPEC v1.0`.
+Next specification: `DBM_MEMORY_SPACE_DEPRECATED_ALIAS_REMOVAL_SPEC v1.0`.

@@ -224,7 +224,7 @@ mod tests {
     }
 
     #[test]
-    fn dhm_uses_file_memory_store() {
+    fn dhm_uses_canonical_file_memory_store() {
         fn assert_store<T: MemoryStore>() {}
         assert_store::<FileMemoryStore>();
     }

@@ -276,7 +276,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_store_canonical_api_is_public() {
+    fn canonical_memory_store_api_is_public() {
         fn assert_implements_memory_store<T: MemoryStore>() {}
         assert_implements_memory_store::<FileMemoryStore>();
         let _store_type: Option<FileMemoryStore> = None;
@@ -324,7 +324,7 @@ mod tests {
 
     #[allow(deprecated)]
     #[test]
-    fn legacy_aliases_still_compile() {
+    fn deprecated_aliases_remain_available_for_migration() {
         use super::{HolographicVectorStoreAdapter, LegacyMemoryStore, LegacyStoreAdapter};
 
         fn assert_implements_legacy_store<T: LegacyMemoryStore>() {}

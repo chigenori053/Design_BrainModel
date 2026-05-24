@@ -37,7 +37,7 @@ mod tests {
     }
 
     #[test]
-    fn memory_store_canonical_api_is_public() {
+    fn canonical_memory_store_api_is_public() {
         fn assert_memory_store<T: MemoryStore>() {}
         fn assert_root_memory_store<T: crate::MemoryStore>() {}
 
@@ -49,7 +49,7 @@ mod tests {
 
     #[allow(deprecated)]
     #[test]
-    fn legacy_aliases_still_compile() {
+    fn deprecated_aliases_remain_available_for_migration() {
         fn assert_legacy_memory_store<T: crate::LegacyMemoryStore>() {}
 
         let _holographic_alias: Option<crate::HolographicVectorStoreAdapter> = None;

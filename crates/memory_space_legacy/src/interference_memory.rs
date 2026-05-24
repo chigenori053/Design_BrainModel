@@ -311,10 +311,10 @@ mod tests {
     }
 
     #[test]
-    fn memory_space_uses_canonical_store_boundary() {
+    fn file_memory_store_is_default_memory_space_store() {
         let path = std::env::temp_dir().join("memory_space_adapter_boundary.bin");
         let store = FileMemoryStore::open(&path, 4).expect("open");
-        let mut memory =
+        let mut memory: MemorySpace =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 2).expect("new");
         let base = ObjectiveVector {
             f_struct: 0.3,
