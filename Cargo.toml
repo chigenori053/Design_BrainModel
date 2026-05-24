@@ -44,7 +44,7 @@ members = [
     "crates/field_engine",
     "crates/hybrid_vm",
     "crates/profile",
-    "crates/memory_space",
+    "crates/memory_space_phase14",
     "crates/memory_graph",
     "crates/search_verification",
     "crates/policy_engine",
@@ -171,7 +171,7 @@ semantic_domain = { path = "crates/domain/semantic_domain" }
 world_model = { path = "crates/world_model" }
 num-complex = { path = "crates/num-complex" }
 profile = { path = "crates/profile" }
-memory_space_phase14 = { path = "crates/memory_space" }
+memory_space_phase14 = { path = "crates/memory_space_phase14" }
 memory_persistence = { path = "crates/memory_persistence" }
 policy_engine = { path = "crates/policy_engine" }
 search_verification = { path = "crates/search_verification" }

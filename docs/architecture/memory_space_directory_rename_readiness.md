@@ -5,6 +5,8 @@
 - Current directory: `crates/memory_space_legacy`
 - Proposed directory: `crates/memory_space`
 - Package name: `memory_space`
+- Collision blocker: resolved by moving the `memory_space_phase14` package to
+  `crates/memory_space_phase14`.
 - Public API impact: no public API change is intended for a directory-only
   rename.
 - Storage format impact: no storage format change is intended.
@@ -30,19 +32,20 @@
 
 | Check | Result |
 |---|---|
-| `find crates -maxdepth 2 -type d -name "memory_space"` | `crates/memory_space` exists |
+| `find crates -maxdepth 2 -type d -name "memory_space"` | no result |
 | `find crates -maxdepth 2 -type d -name "memory_space_legacy"` | `crates/memory_space_legacy` exists |
+| `find crates -maxdepth 2 -type d -name "memory_space_phase14"` | `crates/memory_space_phase14` exists |
 | `grep -n '^name = "memory_space"' crates/memory_space_legacy/Cargo.toml` | `name = "memory_space"` |
-| Existing `crates/memory_space/Cargo.toml` package name | `memory_space_phase14` |
+| Existing `crates/memory_space_phase14/Cargo.toml` package name | `memory_space_phase14` |
 | Workspace alias for `memory_space` | `memory_space = { path = "crates/memory_space_legacy" }` |
-| Workspace alias for `memory_space_phase14` | `memory_space_phase14 = { path = "crates/memory_space" }` |
+| Workspace alias for `memory_space_phase14` | `memory_space_phase14 = { path = "crates/memory_space_phase14" }` |
 
 ## Risk Assessment
 
 | Risk | Severity | Mitigation |
 |---|---|---|
-| Proposed target directory already exists | High | Resolve `memory_space_phase14` directory/package placement before renaming `crates/memory_space_legacy`. |
-| Two distinct package identities are path-inverted | High | Plan a multi-step rename that separates `memory_space` and `memory_space_phase14` directory moves. |
+| Proposed target directory already exists | Resolved | `memory_space_phase14` has moved to `crates/memory_space_phase14`, leaving `crates/memory_space` available. |
+| Two distinct package identities are path-inverted | Resolved | The phase14 package path is now aligned with its package name. |
 | Workspace dependency path must change | Medium | Update only workspace `Cargo.toml` path entries in the actual rename spec. |
 | Current docs contain directory naming debt references | Low | Update current docs during actual rename; preserve historical docs when appropriate. |
 | Generated `.dbm` and `analyze.json` files contain old paths | Medium | Decide whether these are regenerated, updated, or excluded before actual rename. |
@@ -51,23 +54,21 @@
 
 ## Readiness Decision
 
-Status: **BLOCKED**
+Status: **READY**
 
-Reason: `crates/memory_space` already exists and is the directory for the
-`memory_space_phase14` package. A direct rename from `crates/memory_space_legacy`
-to `crates/memory_space` would collide with an active workspace member. Package
-name changes are not required for the canonical `memory_space` crate, and public
-API/storage changes are not required, but the directory collision must be
-resolved first.
+Reason: `crates/memory_space` is now available, and the `memory_space_phase14`
+package has moved to `crates/memory_space_phase14`. Package name changes are not
+required for the canonical `memory_space` crate, and public API/storage changes
+are not required for the next directory-only rename.
 
 ## Next Spec
 
-`DBM_MEMORY_SPACE_RENAME_BLOCKER_RESOLUTION_SPEC v1.0`
+`DBM_MEMORY_SPACE_DIRECTORY_RENAME_SPEC v1.0`
 
 Recommended scope:
 
-- Decide the target directory for the existing `memory_space_phase14` package.
+- Rename `crates/memory_space_legacy` to `crates/memory_space`.
+- Update workspace member and dependency paths for the canonical `memory_space`
+  package.
 - Define whether generated `.dbm` and `analyze.json` path snapshots should be
-  updated, regenerated, or ignored.
-- Only after the collision is resolved, run
-  `DBM_MEMORY_SPACE_DIRECTORY_RENAME_SPEC v1.0`.
+  updated, regenerated, or ignored during the canonical rename.

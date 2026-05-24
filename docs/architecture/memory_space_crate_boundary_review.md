@@ -21,7 +21,7 @@
 
 - `memory_space_phase14`
   - Package name: `memory_space_phase14`
-  - Directory: `crates/memory_space`
+  - Directory: `crates/memory_space_phase14`
   - Provides design experience, pattern memory, `DesignMemorySpace`,
     `InMemoryMemorySpace`, `stable_v03::MemoryEngine`, and search prior support.
   - Used by runtime, CLI, architecture search/evaluation, policy, persistence,
@@ -104,7 +104,7 @@
 
 - Workspace dependency aliases map `memory_space` to
   `crates/memory_space_legacy` and `memory_space_phase14` to
-  `crates/memory_space`.
+  `crates/memory_space_phase14`.
 - `dhm` depends on `memory_space` and uses the canonical file store boundary.
 - `apps/cli` depends on `memory_space_phase14` and `memory_space_core`, not the
   `memory_space` package.
@@ -128,11 +128,12 @@
 
 Recommended next step:
 
-`DBM_MEMORY_SPACE_DIRECTORY_RENAME_READINESS_SPEC v1.0`
+`DBM_MEMORY_SPACE_DIRECTORY_RENAME_SPEC v1.0`
 
-Reason: the strongest confirmed debt is the mismatch between package
-`memory_space` and directory `crates/memory_space_legacy`. The runtime API is now
-canonical, but the directory name still communicates a legacy boundary.
+Reason: the `crates/memory_space` collision has been resolved by moving the
+phase14 package to `crates/memory_space_phase14`. The remaining confirmed debt is
+the mismatch between package `memory_space` and directory
+`crates/memory_space_legacy`.
 
 Secondary follow-up candidates:
 
