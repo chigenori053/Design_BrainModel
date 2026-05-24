@@ -10,19 +10,19 @@ const MAGIC: [u8; 8] = *b"HVSTORE0";
 const VERSION: u32 = 1;
 const HEADER_SIZE: u64 = 8 + 4 + 8;
 
-pub trait LegacyMemoryStore {
+pub trait MemoryStore {
     fn append(&self, entry: &MemoryEntry) -> io::Result<()>;
     fn entries(&self) -> io::Result<Vec<MemoryEntry>>;
     fn entry_count(&self) -> io::Result<u64>;
 }
 
 #[derive(Debug)]
-pub struct HolographicVectorStoreAdapter {
+pub struct FileMemoryStore {
     path: PathBuf,
     dimensions: usize,
 }
 
-impl HolographicVectorStoreAdapter {
+impl FileMemoryStore {
     pub fn open(path: impl AsRef<Path>, dimension: u32) -> io::Result<Self> {
         let path = path.as_ref().to_path_buf();
         let _lock = FileLockGuard::acquire(&path)?;
@@ -96,7 +96,7 @@ impl HolographicVectorStoreAdapter {
     }
 }
 
-impl LegacyMemoryStore for HolographicVectorStoreAdapter {
+impl MemoryStore for FileMemoryStore {
     fn append(&self, entry: &MemoryEntry) -> io::Result<()> {
         if entry.vector.len() != self.dimensions {
             return Err(io::Error::new(
@@ -202,11 +202,20 @@ impl Drop for FileLockGuard {
     }
 }
 
+#[deprecated(note = "use MemoryStore")]
+pub use MemoryStore as LegacyMemoryStore;
+
+#[deprecated(note = "use FileMemoryStore")]
+pub use FileMemoryStore as HolographicVectorStoreAdapter;
+
+#[deprecated(note = "use FileMemoryStore")]
+pub use FileMemoryStore as LegacyStoreAdapter;
+
 #[cfg(test)]
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{HolographicVectorStoreAdapter, LegacyMemoryStore};
+    use super::{FileMemoryStore, MemoryStore};
     use crate::memory_entry::MemoryEntry;
 
     fn temp_path(name: &str) -> std::path::PathBuf {
@@ -223,7 +232,7 @@ mod tests {
     fn adapter_opens_and_preserves_entries() {
         let path = temp_path("adapter_preserves_entries");
         {
-            let adapter = HolographicVectorStoreAdapter::open(&path, 4).expect("open adapter");
+            let adapter = FileMemoryStore::open(&path, 4).expect("open adapter");
             adapter
                 .append(&MemoryEntry {
                     id: 7,
@@ -234,7 +243,7 @@ mod tests {
                 .expect("append");
         }
 
-        let reopened = HolographicVectorStoreAdapter::open(&path, 4).expect("reopen adapter");
+        let reopened = FileMemoryStore::open(&path, 4).expect("reopen adapter");
         let entries = reopened.entries().expect("entries");
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].id, 7);
@@ -246,7 +255,7 @@ mod tests {
     }
 
     #[test]
-    fn adapter_append_roundtrip_matches_legacy_store_behavior() {
+    fn file_memory_store_replaces_holographic_adapter() {
         let path = temp_path("adapter_legacy_roundtrip");
         let entry = MemoryEntry {
             id: 1,
@@ -255,7 +264,7 @@ mod tests {
             vector: vec![0.5, 0.6, 0.7, 0.8],
         };
 
-        let adapter = HolographicVectorStoreAdapter::open(&path, 4).expect("open adapter");
+        let adapter = FileMemoryStore::open(&path, 4).expect("open adapter");
         adapter.append(&entry).expect("append");
 
         let entries = adapter.entries().expect("entries");
@@ -267,15 +276,16 @@ mod tests {
     }
 
     #[test]
-    fn adapter_does_not_require_legacy_store_backend() {
-        fn assert_implements_legacy_store<T: LegacyMemoryStore>() {}
-        assert_implements_legacy_store::<HolographicVectorStoreAdapter>();
+    fn memory_store_canonical_api_is_public() {
+        fn assert_implements_memory_store<T: MemoryStore>() {}
+        assert_implements_memory_store::<FileMemoryStore>();
+        let _store_type: Option<FileMemoryStore> = None;
     }
 
     #[test]
     fn adapter_roundtrip_after_backend_split() {
         let path = temp_path("adapter_roundtrip_split");
-        let adapter = HolographicVectorStoreAdapter::open(&path, 4).expect("open");
+        let adapter = FileMemoryStore::open(&path, 4).expect("open");
         let entry = MemoryEntry {
             id: 42,
             depth: 5,
@@ -300,15 +310,25 @@ mod tests {
             vector: vec![0.1, 0.2, 0.3, 0.4],
         };
         {
-            let adapter = HolographicVectorStoreAdapter::open(&path, 4).expect("open first");
+            let adapter = FileMemoryStore::open(&path, 4).expect("open first");
             adapter.append(&entry).expect("append");
         }
         {
-            let adapter = HolographicVectorStoreAdapter::open(&path, 4).expect("reopen");
+            let adapter = FileMemoryStore::open(&path, 4).expect("reopen");
             let entries = adapter.entries().expect("entries");
             assert_eq!(entries.len(), 1);
             assert_eq!(entries[0], entry);
         }
         let _ = std::fs::remove_file(path);
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_aliases_still_compile() {
+        use super::{HolographicVectorStoreAdapter, LegacyMemoryStore, LegacyStoreAdapter};
+
+        fn assert_implements_legacy_store<T: LegacyMemoryStore>() {}
+        assert_implements_legacy_store::<HolographicVectorStoreAdapter>();
+        assert_implements_legacy_store::<LegacyStoreAdapter>();
     }
 }

@@ -13,17 +13,16 @@ pub use interference_memory::{InterferenceMode, MemoryInterferenceTelemetry, Mem
 pub use memory_entry::MemoryEntry;
 pub use node::DesignNode;
 pub use state::DesignState;
-pub use store_adapter::{
-    HolographicVectorStoreAdapter, HolographicVectorStoreAdapter as LegacyStoreAdapter,
-    LegacyMemoryStore,
-};
+pub use store_adapter::{FileMemoryStore, MemoryStore};
+#[allow(deprecated)]
+pub use store_adapter::{HolographicVectorStoreAdapter, LegacyMemoryStore, LegacyStoreAdapter};
 pub use types::{NodeId, StateId, Uuid, Value};
 
 #[cfg(test)]
 mod tests {
     use crate::{
-        DesignNode, DesignState, ExplorationMemory, HolographicVectorStoreAdapter,
-        LegacyMemoryStore, MemoryEntry, StructuralGraph, Value,
+        DesignNode, DesignState, ExplorationMemory, FileMemoryStore, MemoryEntry, MemoryStore,
+        StructuralGraph, Value,
     };
 
     fn assert_send_sync<T: Send + Sync>() {}
@@ -38,14 +37,26 @@ mod tests {
     }
 
     #[test]
-    fn adapter_remains_public_store_api() {
-        fn assert_legacy_memory_store<T: LegacyMemoryStore>() {}
-        fn assert_root_legacy_store<T: crate::LegacyMemoryStore>() {}
+    fn memory_store_canonical_api_is_public() {
+        fn assert_memory_store<T: MemoryStore>() {}
+        fn assert_root_memory_store<T: crate::MemoryStore>() {}
 
-        let _adapter_type: Option<crate::HolographicVectorStoreAdapter> = None;
+        let _store_type: Option<crate::FileMemoryStore> = None;
 
-        assert_legacy_memory_store::<HolographicVectorStoreAdapter>();
-        assert_root_legacy_store::<crate::HolographicVectorStoreAdapter>();
+        assert_memory_store::<FileMemoryStore>();
+        assert_root_memory_store::<crate::FileMemoryStore>();
+    }
+
+    #[allow(deprecated)]
+    #[test]
+    fn legacy_aliases_still_compile() {
+        fn assert_legacy_memory_store<T: crate::LegacyMemoryStore>() {}
+
+        let _holographic_alias: Option<crate::HolographicVectorStoreAdapter> = None;
+        let _legacy_alias: Option<crate::LegacyStoreAdapter> = None;
+
+        assert_legacy_memory_store::<crate::HolographicVectorStoreAdapter>();
+        assert_legacy_memory_store::<crate::LegacyStoreAdapter>();
     }
 
     #[test]

@@ -2,9 +2,7 @@ use std::io;
 use std::path::Path;
 
 use core_types::ObjectiveVector;
-use memory_space::{
-    InterferenceMode, LegacyStoreAdapter, MemoryInterferenceTelemetry, MemorySpace,
-};
+use memory_space::{FileMemoryStore, InterferenceMode, MemoryInterferenceTelemetry, MemorySpace};
 use memory_store::{Codec, FileStore, InMemoryStore, Store};
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -98,7 +96,7 @@ pub struct Dhm {
 
 impl Dhm {
     pub fn open(path: impl AsRef<Path>, mode: InterferenceMode) -> io::Result<Self> {
-        let store = LegacyStoreAdapter::open(path, 4)?;
+        let store = FileMemoryStore::open(path, 4)?;
         let lambda = match mode {
             InterferenceMode::Disabled => 0.0,
             InterferenceMode::Contractive => 0.1,
@@ -151,7 +149,7 @@ fn read_f64(raw: &[u8], idx: &mut usize) -> io::Result<f64> {
 mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use memory_space::InterferenceMode;
+    use memory_space::{FileMemoryStore, InterferenceMode, MemoryStore};
     use memory_store::{FileStore, InMemoryStore};
 
     use super::{Dhm, DhmKey, DhmRecord, DhmStore};
@@ -223,5 +221,11 @@ mod tests {
         let _ = dhm.evaluate_with_recall(&base, 1);
         let _ = dhm.recall_first(&base);
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn dhm_uses_file_memory_store() {
+        fn assert_store<T: MemoryStore>() {}
+        assert_store::<FileMemoryStore>();
     }
 }

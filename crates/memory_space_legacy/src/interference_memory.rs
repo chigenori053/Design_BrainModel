@@ -3,7 +3,7 @@ use std::io;
 use core_types::ObjectiveVector;
 
 use crate::memory_entry::MemoryEntry;
-use crate::{LegacyMemoryStore, LegacyStoreAdapter};
+use crate::store_adapter::{FileMemoryStore, MemoryStore};
 
 const TAU_MEM_MIN: f64 = 1e-9;
 const DELTA_EPS: f64 = 1e-12;
@@ -31,8 +31,8 @@ struct InterferenceStepStats {
 }
 
 #[derive(Debug)]
-pub struct MemorySpace {
-    store: LegacyStoreAdapter,
+pub struct MemorySpace<S: MemoryStore = FileMemoryStore> {
+    store: S,
     decay: f64,
     lambda: f64,
     mode: InterferenceMode,
@@ -45,9 +45,9 @@ pub struct MemorySpace {
     stats_count: usize,
 }
 
-impl MemorySpace {
+impl<S: MemoryStore> MemorySpace<S> {
     pub fn new(
-        store: LegacyStoreAdapter,
+        store: S,
         decay: f64,
         lambda: f64,
         mode: InterferenceMode,
@@ -284,12 +284,12 @@ fn median(mut values: Vec<f64>) -> f64 {
 mod tests {
     use core_types::ObjectiveVector;
 
-    use crate::{InterferenceMode, LegacyStoreAdapter, MemorySpace};
+    use crate::{FileMemoryStore, InterferenceMode, MemorySpace};
 
     #[test]
     fn memory_space_stores_and_adjusts() {
         let path = std::env::temp_dir().join("memory_space_test_store.bin");
-        let store = LegacyStoreAdapter::open(&path, 4).expect("open");
+        let store = FileMemoryStore::open(&path, 4).expect("open");
         let mut memory =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 256).expect("new");
         let base = ObjectiveVector {
@@ -311,9 +311,9 @@ mod tests {
     }
 
     #[test]
-    fn memory_space_uses_adapter_boundary() {
+    fn memory_space_uses_canonical_store_boundary() {
         let path = std::env::temp_dir().join("memory_space_adapter_boundary.bin");
-        let store = LegacyStoreAdapter::open(&path, 4).expect("open");
+        let store = FileMemoryStore::open(&path, 4).expect("open");
         let mut memory =
             MemorySpace::new(store, 0.95, 0.02, InterferenceMode::Repulsive, 2).expect("new");
         let base = ObjectiveVector {
