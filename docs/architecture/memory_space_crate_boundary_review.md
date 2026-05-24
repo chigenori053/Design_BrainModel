@@ -4,7 +4,7 @@
 
 - `memory_space`
   - Package name: `memory_space`
-  - Directory: `crates/memory_space_legacy`
+  - Directory: `crates/memory_space`
   - Current public API includes `MemorySpace<S: MemoryStore = FileMemoryStore>`,
     `MemoryStore`, `FileMemoryStore`, `MemoryEntry`, `DesignState`, and graph
     model types.
@@ -51,7 +51,7 @@
 | Component | Current Role | Classification | Keep / Rename / Merge / Deprecate | Reason |
 |---|---|---|---|---|
 | `memory_space` package | File-backed interference MemorySpace and canonical store API for dhm/runtime-style recall-first use | CANONICAL_RUNTIME | KEEP | It now has canonical public names and `dhm` uses it through `FileMemoryStore`; package name is already `memory_space`. |
-| `crates/memory_space_legacy` directory | Directory containing the `memory_space` package | UNKNOWN | REVIEW | The implementation is canonical at the package/API level, but the directory name is naming debt. No rename in this phase. |
+| `crates/memory_space` directory | Directory containing the `memory_space` package | CANONICAL_RUNTIME | KEEP | The directory now matches the canonical package name. |
 | `memory_space::MemoryStore` | Store trait for `MemoryEntry` persistence | CANONICAL_RUNTIME | KEEP | This is the canonical store trait for the `memory_space` package after alias removal. |
 | `memory_space::FileMemoryStore` | File-backed `MemoryEntry` store preserving the existing binary format | CANONICAL_RUNTIME | KEEP | This is the canonical store implementation used by `dhm`; storage format remains unchanged. |
 | `memory_space::MemorySpace<S>` | Interference memory runtime with generic store boundary | CANONICAL_RUNTIME | KEEP | This is the canonical runtime MemorySpace for the current `memory_space` package. |
@@ -71,7 +71,7 @@
 
 - Canonical runtime MemorySpace:
   - `memory_space::MemorySpace<S: MemoryStore = FileMemoryStore>` from the
-    `memory_space` package in `crates/memory_space_legacy`.
+    `memory_space` package in `crates/memory_space`.
 
 - Canonical store API:
   - `memory_space::MemoryStore`
@@ -103,7 +103,7 @@
 ## Dependency Findings
 
 - Workspace dependency aliases map `memory_space` to
-  `crates/memory_space_legacy` and `memory_space_phase14` to
+  `crates/memory_space` and `memory_space_phase14` to
   `crates/memory_space_phase14`.
 - `dhm` depends on `memory_space` and uses the canonical file store boundary.
 - `apps/cli` depends on `memory_space_phase14` and `memory_space_core`, not the
@@ -128,12 +128,12 @@
 
 Recommended next step:
 
-`DBM_MEMORY_SPACE_DIRECTORY_RENAME_SPEC v1.0`
+`DBM_MEMORY_SPACE_CORE_BOUNDARY_ALIGNMENT_SPEC v1.0`
 
-Reason: the `crates/memory_space` collision has been resolved by moving the
-phase14 package to `crates/memory_space_phase14`. The remaining confirmed debt is
-the mismatch between package `memory_space` and directory
-`crates/memory_space_legacy`.
+Reason: the canonical runtime package and directory now both use
+`memory_space`. The next remaining boundary question is how `memory_space`,
+`memory_space_core`, and `memory_space_phase14` should be documented and consumed
+by CLI, dhm, and reasoning systems.
 
 Secondary follow-up candidates:
 

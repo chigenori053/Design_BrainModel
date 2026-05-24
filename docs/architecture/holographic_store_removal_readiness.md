@@ -2,8 +2,9 @@
 
 ## Scope
 
-This document records the current `crates/memory_space_legacy` store boundary after
-deprecated store aliases were removed.
+This document records the current `crates/memory_space` store boundary after
+deprecated store aliases were removed and the canonical runtime directory was
+renamed.
 
 ## Reference Inventory
 
@@ -43,9 +44,8 @@ These aliases are no longer part of the public API. `MemoryStore` and
 
 ## Package Boundary
 
-The package remains `memory_space`, and the directory remains
-`crates/memory_space_legacy` for this phase. No Cargo package rename is part of
-this cleanup.
+The package remains `memory_space`, and the directory is now
+`crates/memory_space`. No Cargo package rename was part of this cleanup.
 
 ## Verification Commands
 

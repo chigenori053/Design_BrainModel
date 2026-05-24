@@ -4676,49 +4676,49 @@
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/exploration.rs",
+        "path": "crates/memory_space/src/exploration.rs",
         "language": "Rust",
         "complexity": "Low",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/graph.rs",
+        "path": "crates/memory_space/src/graph.rs",
         "language": "Rust",
         "complexity": "High",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/holographic_store.rs",
+        "path": "crates/memory_space/src/holographic_store.rs",
         "language": "Rust",
         "complexity": "Medium",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/interference_memory.rs",
+        "path": "crates/memory_space/src/interference_memory.rs",
         "language": "Rust",
         "complexity": "Medium",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/lib.rs",
+        "path": "crates/memory_space/src/lib.rs",
         "language": "Rust",
         "complexity": "Low",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/node.rs",
+        "path": "crates/memory_space/src/node.rs",
         "language": "Rust",
         "complexity": "Low",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/state.rs",
+        "path": "crates/memory_space/src/state.rs",
         "language": "Rust",
         "complexity": "Low",
         "todos": []
       },
       {
-        "path": "crates/memory_space_legacy/src/types.rs",
+        "path": "crates/memory_space/src/types.rs",
         "language": "Rust",
         "complexity": "Low",
         "todos": []
@@ -7740,14 +7740,14 @@
           "crates/memory_space_index/src/index.rs",
           "crates/memory_space_index/src/lib.rs",
           "crates/memory_space_index/src/search.rs",
-          "crates/memory_space_legacy/src/exploration.rs",
-          "crates/memory_space_legacy/src/graph.rs",
-          "crates/memory_space_legacy/src/holographic_store.rs",
-          "crates/memory_space_legacy/src/interference_memory.rs",
-          "crates/memory_space_legacy/src/lib.rs",
-          "crates/memory_space_legacy/src/node.rs",
-          "crates/memory_space_legacy/src/state.rs",
-          "crates/memory_space_legacy/src/types.rs",
+          "crates/memory_space/src/exploration.rs",
+          "crates/memory_space/src/graph.rs",
+          "crates/memory_space/src/holographic_store.rs",
+          "crates/memory_space/src/interference_memory.rs",
+          "crates/memory_space/src/lib.rs",
+          "crates/memory_space/src/node.rs",
+          "crates/memory_space/src/state.rs",
+          "crates/memory_space/src/types.rs",
           "crates/memory_space_recall/src/lib.rs",
           "crates/memory_space_recall/src/ranking.rs",
           "crates/memory_space_recall/src/resonance.rs",

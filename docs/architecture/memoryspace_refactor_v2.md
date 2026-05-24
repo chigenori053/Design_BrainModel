@@ -62,7 +62,7 @@ MemorySpace v2
 
 既存MemorySpaceは以下へ移動する。
 
-- crates/memory_space_legacy/
+- historical v1 MemorySpace crate directory
 
 - 変更禁止
 - read-only policy
@@ -203,7 +203,7 @@ memory_space_recall
 memory_space_eval
 memory_space_api
 
-memory_space_legacy
+memory_space_v1_runtime
 ```
 
 ## 8. Implementation Phases
@@ -289,7 +289,7 @@ CIでは以下を検証する。
 
 freeze legacy
 
-- memory_space → memory_space_legacy
+- historical MemorySpace v1 crate is frozen before v2 crate creation
 
 ### Step2
 

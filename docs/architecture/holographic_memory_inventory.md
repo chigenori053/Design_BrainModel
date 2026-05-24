@@ -8,7 +8,7 @@ Do not delete.
 Semantic reasoning memory and concept synthesis support.
 Do not delete unless semantic_concept_synthesis is migrated.
 
-## memory_space_legacy::store_adapter
+## memory_space::store_adapter
 Canonical file-backed store boundary for the frozen MemorySpace v1 package.
 Use `MemoryStore` and `FileMemoryStore`; old store aliases have been removed from
 the public API.
