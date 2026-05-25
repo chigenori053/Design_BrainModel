@@ -262,7 +262,10 @@ fn main() {
     }
 
     if let Commands::Memory(args) = command
-        && args.args.first().map(String::as_str) == Some("maintenance")
+        && matches!(
+            args.args.first().map(String::as_str),
+            Some("maintenance" | "log")
+        )
     {
         match design_cli::commands::memory::dispatch_memory_command(&args.args) {
             Ok(out) => println!("{}", out.message),

@@ -8,6 +8,7 @@ use crate::pipeline::PipelineContext;
 use crate::service::dto::{ActionKind, IRActiveTransaction, IRState, SessionAppliedDiff};
 use uuid::Uuid;
 
+use super::context_aware_plan_target_resolver::PreviousAnalysisContext;
 use super::types::ExecutionPlan;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -19,6 +20,7 @@ pub struct ConversationState {
     pub last_accepted_plan_id: Option<Uuid>,
     pub last_viewer_session: Option<String>,
     pub last_analysis_summary: Option<String>,
+    pub previous_analysis_context: Option<PreviousAnalysisContext>,
     pub ir_state: IRState,
     /// Phase B-2 (DBM-IR-STATE-SPEC v1.0): per-file IR snapshot manager.
     ///

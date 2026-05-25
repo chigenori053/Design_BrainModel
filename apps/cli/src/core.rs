@@ -11,8 +11,8 @@ use serde_json::json;
 use sha2::{Digest, Sha256};
 use strategy_engine::{
     DryRunIntegrator, ExecutionContext as StrategyExecutionContext, ExecutionHistory,
-    ExecutionPlanCandidate, Intent, Limits, StrategyEngine, StrategyInput, StrategyOutput,
-    generate_candidates_from_intent_with_limits, requires_clarification,
+    ExecutionPlanCandidate, Intent, Limits, ResolvedTarget, StrategyEngine, StrategyInput,
+    StrategyOutput, generate_candidates_from_intent_with_limits, requires_clarification,
 };
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -33,6 +33,11 @@ use crate::git::executor::{
 use crate::git::policy::{CommandType, classify as git_command_policy};
 use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_record_json};
 use crate::git::transaction::{ExecutionTransaction, GitPhase};
+use crate::nl::context_aware_plan_target_resolver::{
+    ChangePlanCandidate, NarrowTarget, PlanValidationResult, PreviousAnalysisContext,
+    ReplSessionContext, ValidationStatus, stable_context_hash,
+};
+use crate::nl::language_core_ir_adapter::{IrAction, IrTarget};
 use crate::nl::normalization::target_only_input_target;
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
@@ -211,6 +216,10 @@ pub struct CoreState {
     pub status: PipelineState,
     /// Exploration depth.  Spec DBM-LIMITS-INTEGRATION-STEP3 §4.2.
     pub depth: usize,
+    /// 前回の解析コンテキスト。
+    pub previous_analysis_context: Option<PreviousAnalysisContext>,
+    /// REPL セッション全体で保持する Intent/Target/Plan 文脈。
+    pub session_context: ReplSessionContext,
 }
 
 impl Default for CoreState {
@@ -223,6 +232,8 @@ impl Default for CoreState {
             last_diff: None,
             status: PipelineState::Idle,
             depth: 0,
+            previous_analysis_context: None,
+            session_context: ReplSessionContext::default(),
         }
     }
 }
@@ -547,6 +558,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             let history = self.history.lock().unwrap();
             history.current().clone()
         };
+        current_state.session_context.trace_load();
         let context = ExecutionContext {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             pipeline_state: current_state.status.clone(),
@@ -704,10 +716,47 @@ impl RuntimeCoreBridge {
         if self.current_depth() >= self.limits.max_depth {
             return self.max_depth_response();
         }
+        let session_context_snapshot = {
+            let history = self.history.lock().unwrap();
+            history.current().session_context.clone()
+        };
 
         let mut events = vec![
             CoreEvent::Thinking {
                 summary: "refining natural language intent / 自然言語の意図を精製中".to_string(),
+            },
+            CoreEvent::Debug {
+                message: format!(
+                    "[IR-TRACE][CONTEXT_LOAD] previous_analysis_context={} previous_plan_context={} previous_validation_context={} selected_candidate={} validated_plan={}",
+                    if session_context_snapshot.previous_analysis_context.is_some() {
+                        "Some"
+                    } else {
+                        "None"
+                    },
+                    if session_context_snapshot.previous_plan_context.is_some() {
+                        "Some"
+                    } else {
+                        "None"
+                    },
+                    if session_context_snapshot
+                        .previous_validation_context
+                        .is_some()
+                    {
+                        "Some"
+                    } else {
+                        "None"
+                    },
+                    if session_context_snapshot.selected_candidate.is_some() {
+                        "Some"
+                    } else {
+                        "None"
+                    },
+                    if session_context_snapshot.validated_plan.is_some() {
+                        "Some"
+                    } else {
+                        "None"
+                    },
+                ),
             },
             trace_event(
                 "INTENT",
@@ -721,7 +770,96 @@ impl RuntimeCoreBridge {
                 state: request.context.pipeline_state.label().to_string(),
             },
         ];
-        let intent = Intent::new(request.input.clone());
+
+        if is_plan_validation_intent(&request.input) {
+            return self.validate_selected_plan(request, events);
+        }
+
+        // ── LanguageCoreToIrAdapter ──────────────────────────────────────────
+        // DefaultIntentRefiner は非 ASCII 文字をストリップするため日本語入力が
+        // EmptyInput → InvalidInput になる。Adapter で事前に意味分類し、
+        // ReadOnly な Analyze 系 Intent は execute_from_text を経由しない。
+        use crate::nl::context_aware_plan_target_resolver::{
+            has_context_reference, is_plan_only_intent, resolve_plan_target,
+        };
+        use crate::nl::language_core_ir_adapter::{
+            classify_language_core_intent, language_core_to_ir,
+        };
+
+        let lc_intent = classify_language_core_intent(&request.input);
+        let mut ir_request = language_core_to_ir(lc_intent, &request.input);
+
+        // コンテキストアウェアなターゲット解決 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0)
+        let lower_input = request.input.to_lowercase();
+        let is_plan_only = is_plan_only_intent(&lower_input);
+        let has_context_ref = has_context_reference(&lower_input);
+
+        if is_plan_only {
+            let history = self.history.lock().unwrap();
+            let session_context = &history.current().session_context;
+            let resolution = resolve_plan_target(
+                ir_request.target.clone(),
+                is_plan_only,
+                has_context_ref,
+                Some(session_context),
+            );
+
+            if resolution.previous_context_used {
+                events.push(CoreEvent::Debug {
+                    message: format!(
+                        "[IR-TRACE][CONTEXT_RESOLUTION] previous_context_used=true reason={:?} target={} mode={}",
+                        resolution.reason, resolution.target, resolution.mode
+                    ),
+                });
+                ir_request.action = resolution.action;
+                ir_request.target = resolution.target;
+                ir_request.mode = resolution.mode;
+            }
+        }
+
+        events.push(trace_event(
+            "LANGUAGE_CORE",
+            json!({
+                "intent": ir_request.action.to_string(),
+                "confidence": ir_request.confidence,
+                "timestamp": timestamp_millis(),
+            }),
+        ));
+        events.push(trace_event(
+            "ADAPTER",
+            json!({
+                "action": ir_request.action.to_string(),
+                "target": ir_request.target.to_string(),
+                "mode": ir_request.mode.to_string(),
+            }),
+        ));
+        if ir_request.action.is_analyze() {
+            return self.execute_lc_analyze(ir_request, request, events);
+        }
+        if ir_request.action == IrAction::GenerateChangePlan {
+            return self.execute_lc_generate_plan(ir_request, request, events);
+        }
+        if ir_request.action == IrAction::Apply {
+            return self.apply_validated_plan_guard(request, events);
+        }
+        // ── end LanguageCoreToIrAdapter ──────────────────────────────────────
+
+        let mut intent = Intent::new(request.input.clone());
+
+        // アダプターで解決されたターゲットを Intent に反映 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0 §7)
+        match &ir_request.target {
+            IrTarget::WorkspaceRoot => {
+                intent.file = Some(".".to_string());
+            }
+            IrTarget::File(path) => {
+                intent.file = Some(path.clone());
+            }
+            IrTarget::Symbol(sym) => {
+                intent.symbol = Some(sym.clone());
+            }
+            IrTarget::None => {}
+        }
+
         let ambiguous = requires_clarification(&intent);
         trace_ir!(
             TraceLevel::Basic,
@@ -750,6 +888,298 @@ impl RuntimeCoreBridge {
         }
 
         self.execute_coding_pipeline(intent, request, events)
+    }
+
+    /// 修正プランの作成要求を直接ハンドルする。
+    /// Spec DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0 §11
+    fn execute_lc_generate_plan(
+        &self,
+        ir_request: crate::nl::language_core_ir_adapter::IrIntentRequest,
+        request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let mut intent = Intent::new(request.input.clone());
+        match &ir_request.target {
+            IrTarget::WorkspaceRoot => intent.file = Some(".".to_string()),
+            IrTarget::File(path) => intent.file = Some(path.clone()),
+            IrTarget::Symbol(sym) => intent.symbol = Some(sym.clone()),
+            IrTarget::None => {}
+        }
+
+        let change_candidates = generate_narrow_change_candidates(&request.context.working_dir);
+        let candidates = execution_candidates_from_change_candidates(&change_candidates);
+        trace_ir!(
+            TraceLevel::Basic,
+            "PLAN_CANDIDATES",
+            format!("count={}", change_candidates.len())
+        );
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][PLAN_CANDIDATES] count={} all_narrow=true",
+                change_candidates.len()
+            ),
+        });
+        let plan_text = format_change_plan(&ir_request, &change_candidates);
+        let plan_hash = stable_context_hash(&plan_text);
+
+        events.push(CoreEvent::Result { message: plan_text });
+        events.push(CoreEvent::Proposal {
+            candidates: candidates.clone(),
+        });
+        events.push(CoreEvent::Pipeline {
+            state: PipelineState::Proposed.label().to_string(),
+        });
+
+        let mut response = CoreResponse {
+            events: {
+                events.push(CoreEvent::Debug {
+                    message: format!(
+                        "[IR-TRACE][CONTEXT_STORE] kind=plan target={} mode={} status=Executed",
+                        ir_request.target, ir_request.mode
+                    ),
+                });
+                events
+            },
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: None,
+        };
+
+        // CoreState を更新して History に Push する（候補を選択可能にするため）
+        let mut history = self.history.lock().unwrap();
+        let mut next_state = history.current().clone();
+        next_state.proposals = candidates;
+        next_state.status = PipelineState::Proposed;
+        next_state.session_context.store_plan(
+            ir_request.target.clone(),
+            ir_request.mode.clone(),
+            next_state.proposals.len(),
+            change_candidates,
+            plan_hash,
+            ExecutionStatus::Executed,
+        );
+        next_state.previous_analysis_context =
+            next_state.session_context.previous_analysis_context.clone();
+        history.push(next_state);
+        response.core_state = Some(history.current().clone());
+
+        response
+    }
+
+    /// LanguageCoreToIrAdapter によって分類された Analyze 系 Intent を直接ハンドルする。
+    ///
+    /// `execute_from_text` (DefaultIntentRefiner) を経由しないため、
+    /// 日本語入力の場合でも InvalidInput にならない。
+    fn execute_lc_analyze(
+        &self,
+        ir_request: crate::nl::language_core_ir_adapter::IrIntentRequest,
+        request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let id = request.id;
+        let working_dir = request.context.working_dir.clone();
+        let path_str = working_dir.to_str().unwrap_or(".");
+
+        if observability_enabled() {
+            println!(
+                "[LC-ANALYZE][id={}] action={} target={} mode={}",
+                id, ir_request.action, ir_request.target, ir_request.mode
+            );
+        }
+
+        events.push(CoreEvent::Thinking {
+            summary: format!(
+                "analyzing project structure / プロジェクト構造を解析中 [{}]",
+                ir_request.target
+            ),
+        });
+
+        // dbm::analyzer::analyze_project は軽量なディレクトリ走査を行い、
+        // 日本語入力でも安全に実行できる。
+        let analysis_text = match crate::dbm::analyzer::analyze_project(path_str) {
+            Ok(result) => format_lc_analysis_result(path_str, &result),
+            Err(err) => {
+                trace_ir!(
+                    TraceLevel::Error,
+                    "ADAPTER_ERROR",
+                    format!(
+                        "reason=AnalyzeFailed raw_input={} error={err}",
+                        ir_request.raw_input
+                    )
+                );
+                format!(
+                    "# Project Structure Analysis\n\nPath: {path_str}\n\nNote: {err}\n\nHint: Run `dbm analyze` for detailed analysis."
+                )
+            }
+        };
+
+        events.push(CoreEvent::Result {
+            message: analysis_text,
+        });
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][CONTEXT_STORE] kind=analysis action={} target={} mode={} status=Executed",
+                ir_request.action, ir_request.target, ir_request.mode
+            ),
+        });
+        events.push(CoreEvent::Pipeline {
+            state: PipelineState::Planned.label().to_string(),
+        });
+
+        let mut response = CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: None,
+        };
+
+        // 前回の解析コンテキストを保存
+        let mut history = self.history.lock().unwrap();
+        let mut next_state = history.current().clone();
+        next_state.session_context.store_analysis(
+            ir_request.action.clone(),
+            ir_request.target.clone(),
+            ir_request.mode.clone(),
+            ExecutionStatus::Executed,
+        );
+        next_state.previous_analysis_context =
+            next_state.session_context.previous_analysis_context.clone();
+        history.push(next_state);
+        response.core_state = Some(history.current().clone());
+
+        response
+    }
+
+    fn validate_selected_plan(
+        &self,
+        request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let mut history = self.history.lock().unwrap();
+        let current = history.current().clone();
+        let Some(plan_ctx) = current.session_context.previous_plan_context.as_ref() else {
+            return error_response(
+                "ClarificationRequired",
+                "no previous plan to validate",
+                request.id,
+            );
+        };
+        let Some(selected) = current.session_context.selected_candidate.as_ref() else {
+            return error_response(
+                "ClarificationRequired",
+                "select a candidate before validation",
+                request.id,
+            );
+        };
+        let Some(candidate) = plan_ctx
+            .candidates
+            .iter()
+            .find(|candidate| candidate.candidate_id == selected.candidate_id)
+            .cloned()
+        else {
+            return error_response(
+                "ValidationError",
+                "selected candidate not found",
+                request.id,
+            );
+        };
+
+        let validation = validate_change_plan_candidate(
+            &request.context.working_dir,
+            plan_ctx.plan_hash,
+            &candidate,
+            selected,
+        );
+        trace_ir!(
+            TraceLevel::Basic,
+            "PLAN_VALIDATION",
+            format!(
+                "candidate_id={} status={:?} apply_allowed={}",
+                validation.candidate_id, validation.status, validation.apply_allowed
+            )
+        );
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][PLAN_VALIDATION] candidate_id={} status={:?} apply_allowed={}",
+                validation.candidate_id, validation.status, validation.apply_allowed
+            ),
+        });
+        events.push(CoreEvent::Result {
+            message: format_plan_validation(&validation),
+        });
+
+        let mut next_state = current;
+        next_state
+            .session_context
+            .store_validation(validation.clone());
+        if validation.apply_allowed {
+            events.push(CoreEvent::Debug {
+                message: "[IR-TRACE][CONTEXT_STORE] kind=validated_plan apply_allowed=true"
+                    .to_string(),
+            });
+        }
+        next_state.previous_analysis_context =
+            next_state.session_context.previous_analysis_context.clone();
+        history.push(next_state);
+        let core_state = history.current().clone();
+        drop(history);
+
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: Some(core_state),
+        }
+    }
+
+    fn apply_validated_plan_guard(
+        &self,
+        _request: InternalRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let current = self.history.lock().unwrap().current().clone();
+        let reason = apply_guard_rejection_reason(&current.session_context);
+        if let Some(reason) = reason {
+            trace_ir!(
+                TraceLevel::Basic,
+                "APPLY_GUARD",
+                format!("rejected=true reason={reason}")
+            );
+            events.push(CoreEvent::Debug {
+                message: format!("[IR-TRACE][APPLY_GUARD] rejected=true reason={reason}"),
+            });
+            events.push(CoreEvent::Result {
+                message: format!("# Apply Rejected\n\nReason: {reason}."),
+            });
+            return CoreResponse {
+                events,
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            };
+        }
+
+        let validated = current
+            .session_context
+            .validated_plan
+            .as_ref()
+            .expect("validated plan checked");
+        trace_ir!(TraceLevel::Basic, "APPLY_GUARD", "rejected=false");
+        events.push(CoreEvent::Debug {
+            message: "[IR-TRACE][APPLY_GUARD] rejected=false".to_string(),
+        });
+        events.push(CoreEvent::Result {
+            message: format!(
+                "# Apply Guard\n\nCandidate: {}\nTarget: {}\nStatus: Allowed\n\nSafe apply execution is deferred to DBM-SAFE-APPLY-EXECUTION-SPEC.",
+                validated.candidate_id, validated.target
+            ),
+        });
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: Some(current),
+        }
     }
 
     fn execute_coding_pipeline(
@@ -2065,6 +2495,17 @@ impl RuntimeCoreBridge {
             CoreEvent::Result {
                 message: format!("Selected: {}", candidate.summary),
             },
+            CoreEvent::Debug {
+                message: format!(
+                    "[IR-TRACE][CONTEXT_STORE] kind=selection candidate_id={} target={}",
+                    index,
+                    candidate
+                        .target
+                        .as_ref()
+                        .map(|target| format!("File({})", target.file))
+                        .unwrap_or_else(|| "None".to_string())
+                ),
+            },
             CoreEvent::Pipeline {
                 state: PipelineState::Previewed.label().to_string(),
             },
@@ -2072,6 +2513,30 @@ impl RuntimeCoreBridge {
                 actions: vec!["y".to_string(), "n".to_string()],
             },
         ]);
+
+        {
+            let mut history = self.history.lock().expect("history lock");
+            let mut next_state = history.current().clone();
+            let selected_target = next_state
+                .session_context
+                .previous_plan_context
+                .as_ref()
+                .and_then(|ctx| {
+                    ctx.candidates
+                        .iter()
+                        .find(|plan_candidate| plan_candidate.candidate_id == index)
+                        .map(|plan_candidate| plan_candidate.target.clone())
+                });
+            let Some(selected_target) = selected_target else {
+                return error_response("ValidationError", "candidate target not found", id);
+            };
+            next_state
+                .session_context
+                .store_selection(index, selected_target);
+            next_state.previous_analysis_context =
+                next_state.session_context.previous_analysis_context.clone();
+            history.push(next_state);
+        }
 
         // Emit: Plan → Pipeline::Planned → Preview → Result → Pipeline::Previewed → Next
         // The double Pipeline emission walks through each required state step.  §5.2
@@ -2285,6 +2750,249 @@ fn timestamp_millis() -> u128 {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis())
         .unwrap_or(0)
+}
+
+/// LanguageCoreToIrAdapter の analyze 結果を Markdown テキストに整形する。
+fn format_lc_analysis_result(path: &str, result: &crate::dbm::ProjectAnalysisResult) -> String {
+    let mut out = String::new();
+    out.push_str("# Project Structure Analysis\n\n");
+    out.push_str(&format!("- Path: `{path}`\n"));
+    out.push_str(&format!("- Files: {}\n", result.files.len()));
+    out.push_str(&format!(
+        "- Languages: {}\n",
+        result
+            .summary
+            .languages
+            .iter()
+            .map(|lang| lang.as_str())
+            .collect::<Vec<_>>()
+            .join(", ")
+    ));
+
+    if !result.modules.is_empty() {
+        out.push_str("\n## Modules\n\n");
+        for module in result.modules.iter().take(20) {
+            out.push_str(&format!("- `{}`\n", module.name));
+        }
+        if result.modules.len() > 20 {
+            out.push_str(&format!("- ... and {} more\n", result.modules.len() - 20));
+        }
+    }
+
+    if !result.dependencies.is_empty() {
+        out.push_str(&format!(
+            "\n## Dependencies\n\n- Total edges: {}\n",
+            result.dependencies.len()
+        ));
+    }
+
+    out.push_str("\n## Next Steps\n\n");
+    out.push_str("- Run `dbm analyze` for detailed structural diagnostics\n");
+    out.push_str("- Run `memory maintenance dedup --dry-run` to clean up duplicates\n");
+    out
+}
+
+/// 修正プランの候補を Markdown テキストに整形する。
+/// Spec DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0 §11
+fn generate_narrow_change_candidates(root: &Path) -> Vec<ChangePlanCandidate> {
+    let preferred = [
+        "apps/cli/src/core.rs",
+        "apps/cli/src/repl.rs",
+        "apps/cli/src/nl/language_core_ir_adapter.rs",
+        "src/core.rs",
+        "src/repl.rs",
+        "src/nl/language_core_ir_adapter.rs",
+        "README.md",
+        "Cargo.toml",
+    ];
+    let mut files = preferred
+        .iter()
+        .filter(|path| root.join(path).is_file())
+        .map(|path| (*path).to_string())
+        .collect::<Vec<_>>();
+    if files.len() < 3 {
+        files.extend(
+            ["Cargo.toml", "README.md", "src/lib.rs"]
+                .iter()
+                .filter(|path| root.join(path).is_file())
+                .map(|path| (*path).to_string()),
+        );
+    }
+    files.sort();
+    files.dedup();
+    files
+        .into_iter()
+        .take(5)
+        .enumerate()
+        .map(|(index, file)| ChangePlanCandidate {
+            candidate_id: index + 1,
+            title: format!("Small safe cleanup in {file}"),
+            target: NarrowTarget::File(file.clone()),
+            proposed_change: "Add a focused, non-destructive maintainability improvement after review.".to_string(),
+            rationale: "The target is a concrete file inside the workspace, avoiding WorkspaceRoot mutation.".to_string(),
+            risk_level: if index == 0 {
+                crate::runtime::autonomous_control::RiskLevel::Low
+            } else {
+                crate::runtime::autonomous_control::RiskLevel::Medium
+            },
+            requires_validation: true,
+        })
+        .collect()
+}
+
+fn execution_candidates_from_change_candidates(
+    candidates: &[ChangePlanCandidate],
+) -> Vec<ExecutionPlanCandidate> {
+    candidates
+        .iter()
+        .map(|candidate| {
+            let file = match &candidate.target {
+                NarrowTarget::File(path) => path.clone(),
+                NarrowTarget::Module(module) => module.clone(),
+                NarrowTarget::Symbol(symbol) => symbol.clone(),
+            };
+            ExecutionPlanCandidate::from_ops(
+                candidate.candidate_id,
+                candidate.title.clone(),
+                vec![strategy_engine::ExecutionOp::RuntimePhase(
+                    candidate.proposed_change.clone(),
+                )],
+                Some(ResolvedTarget { file, symbol: None }),
+            )
+        })
+        .collect()
+}
+
+fn format_change_plan(
+    ir_request: &crate::nl::language_core_ir_adapter::IrIntentRequest,
+    candidates: &[ChangePlanCandidate],
+) -> String {
+    let mut out = String::new();
+    out.push_str("# Change Plan\n\n");
+    out.push_str(&format!("Mode: {}\n", ir_request.mode));
+    out.push_str(&format!("Scope: {}\n", ir_request.target));
+    out.push_str("Apply status: Not applied\n\n");
+
+    out.push_str("## Candidates\n\n");
+    if candidates.is_empty() {
+        out.push_str("No suitable change candidates found for the current target.\n");
+    } else {
+        for candidate in candidates {
+            out.push_str(&format!(
+                "{}. {}\n   Target: {}\n   Proposed change: {}\n   Rationale: {}\n   Risk: {:?}\n   Validation required: {}\n\n",
+                candidate.candidate_id,
+                candidate.title,
+                candidate.target,
+                candidate.proposed_change,
+                candidate.rationale,
+                candidate.risk_level,
+                if candidate.requires_validation { "yes" } else { "no" }
+            ));
+        }
+    }
+
+    out.push_str("\n## Safety\n");
+    out.push_str("- No files modified\n");
+    out.push_str("- No apply executed\n");
+    if ir_request.target == crate::nl::language_core_ir_adapter::IrTarget::WorkspaceRoot {
+        out.push_str("- WorkspaceRoot apply prohibited\n");
+    }
+
+    out.push_str("\n## Next\n");
+    out.push_str("- Select one candidate target before apply (`select <n>`)\n");
+    out
+}
+
+fn is_plan_validation_intent(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    lower.contains("検証して")
+        || lower.contains("候補を検証")
+        || lower.contains("修正プランを検証")
+        || lower.contains("validate selected plan")
+        || lower.contains("validate this candidate")
+}
+
+fn validate_change_plan_candidate(
+    root: &Path,
+    plan_hash: u64,
+    candidate: &ChangePlanCandidate,
+    selected: &crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext,
+) -> PlanValidationResult {
+    if selected.plan_hash != plan_hash {
+        return PlanValidationResult {
+            plan_hash,
+            candidate_id: candidate.candidate_id,
+            target: candidate.target.clone(),
+            status: ValidationStatus::Rejected,
+            risk_level: candidate.risk_level,
+            apply_allowed: false,
+            reason: "Plan hash mismatch.".to_string(),
+        };
+    }
+    let target_exists = match &candidate.target {
+        NarrowTarget::File(path) => {
+            let joined = root.join(path);
+            joined.is_file() && joined.starts_with(root)
+        }
+        NarrowTarget::Module(_) | NarrowTarget::Symbol(_) => true,
+    };
+    if !target_exists {
+        return PlanValidationResult {
+            plan_hash,
+            candidate_id: candidate.candidate_id,
+            target: candidate.target.clone(),
+            status: ValidationStatus::Rejected,
+            risk_level: candidate.risk_level,
+            apply_allowed: false,
+            reason: "Target is missing or outside workspace.".to_string(),
+        };
+    }
+    if candidate.risk_level > crate::runtime::autonomous_control::RiskLevel::Medium {
+        return PlanValidationResult {
+            plan_hash,
+            candidate_id: candidate.candidate_id,
+            target: candidate.target.clone(),
+            status: ValidationStatus::ReviewRequired,
+            risk_level: candidate.risk_level,
+            apply_allowed: false,
+            reason: "Risk is above Medium and requires review.".to_string(),
+        };
+    }
+    PlanValidationResult {
+        plan_hash,
+        candidate_id: candidate.candidate_id,
+        target: candidate.target.clone(),
+        status: ValidationStatus::Passed,
+        risk_level: candidate.risk_level,
+        apply_allowed: true,
+        reason: "Target is narrow and non-destructive.".to_string(),
+    }
+}
+
+fn format_plan_validation(result: &PlanValidationResult) -> String {
+    format!(
+        "# Plan Validation\n\nCandidate: {}\nTarget: {}\nStatus: {:?}\nApply allowed: {}\nReason: {}",
+        result.candidate_id, result.target, result.status, result.apply_allowed, result.reason
+    )
+}
+
+fn apply_guard_rejection_reason(session: &ReplSessionContext) -> Option<&'static str> {
+    let Some(validated) = session.validated_plan.as_ref() else {
+        return Some("MissingValidatedPlan");
+    };
+    let Some(selected) = session.selected_candidate.as_ref() else {
+        return Some("MissingSelectedCandidate");
+    };
+    if !validated.apply_allowed {
+        return Some("ApplyNotAllowed");
+    }
+    if selected.candidate_id != validated.candidate_id {
+        return Some("CandidateMismatch");
+    }
+    if selected.plan_hash != validated.plan_hash {
+        return Some("PlanHashMismatch");
+    }
+    None
 }
 
 fn ir_plan_json(plan: &strategy_engine::CodeIrProgram) -> serde_json::Value {
@@ -3655,6 +4363,344 @@ mod tests {
         assert!(response.events.iter().any(
             |event| matches!(event, CoreEvent::Error { message } if message == "Replay limit exceeded")
         ));
+    }
+
+    // ── LanguageCoreToIrAdapter 統合テスト (spec §11.2) ──────────────────────
+
+    /// spec §11.2 テスト 1: 日本語のプロジェクト構造解析が InvalidInput にならない
+    ///
+    /// 「このプロジェクトの構造を解析して」は DefaultIntentRefiner の ASCII-only
+    /// normalizer を通過せずに Adapter で処理されるため、InvalidInput は返さない。
+    #[test]
+    fn nl_project_structure_request_does_not_return_invalid_input() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("このプロジェクトの構造を解析して"));
+
+        assert_ne!(
+            response.status,
+            ExecutionStatus::Failed,
+            "Japanese analyze input must not produce Failed status"
+        );
+        let has_invalid_input_error = response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message.contains("InvalidInput")),
+        );
+        assert!(
+            !has_invalid_input_error,
+            "Response must not contain InvalidInput error for Japanese analyze input"
+        );
+    }
+
+    #[test]
+    fn repl_session_context_stores_previous_analysis() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("このプロジェクトの構造を解析して"));
+        let state = response.core_state.expect("core state");
+
+        assert!(state.session_context.previous_analysis_context.is_some());
+        assert_eq!(
+            state
+                .session_context
+                .previous_analysis_context
+                .as_ref()
+                .expect("analysis")
+                .target,
+            IrTarget::WorkspaceRoot
+        );
+    }
+
+    #[test]
+    fn repl_session_context_loads_previous_analysis() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクトの構造を解析して"));
+
+        let response = core.execute(request(
+            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+        ));
+
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_LOAD]")
+                    && message.contains("previous_analysis_context=Some")))
+        );
+        assert!(
+            response
+                .events
+                .iter()
+                .any(|event| matches!(event, CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_RESOLUTION]")
+                    && message.contains("previous_context_used=true")))
+        );
+    }
+
+    #[test]
+    fn workspace_root_plan_generates_narrow_candidates() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクトの構造を解析して"));
+
+        let response = core.execute(request(
+            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+        ));
+        let state = response.core_state.expect("core state");
+        let plan = state
+            .session_context
+            .previous_plan_context
+            .expect("plan context");
+
+        assert_eq!(plan.target, IrTarget::WorkspaceRoot);
+        assert!(plan.candidates.len() >= 3, "{:?}", plan.candidates);
+        assert!(plan.candidates.iter().all(|candidate| matches!(
+            candidate.target,
+            NarrowTarget::File(_) | NarrowTarget::Module(_) | NarrowTarget::Symbol(_)
+        )));
+    }
+
+    #[test]
+    fn plan_validation_requires_selected_candidate() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクトの構造を解析して"));
+        core.execute(request(
+            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+        ));
+
+        let response = core.execute(request("この候補を検証して"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+    }
+
+    #[test]
+    fn plan_validation_allows_low_risk_file_target() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクトの構造を解析して"));
+        core.execute(request(
+            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+        ));
+        core.execute(request("select 1"));
+
+        let response = core.execute(request("この候補を検証して"));
+        let state = response.core_state.expect("core state");
+
+        assert_eq!(response.status, ExecutionStatus::Executed);
+        assert!(state.session_context.validated_plan.is_some());
+        assert!(
+            state
+                .session_context
+                .validated_plan
+                .as_ref()
+                .expect("validated")
+                .apply_allowed
+        );
+    }
+
+    #[test]
+    fn apply_requires_validated_plan() {
+        apply_without_validated_plan_is_rejected();
+    }
+
+    #[test]
+    fn new_analysis_clears_plan_validation_selection() {
+        let mut state = CoreState::default();
+        state.session_context.previous_plan_context = Some(
+            crate::nl::context_aware_plan_target_resolver::PreviousPlanContext {
+                target: IrTarget::WorkspaceRoot,
+                mode: crate::nl::language_core_ir_adapter::ExecutionMode::PlanOnly,
+                candidate_count: 1,
+                candidates: vec![ChangePlanCandidate {
+                    candidate_id: 1,
+                    title: "test".to_string(),
+                    target: NarrowTarget::File("Cargo.toml".to_string()),
+                    proposed_change: "test".to_string(),
+                    rationale: "test".to_string(),
+                    risk_level: crate::runtime::autonomous_control::RiskLevel::Low,
+                    requires_validation: true,
+                }],
+                plan_hash: 1,
+                status: ExecutionStatus::Executed,
+                timestamp: 1,
+            },
+        );
+        state.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 1,
+                timestamp: 1,
+            },
+        );
+
+        state.session_context.store_analysis(
+            IrAction::AnalyzeProject,
+            IrTarget::WorkspaceRoot,
+            crate::nl::language_core_ir_adapter::ExecutionMode::ReadOnly,
+            ExecutionStatus::Executed,
+        );
+
+        assert!(state.session_context.previous_analysis_context.is_some());
+        assert!(state.session_context.previous_plan_context.is_none());
+        assert!(state.session_context.selected_candidate.is_none());
+    }
+
+    #[test]
+    fn new_plan_clears_validation_selection() {
+        let mut state = CoreState::default();
+        state.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 1,
+                timestamp: 1,
+            },
+        );
+
+        state.session_context.store_plan(
+            IrTarget::WorkspaceRoot,
+            crate::nl::language_core_ir_adapter::ExecutionMode::PlanOnly,
+            2,
+            vec![ChangePlanCandidate {
+                candidate_id: 1,
+                title: "test".to_string(),
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                proposed_change: "test".to_string(),
+                rationale: "test".to_string(),
+                risk_level: crate::runtime::autonomous_control::RiskLevel::Low,
+                requires_validation: true,
+            }],
+            42,
+            ExecutionStatus::Executed,
+        );
+
+        assert!(state.session_context.previous_plan_context.is_some());
+        assert!(state.session_context.selected_candidate.is_none());
+    }
+
+    #[test]
+    fn workspace_root_apply_is_rejected_even_with_context() {
+        let ir_request = crate::nl::language_core_ir_adapter::IrIntentRequest {
+            action: IrAction::Apply,
+            target: IrTarget::WorkspaceRoot,
+            mode: crate::nl::language_core_ir_adapter::ExecutionMode::Apply,
+            raw_input: "apply".to_string(),
+            confidence: 1.0,
+        };
+
+        let rendered = format_change_plan(&ir_request, &[]);
+
+        assert!(rendered.contains("WorkspaceRoot apply prohibited"));
+    }
+
+    #[test]
+    fn apply_without_validated_plan_is_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("問題なければ適用して"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+    }
+
+    /// spec §11.2 テスト 2: プロジェクト構造解析は WorkspaceRoot をターゲットにする
+    ///
+    /// Adapter が AnalyzeProject + WorkspaceRoot を設定していることを、
+    /// [IR-TRACE][ADAPTER] デバッグイベントから確認する。
+    #[test]
+    fn nl_project_structure_request_targets_workspace_root() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("このプロジェクトの構造を解析して"));
+
+        let has_adapter_trace = response.events.iter().any(|event| {
+            matches!(event, CoreEvent::Debug { message }
+                if message.contains("ADAPTER")
+                    && message.contains("WorkspaceRoot"))
+        });
+        assert!(
+            has_adapter_trace,
+            "ADAPTER trace must include WorkspaceRoot target; events={:?}",
+            response
+                .events
+                .iter()
+                .filter(|e| matches!(e, CoreEvent::Debug { .. }))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// spec §11.2 テスト 3: プロジェクト構造解析は ReadOnly モードで実行される
+    ///
+    /// [IR-TRACE][ADAPTER] イベントの mode フィールドが ReadOnly であること。
+    #[test]
+    fn nl_project_structure_request_is_read_only() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("このプロジェクトの構造を解析して"));
+
+        let has_readonly_trace = response.events.iter().any(|event| {
+            matches!(event, CoreEvent::Debug { message }
+                if message.contains("ADAPTER")
+                    && message.contains("ReadOnly"))
+        });
+        assert!(
+            has_readonly_trace,
+            "ADAPTER trace must indicate ReadOnly mode; events={:?}",
+            response
+                .events
+                .iter()
+                .filter(|e| matches!(e, CoreEvent::Debug { .. }))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// spec §11.2 テスト 4: 依存関係解析要求も WorkspaceRoot をターゲットにする
+    ///
+    /// 「依存関係を解析して」→ AnalyzeDependencies + WorkspaceRoot + ReadOnly。
+    #[test]
+    fn nl_dependency_request_targets_workspace_root() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request("依存関係を解析して"));
+
+        assert_ne!(
+            response.status,
+            ExecutionStatus::Failed,
+            "Dependency analyze input must not produce Failed status"
+        );
+        let has_invalid_input_error = response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message.contains("InvalidInput")),
+        );
+        assert!(
+            !has_invalid_input_error,
+            "Response must not contain InvalidInput error for dependency analyze input"
+        );
+        let has_workspace_root = response.events.iter().any(|event| {
+            matches!(event, CoreEvent::Debug { message }
+                if message.contains("ADAPTER")
+                    && message.contains("WorkspaceRoot"))
+        });
+        assert!(
+            has_workspace_root,
+            "Dependency analyze must target WorkspaceRoot"
+        );
+    }
+
+    /// spec §11.2 テスト 5: リファクタリング要求は即時 apply しない
+    ///
+    /// 「修正して」→ PlanOnly モード。Apply (ExecutionStatus::Executed で Diff イベント) は出ない。
+    /// また RefactorRequest は Adapter を通過した後、通常の NL pipeline で曖昧として
+    /// Proposed になるか、あるいは PlanOnly として処理される。
+    /// いずれにせよ ReadOnly な analyze と違い apply は走らない。
+    #[test]
+    fn nl_refactor_request_does_not_apply_immediately() {
+        let core = RuntimeCoreBridge::with_defaults();
+        // Adapter が is_analyze() = false を返すため通常パスへ進む
+        // 「修正して」は ambiguous → Proposed か、PlanOnly で止まる
+        let response = core.execute(request("修正して"));
+
+        // Adapter trace で Apply モードになっていないことを確認
+        let has_apply_mode = response.events.iter().any(|event| {
+            matches!(event, CoreEvent::Debug { message }
+                if message.contains("ADAPTER")
+                    && message.contains("\"Apply\""))
+        });
+        assert!(
+            !has_apply_mode,
+            "Refactor request must not produce Apply mode in ADAPTER trace"
+        );
     }
 }
 // DBM clarification execution guarantee

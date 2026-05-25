@@ -1,5 +1,6 @@
 pub mod autonomous;
 pub mod context;
+pub mod context_aware_plan_target_resolver;
 pub mod convergence;
 pub mod execution_state;
 pub mod executor;
@@ -7,6 +8,7 @@ pub mod goal;
 pub mod intent;
 pub mod intent_ranker;
 pub mod language;
+pub mod language_core_ir_adapter;
 pub mod language_detection;
 pub mod language_intent_bridge;
 pub mod r#loop;

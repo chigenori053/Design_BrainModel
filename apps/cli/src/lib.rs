@@ -20,6 +20,7 @@ pub mod executor;
 pub mod git;
 pub mod git_guard;
 pub mod github_guard;
+pub mod holographic_memory_observation;
 pub mod input;
 pub mod ir;
 pub mod ir_state;

@@ -10,7 +10,9 @@ use crate::ir::{
     emit_step_completed, emit_step_scheduled_with_id, emit_step_started, log_ir_bypass_warning,
     persist_ir_transition, store_execution_memory,
 };
+use crate::nl::context_aware_plan_target_resolver::PreviousAnalysisContext;
 use crate::nl::execution_state::ExecutionState;
+use crate::nl::language_core_ir_adapter::{ExecutionMode, IrAction, IrTarget};
 use crate::nl::session::ConversationState;
 use crate::nl::types::{
     ExecutionPlan, ExecutionStage, Operation, PlannedStep, RefactorSpec, RepairSpec,
@@ -516,6 +518,20 @@ fn update_state_after_operation(
     match op {
         Operation::Analyze => {
             conversation.last_target = Some(target.to_path_buf());
+
+            let ir_target = if target == Path::new(".") || target == Path::new("") {
+                IrTarget::WorkspaceRoot
+            } else {
+                IrTarget::File(target.to_string_lossy().to_string())
+            };
+
+            conversation.previous_analysis_context = Some(PreviousAnalysisContext::new(
+                IrAction::AnalyzeProject,
+                ir_target,
+                ExecutionMode::ReadOnly,
+                crate::core::ExecutionStatus::Executed,
+            ));
+
             if target.is_dir() {
                 let _ = conversation.ir_state_manager.build_project(target);
             } else {

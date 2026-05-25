@@ -1,3 +1,4 @@
+pub mod log;
 pub mod maintenance;
 
 use crate::command::{
@@ -11,6 +12,9 @@ impl CommandPlugin for MemoryPlugin {
     fn register(&self, registry: &mut CommandRegistry) {
         let mut cmd = CommandHandler::new("memory");
         cmd.register_subcommand(SubCommandHandler::new("import", import));
+        cmd.register_subcommand(SubCommandHandler::new("log", |args, _session| {
+            log::handle_log(args)
+        }));
         cmd.register_subcommand(SubCommandHandler::new(
             "maintenance",
             maintenance::handle_maintenance,
@@ -25,13 +29,14 @@ impl CommandPlugin for MemoryPlugin {
 pub fn dispatch_memory_command(args: &[String]) -> Result<Output, CommandError> {
     let mut session = AgentSession::new();
     match args.first().map(String::as_str) {
+        Some("log") => log::handle_log(&args[1..]),
         Some("maintenance") => maintenance::handle_maintenance(&args[1..], &mut session),
         Some(other) => Err(CommandError::UnknownSubcommand {
             command: "memory".to_string(),
             subcommand: other.to_string(),
         }),
         None => Ok(Output::text(
-            "memory: subcommand required.\nAvailable: maintenance\n",
+            "memory: subcommand required.\nAvailable: log, maintenance\n",
         )),
     }
 }

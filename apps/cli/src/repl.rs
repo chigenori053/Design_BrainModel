@@ -169,6 +169,15 @@ where
             continue;
         }
 
+        if let Some(args) = parse_repl_memory_log_command(trimmed) {
+            match crate::commands::memory::dispatch_memory_command(&args) {
+                Ok(out) => writeln!(writer, "{}", out.message).map_err(|err| err.to_string())?,
+                Err(err) => writeln!(writer, "[ERROR] {err}").map_err(|err| err.to_string())?,
+            }
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+
         if let Some(args) = parse_repl_git_command(trimmed) {
             let (_code, output) =
                 crate::runtime::shell::runtime_apply_git_command(workspace_root.as_path(), &args);
@@ -190,8 +199,9 @@ where
             continue;
         }
 
-        if let Some(events) =
-            dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
+        if should_try_runtime_intent(trimmed)
+            && let Some(events) =
+                dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
         {
             for event in events {
                 writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
@@ -221,6 +231,33 @@ fn parse_repl_git_command(input: &str) -> Option<Vec<String>> {
     }
     let args = parts.map(ToOwned::to_owned).collect::<Vec<_>>();
     if args.is_empty() { None } else { Some(args) }
+}
+
+fn parse_repl_memory_log_command(input: &str) -> Option<Vec<String>> {
+    let rest = input.strip_prefix(":memory log")?.trim();
+    let mut args = vec!["log".to_string()];
+    if rest.is_empty() {
+        return Some(args);
+    }
+    let parts = rest.split_whitespace().collect::<Vec<_>>();
+    match parts.as_slice() {
+        ["recent", n] => {
+            args.extend(["--recent".to_string(), (*n).to_string()]);
+        }
+        ["duplicates"] => args.push("--duplicates".to_string()),
+        ["conflicts"] => args.push("--conflicts".to_string()),
+        ["class", class] => {
+            args.extend(["--class".to_string(), (*class).to_string()]);
+        }
+        ["json"] => args.push("--json".to_string()),
+        [memory_id] => args.extend(["--memory-id".to_string(), (*memory_id).to_string()]),
+        _ => {
+            for part in parts {
+                args.push(part.to_string());
+            }
+        }
+    }
+    Some(args)
 }
 
 fn promote_pending_plan<W: Write>(
@@ -425,6 +462,14 @@ pub fn dispatch_repl_input<W: Write>(
         return Ok(false);
     }
 
+    if let Some(args) = parse_repl_memory_log_command(trimmed) {
+        match crate::commands::memory::dispatch_memory_command(&args) {
+            Ok(out) => writeln!(writer, "{}", out.message).map_err(|err| err.to_string())?,
+            Err(err) => writeln!(writer, "[ERROR] {err}").map_err(|err| err.to_string())?,
+        }
+        return Ok(false);
+    }
+
     if let Some(events) =
         RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root.as_path(), trimmed)
     {
@@ -436,8 +481,9 @@ pub fn dispatch_repl_input<W: Write>(
         return Ok(false);
     }
 
-    if let Some(events) =
-        dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
+    if should_try_runtime_intent(trimmed)
+        && let Some(events) =
+            dispatch_normalized_runtime_intent(&mut ui, workspace_root.as_path(), trimmed)
     {
         for event in events {
             writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
@@ -505,6 +551,12 @@ fn dispatch_normalized_runtime_intent(
         }
         _ => None,
     }
+}
+
+fn should_try_runtime_intent(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    !crate::nl::context_aware_plan_target_resolver::is_plan_only_intent(&lower)
+        && !crate::nl::context_aware_plan_target_resolver::has_context_reference(&lower)
 }
 
 impl ReplSemanticState {
@@ -810,6 +862,193 @@ mod tests {
         assert!(output.contains("[ERROR] unresolved target"), "{output}");
         assert!(!output.contains("preview ready"), "{output}");
         assert!(!output.contains("transaction active"), "{output}");
+    }
+
+    #[test]
+    fn repl_two_turn_analysis_then_plan_does_not_unresolved_target() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(!output.contains("[ERROR] unresolved target"), "{output}");
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_STORE] kind=analysis"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_LOAD]")
+                && output.contains("previous_analysis_context=Some"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_RESOLUTION]")
+                && output.contains("previous_context_used=true"),
+            "{output}"
+        );
+        assert!(output.contains("target=WorkspaceRoot"), "{output}");
+        assert!(output.contains("mode=PlanOnly"), "{output}");
+        assert!(output.contains("# Change Plan"), "{output}");
+        assert!(!output.contains("[APPLYING]"), "{output}");
+    }
+
+    #[test]
+    fn repl_plan_outputs_narrow_candidates() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("## Candidates"), "{output}");
+        assert!(output.contains("Target: File("), "{output}");
+        assert!(output.contains("Validation required: yes"), "{output}");
+    }
+
+    #[test]
+    fn repl_select_candidate_stores_selection_context() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\nselect 1\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_STORE] kind=selection candidate_id=1 target=File("),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn repl_validate_selected_candidate_stores_validated_plan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\nselect 1\nこの候補を検証して\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("# Plan Validation"), "{output}");
+        assert!(output.contains("Apply allowed: true"), "{output}");
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_STORE] kind=validated_plan apply_allowed=true"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn repl_apply_without_validation_is_rejected() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\nselect 1\n問題なければ適用して\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("# Apply Rejected"), "{output}");
+        assert!(output.contains("MissingValidatedPlan"), "{output}");
+    }
+
+    #[test]
+    fn repl_workspace_root_apply_is_rejected() {
+        repl_apply_without_validation_is_rejected();
+    }
+
+    #[test]
+    fn repl_plan_validate_apply_happy_path() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let mut input = io::Cursor::new(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\nselect 1\nこの候補を検証して\n問題なければ適用して\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("Target: File("), "{output}");
+        assert!(output.contains("# Plan Validation"), "{output}");
+        assert!(
+            output.contains("[IR-TRACE][APPLY_GUARD] rejected=false"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("[IR-TRACE][APPLY_GUARD] rejected=true"),
+            "{output}"
+        );
+        assert!(!output.contains("git add"), "{output}");
+        assert!(!output.contains("git commit"), "{output}");
+        assert!(!output.contains("git push"), "{output}");
+    }
+
+    #[test]
+    fn repl_two_turn_analysis_then_plan_uses_previous_context() {
+        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
+    }
+
+    #[test]
+    fn repl_two_turn_analysis_then_plan_is_plan_only() {
+        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
+    }
+
+    #[test]
+    fn repl_two_turn_analysis_then_plan_does_not_apply() {
+        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
     }
 
     #[test]

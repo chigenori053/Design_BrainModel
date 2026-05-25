@@ -363,13 +363,13 @@ impl MemoryStore for IrBackedMemoryStore<'_> {
                 })
                 .then_with(|| lhs_entry.memory_id.cmp(&rhs_entry.memory_id))
         });
-        Ok(MemoryContext {
-            entries: recalled
-                .into_iter()
-                .map(|(_, entry)| entry)
-                .take(DEFAULT_MEMORY_TOP_K)
-                .collect(),
-        })
+        let entries = recalled
+            .into_iter()
+            .map(|(_, entry)| entry)
+            .take(DEFAULT_MEMORY_TOP_K)
+            .collect::<Vec<_>>();
+        append_recall_observation(&entries);
+        Ok(MemoryContext { entries })
     }
 
     fn store(
@@ -1509,6 +1509,7 @@ impl IRPersistenceStore {
             session_id,
         }
         .store(step, step_index, result)?;
+        append_memory_insert_observations(self, session_id, &memory);
         self.emit_memory_stored(session_id, result.step_id, step_index, memory.clone())?;
         Ok(memory)
     }
@@ -2140,6 +2141,151 @@ fn apply_memory_outcome(entry: &mut MemoryEntry, outcome: MemoryOutcome) {
                 .min(MEMORY_MAX_COUNT_SCALED);
         }
     }
+}
+
+fn append_memory_insert_observations(
+    store: &IRPersistenceStore,
+    session_id: &str,
+    memory: &MemoryEntry,
+) {
+    use crate::holographic_memory_observation::{
+        DuplicateClass, HolographicMemoryLogStore, HolographicMemoryObservationEvent,
+        classify_duplicate,
+    };
+
+    let source_hash = memory_source_hash(memory);
+    let canonical_key = memory_canonical_key(memory);
+    let existing = store
+        .list_execution_events(session_id)
+        .map(|events| stored_memories_from_events(&events))
+        .unwrap_or_default();
+    let mut duplicate_ids = Vec::new();
+    let mut duplicate_class = DuplicateClass::None;
+    for existing_memory in existing.values() {
+        let existing_source_hash = memory_source_hash(existing_memory);
+        let existing_canonical_key = memory_canonical_key(existing_memory);
+        let class = classify_duplicate(
+            existing_source_hash == source_hash,
+            existing_canonical_key == canonical_key,
+            memory_resonance(memory, existing_memory),
+            false,
+        );
+        if class != DuplicateClass::None {
+            duplicate_ids.push(existing_memory.memory_id.clone());
+            duplicate_class = class;
+            break;
+        }
+    }
+
+    let log = memory_observation_log(
+        HolographicMemoryObservationEvent::MemoryInserted,
+        memory,
+        source_hash.clone(),
+        canonical_key.clone(),
+        duplicate_ids.clone(),
+        duplicate_class.clone(),
+        0.0,
+    );
+    let log_store = HolographicMemoryLogStore::default_for_workspace(
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    );
+    let _ = log_store.append(log);
+
+    if duplicate_class != DuplicateClass::None {
+        let duplicate_log = memory_observation_log(
+            HolographicMemoryObservationEvent::DuplicateCandidateDetected,
+            memory,
+            source_hash,
+            canonical_key,
+            duplicate_ids,
+            duplicate_class,
+            0.93,
+        );
+        let _ = log_store.append(duplicate_log);
+    }
+}
+
+fn append_recall_observation(entries: &[MemoryEntry]) {
+    use crate::holographic_memory_observation::{
+        DuplicateClass, HolographicMemoryLogStore, HolographicMemoryObservationEvent,
+    };
+    let Some(entry) = entries.first() else {
+        return;
+    };
+    let log = memory_observation_log(
+        HolographicMemoryObservationEvent::RecallExecuted,
+        entry,
+        memory_source_hash(entry),
+        memory_canonical_key(entry),
+        entries
+            .iter()
+            .skip(1)
+            .map(|candidate| candidate.memory_id.clone())
+            .collect(),
+        DuplicateClass::None,
+        0.0,
+    );
+    let store = HolographicMemoryLogStore::default_for_workspace(
+        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+    );
+    let _ = store.append(log);
+}
+
+fn memory_observation_log(
+    event_type: crate::holographic_memory_observation::HolographicMemoryObservationEvent,
+    memory: &MemoryEntry,
+    source_input_hash: String,
+    canonical_key: String,
+    duplicate_candidate_ids: Vec<String>,
+    duplicate_class: crate::holographic_memory_observation::DuplicateClass,
+    resonance_score: f32,
+) -> crate::holographic_memory_observation::HolographicMemoryObservationLog {
+    let created_at = crate::holographic_memory_observation::now_secs();
+    crate::holographic_memory_observation::HolographicMemoryObservationLog {
+        event_id: crate::holographic_memory_observation::observation_event_id(
+            &event_type,
+            &memory.memory_id,
+        ),
+        event_type,
+        memory_id: memory.memory_id.clone(),
+        source_input_hash,
+        canonical_key,
+        embedding_dim: memory.embedding.as_ref().map(Vec::len).unwrap_or(0),
+        holographic_dim: memory.embedding.as_ref().map(Vec::len).unwrap_or(0),
+        resonance_score,
+        ambiguity_score: 0.0,
+        recall_count: u64::from(memory.success_count.saturating_add(memory.failure_count)),
+        created_at,
+        last_used_at: Some(memory.metadata.timestamp),
+        duplicate_candidate_ids,
+        duplicate_class,
+        selected_as_canonical: false,
+        rejected_reason: None,
+    }
+}
+
+fn memory_source_hash(memory: &MemoryEntry) -> String {
+    sha256_hex(
+        serde_json::to_string(&memory.content)
+            .unwrap_or_default()
+            .as_bytes(),
+    )
+}
+
+fn memory_canonical_key(memory: &MemoryEntry) -> String {
+    let mut tags = memory.metadata.tags.clone();
+    tags.sort();
+    tags.join(":")
+}
+
+fn memory_resonance(left: &MemoryEntry, right: &MemoryEntry) -> f32 {
+    let Some(left_embedding) = left.embedding.as_ref() else {
+        return 0.0;
+    };
+    let Some(right_embedding) = right.embedding.as_ref() else {
+        return 0.0;
+    };
+    cosine_similarity(left_embedding, right_embedding)
 }
 
 fn embedding_score(
