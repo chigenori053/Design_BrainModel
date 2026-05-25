@@ -3140,7 +3140,6 @@ dependencies = [
  "causal_domain",
  "contracts",
  "design_domain",
- "memory_engine",
  "semantic_domain",
  "world_model",
  "world_model_core",
