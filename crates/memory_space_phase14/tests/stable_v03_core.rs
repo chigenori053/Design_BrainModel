@@ -9,6 +9,15 @@ use memory_space_phase14::stable_v03::{
 use world_model::stable_v03::IntentState;
 
 #[test]
+fn stable_v03_reexports_memory_engine_types() {
+    fn assert_engine<T: memory_space_phase14::stable_v03::MemoryEngine>() {}
+
+    assert_engine::<memory_space_phase14::stable_v03::InMemoryEngine>();
+
+    let _record: Option<memory_space_phase14::stable_v03::MemoryRecord> = None;
+}
+
+#[test]
 fn store_recall_retrieve_is_consistent() {
     let architecture = ArchitectureGraphBuilder::new()
         .add_node(Node::new("api", NodeType::Service))

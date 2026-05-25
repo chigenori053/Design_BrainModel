@@ -11,6 +11,7 @@ architecture_ir = { workspace = true }
 causal_domain = { workspace = true }
 contracts = { workspace = true }
 design_domain = { workspace = true }
+memory_engine = { workspace = true }
 semantic_domain = { workspace = true }
 world_model = { workspace = true }
 world_model_core = { workspace = true }
