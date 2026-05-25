@@ -52,6 +52,7 @@ members = [
     "crates/ai_context",
     "crates/memory_store",
     "crates/shm",
+    "crates/memory_engine",
     "crates/memory_space",
     "crates/core/memory_space_core",
     "crates/memory_space_complex",
@@ -144,6 +145,7 @@ interface_ui = { path = "crates/interface_ui" }
 language_core = { path = "crates/language_core" }
 language_reasoning = { path = "crates/language_reasoning" }
 memory_store = { path = "crates/memory_store" }
+memory_engine = { path = "crates/memory_engine" }
 memory_space = { path = "crates/memory_space" }
 memory_space_core = { path = "crates/core/memory_space_core" }
 memory_space_complex = { path = "crates/memory_space_complex" }
