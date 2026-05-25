@@ -1001,7 +1001,6 @@ dependencies = [
  "code_ir",
  "design_domain",
  "memory_engine",
- "memory_space_phase14",
  "unified_design_ir",
 ]
 
@@ -1386,7 +1385,6 @@ dependencies = [
  "memory_engine",
  "memory_persistence",
  "memory_space_core",
- "memory_space_phase14",
  "ratatui",
  "runtime_core",
  "runtime_vm",
@@ -2840,7 +2838,6 @@ dependencies = [
  "knowledge_store",
  "language_core",
  "memory_engine",
- "memory_space_phase14",
  "world_model",
  "world_model_core",
 ]
@@ -3078,7 +3075,6 @@ name = "memory_persistence"
 version = "0.1.0"
 dependencies = [
  "memory_engine",
- "memory_space_phase14",
  "serde",
  "serde_json",
  "sha2",

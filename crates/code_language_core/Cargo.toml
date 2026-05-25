@@ -8,7 +8,6 @@ architecture_reasoner = { workspace = true }
 code_ir = { workspace = true }
 design_domain = { workspace = true }
 memory_engine = { workspace = true }
-memory_space_phase14 = { workspace = true }
 unified_design_ir = { workspace = true }
 
 [dev-dependencies]
