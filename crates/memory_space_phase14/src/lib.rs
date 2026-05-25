@@ -5,6 +5,10 @@ pub mod pattern_extractor;
 pub mod pattern_matcher;
 pub mod pattern_store;
 pub mod search_prior;
+#[deprecated(
+    since = "0.1.0",
+    note = "use memory_engine directly; memory_space_phase14::stable_v03 is compatibility-only"
+)]
 pub mod stable_v03;
 pub use experience_store::{DesignExperience, ExperienceStore};
 pub use memory_space::space::{embed_architecture, embed_evaluation, embed_intent, embed_template};
