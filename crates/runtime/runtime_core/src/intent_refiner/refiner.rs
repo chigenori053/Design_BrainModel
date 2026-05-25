@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use memory_space_phase14::stable_v03::MemoryEngine;
+use memory_engine::MemoryEngine;
 
 use crate::intent_refiner::default::apply_default;
 use crate::intent_refiner::inference::InferenceEngine;

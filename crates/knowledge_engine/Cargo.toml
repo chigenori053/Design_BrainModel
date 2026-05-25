@@ -7,6 +7,7 @@ edition = "2024"
 design_domain = { workspace = true }
 knowledge_store = { workspace = true }
 language_core = { workspace = true }
+memory_engine = { workspace = true }
 memory_space_phase14 = { workspace = true }
 world_model = { workspace = true }
 world_model_core = { workspace = true }

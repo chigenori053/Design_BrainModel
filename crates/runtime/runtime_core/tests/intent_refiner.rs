@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::intent_refiner::{
     ChatContext, CoreSlot, DefaultIntentRefiner, IntentExecution, IntentRefiner, SlotSource,
 };

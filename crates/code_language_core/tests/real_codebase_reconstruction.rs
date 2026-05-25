@@ -64,7 +64,7 @@ fn load_workspace_rust_sources() -> Vec<ParsedSourceFile> {
         .into_iter()
         .filter_map(|path| {
             let source = fs::read_to_string(&path).ok()?;
-            let relative = path.strip_prefix(&root).ok()?.to_string_lossy().to_string();
+            let relative = path.strip_prefix(root).ok()?.to_string_lossy().to_string();
             Some(ParsedSourceFile {
                 path: relative,
                 source,

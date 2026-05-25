@@ -8,7 +8,7 @@ use std::io;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use memory_space_phase14::stable_v03::MemoryRecord;
+use memory_engine::MemoryRecord;
 use serde::{Deserialize, Serialize};
 
 use crate::generalized_memory::GeneralizedMemory;
@@ -374,7 +374,7 @@ fn epoch_now() -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory_space_phase14::stable_v03::MemoryRecord;
+    use memory_engine::MemoryRecord;
 
     fn record(id: &str, text: &str, tags: &[&str], embed: &[f32]) -> MemoryRecord {
         MemoryRecord {
@@ -450,7 +450,7 @@ mod tests {
         store.ingest(&r1);
         store.ingest(&r2);
         assert_eq!(store.audit_log().len(), 2);
-        assert!(store.audit_log()[0].evidence.reason.len() > 0);
+        assert!(!store.audit_log()[0].evidence.reason.is_empty());
     }
 
     #[test]

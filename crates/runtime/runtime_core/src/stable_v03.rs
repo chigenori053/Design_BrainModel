@@ -28,7 +28,7 @@ use integration_layer::{
     AnalysisInput, CanonicalRelation, SystemInput, SystemOutput, TraceLink, to_relations,
     to_system_output, trace_links, validate_mapping,
 };
-use memory_space_phase14::stable_v03::{
+use memory_engine::{
     MemoryCandidate, MemoryEngine, MemoryRecord, MemorySource, RecallInput, RecallResult,
 };
 use test_generation_core::stable_v03::{
@@ -82,7 +82,7 @@ pub struct RuntimeResult {
     pub intent_trace: Option<IntentTrace>,
     pub explanation: Option<Explanation>,
     pub scored_candidates: Vec<ScoredCandidate>,
-    pub recall_records: Vec<memory_space_phase14::stable_v03::RecalledRecord>,
+    pub recall_records: Vec<memory_engine::RecalledRecord>,
     pub input_relations: Vec<CanonicalRelation>,
     pub output_relations: Vec<CanonicalRelation>,
     pub system_output: SystemOutput,
@@ -373,7 +373,7 @@ fn parse(input: IntentInput) -> CoreResult<IntentState> {
 
 fn to_recall_context(
     intent: &IntentState,
-    recall: &memory_space_phase14::stable_v03::RecallResult,
+    recall: &memory_engine::RecallResult,
 ) -> Option<RecallContext> {
     if recall.records.is_empty() {
         return None;

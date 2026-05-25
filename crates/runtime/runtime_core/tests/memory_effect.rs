@@ -12,7 +12,7 @@ use constraint_engine::stable_v03::{
     NoCycleConstraint,
 };
 use design_search_engine::stable_v03::{DesignSearchEngine, DeterministicBeamSearchEngine};
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};
 use world_model::stable_v03::IntentInput;

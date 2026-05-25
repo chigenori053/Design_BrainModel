@@ -4,7 +4,7 @@ use knowledge_engine::{
     knowledge_entries_to_memory_records, rank_unified_knowledge, snapshot_documents,
     verify_snapshot,
 };
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, RecallInput};
+use memory_engine::{InMemoryEngine, MemoryEngine, RecallInput};
 use world_model::stable_v03::IntentState;
 
 #[test]

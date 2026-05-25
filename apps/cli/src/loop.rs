@@ -2,7 +2,7 @@ use std::io::{self, BufRead, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use memory_space_phase14::stable_v03::InMemoryEngine;
+use memory_engine::InMemoryEngine;
 use runtime_core::intent_refiner::{DefaultIntentRefiner, IntentRefiner};
 use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 

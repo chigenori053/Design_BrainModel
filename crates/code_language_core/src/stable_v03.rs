@@ -16,7 +16,7 @@ use code_ir::program_v1::{
     StateKind as ProgramStateKind, Statement as ProgramStatement, Type as ProgramType,
     TypeKind as ProgramTypeKind, TypeRef as ProgramTypeRef, Visibility as ProgramVisibility,
 };
-use memory_space_phase14::stable_v03::{MemoryEngine, MemoryQuery, MemoryRecord};
+use memory_engine::{MemoryEngine, MemoryQuery, MemoryRecord};
 use unified_design_ir::{
     FieldSpec, ImplementationUnit, InterfaceSpec, MethodSpec, StructSpec, TypeRef,
 };

@@ -1,4 +1,4 @@
-use memory_space_phase14::stable_v03::{MemoryEngine, MemoryQuery};
+use memory_engine::{MemoryEngine, MemoryQuery};
 
 use crate::intent_refiner::refiner::{ChatContext, SlotMap, SlotSource};
 use crate::intent_refiner::rule_engine::RuleEngine;

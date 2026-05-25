@@ -477,7 +477,7 @@ mod tests {
         // m2 は Step1, m3 は Step2 で検出 (ただし m2 は全フィールド同一なので id も "m1" が被っている)
         // 実際には m1 と m2 は id="m1" が被っていることに注意
         // m3 は id が異なるので Step 2 で m1 の spectrum と一致
-        assert!(dups.len() >= 1);
+        assert!(!dups.is_empty());
     }
 
     // ── run_dedup ────────────────────────────────────────────────────────────

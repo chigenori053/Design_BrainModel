@@ -9,7 +9,7 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use serde::Deserialize;
 
 // ── Seed format ───────────────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ pub fn load_default_seeds(engine: &InMemoryEngine) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryQuery};
+    use memory_engine::{InMemoryEngine, MemoryEngine, MemoryQuery};
 
     fn engine_with_defaults() -> InMemoryEngine {
         let engine = InMemoryEngine::default();

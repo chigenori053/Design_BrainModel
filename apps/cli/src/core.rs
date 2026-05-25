@@ -5,7 +5,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
-use memory_space_phase14::stable_v03::InMemoryEngine;
+use memory_engine::InMemoryEngine;
 use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use serde_json::json;
 use sha2::{Digest, Sha256};

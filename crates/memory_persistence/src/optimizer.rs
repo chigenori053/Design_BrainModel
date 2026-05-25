@@ -514,8 +514,10 @@ mod tests {
 
     #[test]
     fn policy_validation_catches_bad_weights() {
-        let mut policy = DecisionPolicy::default();
-        policy.weight_tag = 0.5;
+        let policy = DecisionPolicy {
+            weight_tag: 0.5,
+            ..Default::default()
+        };
         assert!(policy.validate().is_err());
     }
 

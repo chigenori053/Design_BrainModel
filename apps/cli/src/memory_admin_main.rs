@@ -32,6 +32,7 @@ use crossterm::{
     execute,
     terminal::{EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode, enable_raw_mode},
 };
+use memory_engine::MemoryRecord;
 use memory_persistence::{
     DecisionPolicy, GeneralizedMemory, IngestResult, OptimizationStats, PersistentMemoryStore,
 };
@@ -39,7 +40,6 @@ use memory_space_core::{
     SemanticIdentityCandidate, SemanticIdentityGraph, semantic_rewrite_transaction,
     semantic_rollback_snapshot,
 };
-use memory_space_phase14::stable_v03::MemoryRecord;
 use ratatui::{
     Frame, Terminal,
     backend::CrosstermBackend,

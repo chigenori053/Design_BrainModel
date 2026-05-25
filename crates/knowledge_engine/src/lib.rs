@@ -1144,10 +1144,10 @@ pub fn feature_from_content(content: &str) -> KnowledgeFeature {
 
 pub fn knowledge_entries_to_memory_records(
     entries: &[KnowledgeSnapshotEntry],
-) -> Vec<memory_space_phase14::stable_v03::MemoryRecord> {
+) -> Vec<memory_engine::MemoryRecord> {
     entries
         .iter()
-        .map(|entry| memory_space_phase14::stable_v03::MemoryRecord {
+        .map(|entry| memory_engine::MemoryRecord {
             id: entry.id.clone(),
             text: entry.raw_content.clone(),
             tags: memory_tags_for_entry(entry),

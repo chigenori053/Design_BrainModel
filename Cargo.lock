@@ -1000,6 +1000,7 @@ dependencies = [
  "architecture_reasoner",
  "code_ir",
  "design_domain",
+ "memory_engine",
  "memory_space_phase14",
  "unified_design_ir",
 ]
@@ -1382,6 +1383,7 @@ dependencies = [
  "language_core",
  "language_reasoning",
  "log",
+ "memory_engine",
  "memory_persistence",
  "memory_space_core",
  "memory_space_phase14",
@@ -2837,6 +2839,7 @@ dependencies = [
  "design_domain",
  "knowledge_store",
  "language_core",
+ "memory_engine",
  "memory_space_phase14",
  "world_model",
  "world_model_core",
@@ -3074,6 +3077,7 @@ dependencies = [
 name = "memory_persistence"
 version = "0.1.0"
 dependencies = [
+ "memory_engine",
  "memory_space_phase14",
  "serde",
  "serde_json",
@@ -4338,6 +4342,7 @@ dependencies = [
  "design_search_engine",
  "implementation_core",
  "integration_layer",
+ "memory_engine",
  "memory_space_core",
  "memory_space_phase14",
  "num-complex",

@@ -5,7 +5,7 @@
 /// - generate_architecture : CoreRuntime 経由のアーキテクチャ生成
 /// - search_design  : 設計空間検索
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
-use memory_space_phase14::stable_v03::InMemoryEngine;
+use memory_engine::InMemoryEngine;
 use runtime_core::{ChatContext, CoreRuntime, RuntimeExecutionResult};
 use std::sync::Arc;
 

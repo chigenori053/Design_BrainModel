@@ -14,7 +14,7 @@ use constraint_engine::stable_v03::{
 use design_search_engine::stable_v03::{
     ArchitectureCandidate, DesignSearchEngine, DeterministicBeamSearchEngine, ReasoningInput,
 };
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use runtime_core::CoreRuntime;
 use runtime_core::stable_v03::{CoreError, RuntimeResult};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper};

@@ -17,7 +17,7 @@ use code_language_core::stable_v03::{
     },
     safe_generate_program,
 };
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 
 fn sample_program(effects: Vec<Effect>) -> Program {
     Program {

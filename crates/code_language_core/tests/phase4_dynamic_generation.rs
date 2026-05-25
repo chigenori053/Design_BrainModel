@@ -6,7 +6,7 @@ use code_language_core::stable_v03::{
     DefaultProfileResolver, GeneratorRegistry, ProfileResolver, PythonTypeMapper, RustTypeMapper,
     TargetLanguage, TypeMapper, TypeScriptTypeMapper,
 };
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine, MemoryRecord};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord};
 use unified_design_ir::{ArchitectureMapper, DefaultArchitectureMapper, TypeRef};
 
 fn implementation_unit() -> unified_design_ir::ImplementationUnit {

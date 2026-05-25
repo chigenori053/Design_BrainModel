@@ -16,6 +16,7 @@ constraint_engine = { workspace = true }
 design_search_engine = { workspace = true }
 implementation_core = { workspace = true }
 integration_layer = { workspace = true }
+memory_engine = { workspace = true }
 memory_space_phase14 = { workspace = true }
 memory_space_core = { workspace = true }
 num-complex = { workspace = true }

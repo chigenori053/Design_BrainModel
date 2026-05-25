@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
-use memory_space_phase14::stable_v03::InMemoryEngine;
+use memory_engine::InMemoryEngine;
 use runtime_core::CoreRuntime;
 
 /// 共通の CoreRuntime を構築する
