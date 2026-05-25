@@ -261,6 +261,19 @@ fn main() {
         return;
     }
 
+    if let Commands::Memory(args) = command
+        && args.args.first().map(String::as_str) == Some("maintenance")
+    {
+        match design_cli::commands::memory::dispatch_memory_command(&args.args) {
+            Ok(out) => println!("{}", out.message),
+            Err(e) => {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+        }
+        return;
+    }
+
     if let Commands::Workspace {
         command: Some(command),
     } = command

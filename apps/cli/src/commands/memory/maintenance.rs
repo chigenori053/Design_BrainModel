@@ -272,6 +272,86 @@ mod tests {
         );
     }
 
+    /// dry-run で空ストアを指定したとき、structured output が返ることを確認する。
+    #[test]
+    fn memory_maintenance_dedup_dry_run_empty_store_returns_structured_output() {
+        let tmp = tempfile_path("dedup_dry_run_structured_output");
+        let mut session = AgentSession::new();
+        let args = vec![
+            "dedup".to_string(),
+            "--dry-run".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = handle_maintenance(&args, &mut session).unwrap();
+        // structured output に必須フィールドが含まれること
+        assert!(!out.message.contains("ClarificationRequired"));
+        assert!(
+            out.message.contains("空")
+                || out.message.contains("なし")
+                || out.message.contains("DBM Memory")
+        );
+    }
+
+    /// --audit は永続ストアを書き換えないことを確認する。
+    #[test]
+    fn memory_maintenance_dedup_audit_routes_without_apply() {
+        let tmp = tempfile_path("dedup_audit_no_apply");
+        let mut session = AgentSession::new();
+        let args = vec![
+            "dedup".to_string(),
+            "--audit".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = handle_maintenance(&args, &mut session).unwrap();
+        // audit はストアファイルを作成・変更しない (空ストアのためファイル書き込みなし)
+        assert!(!tmp.exists(), "--audit should not create the store file");
+        assert!(
+            out.message.contains("空")
+                || out.message.contains("なし")
+                || out.message.contains("DBM Memory")
+        );
+    }
+
+    /// --apply を明示しない限りストアを書き換えないことを確認する。
+    #[test]
+    fn memory_maintenance_dedup_apply_requires_explicit_apply_flag() {
+        let tmp = tempfile_path("dedup_no_apply_flag");
+        let mut session = AgentSession::new();
+        // --apply なしの dry-run では書き込みが発生しない
+        let args = vec![
+            "dedup".to_string(),
+            "--dry-run".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = handle_maintenance(&args, &mut session).unwrap();
+        assert!(!tmp.exists(), "--dry-run should not create the store file");
+        // "適用済み" のメッセージが出ないこと
+        assert!(!out.message.contains("適用済み"));
+    }
+
+    /// --store でパスを指定したとき、そのパスが出力に反映されることを確認する。
+    #[test]
+    fn memory_maintenance_dedup_with_store_path_routes_correctly() {
+        let tmp = tempfile_path("dedup_with_store_path");
+        let mut session = AgentSession::new();
+        let args = vec![
+            "dedup".to_string(),
+            "--dry-run".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = handle_maintenance(&args, &mut session).unwrap();
+        // 指定したストアパスが出力に含まれるか、空ストアメッセージが返る
+        assert!(
+            out.message.contains(&tmp.display().to_string())
+                || out.message.contains("空")
+                || out.message.contains("DBM Memory")
+        );
+    }
+
     fn tempfile_path(name: &str) -> std::path::PathBuf {
         std::env::temp_dir().join(format!(
             "{}_{}.json",

@@ -1,4 +1,4 @@
-mod maintenance;
+pub mod maintenance;
 
 use crate::command::{
     CommandError, CommandHandler, CommandPlugin, CommandRegistry, Output, SubCommandHandler,
@@ -16,6 +16,23 @@ impl CommandPlugin for MemoryPlugin {
             maintenance::handle_maintenance,
         ));
         registry.register(cmd);
+    }
+}
+
+/// NL pipeline を経由せず memory サブコマンドを直接処理するディスパッチャ。
+///
+/// main.rs の早期 dispatch ブロックから呼ばれる。`args` は `["maintenance", ...]` 形式で渡す。
+pub fn dispatch_memory_command(args: &[String]) -> Result<Output, CommandError> {
+    let mut session = AgentSession::new();
+    match args.first().map(String::as_str) {
+        Some("maintenance") => maintenance::handle_maintenance(&args[1..], &mut session),
+        Some(other) => Err(CommandError::UnknownSubcommand {
+            command: "memory".to_string(),
+            subcommand: other.to_string(),
+        }),
+        None => Ok(Output::text(
+            "memory: subcommand required.\nAvailable: maintenance\n",
+        )),
     }
 }
 
@@ -40,6 +57,17 @@ mod tests {
         registry
     }
 
+    fn temp_store_path(name: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "{}_{}.json",
+            name,
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
     #[test]
     fn memory_is_registered() {
         let registry = build_registry();
@@ -52,5 +80,36 @@ mod tests {
         let mut session = AgentSession::new();
         let out = registry.execute("memory", None, &[], &mut session).unwrap();
         assert!(out.message.contains("import") || out.message.contains("Available"));
+    }
+
+    /// dispatch_memory_command が NL pipeline を経由せず maintenance を直接処理することを確認する。
+    /// NL pipeline に流れた場合は ClarificationRequired エラーになるが、
+    /// 直接ルートでは dedup の空ストア結果が返る。
+    #[test]
+    fn memory_maintenance_dedup_routes_without_nl_pipeline() {
+        let tmp = temp_store_path("route_test");
+        let args = vec![
+            "maintenance".to_string(),
+            "dedup".to_string(),
+            "--dry-run".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = dispatch_memory_command(&args).unwrap();
+        assert!(!out.message.contains("ClarificationRequired"));
+        assert!(
+            out.message.contains("dedup")
+                || out.message.contains("空")
+                || out.message.contains("Dedup")
+                || out.message.contains("DBM Memory")
+        );
+    }
+
+    /// 未知のサブコマンドに対して structured error が返ることを確認する。
+    #[test]
+    fn memory_maintenance_unknown_subcommand_returns_structured_error() {
+        let args = vec!["maintenance".to_string(), "nonexistent_cmd".to_string()];
+        let err = dispatch_memory_command(&args).unwrap_err();
+        assert!(matches!(err, CommandError::UnknownSubcommand { .. }));
     }
 }
