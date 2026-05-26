@@ -376,7 +376,9 @@ pub fn resolve_plan_target(
     session_context: Option<&ReplSessionContext>,
 ) -> PlanTargetResolution {
     // 7.1 明示的なターゲットがある場合
-    if explicit_target != IrTarget::None {
+    if explicit_target != IrTarget::None
+        && !(explicit_target == IrTarget::WorkspaceRoot && is_plan_only && has_context_ref)
+    {
         return PlanTargetResolution {
             action: IrAction::GenerateChangePlan,
             target: explicit_target,
@@ -417,9 +419,21 @@ pub fn resolve_plan_target(
 
     // 7.5 明示ターゲットなし + コンテキストなし
     PlanTargetResolution {
-        action: IrAction::Unknown,
-        target: IrTarget::None,
-        mode: ExecutionMode::ReadOnly,
+        action: if is_plan_only {
+            IrAction::GenerateChangePlan
+        } else {
+            IrAction::Unknown
+        },
+        target: if is_plan_only {
+            IrTarget::WorkspaceRoot
+        } else {
+            IrTarget::None
+        },
+        mode: if is_plan_only {
+            ExecutionMode::PlanOnly
+        } else {
+            ExecutionMode::ReadOnly
+        },
         apply: false,
         previous_context_used: false,
         reason: PlanTargetResolutionReason::MissingContext,
@@ -486,7 +500,9 @@ mod tests {
     fn context_plan_without_previous_context_requires_clarification() {
         let res = resolve_plan_target(IrTarget::None, true, true, None);
         assert!(!res.previous_context_used);
-        assert_eq!(res.target, IrTarget::None);
+        assert_eq!(res.target, IrTarget::WorkspaceRoot);
+        assert_eq!(res.action, IrAction::GenerateChangePlan);
+        assert_eq!(res.mode, ExecutionMode::PlanOnly);
         assert_eq!(res.reason, PlanTargetResolutionReason::MissingContext);
     }
 
@@ -563,6 +579,14 @@ mod tests {
         assert!(is_plan_only_intent("make a fix plan"));
         assert!(is_plan_only_intent("まだ適用しないで"));
         assert!(!is_plan_only_intent("解析して"));
+    }
+
+    #[test]
+    fn long_input_generate_plan_never_returns_target_none() {
+        let res = resolve_plan_target(IrTarget::None, true, false, None);
+        assert_eq!(res.action, IrAction::GenerateChangePlan);
+        assert_eq!(res.mode, ExecutionMode::PlanOnly);
+        assert_eq!(res.target, IrTarget::WorkspaceRoot);
     }
 
     #[test]

@@ -35,9 +35,10 @@ use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_rec
 use crate::git::transaction::{ExecutionTransaction, GitPhase};
 use crate::nl::context_aware_plan_target_resolver::{
     ChangePlanCandidate, NarrowTarget, PlanValidationResult, PreviousAnalysisContext,
-    ReplSessionContext, ValidationStatus, stable_context_hash,
+    PreviousValidationContext, ReplSessionContext, ValidatedPlanContext, ValidationStatus,
+    stable_context_hash,
 };
-use crate::nl::language_core_ir_adapter::{IrAction, IrTarget};
+use crate::nl::language_core_ir_adapter::{ExecutionMode, IrAction, IrTarget};
 use crate::nl::normalization::target_only_input_target;
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
@@ -196,6 +197,15 @@ pub struct CorePlan {
     pub steps: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewSnapshot {
+    pub candidate_id: usize,
+    pub target: NarrowTarget,
+    pub plan_hash: u64,
+    pub preview_hash: u64,
+    pub created_at: u64,
+}
+
 /// Canonical state snapshot — the Single Source of Truth.  Phase 4.5.
 ///
 /// Each `execute()` call produces one new `CoreState` pushed to `History`.
@@ -212,6 +222,9 @@ pub struct CoreState {
     pub current_plan: Option<CorePlan>,
     /// Most-recent file diff produced by the last execution.
     pub last_diff: Option<Diff>,
+    /// Active preview identity.  Previewed is valid only while this exists
+    /// and matches the selected or validated plan context.
+    pub preview_snapshot: Option<PreviewSnapshot>,
     /// Current pipeline phase.
     pub status: PipelineState,
     /// Exploration depth.  Spec DBM-LIMITS-INTEGRATION-STEP3 §4.2.
@@ -230,6 +243,7 @@ impl Default for CoreState {
             proposals: Vec::new(),
             current_plan: None,
             last_diff: None,
+            preview_snapshot: None,
             status: PipelineState::Idle,
             depth: 0,
             previous_analysis_context: None,
@@ -303,6 +317,10 @@ impl History {
         }
         self.cursor -= 1;
         Some(self.states[self.cursor].clone())
+    }
+
+    fn replace_current(&mut self, state: CoreState) {
+        self.states[self.cursor] = state;
     }
 
     /// Move the cursor to the snapshot whose `version == version`.
@@ -423,6 +441,14 @@ pub enum ExecutionStatus {
     Planned,
     Executed,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PreviewConfirmation {
+    Confirm,
+    Reject,
+    Cancel,
+    Reconfirm,
 }
 
 fn execution_status_label(status: ExecutionStatus) -> &'static str {
@@ -597,6 +623,20 @@ impl CoreExecutor for RuntimeCoreBridge {
                 "[STATE][id={}] depth={} history={} graph_nodes={}",
                 id, state.depth, history_len, graph_nodes
             );
+        }
+
+        if current_state.status == PipelineState::Previewed && !raw_input.trim().starts_with('/') {
+            let request = InternalRequest {
+                id,
+                input: raw_input.trim().to_string(),
+                kind,
+                context: context.clone(),
+            };
+            let response = self.route_preview_input(request);
+            if observability_enabled() {
+                println!("[CORE][id={}] exit status={:?}", id, response.status);
+            }
+            return response;
         }
 
         if let Some(response) =
@@ -788,13 +828,51 @@ impl RuntimeCoreBridge {
 
         let lc_intent = classify_language_core_intent(&request.input);
         let mut ir_request = language_core_to_ir(lc_intent, &request.input);
+        if ir_request.safety_constraints.no_apply && ir_request.action == IrAction::Apply {
+            if session_context_snapshot.validated_plan.is_some() {
+                ir_request.action = IrAction::ReviewValidatedPlan;
+                ir_request.mode = ExecutionMode::ValidateOnly;
+                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
+                    ir_request.target = narrow_target_to_ir_target(&selected.target);
+                }
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan"
+                            .to_string(),
+                });
+            } else if session_context_snapshot.selected_candidate.is_some() {
+                ir_request.action = IrAction::ValidatePlan;
+                ir_request.mode = ExecutionMode::ValidateOnly;
+                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
+                    ir_request.target = narrow_target_to_ir_target(&selected.target);
+                }
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate"
+                            .to_string(),
+                });
+            } else {
+                ir_request.action = IrAction::GenerateChangePlan;
+                ir_request.mode = ExecutionMode::PlanOnly;
+                ir_request.target = session_context_snapshot
+                    .previous_analysis_context
+                    .as_ref()
+                    .map(|ctx| ctx.target.clone())
+                    .unwrap_or(IrTarget::WorkspaceRoot);
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=GenerateChangePlan reason=NoApplyWithoutSelection"
+                            .to_string(),
+                });
+            }
+        }
 
         // コンテキストアウェアなターゲット解決 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0)
         let lower_input = request.input.to_lowercase();
         let is_plan_only = is_plan_only_intent(&lower_input);
         let has_context_ref = has_context_reference(&lower_input);
 
-        if is_plan_only {
+        if is_plan_only && ir_request.action == IrAction::GenerateChangePlan {
             let history = self.history.lock().unwrap();
             let session_context = &history.current().session_context;
             let resolution = resolve_plan_target(
@@ -833,8 +911,23 @@ impl RuntimeCoreBridge {
                 "mode": ir_request.mode.to_string(),
             }),
         ));
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][SAFETY_CONSTRAINTS] no_apply={} no_file_write={} no_git_operation={} no_external_command={}",
+                ir_request.safety_constraints.no_apply,
+                ir_request.safety_constraints.no_file_write,
+                ir_request.safety_constraints.no_git_operation,
+                ir_request.safety_constraints.no_external_command
+            ),
+        });
         if ir_request.action.is_analyze() {
             return self.execute_lc_analyze(ir_request, request, events);
+        }
+        if ir_request.action == IrAction::ReviewValidatedPlan {
+            return self.review_validated_plan(ir_request, events);
+        }
+        if ir_request.action == IrAction::ValidatePlan {
+            return self.validate_selected_plan(request, events);
         }
         if ir_request.action == IrAction::GenerateChangePlan {
             return self.execute_lc_generate_plan(ir_request, request, events);
@@ -950,6 +1043,7 @@ impl RuntimeCoreBridge {
         let mut next_state = history.current().clone();
         next_state.proposals = candidates;
         next_state.status = PipelineState::Proposed;
+        next_state.preview_snapshot = None;
         next_state.session_context.store_plan(
             ir_request.target.clone(),
             ir_request.mode.clone(),
@@ -1036,6 +1130,7 @@ impl RuntimeCoreBridge {
         // 前回の解析コンテキストを保存
         let mut history = self.history.lock().unwrap();
         let mut next_state = history.current().clone();
+        next_state.preview_snapshot = None;
         next_state.session_context.store_analysis(
             ir_request.action.clone(),
             ir_request.target.clone(),
@@ -1048,6 +1143,51 @@ impl RuntimeCoreBridge {
         response.core_state = Some(history.current().clone());
 
         response
+    }
+
+    fn review_validated_plan(
+        &self,
+        ir_request: crate::nl::language_core_ir_adapter::IrIntentRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        let current = self.history.lock().unwrap().current().clone();
+        let Some(validated) = current.session_context.validated_plan.as_ref() else {
+            events.push(CoreEvent::Debug {
+                message:
+                    "[IR-TRACE][INTENT_DOWNGRADE] from=ReviewValidatedPlan to=ValidatePlan reason=MissingValidatedPlan"
+                        .to_string(),
+            });
+            return CoreResponse {
+                events,
+                status: ExecutionStatus::Failed,
+                design: None,
+                core_state: Some(current),
+            };
+        };
+
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id={} target={}",
+                validated.candidate_id, validated.target
+            ),
+        });
+        events.push(CoreEvent::Debug {
+            message: "[IR-TRACE][APPLY_DEFERRED] reason=NoApplyConstraint".to_string(),
+        });
+        events.push(CoreEvent::Result {
+            message: format_validation_review(
+                validated,
+                current.session_context.previous_validation_context.as_ref(),
+                ir_request.safety_constraints.no_apply,
+            ),
+        });
+
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: Some(current),
+        }
     }
 
     fn validate_selected_plan(
@@ -1145,17 +1285,29 @@ impl RuntimeCoreBridge {
                 "APPLY_GUARD",
                 format!("rejected=true reason={reason}")
             );
+            let next_state = self.clear_preview_state(PipelineState::Idle);
             events.push(CoreEvent::Debug {
                 message: format!("[IR-TRACE][APPLY_GUARD] rejected=true reason={reason}"),
             });
+            events.push(CoreEvent::Debug {
+                message:
+                    "[IR-TRACE][CONTEXT_CLEAR] reason=ApplyGuardReject clears preview/selection"
+                        .to_string(),
+            });
+            events.push(CoreEvent::Debug {
+                message: "[IR-TRACE][PIPELINE_DERIVE] state=Idle reason=ApplyRejected".to_string(),
+            });
             events.push(CoreEvent::Result {
-                message: format!("# Apply Rejected\n\nReason: {reason}."),
+                message: format!("# Apply Rejected\n\nReason: {reason}.\n\nNo files modified."),
+            });
+            events.push(CoreEvent::Pipeline {
+                state: PipelineState::Idle.label().to_string(),
             });
             return CoreResponse {
                 events,
                 status: ExecutionStatus::Failed,
                 design: None,
-                core_state: Some(current),
+                core_state: Some(next_state),
             };
         }
 
@@ -1575,6 +1727,157 @@ impl RuntimeCoreBridge {
         }
     }
 
+    fn route_preview_input(&self, request: InternalRequest) -> CoreResponse {
+        let action = parse_preview_confirmation(&request.input);
+        let mut events = vec![CoreEvent::Debug {
+            message: format!("[IR-TRACE][PREVIEW_CONFIRMATION] action={action:?}"),
+        }];
+
+        match action {
+            PreviewConfirmation::Confirm => self.apply_validated_plan_guard(request, events),
+            PreviewConfirmation::Reject => self.reject_preview(events),
+            PreviewConfirmation::Cancel => self.cancel_preview(events),
+            PreviewConfirmation::Reconfirm => {
+                let current = self.history.lock().expect("history lock").current().clone();
+                if !preview_state_is_valid(
+                    &current.session_context,
+                    current.preview_snapshot.as_ref(),
+                ) {
+                    let mut downgraded = current;
+                    downgraded.status = derive_pipeline_state_from_context(
+                        &downgraded.session_context,
+                        downgraded.preview_snapshot.as_ref(),
+                    );
+                    let derived = downgraded.status.clone();
+                    self.history
+                        .lock()
+                        .expect("history lock")
+                        .replace_current(downgraded.clone());
+                    events.extend([
+                        CoreEvent::Debug {
+                            message: format!(
+                                "[IR-TRACE][ROLLBACK_STATE_CHECK] restored_state=Previewed valid=false reason={}",
+                                preview_invalid_reason(&downgraded)
+                            ),
+                        },
+                        CoreEvent::Debug {
+                            message: format!(
+                                "[IR-TRACE][PIPELINE_DERIVE] state={} reason={}",
+                                derived.label(),
+                                pipeline_derive_reason(
+                                    &downgraded.session_context,
+                                    downgraded.preview_snapshot.as_ref()
+                                )
+                            ),
+                        },
+                        CoreEvent::Pipeline {
+                            state: derived.label().to_string(),
+                        },
+                        CoreEvent::Next {
+                            actions: next_actions_for_pipeline_state(&derived),
+                        },
+                    ]);
+                    return CoreResponse {
+                        events,
+                        status: ExecutionStatus::Idle,
+                        design: None,
+                        core_state: Some(downgraded),
+                    };
+                }
+                if should_route_preview_input_to_language(&request.input) {
+                    return self.execute_natural_language(request);
+                }
+                events.extend([
+                    CoreEvent::Result {
+                        message: "Please confirm: y / n / cancel".to_string(),
+                    },
+                    CoreEvent::Pipeline {
+                        state: PipelineState::Previewed.label().to_string(),
+                    },
+                    CoreEvent::Next {
+                        actions: vec!["y".to_string(), "n".to_string(), "cancel".to_string()],
+                    },
+                ]);
+                CoreResponse {
+                    events,
+                    status: ExecutionStatus::Idle,
+                    design: None,
+                    core_state: Some(current),
+                }
+            }
+        }
+    }
+
+    fn reject_preview(&self, mut events: Vec<CoreEvent>) -> CoreResponse {
+        self.pending_files.lock().expect("pending lock").clear();
+        let next_state = self.clear_preview_state(PipelineState::Idle);
+        events.extend([
+            CoreEvent::Debug {
+                message: "[IR-TRACE][CONTEXT_CLEAR] reason=PreviewReject clears preview/selection/validation"
+                    .to_string(),
+            },
+            CoreEvent::Debug {
+                message: "[IR-TRACE][PIPELINE_DERIVE] state=Idle reason=NoSelectedCandidateNoPreview"
+                    .to_string(),
+            },
+            CoreEvent::Result {
+                message: "Preview cancelled. No files modified.".to_string(),
+            },
+            CoreEvent::Pipeline {
+                state: PipelineState::Idle.label().to_string(),
+            },
+            CoreEvent::Next { actions: vec![] },
+        ]);
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Idle,
+            design: None,
+            core_state: Some(next_state),
+        }
+    }
+
+    fn cancel_preview(&self, mut events: Vec<CoreEvent>) -> CoreResponse {
+        self.pending_files.lock().expect("pending lock").clear();
+        let next_state = self.clear_preview_state(PipelineState::Idle);
+        events.extend([
+            CoreEvent::Debug {
+                message: "[IR-TRACE][CONTEXT_CLEAR] reason=PreviewCancel clears preview/selection/validation"
+                    .to_string(),
+            },
+            CoreEvent::Debug {
+                message: "[IR-TRACE][PIPELINE_DERIVE] state=Idle reason=NoSelectedCandidateNoPreview"
+                    .to_string(),
+            },
+            CoreEvent::Result {
+                message: "Preview cancelled. No files modified.".to_string(),
+            },
+            CoreEvent::Pipeline {
+                state: PipelineState::Idle.label().to_string(),
+            },
+            CoreEvent::Next { actions: vec![] },
+        ]);
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Idle,
+            design: None,
+            core_state: Some(next_state),
+        }
+    }
+
+    fn clear_preview_state(&self, status: PipelineState) -> CoreState {
+        let mut history = self.history.lock().expect("history lock");
+        let mut next_state = history.current().clone();
+        next_state.status = status;
+        next_state.preview_snapshot = None;
+        next_state.session_context.selected_candidate = None;
+        next_state.session_context.validated_plan = None;
+        next_state.session_context.previous_validation_context = None;
+        next_state.previous_analysis_context =
+            next_state.session_context.previous_analysis_context.clone();
+        history.push(next_state.clone());
+        next_state
+    }
+
     fn execute_git_command(
         &self,
         command: GitCommand,
@@ -1809,21 +2112,51 @@ impl RuntimeCoreBridge {
         }
 
         let mut hist = self.history.lock().expect("history lock");
+        let state_before_undo = hist.current().clone();
         if let Some(restored) = hist.undo() {
-            let pipeline_label = restored.status.label().to_string();
+            let (mut restored, check_reason) =
+                normalize_restored_state_after_undo(restored, &state_before_undo);
+            let derived = derive_pipeline_state_from_context(
+                &restored.session_context,
+                restored.preview_snapshot.as_ref(),
+            );
+            restored.status = derived.clone();
+            restored.previous_analysis_context =
+                restored.session_context.previous_analysis_context.clone();
+            hist.replace_current(restored.clone());
+            let pipeline_label = derived.label().to_string();
             let version = restored.version;
             let design = restored.design.clone();
+            let next_actions = next_actions_for_pipeline_state(&derived);
             drop(hist);
             CoreResponse {
                 events: vec![
                     CoreEvent::Result {
                         message: format!("Undo to v{version}"),
                     },
+                    CoreEvent::Debug {
+                        message: format!(
+                            "[IR-TRACE][ROLLBACK_STATE_CHECK] restored_state={} valid={} reason={}",
+                            check_reason.restored_state.label(),
+                            check_reason.valid,
+                            check_reason.reason
+                        ),
+                    },
+                    CoreEvent::Debug {
+                        message: format!(
+                            "[IR-TRACE][PIPELINE_DERIVE] state={} reason={}",
+                            derived.label(),
+                            pipeline_derive_reason(
+                                &restored.session_context,
+                                restored.preview_snapshot.as_ref()
+                            )
+                        ),
+                    },
                     CoreEvent::Pipeline {
                         state: pipeline_label,
                     },
                     CoreEvent::Next {
-                        actions: vec!["/proposals".to_string(), "select <n>".to_string()],
+                        actions: next_actions,
                     },
                 ],
                 status: ExecutionStatus::Idle,
@@ -2479,6 +2812,7 @@ impl RuntimeCoreBridge {
         } else {
             preview_lines(&pending)
         };
+        let preview_hash = stable_context_hash(&preview.join("\n"));
         let mut events = vec![
             CoreEvent::Plan {
                 steps: std::iter::once(format!("Selected: {}", candidate.summary))
@@ -2527,12 +2861,20 @@ impl RuntimeCoreBridge {
                         .find(|plan_candidate| plan_candidate.candidate_id == index)
                         .map(|plan_candidate| plan_candidate.target.clone())
                 });
-            let Some(selected_target) = selected_target else {
-                return error_response("ValidationError", "candidate target not found", id);
-            };
-            next_state
-                .session_context
-                .store_selection(index, selected_target);
+            if let Some(selected_target) = selected_target {
+                next_state
+                    .session_context
+                    .store_selection(index, selected_target);
+                if let Some(selected) = next_state.session_context.selected_candidate.as_ref() {
+                    next_state.preview_snapshot = Some(PreviewSnapshot {
+                        candidate_id: selected.candidate_id,
+                        target: selected.target.clone(),
+                        plan_hash: selected.plan_hash,
+                        preview_hash,
+                        created_at: current_timestamp_secs_core(),
+                    });
+                }
+            }
             next_state.previous_analysis_context =
                 next_state.session_context.previous_analysis_context.clone();
             history.push(next_state);
@@ -2976,6 +3318,193 @@ fn format_plan_validation(result: &PlanValidationResult) -> String {
     )
 }
 
+fn format_validation_review(
+    validated: &ValidatedPlanContext,
+    previous_validation: Option<&PreviousValidationContext>,
+    no_apply: bool,
+) -> String {
+    let status = previous_validation
+        .map(|ctx| format!("{:?}", ctx.validation_status))
+        .unwrap_or_else(|| "Passed".to_string());
+    format!(
+        "# Validation Review\n\nCandidate: {}\nTarget: {}\nStatus: {}\nApply allowed: {}\nApply status: Deferred\nReason: {} No files modified.\n\n## Safety\n- No files modified\n- No apply executed\n- Existing validated_plan preserved\n- Awaiting explicit confirmation",
+        validated.candidate_id,
+        validated.target,
+        status,
+        validated.apply_allowed,
+        if no_apply {
+            "no_apply constraint is active."
+        } else {
+            "Apply was not explicitly confirmed."
+        }
+    )
+}
+
+fn narrow_target_to_ir_target(target: &NarrowTarget) -> IrTarget {
+    match target {
+        NarrowTarget::File(path) => IrTarget::File(path.clone()),
+        NarrowTarget::Module(name) | NarrowTarget::Symbol(name) => IrTarget::Symbol(name.clone()),
+    }
+}
+
+pub fn derive_pipeline_state_from_context(
+    context: &ReplSessionContext,
+    preview_snapshot: Option<&PreviewSnapshot>,
+) -> PipelineState {
+    match (
+        context.validated_plan.as_ref(),
+        context.selected_candidate.as_ref(),
+        context.previous_plan_context.as_ref(),
+        context.previous_analysis_context.as_ref(),
+        preview_snapshot,
+    ) {
+        (Some(_), _, _, _, Some(_)) => PipelineState::Previewed,
+        (_, Some(_), _, _, Some(_)) => PipelineState::Previewed,
+        (_, None, Some(_), _, _) => PipelineState::Proposed,
+        (_, None, None, Some(_), _) => PipelineState::Idle,
+        _ => PipelineState::Idle,
+    }
+}
+
+fn pipeline_derive_reason(
+    context: &ReplSessionContext,
+    preview_snapshot: Option<&PreviewSnapshot>,
+) -> &'static str {
+    match (
+        context.validated_plan.as_ref(),
+        context.selected_candidate.as_ref(),
+        context.previous_plan_context.as_ref(),
+        context.previous_analysis_context.as_ref(),
+        preview_snapshot,
+    ) {
+        (Some(_), _, _, _, Some(_)) => "ValidatedPlanWithPreview",
+        (_, Some(_), _, _, Some(_)) => "SelectedCandidateWithPreview",
+        (_, None, Some(_), _, _) => "PreviousPlanWithoutSelection",
+        (_, None, None, Some(_), _) => "PreviousAnalysisWithoutPlan",
+        _ => "NoContext",
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RollbackStateCheck {
+    restored_state: PipelineState,
+    valid: bool,
+    reason: &'static str,
+}
+
+fn normalize_restored_state_after_undo(
+    mut restored: CoreState,
+    state_before_undo: &CoreState,
+) -> (CoreState, RollbackStateCheck) {
+    let restored_state = restored.status.clone();
+    let mut valid = restored_state != PipelineState::Previewed
+        || preview_state_is_valid(
+            &restored.session_context,
+            restored.preview_snapshot.as_ref(),
+        );
+    let mut reason = if valid {
+        "Valid"
+    } else {
+        preview_invalid_reason(&restored)
+    };
+
+    let undoing_from_cleared_preview = matches!(restored_state, PipelineState::Previewed)
+        && state_before_undo.preview_snapshot.is_none()
+        && state_before_undo
+            .session_context
+            .selected_candidate
+            .is_none()
+        && state_before_undo.session_context.validated_plan.is_none();
+    if undoing_from_cleared_preview {
+        restored.preview_snapshot = None;
+        restored.session_context.selected_candidate = None;
+        restored.session_context.validated_plan = None;
+        restored.session_context.previous_validation_context = None;
+        valid = false;
+        reason = "PreviewClearedBeforeUndo";
+    }
+
+    if !valid {
+        restored.status = derive_pipeline_state_from_context(
+            &restored.session_context,
+            restored.preview_snapshot.as_ref(),
+        );
+    }
+
+    (
+        restored,
+        RollbackStateCheck {
+            restored_state,
+            valid,
+            reason,
+        },
+    )
+}
+
+fn preview_state_is_valid(
+    context: &ReplSessionContext,
+    preview_snapshot: Option<&PreviewSnapshot>,
+) -> bool {
+    let Some(snapshot) = preview_snapshot else {
+        return false;
+    };
+    if let Some(validated) = context.validated_plan.as_ref()
+        && validated.candidate_id == snapshot.candidate_id
+        && validated.plan_hash == snapshot.plan_hash
+        && validated.target == snapshot.target
+    {
+        return true;
+    }
+    if let Some(selected) = context.selected_candidate.as_ref() {
+        return selected.candidate_id == snapshot.candidate_id
+            && selected.plan_hash == snapshot.plan_hash
+            && selected.target == snapshot.target;
+    }
+    false
+}
+
+fn preview_invalid_reason(state: &CoreState) -> &'static str {
+    let Some(snapshot) = state.preview_snapshot.as_ref() else {
+        return "MissingPreviewSnapshot";
+    };
+    let context = &state.session_context;
+    if context.selected_candidate.is_none() && context.validated_plan.is_none() {
+        return "MissingSelectedCandidate";
+    }
+    if let Some(selected) = context.selected_candidate.as_ref() {
+        if selected.candidate_id != snapshot.candidate_id {
+            return "CandidateIdMismatch";
+        }
+        if selected.plan_hash != snapshot.plan_hash {
+            return "PlanHashMismatch";
+        }
+    }
+    if let Some(validated) = context.validated_plan.as_ref() {
+        if validated.candidate_id != snapshot.candidate_id {
+            return "CandidateIdMismatch";
+        }
+        if validated.plan_hash != snapshot.plan_hash {
+            return "PlanHashMismatch";
+        }
+    }
+    "InvalidPreviewSnapshot"
+}
+
+fn next_actions_for_pipeline_state(state: &PipelineState) -> Vec<String> {
+    match state {
+        PipelineState::Previewed => vec!["y".to_string(), "n".to_string(), "cancel".to_string()],
+        PipelineState::Proposed => vec!["/proposals".to_string(), "select <n>".to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn current_timestamp_secs_core() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+}
+
 fn apply_guard_rejection_reason(session: &ReplSessionContext) -> Option<&'static str> {
     let Some(validated) = session.validated_plan.as_ref() else {
         return Some("MissingValidatedPlan");
@@ -2993,6 +3522,29 @@ fn apply_guard_rejection_reason(session: &ReplSessionContext) -> Option<&'static
         return Some("PlanHashMismatch");
     }
     None
+}
+
+fn parse_preview_confirmation(input: &str) -> PreviewConfirmation {
+    match input.trim().to_ascii_lowercase().as_str() {
+        "y" | "yes" => PreviewConfirmation::Confirm,
+        "n" | "no" => PreviewConfirmation::Reject,
+        "cancel" => PreviewConfirmation::Cancel,
+        _ => PreviewConfirmation::Reconfirm,
+    }
+}
+
+fn should_route_preview_input_to_language(input: &str) -> bool {
+    let trimmed = input.trim();
+    if trimmed.is_empty() || trimmed == "適用する？" {
+        return false;
+    }
+    if is_plan_validation_intent(trimmed) {
+        return true;
+    }
+    !matches!(
+        crate::nl::language_core_ir_adapter::classify_language_core_intent(trimmed),
+        crate::nl::language_core_ir_adapter::LanguageCoreIntent::Unknown { .. }
+    )
 }
 
 fn ir_plan_json(plan: &strategy_engine::CodeIrProgram) -> serde_json::Value {
@@ -3698,6 +4250,93 @@ mod tests {
         CoreRequest::new(input.to_string())
     }
 
+    fn set_preview_state(core: &RuntimeCoreBridge) {
+        let mut hist = core.history.lock().unwrap();
+        let mut s = hist.current().clone();
+        s.status = PipelineState::Previewed;
+        s.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 42,
+                timestamp: 1,
+            },
+        );
+        s.preview_snapshot = Some(PreviewSnapshot {
+            candidate_id: 1,
+            target: NarrowTarget::File("Cargo.toml".to_string()),
+            plan_hash: 42,
+            preview_hash: 7,
+            created_at: 1,
+        });
+        hist.push(s);
+    }
+
+    fn set_preview_state_with_context(core: &RuntimeCoreBridge) {
+        let mut hist = core.history.lock().unwrap();
+        let mut s = hist.current().clone();
+        s.status = PipelineState::Previewed;
+        s.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 42,
+                timestamp: 1,
+            },
+        );
+        s.session_context.validated_plan = Some(
+            crate::nl::context_aware_plan_target_resolver::ValidatedPlanContext {
+                plan_hash: 42,
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                approved: true,
+                apply_allowed: true,
+                timestamp: 1,
+            },
+        );
+        s.preview_snapshot = Some(PreviewSnapshot {
+            candidate_id: 1,
+            target: NarrowTarget::File("Cargo.toml".to_string()),
+            plan_hash: 42,
+            preview_hash: 7,
+            created_at: 1,
+        });
+        hist.push(s);
+    }
+
+    fn state_with_plan_context() -> CoreState {
+        let mut state = CoreState::default();
+        state.session_context.previous_analysis_context = Some(PreviousAnalysisContext {
+            action: IrAction::AnalyzeProject,
+            target: IrTarget::WorkspaceRoot,
+            mode: crate::nl::language_core_ir_adapter::ExecutionMode::ReadOnly,
+            status: ExecutionStatus::Executed,
+            summary_hash: 1,
+            timestamp: 1,
+        });
+        state.session_context.previous_plan_context = Some(
+            crate::nl::context_aware_plan_target_resolver::PreviousPlanContext {
+                target: IrTarget::WorkspaceRoot,
+                mode: crate::nl::language_core_ir_adapter::ExecutionMode::PlanOnly,
+                candidate_count: 1,
+                candidates: vec![ChangePlanCandidate {
+                    candidate_id: 1,
+                    title: "test".to_string(),
+                    target: NarrowTarget::File("Cargo.toml".to_string()),
+                    proposed_change: "test".to_string(),
+                    rationale: "test".to_string(),
+                    risk_level: crate::runtime::autonomous_control::RiskLevel::Low,
+                    requires_validation: true,
+                }],
+                plan_hash: 42,
+                status: ExecutionStatus::Executed,
+                timestamp: 1,
+            },
+        );
+        state.previous_analysis_context = state.session_context.previous_analysis_context.clone();
+        state
+    }
+
     fn core_with_limits(limits: Limits) -> RuntimeCoreBridge {
         RuntimeCoreBridge::new_with_limits(
             CoreRuntime::new_with_defaults(
@@ -3707,6 +4346,222 @@ mod tests {
             StrategyEngine::default(),
             limits,
         )
+    }
+
+    #[test]
+    fn preview_confirmation_parser_maps_confirm_reject_cancel_and_reconfirm() {
+        assert_eq!(
+            parse_preview_confirmation("y"),
+            PreviewConfirmation::Confirm
+        );
+        assert_eq!(
+            parse_preview_confirmation("yes"),
+            PreviewConfirmation::Confirm
+        );
+        assert_eq!(parse_preview_confirmation("n"), PreviewConfirmation::Reject);
+        assert_eq!(
+            parse_preview_confirmation("no"),
+            PreviewConfirmation::Reject
+        );
+        assert_eq!(
+            parse_preview_confirmation("cancel"),
+            PreviewConfirmation::Cancel
+        );
+        assert_eq!(
+            parse_preview_confirmation(""),
+            PreviewConfirmation::Reconfirm
+        );
+        assert_eq!(
+            parse_preview_confirmation("maybe"),
+            PreviewConfirmation::Reconfirm
+        );
+    }
+
+    #[test]
+    fn derive_pipeline_state_previewed_requires_preview_snapshot() {
+        let mut state = state_with_plan_context();
+        state.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 42,
+                timestamp: 1,
+            },
+        );
+
+        assert_ne!(
+            derive_pipeline_state_from_context(&state.session_context, None),
+            PipelineState::Previewed
+        );
+    }
+
+    #[test]
+    fn derive_pipeline_state_previewed_requires_selected_candidate() {
+        let state = state_with_plan_context();
+        let snapshot = PreviewSnapshot {
+            candidate_id: 1,
+            target: NarrowTarget::File("Cargo.toml".to_string()),
+            plan_hash: 42,
+            preview_hash: 7,
+            created_at: 1,
+        };
+
+        assert_eq!(
+            derive_pipeline_state_from_context(&state.session_context, Some(&snapshot)),
+            PipelineState::Proposed
+        );
+    }
+
+    #[test]
+    fn derive_pipeline_state_previous_plan_without_selection_returns_proposed() {
+        let state = state_with_plan_context();
+
+        assert_eq!(
+            derive_pipeline_state_from_context(&state.session_context, None),
+            PipelineState::Proposed
+        );
+    }
+
+    #[test]
+    fn rollback_state_downgrades_previewed_without_selection() {
+        let mut restored = state_with_plan_context();
+        restored.status = PipelineState::Previewed;
+        restored.preview_snapshot = Some(PreviewSnapshot {
+            candidate_id: 1,
+            target: NarrowTarget::File("Cargo.toml".to_string()),
+            plan_hash: 42,
+            preview_hash: 7,
+            created_at: 1,
+        });
+
+        let (restored, check) =
+            normalize_restored_state_after_undo(restored, &CoreState::default());
+
+        assert!(!check.valid);
+        assert_eq!(restored.status, PipelineState::Proposed);
+    }
+
+    #[test]
+    fn rollback_state_downgrades_previewed_without_preview_snapshot() {
+        let mut restored = state_with_plan_context();
+        restored.status = PipelineState::Previewed;
+        restored.session_context.selected_candidate = Some(
+            crate::nl::context_aware_plan_target_resolver::SelectedCandidateContext {
+                candidate_id: 1,
+                target: NarrowTarget::File("Cargo.toml".to_string()),
+                plan_hash: 42,
+                timestamp: 1,
+            },
+        );
+
+        let (restored, check) =
+            normalize_restored_state_after_undo(restored, &CoreState::default());
+
+        assert!(!check.valid);
+        assert_eq!(restored.status, PipelineState::Proposed);
+    }
+
+    #[test]
+    fn preview_empty_input_reconfirms() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request(""));
+
+        assert_eq!(response.status, ExecutionStatus::Idle);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "Please confirm: y / n / cancel")));
+        assert_eq!(
+            response.core_state.expect("state").status,
+            PipelineState::Previewed
+        );
+    }
+
+    #[test]
+    fn preview_unknown_input_reconfirms() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("maybe"));
+
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reconfirm"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "Please confirm: y / n / cancel")));
+        assert_eq!(
+            response.core_state.expect("state").status,
+            PipelineState::Previewed
+        );
+    }
+
+    #[test]
+    fn preview_uncertain_japanese_apply_input_reconfirms() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("適用する？"));
+
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reconfirm"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "Please confirm: y / n / cancel")));
+        assert_eq!(
+            response.core_state.expect("state").status,
+            PipelineState::Previewed
+        );
+    }
+
+    #[test]
+    fn preview_unknown_input_does_not_route_to_language_core() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("abc"));
+
+        assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("LANGUAGE_CORE"))));
+        assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ClarificationRequired"))));
+    }
+
+    #[test]
+    fn preview_reject_cancels_without_clarification() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("n"));
+        let state = response.core_state.as_ref().expect("state");
+
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reject"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "Preview cancelled. No files modified.")));
+        assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ClarificationRequired"))));
+        assert_eq!(state.status, PipelineState::Idle);
+        assert!(state.preview_snapshot.is_none());
+        assert!(state.session_context.selected_candidate.is_none());
+    }
+
+    #[test]
+    fn preview_confirm_without_validated_plan_rejects_apply() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("y"));
+        let state = response.core_state.as_ref().expect("state");
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Confirm"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true reason=MissingValidatedPlan"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message.contains("# Apply Rejected") && message.contains("No files modified."))));
+        assert_eq!(state.status, PipelineState::Idle);
+        assert!(state.preview_snapshot.is_none());
+        assert!(state.session_context.selected_candidate.is_none());
+    }
+
+    #[test]
+    fn preview_cancel_clears_selection() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state_with_context(&core);
+
+        let response = core.execute(request("cancel"));
+        let state = response.core_state.expect("state");
+
+        assert_eq!(state.status, PipelineState::Idle);
+        assert!(state.session_context.selected_candidate.is_none());
+        assert!(state.session_context.validated_plan.is_none());
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Cancel"))));
     }
 
     #[test]
@@ -4457,6 +5312,338 @@ mod tests {
         )));
     }
 
+    fn long_analyze_request(
+        primary_request: &str,
+        referenced_concepts: &str,
+        safety_constraints: &str,
+    ) -> String {
+        format!("{primary_request}。{referenced_concepts}。{safety_constraints}。")
+    }
+
+    fn long_analyze_request_with_plan_terms() -> String {
+        long_analyze_request(
+            "このプロジェクト全体の構造を解析してください",
+            "現時点でInputから構造理解、修正プラン生成、候補選択、検証、Apply Guardまでの接続に問題がないかを整理してください",
+            "まだ修正、apply、git操作、外部コマンド実行は行わないでください",
+        )
+    }
+
+    fn long_plan_request_with_context_reference() -> String {
+        [
+            "先ほどのプロジェクト構造解析結果をもとに、確認された問題点を整理し、安全な小規模修正プランを作成してください",
+            "ただし、まだファイル変更、apply、git操作、外部コマンド実行は行わず、候補ごとに対象ファイル、想定変更、リスク、検証方法だけを提示してください",
+        ]
+        .join("。")
+    }
+
+    fn has_trace_value(response: &CoreResponse, stage: &str, key: &str, value: &str) -> bool {
+        response.events.iter().any(|event| {
+            matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains(&format!("\"stage\":\"{stage}\""))
+                        && message.contains(&format!("\"{key}\":\"{value}\""))
+            )
+        })
+    }
+
+    #[test]
+    fn repl_long_analyze_request_routes_to_analyze_project() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let input = long_analyze_request_with_plan_terms();
+        let response = core.execute(request(&input));
+
+        assert!(has_trace_value(
+            &response,
+            "LANGUAGE_CORE",
+            "intent",
+            "AnalyzeProject"
+        ));
+    }
+
+    #[test]
+    fn repl_long_analyze_request_is_read_only() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let input = long_analyze_request_with_plan_terms();
+        let response = core.execute(request(&input));
+
+        assert!(has_trace_value(&response, "ADAPTER", "mode", "ReadOnly"));
+    }
+
+    #[test]
+    fn repl_long_analyze_request_targets_workspace_root() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let input = long_analyze_request_with_plan_terms();
+        let response = core.execute(request(&input));
+
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "target",
+            "WorkspaceRoot"
+        ));
+    }
+
+    #[test]
+    fn repl_long_analyze_with_plan_terms_does_not_generate_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let input = long_analyze_request_with_plan_terms();
+        let response = core.execute(request(&input));
+
+        assert!(!has_trace_value(
+            &response,
+            "LANGUAGE_CORE",
+            "intent",
+            "GenerateChangePlan"
+        ));
+    }
+
+    #[test]
+    fn repl_long_plan_request_uses_previous_analysis_context() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let analyze_input = long_analyze_request_with_plan_terms();
+        let plan_input = long_plan_request_with_context_reference();
+        core.execute(request(&analyze_input));
+        let response = core.execute(request(&plan_input));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_RESOLUTION]")
+                    && message.contains("previous_context_used=true")
+                    && message.contains("target=WorkspaceRoot")
+        )));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "GenerateChangePlan"
+        ));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "target",
+            "WorkspaceRoot"
+        ));
+    }
+
+    #[test]
+    fn repl_long_apply_prohibited_does_not_apply() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let response = core.execute(request(
+            "この候補が安全であれば適用してもよいか検討してください。ただし、この入力ではまだapplyしないでください。まず検証結果だけを表示し、validated_planが作成されてもファイル変更は次の明示的な確認まで停止してください。",
+        ));
+
+        assert!(!has_trace_value(&response, "ADAPTER", "action", "Apply"));
+    }
+
+    fn no_apply_validated_plan_input() -> &'static str {
+        "この候補が安全であれば適用してもよいか検討してください。ただし、この入力ではまだapplyしないでください。まず検証結果だけを表示し、validated_planが作成されてもファイル変更は次の明示的な確認まで停止してください。"
+    }
+
+    fn prepare_selected_candidate(core: &RuntimeCoreBridge) {
+        core.execute(request("このプロジェクトの構造を解析して"));
+        core.execute(request(
+            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+        ));
+        core.execute(request("select 1"));
+    }
+
+    fn prepare_validated_plan(core: &RuntimeCoreBridge) {
+        prepare_selected_candidate(core);
+        core.execute(request("選択済みの候補について検証してください。対象ファイルがworkspace内に存在すること、WorkspaceRootへの直接Applyではないこと、変更内容が破壊的でないこと、既存のPlan hashと候補IDが一致していること、validated_planなしにApplyへ進まないことを確認してください。検証結果だけを表示し、まだファイル変更は行わないでください。"));
+    }
+
+    #[test]
+    fn no_apply_apply_with_validated_plan_downgrades_to_review() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan")
+        )));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "ReviewValidatedPlan"
+        ));
+    }
+
+    #[test]
+    fn no_apply_apply_with_selected_candidate_downgrades_to_validate() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_selected_candidate(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate")
+        )));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "ValidatePlan"
+        ));
+    }
+
+    #[test]
+    fn no_apply_apply_without_selection_downgrades_to_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=GenerateChangePlan reason=NoApplyWithoutSelection")
+        )));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "GenerateChangePlan"
+        ));
+    }
+
+    #[test]
+    fn review_validated_plan_preserves_validated_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+        let before = core.history.lock().unwrap().current().clone();
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+        let after = response.core_state.expect("state");
+
+        assert_eq!(
+            before.session_context.validated_plan,
+            after.session_context.validated_plan
+        );
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1")
+        )));
+    }
+
+    #[test]
+    fn review_validated_plan_does_not_clear_selection() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+        let state = response.core_state.expect("state");
+
+        assert!(state.session_context.selected_candidate.is_some());
+        assert!(!response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
+        )));
+    }
+
+    #[test]
+    fn review_validated_plan_does_not_generate_new_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(!has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "GenerateChangePlan"
+        ));
+    }
+
+    #[test]
+    fn repl_no_apply_with_validated_plan_preserves_context() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+        let state = response.core_state.expect("state");
+
+        assert!(state.session_context.selected_candidate.is_some());
+        assert!(state.session_context.validated_plan.is_some());
+        assert!(state.session_context.previous_validation_context.is_some());
+    }
+
+    #[test]
+    fn no_apply_validated_plan_preserves_context() {
+        repl_no_apply_with_validated_plan_preserves_context();
+    }
+
+    #[test]
+    fn repl_no_apply_with_validated_plan_does_not_generate_new_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(!has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "GenerateChangePlan"
+        ));
+        assert!(!response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
+        )));
+    }
+
+    #[test]
+    fn repl_no_apply_with_validated_plan_outputs_validation_review() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Result { message }
+                if message.contains("# Validation Review")
+                    && message.contains("Apply status: Deferred")
+                    && message.contains("No apply executed")
+        )));
+    }
+
+    #[test]
+    fn repl_no_apply_with_validated_plan_does_not_clear_selection() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+        let state = response.core_state.expect("state");
+
+        assert!(state.session_context.selected_candidate.is_some());
+    }
+
+    #[test]
+    fn repl_no_apply_with_validated_plan_does_not_apply() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(no_apply_validated_plan_input()));
+
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][APPLY_DEFERRED] reason=NoApplyConstraint")
+        )));
+        assert!(!has_trace_value(&response, "ADAPTER", "action", "Apply"));
+    }
+
     #[test]
     fn plan_validation_requires_selected_candidate() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -4583,6 +5770,7 @@ mod tests {
             mode: crate::nl::language_core_ir_adapter::ExecutionMode::Apply,
             raw_input: "apply".to_string(),
             confidence: 1.0,
+            safety_constraints: crate::nl::language_core_ir_adapter::SafetyConstraints::default(),
         };
 
         let rendered = format_change_plan(&ir_request, &[]);

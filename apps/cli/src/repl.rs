@@ -12,6 +12,7 @@ use crate::core::{
 use crate::nl::normalization::normalize_runtime_input;
 use crate::nl::planner::InstructionPlan;
 use crate::nl::runtime_intent::RuntimeIntent;
+use crate::pipeline::PipelineState;
 use crate::runtime::shell::{
     PreviewCandidate, ResolvedExecutionTarget, RuntimeAuthorityTarget, RuntimeCommandDispatcher,
     commit_preview_candidate, empty_runtime_payload, runtime_preview_from_intent,
@@ -104,7 +105,7 @@ where
     for line in reader.lines() {
         let input = line.map_err(|err| err.to_string())?;
         let trimmed = input.trim();
-        if trimmed.is_empty() {
+        if trimmed.is_empty() && ui.core_snapshot.status != PipelineState::Previewed {
             continue;
         }
         if is_exit(trimmed) {
@@ -716,6 +717,25 @@ mod tests {
         }
     }
 
+    fn run_preview_confirmation_script(confirm_input: &str) -> String {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write Cargo.toml");
+        let script = format!(
+            "このプロジェクトの構造を解析して\nこのプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで\nselect 1\n{confirm_input}\n"
+        );
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        String::from_utf8(output).expect("utf8")
+    }
+
     #[test]
     fn repl_routes_ambiguous_input_to_core_proposal() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -757,6 +777,125 @@ mod tests {
 
         assert!(should_exit);
         assert!(output.is_empty());
+    }
+
+    #[test]
+    fn repl_preview_n_cancels_without_clarification() {
+        let output = run_preview_confirmation_script("n");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reject"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[RESULT] Preview cancelled. No files modified."),
+            "{output}"
+        );
+        assert!(!output.contains("ClarificationRequired"), "{output}");
+    }
+
+    #[test]
+    fn repl_preview_n_does_not_route_to_language_core() {
+        let output = run_preview_confirmation_script("n");
+
+        assert!(!output.contains("intent=Unknown"), "{output}");
+        assert!(!output.contains("ClarificationRequired"), "{output}");
+    }
+
+    #[test]
+    fn repl_preview_reject_then_undo_does_not_return_previewed() {
+        let output = run_preview_confirmation_script("n\nundo");
+
+        assert!(
+            output.contains("[IR-TRACE][ROLLBACK_STATE_CHECK]"),
+            "{output}"
+        );
+        assert!(
+            !output
+                .lines()
+                .skip_while(|line| !line.contains("[RESULT] Undo to v"))
+                .any(|line| line.contains("[PIPELINE] Previewed")),
+            "{output}"
+        );
+        assert!(
+            !output
+                .lines()
+                .skip_while(|line| !line.contains("[RESULT] Undo to v"))
+                .any(|line| line.trim() == "y" || line.trim() == "n"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn repl_preview_y_without_validated_plan_rejects_apply() {
+        let output = run_preview_confirmation_script("y");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Confirm"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[IR-TRACE][APPLY_GUARD] rejected=true reason=MissingValidatedPlan"),
+            "{output}"
+        );
+        assert!(output.contains("[RESULT] # Apply Rejected"), "{output}");
+        assert!(output.contains("No files modified."), "{output}");
+    }
+
+    #[test]
+    fn repl_preview_cancel_clears_selection() {
+        let output = run_preview_confirmation_script("cancel");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Cancel"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[RESULT] Preview cancelled. No files modified."),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn repl_preview_confirmation_does_not_emit_unknown_intent() {
+        let output = run_preview_confirmation_script("abc");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reconfirm"),
+            "{output}"
+        );
+        assert!(!output.contains("intent=Unknown"), "{output}");
+        assert!(!output.contains("ClarificationRequired"), "{output}");
+    }
+
+    #[test]
+    fn repl_preview_empty_input_reconfirms() {
+        let output = run_preview_confirmation_script("");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reconfirm"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[RESULT] Please confirm: y / n / cancel"),
+            "{output}"
+        );
+        assert!(!output.contains("ClarificationRequired"), "{output}");
+    }
+
+    #[test]
+    fn repl_preview_unknown_input_reconfirms() {
+        let output = run_preview_confirmation_script("maybe");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Reconfirm"),
+            "{output}"
+        );
+        assert!(
+            output.contains("[RESULT] Please confirm: y / n / cancel"),
+            "{output}"
+        );
+        assert!(output.contains("[PIPELINE] Previewed"), "{output}");
     }
 
     #[test]

@@ -45,6 +45,62 @@ pub enum LanguageCoreIntent {
     Unknown { raw: String },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ClauseRole {
+    PrimaryRequest,
+    ReferencedConcept,
+    SafetyConstraint,
+    ExecutionRequest,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClassifiedClause {
+    pub text: String,
+    pub role: ClauseRole,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct SafetyConstraints {
+    pub no_apply: bool,
+    pub no_file_write: bool,
+    pub no_git_operation: bool,
+    pub no_external_command: bool,
+}
+
+impl SafetyConstraints {
+    pub fn prohibits_apply(self) -> bool {
+        self.no_apply || self.no_file_write
+    }
+
+    fn labels(self) -> Vec<&'static str> {
+        let mut labels = Vec::new();
+        if self.no_apply {
+            labels.push("no_apply");
+        }
+        if self.no_file_write {
+            labels.push("no_file_write");
+        }
+        if self.no_git_operation {
+            labels.push("no_git");
+        }
+        if self.no_external_command {
+            labels.push("no_external_command");
+        }
+        labels
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrimaryIntent {
+    AnalyzeProject,
+    ValidatePlan,
+    ReviewValidatedPlan,
+    GenerateChangePlan,
+    Apply,
+    Unknown,
+}
+
 impl fmt::Display for LanguageCoreIntent {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -74,6 +130,8 @@ pub enum IrAction {
     AnalyzeFile,
     AnalyzeSymbol,
     GenerateChangePlan,
+    ValidatePlan,
+    ReviewValidatedPlan,
     Refactor,
     Apply,
     Unknown,
@@ -106,6 +164,8 @@ impl fmt::Display for IrAction {
             Self::AnalyzeFile => write!(f, "AnalyzeFile"),
             Self::AnalyzeSymbol => write!(f, "AnalyzeSymbol"),
             Self::GenerateChangePlan => write!(f, "GenerateChangePlan"),
+            Self::ValidatePlan => write!(f, "ValidatePlan"),
+            Self::ReviewValidatedPlan => write!(f, "ReviewValidatedPlan"),
             Self::Refactor => write!(f, "Refactor"),
             Self::Apply => write!(f, "Apply"),
             Self::Unknown => write!(f, "Unknown"),
@@ -144,6 +204,8 @@ pub enum ExecutionMode {
     ReadOnly,
     /// 計画のみ（apply しない）
     PlanOnly,
+    /// 検証のみ（apply しない）
+    ValidateOnly,
     /// 検証済み Plan の適用
     Apply,
 }
@@ -153,6 +215,7 @@ impl fmt::Display for ExecutionMode {
         match self {
             Self::ReadOnly => write!(f, "ReadOnly"),
             Self::PlanOnly => write!(f, "PlanOnly"),
+            Self::ValidateOnly => write!(f, "ValidateOnly"),
             Self::Apply => write!(f, "Apply"),
         }
     }
@@ -168,6 +231,7 @@ pub struct IrIntentRequest {
     pub mode: ExecutionMode,
     pub raw_input: String,
     pub confidence: f32,
+    pub safety_constraints: SafetyConstraints,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -177,10 +241,31 @@ pub struct IrIntentRequest {
 /// 日本語・英語の両方に対応する。分類は先行優先（specific → general）。
 pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
     let lower = input.to_lowercase();
+    let clauses = classify_clauses(input);
+    let safety_constraints = extract_safety_constraints_from_clauses(&clauses);
+    let primary_intent = select_primary_intent(&clauses);
+
+    emit_long_input_traces(primary_intent, safety_constraints, &clauses);
+
+    match primary_intent {
+        PrimaryIntent::AnalyzeProject => return LanguageCoreIntent::ProjectStructureAnalyze,
+        PrimaryIntent::GenerateChangePlan => {
+            return LanguageCoreIntent::GenerateChangePlan {
+                target: Option::None,
+                instruction: input.to_string(),
+            };
+        }
+        PrimaryIntent::Apply => {
+            return LanguageCoreIntent::ApplyRequest;
+        }
+        PrimaryIntent::ValidatePlan
+        | PrimaryIntent::ReviewValidatedPlan
+        | PrimaryIntent::Unknown => {}
+    }
 
     // 修正プラン要求は「構造解析結果」など Analyze 語を含みうるため、
     // Analyze 系 fallback より先に判定する。
-    if crate::nl::context_aware_plan_target_resolver::is_plan_only_intent(&lower) {
+    if is_explicit_plan_primary(&lower) {
         return LanguageCoreIntent::GenerateChangePlan {
             target: Option::None,
             instruction: input.to_string(),
@@ -208,7 +293,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
     }
 
     // 適用要求
-    if is_explicit_apply(&lower) {
+    if is_explicit_apply(&lower) && !safety_constraints.prohibits_apply() {
         return LanguageCoreIntent::ApplyRequest;
     }
 
@@ -234,6 +319,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
 ///
 /// spec 5.2 の変換ルールに従う。
 pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrIntentRequest {
+    let safety_constraints = extract_safety_constraints(raw_input);
     match intent {
         LanguageCoreIntent::ProjectStructureAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeProject,
@@ -241,6 +327,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.90,
+            safety_constraints,
         },
         LanguageCoreIntent::WorkspaceAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeWorkspace,
@@ -248,6 +335,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.85,
+            safety_constraints,
         },
         LanguageCoreIntent::DependencyAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeDependencies,
@@ -255,6 +343,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.85,
+            safety_constraints,
         },
         LanguageCoreIntent::ModuleStructureAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeModuleStructure,
@@ -262,6 +351,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.85,
+            safety_constraints,
         },
         LanguageCoreIntent::FileAnalyze { file } => IrIntentRequest {
             action: IrAction::AnalyzeFile,
@@ -269,6 +359,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.95,
+            safety_constraints,
         },
         LanguageCoreIntent::SymbolAnalyze { symbol } => IrIntentRequest {
             action: IrAction::AnalyzeSymbol,
@@ -276,13 +367,17 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.90,
+            safety_constraints,
         },
         LanguageCoreIntent::GenerateChangePlan { target, .. } => IrIntentRequest {
             action: IrAction::GenerateChangePlan,
-            target: target.map(IrTarget::File).unwrap_or(IrTarget::None),
+            target: target
+                .map(IrTarget::File)
+                .unwrap_or(IrTarget::WorkspaceRoot),
             mode: ExecutionMode::PlanOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.80,
+            safety_constraints,
         },
         LanguageCoreIntent::RefactorRequest { target, .. } => IrIntentRequest {
             action: IrAction::Refactor,
@@ -293,6 +388,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::PlanOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.75,
+            safety_constraints,
         },
         LanguageCoreIntent::ApplyRequest => IrIntentRequest {
             action: IrAction::Apply,
@@ -301,6 +397,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::Apply,
             raw_input: raw_input.to_string(),
             confidence: 0.95,
+            safety_constraints,
         },
         LanguageCoreIntent::Unknown { .. } => IrIntentRequest {
             action: IrAction::Unknown,
@@ -308,6 +405,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.0,
+            safety_constraints,
         },
     }
 }
@@ -318,6 +416,248 @@ pub(crate) fn has_analyze_keyword(lower: &str) -> bool {
     ["analyze", "analyse", "解析", "分析", "調べ", "audit"]
         .iter()
         .any(|kw| lower.contains(kw))
+}
+
+pub fn classify_clauses(input: &str) -> Vec<ClassifiedClause> {
+    input
+        .split(['。', '\n', '；', ';'])
+        .map(str::trim)
+        .filter(|clause| !clause.is_empty())
+        .map(|clause| {
+            let lower = clause.to_lowercase();
+            let role = if is_safety_constraint(&lower) {
+                ClauseRole::SafetyConstraint
+            } else if is_explicit_analyze_primary(&lower) || is_explicit_plan_primary(&lower) {
+                ClauseRole::PrimaryRequest
+            } else if is_explicit_apply(&lower) {
+                ClauseRole::ExecutionRequest
+            } else if is_referenced_concept(&lower) {
+                ClauseRole::ReferencedConcept
+            } else {
+                ClauseRole::Unknown
+            };
+            ClassifiedClause {
+                text: clause.to_string(),
+                role,
+            }
+        })
+        .collect()
+}
+
+pub fn select_primary_intent(clauses: &[ClassifiedClause]) -> PrimaryIntent {
+    if clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::PrimaryRequest)
+        .any(|clause| is_explicit_analyze_primary(&clause.text.to_lowercase()))
+    {
+        return PrimaryIntent::AnalyzeProject;
+    }
+    if clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::PrimaryRequest)
+        .any(|clause| is_explicit_validate_primary(&clause.text.to_lowercase()))
+    {
+        return PrimaryIntent::ValidatePlan;
+    }
+    if clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::PrimaryRequest)
+        .any(|clause| is_explicit_plan_primary(&clause.text.to_lowercase()))
+    {
+        return PrimaryIntent::GenerateChangePlan;
+    }
+    if clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::ExecutionRequest)
+        .any(|clause| is_explicit_apply(&clause.text.to_lowercase()))
+    {
+        return PrimaryIntent::Apply;
+    }
+    PrimaryIntent::Unknown
+}
+
+pub fn extract_safety_constraints(input: &str) -> SafetyConstraints {
+    extract_safety_constraints_from_clauses(&classify_clauses(input))
+}
+
+fn extract_safety_constraints_from_clauses(clauses: &[ClassifiedClause]) -> SafetyConstraints {
+    clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::SafetyConstraint)
+        .fold(SafetyConstraints::default(), |mut constraints, clause| {
+            let lower = clause.text.to_lowercase();
+            if has_no_apply_phrase(&lower)
+                || lower.contains("修正しない")
+                || ((lower.contains("修正") || lower.contains("apply"))
+                    && contains_no_execute(&lower))
+            {
+                constraints.no_apply = true;
+            }
+            if lower.contains("ファイル変更しない")
+                || (lower.contains("ファイル変更") && contains_no_execute(&lower))
+                || lower.contains("file write")
+                || lower.contains("files modified")
+            {
+                constraints.no_file_write = true;
+                constraints.no_apply = true;
+            }
+            if lower.contains("git操作しない")
+                || (lower.contains("git操作") && contains_no_execute(&lower))
+                || lower.contains("git operation")
+            {
+                constraints.no_git_operation = true;
+            }
+            if lower.contains("外部コマンド実行しない")
+                || (lower.contains("外部コマンド実行") && contains_no_execute(&lower))
+                || lower.contains("external command")
+            {
+                constraints.no_external_command = true;
+            }
+            constraints
+        })
+}
+
+fn emit_long_input_traces(
+    primary_intent: PrimaryIntent,
+    safety_constraints: SafetyConstraints,
+    clauses: &[ClassifiedClause],
+) {
+    if clauses.len() < 2 {
+        return;
+    }
+    let referenced = clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::ReferencedConcept)
+        .map(|clause| referenced_label(&clause.text))
+        .collect::<Vec<_>>()
+        .join(",");
+    let safety = safety_constraints.labels().join(",");
+    eprintln!(
+        "[IR-TRACE][LONG_INPUT_CLASSIFY] primary={:?} referenced={} safety={}",
+        primary_intent, referenced, safety
+    );
+    eprintln!(
+        "[IR-TRACE][PRIMARY_INTENT] selected={:?} reason={}",
+        primary_intent,
+        primary_reason(primary_intent)
+    );
+    eprintln!(
+        "[IR-TRACE][SAFETY_CONSTRAINTS] no_apply={} no_file_write={} no_git_operation={} no_external_command={}",
+        safety_constraints.no_apply,
+        safety_constraints.no_file_write,
+        safety_constraints.no_git_operation,
+        safety_constraints.no_external_command
+    );
+    if primary_intent == PrimaryIntent::AnalyzeProject {
+        eprintln!(
+            "[IR-TRACE][TARGET_RESOLUTION] target=WorkspaceRoot reason=AnalyzeProjectDefault"
+        );
+    }
+}
+
+fn primary_reason(intent: PrimaryIntent) -> &'static str {
+    match intent {
+        PrimaryIntent::AnalyzeProject => "ExplicitAnalyzePrimaryRequest",
+        PrimaryIntent::ValidatePlan => "ExplicitValidatePrimaryRequest",
+        PrimaryIntent::ReviewValidatedPlan => "NoApplyWithValidatedPlan",
+        PrimaryIntent::GenerateChangePlan => "ExplicitPlanPrimaryRequest",
+        PrimaryIntent::Apply => "ExplicitApplyRequest",
+        PrimaryIntent::Unknown => "Unknown",
+    }
+}
+
+fn referenced_label(text: &str) -> &'static str {
+    let lower = text.to_lowercase();
+    if lower.contains("apply guard") {
+        "ApplyGuard"
+    } else if lower.contains("preview") {
+        "PreviewConfirmation"
+    } else if lower.contains("検証") || lower.contains("validation") {
+        "PlanValidation"
+    } else {
+        "ReferencedConcept"
+    }
+}
+
+fn is_explicit_analyze_primary(lower: &str) -> bool {
+    [
+        "構造を解析してください",
+        "構造を解析して",
+        "全体の構造を確認して",
+        "構成を確認して",
+        "接続に問題がないか整理して",
+        "現状を整理して",
+        "analyze project structure",
+        "analyze this project",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+        || (lower.contains("プロジェクト全体") && lower.contains("構造") && lower.contains("解析"))
+}
+
+fn is_explicit_validate_primary(lower: &str) -> bool {
+    lower.contains("検証して") || lower.contains("validate")
+}
+
+fn is_explicit_plan_primary(lower: &str) -> bool {
+    [
+        "修正プランを作成して",
+        "変更プランを作成して",
+        "安全な小規模修正プランを作成して",
+        "候補を提示して",
+        "fix plan",
+        "change plan",
+        "create a plan",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn is_referenced_concept(lower: &str) -> bool {
+    [
+        "修正プラン生成",
+        "候補選択",
+        "apply guard",
+        "plan validation",
+        "preview confirmation",
+        "までの接続",
+        "までの流れ",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn is_safety_constraint(lower: &str) -> bool {
+    has_no_apply_phrase(lower)
+        || lower.contains("修正しない")
+        || lower.contains("ファイル変更しない")
+        || lower.contains("git操作しない")
+        || lower.contains("外部コマンド実行しない")
+        || ((lower.contains("修正")
+            || lower.contains("apply")
+            || lower.contains("ファイル変更")
+            || lower.contains("git操作")
+            || lower.contains("外部コマンド実行"))
+            && contains_no_execute(lower))
+        || lower.contains("no files modified")
+        || lower.contains("no apply")
+        || lower.contains("do not apply")
+}
+
+fn has_no_apply_phrase(lower: &str) -> bool {
+    lower.contains("まだ適用しない")
+        || lower.contains("まだapplyしない")
+        || lower.contains("適用しないで")
+        || lower.contains("applyしない")
+        || lower.contains("do not apply")
+        || lower.contains("without applying")
+}
+
+fn contains_no_execute(lower: &str) -> bool {
+    lower.contains("行わない")
+        || lower.contains("行わず")
+        || lower.contains("しない")
+        || lower.contains("停止")
 }
 
 fn is_project_structure_analyze(lower: &str) -> bool {
@@ -417,6 +757,18 @@ fn is_explicit_apply(lower: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn compose_long_request(primary: &str, referenced: &str, safety: &str) -> String {
+        format!("{primary}。{referenced}。{safety}。")
+    }
+
+    fn analyze_request_with_referenced_plan_terms() -> String {
+        compose_long_request(
+            "このプロジェクト全体の構造を解析してください",
+            "現時点でInputから構造理解、修正プラン生成、候補選択、検証、Apply Guardまでの接続に問題がないかを整理してください",
+            "まだ修正、apply、git操作、外部コマンド実行は行わないでください",
+        )
+    }
 
     /// spec §11.1 テスト 1: ProjectStructureAnalyze → AnalyzeProject + WorkspaceRoot + ReadOnly
     #[test]
@@ -589,5 +941,69 @@ mod tests {
             ),
             "got {intent:?}"
         );
+    }
+
+    #[test]
+    fn long_input_analyze_primary_not_plan() {
+        let input = analyze_request_with_referenced_plan_terms();
+        let intent = classify_language_core_intent(&input);
+        let ir = language_core_to_ir(intent, &input);
+        assert_eq!(ir.action, IrAction::AnalyzeProject);
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+        assert_eq!(ir.target, IrTarget::WorkspaceRoot);
+    }
+
+    #[test]
+    fn long_input_referenced_plan_terms_do_not_override_analyze() {
+        let input = analyze_request_with_referenced_plan_terms();
+        let clauses = classify_clauses(&input);
+        assert!(
+            clauses
+                .iter()
+                .any(|clause| clause.role == ClauseRole::ReferencedConcept)
+        );
+        assert_eq!(
+            select_primary_intent(&clauses),
+            PrimaryIntent::AnalyzeProject
+        );
+    }
+
+    #[test]
+    fn long_input_no_apply_terms_do_not_trigger_apply() {
+        let input = analyze_request_with_referenced_plan_terms();
+        let intent = classify_language_core_intent(&input);
+        assert_ne!(intent, LanguageCoreIntent::ApplyRequest);
+        let safety = extract_safety_constraints(&input);
+        assert!(safety.no_apply);
+        assert!(safety.no_git_operation);
+        assert!(safety.no_external_command);
+    }
+
+    #[test]
+    fn long_input_apply_phrase_with_no_apply_constraint_is_not_apply() {
+        let input = "この候補が安全であれば適用してもよいか検討してください。ただし、この入力ではまだapplyしないでください。まず検証結果だけを表示し、validated_planが作成されてもファイル変更は次の明示的な確認まで停止してください。";
+        let intent = classify_language_core_intent(input);
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::Apply);
+        assert_eq!(ir.mode, ExecutionMode::Apply);
+        assert!(ir.safety_constraints.no_apply);
+        assert!(ir.safety_constraints.no_file_write);
+    }
+
+    #[test]
+    fn long_input_plan_primary_generates_plan() {
+        let input = "先ほどのプロジェクト構造解析結果をもとに、DBM_CLIのREPL実働テストで確認された問題点を整理し、安全な小規模修正プランを作成してください。ただし、まだファイル変更、apply、git操作、外部コマンド実行は行わず、候補ごとに対象ファイル、想定変更、リスク、検証方法だけを提示してください。";
+        let intent = classify_language_core_intent(input);
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::GenerateChangePlan);
+        assert_eq!(ir.mode, ExecutionMode::PlanOnly);
+        assert_eq!(ir.target, IrTarget::WorkspaceRoot);
+    }
+
+    #[test]
+    fn long_input_analyze_returns_workspace_root() {
+        let input = analyze_request_with_referenced_plan_terms();
+        let ir = language_core_to_ir(classify_language_core_intent(&input), &input);
+        assert_eq!(ir.target, IrTarget::WorkspaceRoot);
     }
 }
