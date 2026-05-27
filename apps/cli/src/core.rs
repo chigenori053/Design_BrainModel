@@ -35,8 +35,8 @@ use crate::git::telemetry::{GitExecutionRecord, git_record_json, transaction_rec
 use crate::git::transaction::{ExecutionTransaction, GitPhase};
 use crate::nl::context_aware_plan_target_resolver::{
     ChangePlanCandidate, NarrowTarget, PlanValidationResult, PreviousAnalysisContext,
-    PreviousValidationContext, ReplSessionContext, ValidatedPlanContext, ValidationStatus,
-    stable_context_hash,
+    PreviousValidationContext, ReplSessionContext, SelectedCandidateContext, ValidatedPlanContext,
+    ValidationStatus, stable_context_hash,
 };
 use crate::nl::language_core_ir_adapter::{ExecutionMode, IrAction, IrTarget};
 use crate::nl::normalization::{TargetResolutionFailure, target_only_input_resolution};
@@ -45,9 +45,14 @@ use crate::refactor::PatchScope;
 use crate::state_graph::StateGraph;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
+static SAFE_APPLY_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_request_id() -> u64 {
     REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
+fn next_safe_apply_transaction_id() -> u64 {
+    SAFE_APPLY_TRANSACTION_COUNTER.fetch_add(1, Ordering::Relaxed)
 }
 
 const ENABLE_OBSERVABILITY: bool = true;
@@ -204,6 +209,180 @@ pub struct PreviewSnapshot {
     pub plan_hash: u64,
     pub preview_hash: u64,
     pub created_at: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Target {
+    WorkspaceRoot,
+    File(String),
+    Module(String),
+    Symbol(String),
+}
+
+impl std::fmt::Display for Target {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::WorkspaceRoot => write!(f, "WorkspaceRoot"),
+            Self::File(path) => write!(f, "File({path})"),
+            Self::Module(name) => write!(f, "Module({name})"),
+            Self::Symbol(name) => write!(f, "Symbol({name})"),
+        }
+    }
+}
+
+impl From<NarrowTarget> for Target {
+    fn from(target: NarrowTarget) -> Self {
+        match target {
+            NarrowTarget::File(path) => Self::File(path),
+            NarrowTarget::Module(name) => Self::Module(name),
+            NarrowTarget::Symbol(name) => Self::Symbol(name),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectedCandidate {
+    pub candidate_id: usize,
+    pub target: Target,
+    pub plan_hash: u64,
+    pub timestamp: u64,
+}
+
+impl From<SelectedCandidateContext> for SelectedCandidate {
+    fn from(selected: SelectedCandidateContext) -> Self {
+        Self {
+            candidate_id: selected.candidate_id,
+            target: selected.target.into(),
+            plan_hash: selected.plan_hash,
+            timestamp: selected.timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidatedPlan {
+    pub plan_hash: u64,
+    pub candidate_id: usize,
+    pub target: Target,
+    pub approved: bool,
+    pub apply_allowed: bool,
+    pub timestamp: u64,
+}
+
+impl From<ValidatedPlanContext> for ValidatedPlan {
+    fn from(validated: ValidatedPlanContext) -> Self {
+        Self {
+            plan_hash: validated.plan_hash,
+            candidate_id: validated.candidate_id,
+            target: validated.target.into(),
+            approved: validated.approved,
+            apply_allowed: validated.apply_allowed,
+            timestamp: validated.timestamp,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyGuardDecision {
+    Allow {
+        candidate_id: usize,
+        target: Target,
+        validated_plan_hash: u64,
+    },
+    Reject {
+        reason: ApplyGuardRejectReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyGuardRejectReason {
+    MissingValidatedPlan,
+    MissingSelectedCandidate,
+    WorkspaceRootApplyForbidden,
+    CandidateMismatch,
+    PlanHashMismatch,
+    TargetMismatch,
+    PreviewNotActive,
+    StaleValidatedPlan,
+}
+
+impl std::fmt::Display for ApplyGuardRejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ApplyGuardInput {
+    pub selected_candidate: Option<SelectedCandidate>,
+    pub validated_plan: Option<ValidatedPlan>,
+    pub pipeline_state: PipelineState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SafeApplyTransaction {
+    pub transaction_id: u64,
+    pub candidate_id: usize,
+    pub validated_plan_hash: u64,
+    pub target: Target,
+    pub target_path: PathBuf,
+    pub pre_apply_checksum: u64,
+    pub planned_diff_checksum: u64,
+    pub rollback_snapshot: RollbackSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackSnapshot {
+    pub target_path: PathBuf,
+    pub original_contents: String,
+    pub original_checksum: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ApplyResult {
+    Applied {
+        transaction_id: u64,
+        post_apply_checksum: u64,
+    },
+    RolledBack {
+        transaction_id: u64,
+        reason: ApplyFailureReason,
+    },
+    Rejected {
+        reason: ApplyRejectReason,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyFailureReason {
+    TargetMissing,
+    ChecksumMismatch,
+    DiffApplyFailed,
+    PostValidationFailed,
+    RollbackFailed,
+}
+
+impl std::fmt::Display for ApplyFailureReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApplyRejectReason {
+    GuardRejected,
+    MissingValidatedPlan,
+    MissingSelectedCandidate,
+    MissingPreview,
+    WorkspaceRootApplyForbidden,
+    UnsupportedTarget,
+    ChecksumMismatch,
+}
+
+impl std::fmt::Display for ApplyRejectReason {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{self:?}")
+    }
 }
 
 /// Canonical state snapshot — the Single Source of Truth.  Phase 4.5.
@@ -1349,12 +1528,12 @@ impl RuntimeCoreBridge {
 
     fn apply_validated_plan_guard(
         &self,
-        _request: InternalRequest,
+        request: InternalRequest,
         mut events: Vec<CoreEvent>,
     ) -> CoreResponse {
         let current = self.history.lock().unwrap().current().clone();
-        let reason = apply_guard_rejection_reason(&current.session_context);
-        if let Some(reason) = reason {
+        let decision = apply_guard_decide(ApplyGuardInput::from(&current));
+        if let ApplyGuardDecision::Reject { reason } = decision {
             trace_ir!(
                 TraceLevel::Basic,
                 "APPLY_GUARD",
@@ -1386,26 +1565,83 @@ impl RuntimeCoreBridge {
             };
         }
 
-        let validated = current
-            .session_context
-            .validated_plan
-            .as_ref()
-            .expect("validated plan checked");
-        trace_ir!(TraceLevel::Basic, "APPLY_GUARD", "rejected=false");
+        let ApplyGuardDecision::Allow {
+            candidate_id,
+            ref target,
+            validated_plan_hash,
+        } = decision
+        else {
+            unreachable!("reject returned above")
+        };
+        let allow_trace = format!(
+            "rejected=false candidate_id={candidate_id} target={target} validated_plan_hash={validated_plan_hash}"
+        );
+        trace_ir!(TraceLevel::Basic, "APPLY_GUARD", allow_trace.clone());
         events.push(CoreEvent::Debug {
-            message: "[IR-TRACE][APPLY_GUARD] rejected=false".to_string(),
+            message: format!("[IR-TRACE][APPLY_GUARD] {allow_trace}"),
         });
-        events.push(CoreEvent::Result {
-            message: format!(
-                "# Apply Guard\n\nCandidate: {}\nTarget: {}\nStatus: Allowed\n\nSafe apply execution is deferred to DBM-SAFE-APPLY-EXECUTION-SPEC.",
-                validated.candidate_id, validated.target
-            ),
-        });
-        CoreResponse {
-            events,
-            status: ExecutionStatus::Executed,
-            design: None,
-            core_state: Some(current),
+
+        let apply_result = self.execute_safe_apply(
+            &request.context.working_dir,
+            &current,
+            &decision,
+            &mut events,
+        );
+        match apply_result {
+            ApplyResult::Applied {
+                transaction_id,
+                post_apply_checksum,
+            } => {
+                self.pending_files.lock().expect("pending lock").clear();
+                let next_state = self.clear_preview_state(PipelineState::Idle);
+                events.push(CoreEvent::Result {
+                    message: format!(
+                        "# Safe Apply\n\nTransaction: {transaction_id}\nCandidate: {candidate_id}\nTarget: {target}\nPost checksum: {post_apply_checksum}\n\nApplied."
+                    ),
+                });
+                events.push(CoreEvent::Pipeline {
+                    state: PipelineState::Idle.label().to_string(),
+                });
+                CoreResponse {
+                    events,
+                    status: ExecutionStatus::Executed,
+                    design: None,
+                    core_state: Some(next_state),
+                }
+            }
+            ApplyResult::RolledBack {
+                transaction_id,
+                reason,
+            } => {
+                let next_state = self.preserve_preview_state(PipelineState::Previewed);
+                events.push(CoreEvent::Result {
+                    message: format!(
+                        "# Safe Apply Rolled Back\n\nTransaction: {transaction_id}\nReason: {reason}.\n\nPreview context preserved."
+                    ),
+                });
+                events.push(CoreEvent::Pipeline {
+                    state: PipelineState::Previewed.label().to_string(),
+                });
+                CoreResponse {
+                    events,
+                    status: ExecutionStatus::Failed,
+                    design: None,
+                    core_state: Some(next_state),
+                }
+            }
+            ApplyResult::Rejected { reason } => {
+                events.push(CoreEvent::Result {
+                    message: format!(
+                        "# Safe Apply Rejected\n\nReason: {reason}.\n\nNo files modified."
+                    ),
+                });
+                CoreResponse {
+                    events,
+                    status: ExecutionStatus::Failed,
+                    design: None,
+                    core_state: Some(current),
+                }
+            }
         }
     }
 
@@ -1959,6 +2195,158 @@ impl RuntimeCoreBridge {
             next_state.session_context.previous_analysis_context.clone();
         history.push(next_state.clone());
         next_state
+    }
+
+    fn preserve_preview_state(&self, status: PipelineState) -> CoreState {
+        let mut history = self.history.lock().expect("history lock");
+        let mut next_state = history.current().clone();
+        next_state.status = status;
+        next_state.previous_analysis_context =
+            next_state.session_context.previous_analysis_context.clone();
+        history.push(next_state.clone());
+        next_state
+    }
+
+    fn execute_safe_apply(
+        &self,
+        root: &Path,
+        state: &CoreState,
+        guard_decision: &ApplyGuardDecision,
+        events: &mut Vec<CoreEvent>,
+    ) -> ApplyResult {
+        let ApplyGuardDecision::Allow {
+            candidate_id,
+            target,
+            validated_plan_hash,
+        } = guard_decision
+        else {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::GuardRejected,
+            };
+        };
+        let Some(validated) = state.session_context.validated_plan.as_ref() else {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::MissingValidatedPlan,
+            };
+        };
+        if state.session_context.selected_candidate.is_none() {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::MissingSelectedCandidate,
+            };
+        }
+        let Target::File(relative_target) = target else {
+            let reason = if *target == Target::WorkspaceRoot {
+                ApplyRejectReason::WorkspaceRootApplyForbidden
+            } else {
+                ApplyRejectReason::UnsupportedTarget
+            };
+            return ApplyResult::Rejected { reason };
+        };
+
+        let pending = self.pending_files.lock().expect("pending lock").clone();
+        if pending.len() != 1 || pending[0].path != *relative_target {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::MissingPreview,
+            };
+        }
+        let Some(preview) = state.preview_snapshot.as_ref() else {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::MissingPreview,
+            };
+        };
+        let planned_diff_checksum = checksum_u64(preview_lines(&pending).join("\n").as_bytes());
+        if planned_diff_checksum != preview.preview_hash {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::ChecksumMismatch,
+            };
+        }
+
+        let target_path = match resolve_repo_file(root, relative_target) {
+            Ok(path) => path,
+            Err(_) => {
+                return ApplyResult::Rejected {
+                    reason: ApplyRejectReason::UnsupportedTarget,
+                };
+            }
+        };
+        let original_contents = match fs::read_to_string(&target_path) {
+            Ok(contents) => contents,
+            Err(_) => {
+                return ApplyResult::RolledBack {
+                    transaction_id: 0,
+                    reason: ApplyFailureReason::TargetMissing,
+                };
+            }
+        };
+        let transaction = create_safe_apply_transaction(
+            *candidate_id,
+            *validated_plan_hash,
+            target.clone(),
+            target_path.clone(),
+            original_contents,
+            planned_diff_checksum,
+        );
+        events.extend([
+            CoreEvent::Debug {
+                message: format!(
+                    "[IR-TRACE][SAFE_APPLY_BEGIN] transaction_id={} candidate_id={} target={}",
+                    transaction.transaction_id, transaction.candidate_id, transaction.target
+                ),
+            },
+            CoreEvent::Debug {
+                message: format!(
+                    "[IR-TRACE][ROLLBACK_SNAPSHOT_CREATED] checksum={}",
+                    transaction.rollback_snapshot.original_checksum
+                ),
+            },
+        ]);
+
+        if checksum_u64(transaction.rollback_snapshot.original_contents.as_bytes())
+            != transaction.rollback_snapshot.original_checksum
+        {
+            return ApplyResult::Rejected {
+                reason: ApplyRejectReason::ChecksumMismatch,
+            };
+        }
+        if validated.plan_hash != *validated_plan_hash {
+            return rollback_safe_apply(&transaction, ApplyFailureReason::ChecksumMismatch, events);
+        }
+        if fs::write(&target_path, &pending[0].content).is_err() {
+            return rollback_safe_apply(&transaction, ApplyFailureReason::DiffApplyFailed, events);
+        }
+        let post_apply_contents = match fs::read_to_string(&target_path) {
+            Ok(contents) => contents,
+            Err(_) => {
+                return rollback_safe_apply(
+                    &transaction,
+                    ApplyFailureReason::PostValidationFailed,
+                    events,
+                );
+            }
+        };
+        let post_apply_checksum = checksum_u64(post_apply_contents.as_bytes());
+        if post_apply_checksum != checksum_u64(pending[0].content.as_bytes()) {
+            return rollback_safe_apply(&transaction, ApplyFailureReason::ChecksumMismatch, events);
+        }
+        if post_apply_checksum == transaction.pre_apply_checksum
+            || !post_apply_validation(&target_path, &post_apply_contents)
+        {
+            return rollback_safe_apply(
+                &transaction,
+                ApplyFailureReason::PostValidationFailed,
+                events,
+            );
+        }
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][SAFE_APPLY_SUCCESS] transaction_id={} post_checksum={}",
+                transaction.transaction_id, post_apply_checksum
+            ),
+        });
+        ApplyResult::Applied {
+            transaction_id: transaction.transaction_id,
+            post_apply_checksum,
+        }
     }
 
     fn execute_git_command(
@@ -2888,14 +3276,42 @@ impl RuntimeCoreBridge {
             format!("steps={}", plan.steps.join(", "))
         );
 
-        // Build preview diff from already-stored pending files (§10.1 preview必須)
-        let pending = self.pending_files.lock().expect("pending lock").clone();
+        let selected_target = request.context.current_proposals.as_ref().and_then(|_| {
+            self.history
+                .lock()
+                .expect("history lock")
+                .current()
+                .session_context
+                .previous_plan_context
+                .as_ref()
+                .and_then(|ctx| {
+                    ctx.candidates
+                        .iter()
+                        .find(|plan_candidate| plan_candidate.candidate_id == index)
+                        .map(|plan_candidate| plan_candidate.target.clone())
+                })
+        });
+
+        // Build preview diff from the selected candidate and keep that exact
+        // pending content as the only source Safe Apply may write.
+        let pending = {
+            let mut pending = self.pending_files.lock().expect("pending lock");
+            if pending.is_empty()
+                && let Some(NarrowTarget::File(path)) = selected_target.as_ref()
+            {
+                match safe_apply_preview_file(&request.context.working_dir, path, index) {
+                    Ok(file) => *pending = vec![file],
+                    Err(err) => return error_response("ValidationError", &err, id),
+                }
+            }
+            pending.clone()
+        };
         let preview = if pending.is_empty() {
             vec!["(no pending files)".to_string()]
         } else {
             preview_lines(&pending)
         };
-        let preview_hash = stable_context_hash(&preview.join("\n"));
+        let preview_hash = checksum_u64(preview.join("\n").as_bytes());
         let mut events = vec![
             CoreEvent::Plan {
                 steps: std::iter::once(format!("Selected: {}", candidate.summary))
@@ -2934,16 +3350,6 @@ impl RuntimeCoreBridge {
         {
             let mut history = self.history.lock().expect("history lock");
             let mut next_state = history.current().clone();
-            let selected_target = next_state
-                .session_context
-                .previous_plan_context
-                .as_ref()
-                .and_then(|ctx| {
-                    ctx.candidates
-                        .iter()
-                        .find(|plan_candidate| plan_candidate.candidate_id == index)
-                        .map(|plan_candidate| plan_candidate.target.clone())
-                });
             if let Some(selected_target) = selected_target {
                 next_state
                     .session_context
@@ -3689,23 +4095,70 @@ fn current_timestamp_secs_core() -> u64 {
         .as_secs()
 }
 
-fn apply_guard_rejection_reason(session: &ReplSessionContext) -> Option<&'static str> {
-    let Some(validated) = session.validated_plan.as_ref() else {
-        return Some("MissingValidatedPlan");
+impl From<&CoreState> for ApplyGuardInput {
+    fn from(state: &CoreState) -> Self {
+        Self {
+            selected_candidate: state
+                .session_context
+                .selected_candidate
+                .clone()
+                .map(SelectedCandidate::from),
+            validated_plan: state
+                .session_context
+                .validated_plan
+                .clone()
+                .map(ValidatedPlan::from),
+            pipeline_state: state.status.clone(),
+        }
+    }
+}
+
+pub fn apply_guard_decide(input: ApplyGuardInput) -> ApplyGuardDecision {
+    let Some(validated) = input.validated_plan else {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::MissingValidatedPlan,
+        };
     };
-    let Some(selected) = session.selected_candidate.as_ref() else {
-        return Some("MissingSelectedCandidate");
+    let Some(selected) = input.selected_candidate else {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::MissingSelectedCandidate,
+        };
     };
-    if !validated.apply_allowed {
-        return Some("ApplyNotAllowed");
+    if input.pipeline_state != PipelineState::Previewed {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::PreviewNotActive,
+        };
+    }
+    if selected.target == Target::WorkspaceRoot || validated.target == Target::WorkspaceRoot {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::WorkspaceRootApplyForbidden,
+        };
     }
     if selected.candidate_id != validated.candidate_id {
-        return Some("CandidateMismatch");
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::CandidateMismatch,
+        };
     }
     if selected.plan_hash != validated.plan_hash {
-        return Some("PlanHashMismatch");
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::PlanHashMismatch,
+        };
     }
-    None
+    if selected.target != validated.target {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::TargetMismatch,
+        };
+    }
+    if !validated.approved || !validated.apply_allowed || validated.timestamp < selected.timestamp {
+        return ApplyGuardDecision::Reject {
+            reason: ApplyGuardRejectReason::StaleValidatedPlan,
+        };
+    }
+    ApplyGuardDecision::Allow {
+        candidate_id: validated.candidate_id,
+        target: validated.target,
+        validated_plan_hash: validated.plan_hash,
+    }
 }
 
 fn parse_preview_confirmation(input: &str) -> PreviewConfirmation {
@@ -4335,6 +4788,93 @@ fn checksum_bytes(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
 
+fn checksum_u64(bytes: &[u8]) -> u64 {
+    let digest = Sha256::digest(bytes);
+    u64::from_be_bytes(
+        digest[..8]
+            .try_into()
+            .expect("sha256 digest provides at least eight bytes"),
+    )
+}
+
+fn create_safe_apply_transaction(
+    candidate_id: usize,
+    validated_plan_hash: u64,
+    target: Target,
+    target_path: PathBuf,
+    original_contents: String,
+    planned_diff_checksum: u64,
+) -> SafeApplyTransaction {
+    let pre_apply_checksum = checksum_u64(original_contents.as_bytes());
+    SafeApplyTransaction {
+        transaction_id: next_safe_apply_transaction_id(),
+        candidate_id,
+        validated_plan_hash,
+        target,
+        target_path: target_path.clone(),
+        pre_apply_checksum,
+        planned_diff_checksum,
+        rollback_snapshot: RollbackSnapshot {
+            target_path,
+            original_contents,
+            original_checksum: pre_apply_checksum,
+        },
+    }
+}
+
+fn safe_apply_preview_file(
+    root: &Path,
+    relative_target: &str,
+    candidate_id: usize,
+) -> Result<PendingFile, String> {
+    let target = resolve_repo_file(root, relative_target)?;
+    let original = fs::read_to_string(&target)
+        .map_err(|err| format!("cannot read selected target {relative_target}: {err}"))?;
+    let marker = match target.extension().and_then(|ext| ext.to_str()) {
+        Some("rs") => format!("// DBM safe apply candidate {candidate_id}\n"),
+        Some("json") => {
+            return Err("json safe apply preview is not supported in v1.0".to_string());
+        }
+        _ => format!("# DBM safe apply candidate {candidate_id}\n"),
+    };
+    let separator = if original.ends_with('\n') { "" } else { "\n" };
+    let content = format!("{original}{separator}{marker}");
+    Ok(PendingFile {
+        path: relative_target.to_string(),
+        content_checksum: checksum_bytes(content.as_bytes()),
+        content,
+    })
+}
+
+fn rollback_safe_apply(
+    transaction: &SafeApplyTransaction,
+    reason: ApplyFailureReason,
+    events: &mut Vec<CoreEvent>,
+) -> ApplyResult {
+    events.push(CoreEvent::Debug {
+        message: format!("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason={reason}"),
+    });
+    if fs::write(
+        &transaction.rollback_snapshot.target_path,
+        &transaction.rollback_snapshot.original_contents,
+    )
+    .is_err()
+    {
+        return ApplyResult::RolledBack {
+            transaction_id: transaction.transaction_id,
+            reason: ApplyFailureReason::RollbackFailed,
+        };
+    }
+    ApplyResult::RolledBack {
+        transaction_id: transaction.transaction_id,
+        reason,
+    }
+}
+
+fn post_apply_validation(target_path: &Path, contents: &str) -> bool {
+    target_path.is_file() && !contents.contains("DBM_POST_VALIDATION_FAIL")
+}
+
 fn restore_applied(files: &[AppliedFile]) {
     for file in files.iter().rev() {
         match &file.backup {
@@ -4505,6 +5045,73 @@ mod tests {
         hist.push(s);
     }
 
+    fn apply_guard_input() -> ApplyGuardInput {
+        ApplyGuardInput {
+            selected_candidate: Some(SelectedCandidate {
+                candidate_id: 1,
+                target: Target::File("Cargo.toml".to_string()),
+                plan_hash: 42,
+                timestamp: 1,
+            }),
+            validated_plan: Some(ValidatedPlan {
+                plan_hash: 42,
+                candidate_id: 1,
+                target: Target::File("Cargo.toml".to_string()),
+                approved: true,
+                apply_allowed: true,
+                timestamp: 2,
+            }),
+            pipeline_state: PipelineState::Previewed,
+        }
+    }
+
+    fn assert_apply_guard_rejects(input: ApplyGuardInput, expected: ApplyGuardRejectReason) {
+        assert_eq!(
+            apply_guard_decide(input),
+            ApplyGuardDecision::Reject { reason: expected }
+        );
+    }
+
+    fn safe_apply_state(relative: &str, planned_content: &str) -> (RuntimeCoreBridge, CoreState) {
+        let core = RuntimeCoreBridge::with_defaults();
+        *core.pending_files.lock().expect("pending lock") = vec![PendingFile {
+            path: relative.to_string(),
+            content: planned_content.to_string(),
+            content_checksum: checksum_bytes(planned_content.as_bytes()),
+        }];
+        let preview_hash = checksum_u64(
+            preview_lines(&core.pending_files.lock().expect("pending lock"))
+                .join("\n")
+                .as_bytes(),
+        );
+        let mut state = CoreState {
+            status: PipelineState::Previewed,
+            ..CoreState::default()
+        };
+        state.session_context.selected_candidate = Some(SelectedCandidateContext {
+            candidate_id: 1,
+            target: NarrowTarget::File(relative.to_string()),
+            plan_hash: 42,
+            timestamp: 1,
+        });
+        state.session_context.validated_plan = Some(ValidatedPlanContext {
+            plan_hash: 42,
+            candidate_id: 1,
+            target: NarrowTarget::File(relative.to_string()),
+            approved: true,
+            apply_allowed: true,
+            timestamp: 2,
+        });
+        state.preview_snapshot = Some(PreviewSnapshot {
+            candidate_id: 1,
+            target: NarrowTarget::File(relative.to_string()),
+            plan_hash: 42,
+            preview_hash,
+            created_at: 1,
+        });
+        (core, state)
+    }
+
     fn state_with_plan_context() -> CoreState {
         let mut state = CoreState::default();
         state.session_context.previous_analysis_context = Some(PreviousAnalysisContext {
@@ -4576,6 +5183,276 @@ mod tests {
             parse_preview_confirmation("maybe"),
             PreviewConfirmation::Reconfirm
         );
+    }
+
+    #[test]
+    fn apply_guard_rejects_without_validated_plan() {
+        let mut input = apply_guard_input();
+        input.validated_plan = None;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::MissingValidatedPlan);
+    }
+
+    #[test]
+    fn apply_guard_rejects_without_selected_candidate() {
+        let mut input = apply_guard_input();
+        input.selected_candidate = None;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::MissingSelectedCandidate);
+    }
+
+    #[test]
+    fn apply_guard_rejects_workspace_root_apply() {
+        let mut input = apply_guard_input();
+        input.selected_candidate.as_mut().expect("selected").target = Target::WorkspaceRoot;
+        input.validated_plan.as_mut().expect("validated").target = Target::WorkspaceRoot;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::WorkspaceRootApplyForbidden);
+    }
+
+    #[test]
+    fn apply_guard_rejects_candidate_mismatch() {
+        let mut input = apply_guard_input();
+        input
+            .validated_plan
+            .as_mut()
+            .expect("validated")
+            .candidate_id = 2;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::CandidateMismatch);
+    }
+
+    #[test]
+    fn apply_guard_rejects_plan_hash_mismatch() {
+        let mut input = apply_guard_input();
+        input.validated_plan.as_mut().expect("validated").plan_hash = 43;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::PlanHashMismatch);
+    }
+
+    #[test]
+    fn apply_guard_rejects_target_mismatch() {
+        let mut input = apply_guard_input();
+        input.validated_plan.as_mut().expect("validated").target =
+            Target::File("apps/cli/src/core.rs".to_string());
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::TargetMismatch);
+    }
+
+    #[test]
+    fn apply_guard_rejects_non_previewed_pipeline() {
+        let mut input = apply_guard_input();
+        input.pipeline_state = PipelineState::Planned;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::PreviewNotActive);
+    }
+
+    #[test]
+    fn apply_guard_rejects_stale_validated_plan() {
+        let mut input = apply_guard_input();
+        input
+            .selected_candidate
+            .as_mut()
+            .expect("selected")
+            .timestamp = 3;
+        input.validated_plan.as_mut().expect("validated").timestamp = 2;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::StaleValidatedPlan);
+    }
+
+    #[test]
+    fn apply_guard_allows_validated_narrow_target() {
+        assert_eq!(
+            apply_guard_decide(apply_guard_input()),
+            ApplyGuardDecision::Allow {
+                candidate_id: 1,
+                target: Target::File("Cargo.toml".to_string()),
+                validated_plan_hash: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn safe_apply_creates_transaction() {
+        let tx = create_safe_apply_transaction(
+            1,
+            42,
+            Target::File("Cargo.toml".to_string()),
+            PathBuf::from("Cargo.toml"),
+            "before\n".to_string(),
+            7,
+        );
+
+        assert_eq!(tx.candidate_id, 1);
+        assert_eq!(tx.validated_plan_hash, 42);
+        assert_eq!(tx.target, Target::File("Cargo.toml".to_string()));
+        assert_eq!(tx.planned_diff_checksum, 7);
+    }
+
+    #[test]
+    fn safe_apply_creates_rollback_snapshot() {
+        let tx = create_safe_apply_transaction(
+            1,
+            42,
+            Target::File("Cargo.toml".to_string()),
+            PathBuf::from("Cargo.toml"),
+            "before\n".to_string(),
+            7,
+        );
+
+        assert_eq!(tx.rollback_snapshot.original_contents, "before\n");
+        assert_eq!(
+            tx.rollback_snapshot.target_path,
+            PathBuf::from("Cargo.toml")
+        );
+    }
+
+    #[test]
+    fn safe_apply_records_pre_checksum() {
+        let tx = create_safe_apply_transaction(
+            1,
+            42,
+            Target::File("Cargo.toml".to_string()),
+            PathBuf::from("Cargo.toml"),
+            "before\n".to_string(),
+            7,
+        );
+
+        assert_eq!(tx.pre_apply_checksum, checksum_u64("before\n".as_bytes()));
+        assert_eq!(
+            tx.pre_apply_checksum,
+            tx.rollback_snapshot.original_checksum
+        );
+    }
+
+    #[test]
+    fn safe_apply_requires_apply_guard_allow() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (core, state) = safe_apply_state("Cargo.toml", "after\n");
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(
+            temp.path(),
+            &state,
+            &ApplyGuardDecision::Reject {
+                reason: ApplyGuardRejectReason::MissingValidatedPlan,
+            },
+            &mut events,
+        );
+
+        assert_eq!(
+            result,
+            ApplyResult::Rejected {
+                reason: ApplyRejectReason::GuardRejected
+            }
+        );
+    }
+
+    #[test]
+    fn safe_apply_rejects_without_validated_plan() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(temp.path().join("Cargo.toml"), "before\n").expect("write");
+        let (core, mut state) = safe_apply_state("Cargo.toml", "after\n");
+        state.session_context.validated_plan = None;
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(
+            temp.path(),
+            &state,
+            &ApplyGuardDecision::Allow {
+                candidate_id: 1,
+                target: Target::File("Cargo.toml".to_string()),
+                validated_plan_hash: 42,
+            },
+            &mut events,
+        );
+
+        assert_eq!(
+            result,
+            ApplyResult::Rejected {
+                reason: ApplyRejectReason::MissingValidatedPlan
+            }
+        );
+        assert_eq!(
+            std::fs::read_to_string(temp.path().join("Cargo.toml")).expect("read"),
+            "before\n"
+        );
+    }
+
+    #[test]
+    fn safe_apply_rejects_workspace_root() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (core, state) = safe_apply_state("Cargo.toml", "after\n");
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(
+            temp.path(),
+            &state,
+            &ApplyGuardDecision::Allow {
+                candidate_id: 1,
+                target: Target::WorkspaceRoot,
+                validated_plan_hash: 42,
+            },
+            &mut events,
+        );
+
+        assert_eq!(
+            result,
+            ApplyResult::Rejected {
+                reason: ApplyRejectReason::WorkspaceRootApplyForbidden
+            }
+        );
+    }
+
+    #[test]
+    fn safe_apply_rolls_back_on_checksum_mismatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("Cargo.toml");
+        std::fs::write(&target, "before\n").expect("write");
+        let tx = create_safe_apply_transaction(
+            1,
+            42,
+            Target::File("Cargo.toml".to_string()),
+            target.clone(),
+            "before\n".to_string(),
+            7,
+        );
+        std::fs::write(&target, "partial\n").expect("partial");
+        let mut events = Vec::new();
+
+        let result = rollback_safe_apply(&tx, ApplyFailureReason::ChecksumMismatch, &mut events);
+
+        assert_eq!(
+            result,
+            ApplyResult::RolledBack {
+                transaction_id: tx.transaction_id,
+                reason: ApplyFailureReason::ChecksumMismatch
+            }
+        );
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=ChecksumMismatch"))));
+    }
+
+    #[test]
+    fn safe_apply_rolls_back_on_post_validation_failure() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("Cargo.toml");
+        std::fs::write(&target, "before\n").expect("write");
+        let (core, state) = safe_apply_state("Cargo.toml", "DBM_POST_VALIDATION_FAIL\n");
+        let guard = apply_guard_decide(ApplyGuardInput::from(&state));
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(temp.path(), &state, &guard, &mut events);
+
+        assert!(matches!(
+            result,
+            ApplyResult::RolledBack {
+                reason: ApplyFailureReason::PostValidationFailed,
+                ..
+            }
+        ));
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=PostValidationFailed"))));
     }
 
     #[test]
@@ -4798,6 +5675,160 @@ mod tests {
         assert_eq!(state.status, PipelineState::Idle);
         assert!(state.preview_snapshot.is_none());
         assert!(state.session_context.selected_candidate.is_none());
+    }
+
+    #[test]
+    fn repl_y_without_validated_plan_rejects_apply_guard() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("Cargo.toml");
+        std::fs::write(&target, "[package]\nname = \"fixture\"\n").expect("write");
+        let before = std::fs::read_to_string(&target).expect("read before");
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state(&core);
+
+        let response = core.execute(request("y"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true reason=MissingValidatedPlan"))));
+        assert_eq!(
+            std::fs::read_to_string(&target).expect("read after"),
+            before
+        );
+    }
+
+    #[test]
+    fn repl_workspace_root_apply_rejected_by_guard() {
+        let mut input = apply_guard_input();
+        input.selected_candidate.as_mut().expect("selected").target = Target::WorkspaceRoot;
+        input.validated_plan.as_mut().expect("validated").target = Target::WorkspaceRoot;
+
+        assert_apply_guard_rejects(input, ApplyGuardRejectReason::WorkspaceRootApplyForbidden);
+    }
+
+    #[test]
+    fn repl_stale_validated_plan_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state_with_context(&core);
+        {
+            let mut hist = core.history.lock().expect("history lock");
+            let mut state = hist.current().clone();
+            state
+                .session_context
+                .selected_candidate
+                .as_mut()
+                .expect("selected")
+                .timestamp = 3;
+            state
+                .session_context
+                .validated_plan
+                .as_mut()
+                .expect("validated")
+                .timestamp = 2;
+            hist.replace_current(state);
+        }
+
+        let response = core.execute(request("y"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true reason=StaleValidatedPlan"))));
+    }
+
+    #[test]
+    fn repl_validated_preview_y_passes_apply_guard() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write");
+        let response = with_current_dir(temp.path(), || {
+            let core = RuntimeCoreBridge::with_defaults();
+            let (fixture_core, state) = safe_apply_state(
+                "Cargo.toml",
+                "[package]\nname = \"fixture\"\n# DBM safe apply candidate 1\n",
+            );
+            *core.pending_files.lock().expect("pending lock") = fixture_core
+                .pending_files
+                .lock()
+                .expect("pending lock")
+                .clone();
+            core.history
+                .lock()
+                .expect("history lock")
+                .replace_current(state);
+            core.execute(request("y"))
+        });
+
+        assert_eq!(response.status, ExecutionStatus::Executed);
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=false candidate_id=1 target=File(Cargo.toml) validated_plan_hash=42"))));
+        assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true"))));
+    }
+
+    #[test]
+    fn repl_validated_preview_y_executes_safe_apply() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        std::fs::write(
+            temp.path().join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\n",
+        )
+        .expect("write");
+        let response = with_current_dir(temp.path(), || {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("このプロジェクトの構造を解析して"));
+            core.execute(request(
+                "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+            ));
+            core.execute(request("select 1"));
+            core.execute(request("この候補を検証して"));
+            core.execute(request("y"))
+        });
+        let state = response.core_state.as_ref().expect("state");
+
+        assert_eq!(response.status, ExecutionStatus::Executed);
+        assert_eq!(state.status, PipelineState::Idle);
+        assert!(state.session_context.validated_plan.is_none());
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_BEGIN]"))));
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_SUCCESS]"))));
+        assert!(
+            std::fs::read_to_string(temp.path().join("Cargo.toml"))
+                .expect("read")
+                .contains("# DBM safe apply candidate 1")
+        );
+    }
+
+    #[test]
+    fn repl_apply_failure_rolls_back() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("Cargo.toml");
+        std::fs::write(&target, "before\n").expect("write");
+        let response = with_current_dir(temp.path(), || {
+            let core = RuntimeCoreBridge::with_defaults();
+            let (fixture_core, state) =
+                safe_apply_state("Cargo.toml", "DBM_POST_VALIDATION_FAIL\n");
+            *core.pending_files.lock().expect("pending lock") = fixture_core
+                .pending_files
+                .lock()
+                .expect("pending lock")
+                .clone();
+            core.history
+                .lock()
+                .expect("history lock")
+                .replace_current(state);
+            core.execute(request("y"))
+        });
+        let state = response.core_state.as_ref().expect("state");
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert_eq!(state.status, PipelineState::Previewed);
+        assert!(state.session_context.validated_plan.is_some());
+        assert!(state.session_context.selected_candidate.is_some());
+        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK]"))));
+    }
+
+    #[test]
+    fn repl_y_without_validated_plan_does_not_apply() {
+        repl_y_without_validated_plan_rejects_apply_guard();
     }
 
     #[test]
