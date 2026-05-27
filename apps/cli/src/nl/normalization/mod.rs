@@ -12,12 +12,29 @@ pub struct NormalizedRuntimeInput {
     pub validated_target: Option<PathBuf>,
     pub command: RuntimeIntentCommand,
     pub rejection: Option<RuntimeNormalizationRejection>,
+    pub source: RuntimeInputSource,
+    pub certainty: RuntimeCommandCertainty,
+    pub requires_target: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeNormalizationRejection {
     AmbiguousTarget,
     UnresolvedTarget,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeInputSource {
+    ExplicitCommand,
+    NaturalLanguageHeuristic,
+    Ambiguous,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeCommandCertainty {
+    Certain,
+    Probable,
+    Weak,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,24 +52,50 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
     let lower = raw.to_ascii_lowercase();
     let sentences = segment_sentences(raw);
 
-    let intent = if lower == "git status"
+    let (intent, source, certainty) = if lower == "git status"
         || raw == "git status を確認"
         || raw == "git status確認"
         || raw == "状態を確認"
     {
-        RuntimeIntent::GitStatus
+        (
+            RuntimeIntent::GitStatus,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
     } else if lower == "git diff" || raw == "差分を確認" {
-        RuntimeIntent::GitDiff
+        (
+            RuntimeIntent::GitDiff,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
     } else if lower == "undo" {
-        RuntimeIntent::Rollback
-    } else if lower == "apply"
-        || lower.contains("apply this")
+        (
+            RuntimeIntent::Rollback,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if lower == "apply" {
+        (
+            RuntimeIntent::Apply,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if lower.contains("apply this")
         || raw.contains("この変更を apply")
         || raw.contains("変更を apply")
     {
-        RuntimeIntent::Apply
-    } else if lower.starts_with("preview")
-        || raw.contains(" preview")
+        (
+            RuntimeIntent::Apply,
+            RuntimeInputSource::NaturalLanguageHeuristic,
+            RuntimeCommandCertainty::Weak,
+        )
+    } else if lower.starts_with("preview") || lower.starts_with("runtime preview") {
+        (
+            RuntimeIntent::Preview,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if raw.contains(" preview")
         || raw.contains("を preview")
         || lower.contains("generate")
         || lower.contains("create")
@@ -63,15 +106,53 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
         || raw.contains("修正")
         || has_mutation_sentence(&sentences)
     {
-        RuntimeIntent::Preview
-    } else if lower.starts_with("rollback") || raw.contains("rollback") {
-        RuntimeIntent::Rollback
-    } else if lower.starts_with("replay") || raw.contains("replay") {
-        RuntimeIntent::Replay
-    } else if lower.starts_with("analyze") || raw.contains("解析") {
-        RuntimeIntent::Analyze
+        (
+            RuntimeIntent::Preview,
+            RuntimeInputSource::NaturalLanguageHeuristic,
+            RuntimeCommandCertainty::Weak,
+        )
+    } else if lower.starts_with("rollback") {
+        (
+            RuntimeIntent::Rollback,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if raw.contains("rollback") {
+        (
+            RuntimeIntent::Rollback,
+            RuntimeInputSource::Ambiguous,
+            RuntimeCommandCertainty::Weak,
+        )
+    } else if lower.starts_with("replay") {
+        (
+            RuntimeIntent::Replay,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if raw.contains("replay") {
+        (
+            RuntimeIntent::Replay,
+            RuntimeInputSource::Ambiguous,
+            RuntimeCommandCertainty::Weak,
+        )
+    } else if lower.starts_with("analyze") {
+        (
+            RuntimeIntent::Analyze,
+            RuntimeInputSource::ExplicitCommand,
+            RuntimeCommandCertainty::Certain,
+        )
+    } else if raw.contains("解析") {
+        (
+            RuntimeIntent::Analyze,
+            RuntimeInputSource::NaturalLanguageHeuristic,
+            RuntimeCommandCertainty::Weak,
+        )
     } else if lower.contains("safely") || raw.contains("安全に") {
-        RuntimeIntent::Preview
+        (
+            RuntimeIntent::Preview,
+            RuntimeInputSource::NaturalLanguageHeuristic,
+            RuntimeCommandCertainty::Weak,
+        )
     } else {
         return None;
     };
@@ -99,6 +180,9 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
             aggregation.operations,
         ),
         rejection: aggregation.rejection,
+        source,
+        certainty,
+        requires_target: matches!(intent, RuntimeIntent::Preview | RuntimeIntent::Analyze),
     })
 }
 

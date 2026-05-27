@@ -10,6 +10,7 @@ use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
 use crate::nl::normalization::{
+    NormalizedRuntimeInput, RuntimeCommandCertainty, RuntimeInputSource,
     RuntimeNormalizationRejection, confirmation_like_target_failure, normalize_runtime_input,
 };
 use crate::nl::planner::InstructionPlan;
@@ -511,6 +512,14 @@ fn dispatch_normalized_runtime_intent(
     input: &str,
 ) -> Option<Vec<crate::tui::state::RuntimeNarrativeEvent>> {
     let normalized = normalize_runtime_input(input)?;
+    eprintln!(
+        "[REPL][PRECORE_CERTAINTY] source={:?} certainty={:?}",
+        normalized.source, normalized.certainty
+    );
+    if !should_handle_in_precore(input, &normalized) {
+        eprintln!("[REPL][PRECORE_FALLTHROUGH] reason=NotExplicitRuntimeCommand");
+        return None;
+    }
     if matches!(
         normalized.rejection,
         Some(RuntimeNormalizationRejection::UnresolvedTarget)
@@ -521,6 +530,7 @@ fn dispatch_normalized_runtime_intent(
     match normalized.command.intent {
         RuntimeIntent::Preview => {
             let Some(target) = normalized.command.target else {
+                eprintln!("[REPL][PRECORE_REJECTED] reason=ExplicitCommandMissingTarget");
                 ui.runtime.rejection = Some(crate::tui::state::RejectionInfo {
                     reason: "unresolved target".to_string(),
                     originating_mutation: "runtime_intent_bridge".to_string(),
@@ -561,6 +571,11 @@ fn dispatch_normalized_runtime_intent(
         }
         _ => None,
     }
+}
+
+fn should_handle_in_precore(_input: &str, normalized: &NormalizedRuntimeInput) -> bool {
+    normalized.source == RuntimeInputSource::ExplicitCommand
+        && normalized.certainty == RuntimeCommandCertainty::Certain
 }
 
 fn should_try_runtime_intent(input: &str) -> bool {
@@ -975,9 +990,12 @@ mod tests {
     }
 
     #[test]
-    fn nl_runtime_intent_binds_target_to_preview_transaction() {
+    fn repl_precore_explicit_runtime_preview_with_target_works() {
         let temp = tempfile::tempdir().expect("tempdir");
-        let mut input = io::Cursor::new("apps/cli/src/test_runtime.rs を生成。\n");
+        let target = temp.path().join("apps/cli/src/test_runtime.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn generated() {}\n").expect("write");
+        let mut input = io::Cursor::new("runtime preview apps/cli/src/test_runtime.rs\n");
         let mut output = Vec::new();
         let core = CountingCore::new();
 
@@ -996,7 +1014,7 @@ mod tests {
     }
 
     #[test]
-    fn nl_runtime_intent_rejects_empty_target_preview() {
+    fn repl_precore_natural_language_preview_falls_through() {
         let temp = tempfile::tempdir().expect("tempdir");
         let mut input = io::Cursor::new("修正してください\n");
         let mut output = Vec::new();
@@ -1006,10 +1024,122 @@ mod tests {
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
-        assert_eq!(core.calls(), 0);
-        assert!(output.contains("[ERROR] unresolved target"), "{output}");
+        assert_eq!(core.calls(), 1);
+        assert!(!output.contains("[ERROR] unresolved target"), "{output}");
         assert!(!output.contains("preview ready"), "{output}");
         assert!(!output.contains("transaction active"), "{output}");
+    }
+
+    #[test]
+    fn repl_precore_long_analyze_project_falls_through() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new(
+            "このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。\n",
+        );
+        let mut output = Vec::new();
+        let core = RuntimeCoreBridge::with_defaults();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(!output.contains("[ERROR] unresolved target"), "{output}");
+        assert!(output.contains("# Project Structure Analysis"), "{output}");
+        assert!(
+            output.contains("[IR-TRACE][CONTEXT_STORE] kind=analysis action=AnalyzeProject target=WorkspaceRoot mode=ReadOnly"),
+            "{output}"
+        );
+    }
+
+    #[test]
+    fn repl_precore_review_safety_falls_through() {
+        assert_precore_falls_through(
+            "この変更案の安全性レビューをしてください。まだapplyしないでください。",
+        );
+    }
+
+    #[test]
+    fn repl_precore_validate_plan_falls_through() {
+        assert_precore_falls_through(
+            "この修正プランを検証してください。外部コマンド実行は行わないでください。",
+        );
+    }
+
+    #[test]
+    fn repl_precore_generate_change_plan_falls_through() {
+        assert_precore_falls_through(
+            "このプロジェクト向けの修正プランを生成してください。git操作しないでください。",
+        );
+    }
+
+    #[test]
+    fn repl_precore_yes_no_reference_falls_through() {
+        assert_precore_falls_through(
+            "yes/no や y/n は確認トークンの参照文字列として扱い、構造を解析してください。",
+        );
+    }
+
+    #[test]
+    fn repl_precore_explicit_preview_without_target_errors() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("preview\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("[ERROR] unresolved target"), "{output}");
+    }
+
+    #[test]
+    fn repl_precore_explicit_preview_with_target_works() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("apps/cli/src/core.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "fn core() {}\n").expect("write");
+        let mut input = io::Cursor::new("preview apps/cli/src/core.rs\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0);
+        assert!(output.contains("preview ready"), "{output}");
+    }
+
+    #[test]
+    fn repl_precore_runtime_preview_with_target_works() {
+        repl_precore_explicit_runtime_preview_with_target_works();
+    }
+
+    #[test]
+    fn repl_precore_confirmation_exact_token_still_works() {
+        let output = run_preview_confirmation_script("y");
+
+        assert!(
+            output.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Confirm"),
+            "{output}"
+        );
+        assert!(!output.contains("ClarificationRequired"), "{output}");
+    }
+
+    fn assert_precore_falls_through(input: &str) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new(format!("{input}\n"));
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 1);
+        assert!(!output.contains("[ERROR] unresolved target"), "{output}");
     }
 
     #[test]
