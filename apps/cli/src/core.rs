@@ -10,7 +10,7 @@ use runtime_core::{CoreRuntime, RuntimeExecutionResult};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use strategy_engine::{
-    DryRunIntegrator, ExecutionContext as StrategyExecutionContext, ExecutionHistory,
+    Action, DryRunIntegrator, ExecutionContext as StrategyExecutionContext, ExecutionHistory,
     ExecutionPlanCandidate, Intent, Limits, ResolvedTarget, StrategyEngine, StrategyInput,
     StrategyOutput, generate_candidates_from_intent_with_limits, requires_clarification,
 };
@@ -519,6 +519,10 @@ impl History {
         Some(self.states[self.cursor].clone())
     }
 
+    pub fn contains_replay_target(&self, version: u64) -> bool {
+        version != 0 && self.states.iter().any(|s| s.version == version)
+    }
+
     pub fn replay_distance_to(&self, version: u64) -> Option<usize> {
         let idx = self.states.iter().position(|s| s.version == version)?;
         Some(self.cursor.abs_diff(idx))
@@ -620,6 +624,13 @@ pub enum ExecutionStatus {
     Planned,
     Executed,
     Failed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplayValidationFailure {
+    InvalidTarget,
+    ReplayLimitExceeded,
+    ParseFailure,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -804,7 +815,14 @@ impl CoreExecutor for RuntimeCoreBridge {
             );
         }
 
-        if current_state.status == PipelineState::Previewed && !raw_input.trim().starts_with('/') {
+        let normalized_lower = normalized_input.trim().to_ascii_lowercase();
+        let is_navigation_command = matches!(normalized_lower.as_str(), "undo" | "replay")
+            || normalized_lower.starts_with("replay ");
+
+        if current_state.status == PipelineState::Previewed
+            && !raw_input.trim().starts_with('/')
+            && !is_navigation_command
+        {
             let request = InternalRequest {
                 id,
                 input: raw_input.trim().to_string(),
@@ -872,6 +890,10 @@ impl RuntimeCoreBridge {
             context: context.clone(),
         };
 
+        if let Some(response) = self.try_handle_priority_command(&lower, input, &request) {
+            return Some(response);
+        }
+
         match target_only_input_resolution(input) {
             Ok(Some(target)) => return Some(target_context_response(target, id)),
             Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) => {
@@ -911,6 +933,29 @@ impl RuntimeCoreBridge {
                 Some(self.replay(&request, input.split_whitespace().nth(1)))
             }
             _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input, id)),
+            _ => None,
+        }
+    }
+
+    fn try_handle_priority_command(
+        &self,
+        lower: &str,
+        input: &str,
+        request: &InternalRequest,
+    ) -> Option<CoreResponse> {
+        match lower {
+            "preview" | "apply" | "y" | "yes" | "cancel" | "n" | "no" | "undo" | "replay" => {
+                self.execute_pipeline_builtin(request)
+            }
+            _ if lower.starts_with("replay ") || lower.starts_with("select ") => {
+                self.execute_pipeline_builtin(request)
+            }
+            _ if input.contains("--json")
+                || input.contains("--event")
+                || input.contains("--preview") =>
+            {
+                None
+            }
             _ => None,
         }
     }
@@ -1662,6 +1707,7 @@ impl RuntimeCoreBridge {
                 if let Some(target) = log_clear_intent_runtime_clarification_bypassed(
                     &mut events,
                     &intent,
+                    &request.input,
                     &clarification,
                 ) {
                     return self
@@ -2662,27 +2708,58 @@ impl RuntimeCoreBridge {
         if observability_enabled() {
             println!("[CODING][id={}] stage=plan", id);
         }
-        let version = step
-            .filter(|s| !s.is_empty())
-            .and_then(|s| s.parse::<u64>().ok());
+        let target_version = match step.filter(|s| !s.is_empty()) {
+            Some(step) => match step.parse::<u64>() {
+                Ok(version) => version,
+                Err(_) => {
+                    let current = self.history.lock().expect("history lock").current().clone();
+                    return replay_validation_failure_response(
+                        current,
+                        ReplayValidationFailure::ParseFailure,
+                        None,
+                        None,
+                        None,
+                    );
+                }
+            },
+            None => {
+                let current = self.history.lock().expect("history lock").current().clone();
+                return replay_validation_failure_response(
+                    current,
+                    ReplayValidationFailure::ParseFailure,
+                    None,
+                    None,
+                    None,
+                );
+            }
+        };
 
         let mut hist = self.history.lock().expect("history lock");
-        let target_version = version.unwrap_or_else(|| hist.current().version);
-
-        if hist
-            .replay_distance_to(target_version)
-            .is_some_and(|steps| steps > self.limits.max_replay_steps)
-        {
+        if !hist.contains_replay_target(target_version) {
             let current = hist.current().clone();
             drop(hist);
-            return CoreResponse {
-                events: vec![CoreEvent::Error {
-                    message: "Replay limit exceeded".to_string(),
-                }],
-                status: ExecutionStatus::Failed,
-                design: None,
-                core_state: Some(current),
-            };
+            return replay_validation_failure_response(
+                current,
+                ReplayValidationFailure::InvalidTarget,
+                Some(target_version),
+                None,
+                None,
+            );
+        }
+
+        let replay_distance = hist
+            .replay_distance_to(target_version)
+            .expect("validated replay target must have a distance");
+        if replay_distance > self.limits.max_replay_steps {
+            let current = hist.current().clone();
+            drop(hist);
+            return replay_validation_failure_response(
+                current,
+                ReplayValidationFailure::ReplayLimitExceeded,
+                Some(target_version),
+                Some(replay_distance),
+                Some(self.limits.max_replay_steps),
+            );
         }
 
         if let Some(restored) = hist.replay_from(target_version) {
@@ -2692,6 +2769,17 @@ impl RuntimeCoreBridge {
             drop(hist);
             CoreResponse {
                 events: vec![
+                    CoreEvent::Debug {
+                        message: format!(
+                            "[IR-TRACE][REPLAY_TARGET_VALIDATE] target_version={target_version} exists=true"
+                        ),
+                    },
+                    CoreEvent::Debug {
+                        message: format!(
+                            "[IR-TRACE][REPLAY_DISTANCE_VALIDATE] target_version={target_version} distance={replay_distance} limit={}",
+                            self.limits.max_replay_steps
+                        ),
+                    },
                     CoreEvent::Result {
                         message: format!("Replay from v{v} (new branch)"),
                     },
@@ -3424,17 +3512,20 @@ fn core_events_from_strategy(output: &StrategyOutput) -> Vec<CoreEvent> {
 fn log_clear_intent_runtime_clarification_bypassed(
     events: &mut Vec<CoreEvent>,
     intent: &Intent,
+    input: &str,
     clarification: &runtime_core::Clarification,
 ) -> Option<String> {
     if requires_clarification(intent) {
         return None;
     }
+    if !matches!(
+        intent.action,
+        Action::Fix | Action::Improve | Action::Optimize | Action::RefactorGeneric
+    ) {
+        return None;
+    }
 
-    let target = intent
-        .file
-        .clone()
-        .or_else(|| intent.symbol.clone())
-        .or_else(|| intent.target.clone());
+    let target = clarification_target_from_intent_or_input(intent, input);
     let target = target?;
     let action = format!("{:?}", intent.action);
 
@@ -3458,6 +3549,31 @@ fn log_clear_intent_runtime_clarification_bypassed(
     ));
 
     Some(target)
+}
+
+fn clarification_target_from_intent_or_input(intent: &Intent, input: &str) -> Option<String> {
+    let target = intent
+        .file
+        .clone()
+        .or_else(|| intent.symbol.clone())
+        .or_else(|| intent.target.clone());
+    match target.as_deref() {
+        Some(".") | None => input
+            .split_whitespace()
+            .find(|token| {
+                Path::new(token)
+                    .extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some()
+            })
+            .map(|token| {
+                token
+                    .trim_matches(|c: char| c == ',' || c == '.')
+                    .to_string()
+            })
+            .or(target),
+        _ => target,
+    }
 }
 
 fn append_comment_line(content: &str, target: &str) -> String {
@@ -3817,7 +3933,7 @@ fn format_validation_review(
         .map(|ctx| format!("{:?}", ctx.validation_status))
         .unwrap_or_else(|| "Passed".to_string());
     let reason = if rejected_confirmation_like_target {
-        "confirmation-like token was rejected as target; Core fallback priority prevented unresolved target."
+        "confirmation-like token was rejected as target; Core fallback priority preserved review flow."
     } else if no_apply {
         "no_apply constraint is active."
     } else {
@@ -4468,6 +4584,50 @@ fn is_exploration_state(state: &PipelineState) -> bool {
         state,
         PipelineState::Proposed | PipelineState::Planned | PipelineState::Previewed
     )
+}
+
+fn replay_validation_failure_response(
+    current: CoreState,
+    failure: ReplayValidationFailure,
+    target_version: Option<u64>,
+    replay_distance: Option<usize>,
+    replay_limit: Option<usize>,
+) -> CoreResponse {
+    let message = match failure {
+        ReplayValidationFailure::InvalidTarget => "Replay target does not exist",
+        ReplayValidationFailure::ReplayLimitExceeded => "Replay limit exceeded",
+        ReplayValidationFailure::ParseFailure => "Invalid replay target",
+    };
+    let target = target_version
+        .map(|version| version.to_string())
+        .unwrap_or_else(|| "none".to_string());
+
+    let mut events = vec![CoreEvent::Debug {
+        message: format!("[IR-TRACE][REPLAY_TARGET_VALIDATE] target_version={target}"),
+    }];
+    if let Some(distance) = replay_distance {
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][REPLAY_DISTANCE_VALIDATE] target_version={target} distance={distance} limit={}",
+                replay_limit.unwrap_or_default()
+            ),
+        });
+    }
+    events.push(CoreEvent::Debug {
+        message: format!(
+            "[IR-TRACE][REPLAY_TARGET_REJECTED] target_version={target} reason={failure:?}"
+        ),
+    });
+    events.push(CoreEvent::Error {
+        message: message.to_string(),
+    });
+
+    CoreResponse {
+        events,
+        status: ExecutionStatus::Failed,
+        design: None,
+        core_state: Some(current),
+    }
 }
 
 fn error_response(kind: &str, message: &str, id: u64) -> CoreResponse {
@@ -6553,6 +6713,66 @@ mod tests {
         ));
     }
 
+    fn seed_replay_history(core: &RuntimeCoreBridge) {
+        let mut h = core.history.lock().unwrap();
+        h.push(CoreState {
+            status: PipelineState::Proposed,
+            ..CoreState::default()
+        });
+        h.push(CoreState {
+            status: PipelineState::Planned,
+            ..CoreState::default()
+        });
+        h.push(CoreState {
+            status: PipelineState::Previewed,
+            ..CoreState::default()
+        });
+    }
+
+    #[test]
+    fn replay_invalid_target_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+        let before = core.history.lock().unwrap().entries().to_vec();
+
+        let response = core.execute(request("replay 99"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Replay target does not exist")
+        ));
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][REPLAY_TARGET_REJECTED]"))
+        ));
+        assert_eq!(core.history.lock().unwrap().entries(), before.as_slice());
+    }
+
+    #[test]
+    fn replay_zero_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay 0"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Replay target does not exist")
+        ));
+    }
+
+    #[test]
+    fn replay_future_version_rejected() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay 4"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Replay target does not exist")
+        ));
+    }
+
     #[test]
     fn replay_distance_is_limited() {
         let core = core_with_limits(Limits {
@@ -6560,27 +6780,168 @@ mod tests {
             max_depth: 10,
             ..Limits::default()
         });
-        {
-            let mut h = core.history.lock().unwrap();
-            h.push(CoreState {
-                status: PipelineState::Proposed,
-                ..CoreState::default()
-            });
-            h.push(CoreState {
-                status: PipelineState::Planned,
-                ..CoreState::default()
-            });
-            h.push(CoreState {
-                status: PipelineState::Previewed,
-                ..CoreState::default()
-            });
-        }
+        seed_replay_history(&core);
 
-        let response = core.execute(request("replay 0"));
+        let response = core.execute(request("replay 1"));
 
         assert!(response.events.iter().any(
             |event| matches!(event, CoreEvent::Error { message } if message == "Replay limit exceeded")
         ));
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][REPLAY_DISTANCE_VALIDATE]"))
+        ));
+    }
+
+    #[test]
+    fn replay_limit_exceeded() {
+        let core = core_with_limits(Limits {
+            max_replay_steps: 1,
+            max_depth: 10,
+            ..Limits::default()
+        });
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay 1"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Replay limit exceeded")
+        ));
+    }
+
+    #[test]
+    fn replay_parse_failure() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay nope"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Invalid replay target")
+        ));
+    }
+
+    #[test]
+    fn replay_validation_failure_preserves_pipeline() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let mut state = state_with_plan_context();
+        state.status = PipelineState::Previewed;
+        core.history.lock().unwrap().push(state.clone());
+
+        let response = core.execute(request("replay 99"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert_eq!(
+            response
+                .core_state
+                .as_ref()
+                .map(|state| state.status.clone()),
+            Some(PipelineState::Previewed)
+        );
+        assert_eq!(
+            core.history.lock().unwrap().current().status,
+            PipelineState::Previewed
+        );
+    }
+
+    #[test]
+    fn replay_validation_failure_preserves_context() {
+        let core = RuntimeCoreBridge::with_defaults();
+        let mut state = state_with_plan_context();
+        state.status = PipelineState::Previewed;
+        let expected_context = state.session_context.clone();
+        core.history.lock().unwrap().push(state);
+
+        let response = core.execute(request("replay nope"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert_eq!(
+            response
+                .core_state
+                .as_ref()
+                .map(|state| &state.session_context),
+            Some(&expected_context)
+        );
+        assert_eq!(
+            core.history.lock().unwrap().current().session_context,
+            expected_context
+        );
+    }
+
+    #[test]
+    fn replay_validation_failure_not_idle() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay 99"));
+
+        assert_ne!(response.status, ExecutionStatus::Idle);
+        assert_eq!(
+            response
+                .core_state
+                .as_ref()
+                .map(|state| state.status.clone()),
+            Some(PipelineState::Previewed)
+        );
+    }
+
+    #[test]
+    fn command_dispatch_replay_not_confirmation() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request_with_state(
+            &core,
+            "replay nope",
+            PipelineState::Previewed,
+            None,
+        ));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(response.events.iter().any(
+            |event| matches!(event, CoreEvent::Error { message } if message == "Invalid replay target")
+        ));
+        assert!(!response.events.iter().any(
+            |event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION]"))
+        ));
+    }
+
+    #[test]
+    fn command_dispatch_replay_not_nl() {
+        let core = RuntimeCoreBridge::with_defaults();
+        seed_replay_history(&core);
+
+        let response = core.execute(request("replay nope"));
+        let text = event_text(&response.events);
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(text.contains("Invalid replay target"), "{text}");
+        assert!(!text.contains("LANGUAGE_CORE"), "{text}");
+        assert!(!text.contains("ClarificationRequired"), "{text}");
+    }
+
+    #[test]
+    fn command_dispatch_preview_not_clarification() {
+        let core = RuntimeCoreBridge::with_defaults();
+
+        let response = core.execute(request("preview"));
+        let text = event_text(&response.events);
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert!(text.contains("preview requires Planned state"), "{text}");
+        assert!(!text.contains("ClarificationRequired"), "{text}");
+        assert!(!text.contains("LANGUAGE_CORE"), "{text}");
+    }
+
+    #[test]
+    fn command_dispatch_failure_not_idle() {
+        let core = RuntimeCoreBridge::with_defaults();
+
+        let response = core.execute(request("apply"));
+
+        assert_eq!(response.status, ExecutionStatus::Failed);
+        assert_ne!(response.status, ExecutionStatus::Idle);
     }
 
     // ── LanguageCoreToIrAdapter 統合テスト (spec §11.2) ──────────────────────

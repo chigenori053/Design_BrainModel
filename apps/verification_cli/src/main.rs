@@ -37,8 +37,8 @@ enum Command {
     Audit {
         #[arg(long, default_value = "rest-api")]
         scenario: String,
-        #[arg(long, default_value = "report.json")]
-        output: PathBuf,
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
 }
 
@@ -60,6 +60,6 @@ fn run() -> CliResult<()> {
             trace2,
             output,
         } => commands::diff::run(&trace1, &trace2, output.as_deref()),
-        Command::Audit { scenario, output } => commands::audit::run(&scenario, &output),
+        Command::Audit { scenario, output } => commands::audit::run(&scenario, output.as_deref()),
     }
 }

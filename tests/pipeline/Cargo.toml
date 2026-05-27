@@ -21,5 +21,6 @@ design_cli = { workspace = true }
 design_search_engine = { workspace = true }
 integration_layer = { workspace = true }
 memory_space_phase14 = { workspace = true }
+memory_engine = { workspace = true }
 runtime_core = { workspace = true }
 world_model = { workspace = true }

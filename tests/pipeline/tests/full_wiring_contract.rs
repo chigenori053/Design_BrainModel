@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
 use integration_layer::{SystemInput, to_relations, to_system_output};
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine};
+use memory_engine::{InMemoryEngine, MemoryEngine};
 use pipeline_tests::read_workspace_file;
 use runtime_core::CoreRuntime;
 use world_model::stable_v03::IntentInput;
@@ -28,7 +28,7 @@ fn runtime_output_is_routed_through_integration_layer() {
 
 #[test]
 fn cli_and_runtime_sources_are_wired_via_integration_layer() {
-    let cli_source = read_workspace_file("apps/cli/src/app.rs");
+    let cli_source = read_workspace_file("apps/cli/src/service.rs");
     let runtime_source = read_workspace_file("crates/runtime/runtime_core/src/stable_v03.rs");
 
     assert!(cli_source.contains("to_relations("));

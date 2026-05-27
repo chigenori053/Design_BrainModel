@@ -1,12 +1,12 @@
 use concept_engine::ConceptId;
 
-use super::design_state::{DesignState, EvaluationScore};
+use super::design_state::{DesignEvaluationScore, DesignState};
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Evaluator;
 
 impl Evaluator {
-    pub fn evaluate(&self, state: &DesignState, concepts: &[ConceptId]) -> EvaluationScore {
+    pub fn evaluate(&self, state: &DesignState, concepts: &[ConceptId]) -> DesignEvaluationScore {
         let unit_count = state.design_units.len() as f64;
         let structural = (unit_count / 10.0).clamp(0.0, 1.0);
 
@@ -32,7 +32,7 @@ impl Evaluator {
             (unit_count / concepts.len() as f64).clamp(0.0, 1.0)
         };
 
-        EvaluationScore {
+        DesignEvaluationScore {
             structural,
             dependency,
             concept_alignment,

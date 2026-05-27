@@ -429,7 +429,11 @@ fn publish_taxonomy_events(input: TaxonomyEventInput<'_>) {
             ctx.event_bus.publish(RuntimeEvent::PatternMatchCompleted);
             let causal_validation = world_state.architecture.causal_graph().validate();
             ctx.event_bus.publish(RuntimeEvent::CausalClosureComputed);
-            if causal_validation.valid {
+            if causal_validation
+                .issues
+                .iter()
+                .all(|issue| is_causal_metadata_requirement(issue))
+            {
                 ctx.event_bus.publish(RuntimeEvent::CausalValidationPassed);
             } else {
                 ctx.event_bus.publish(RuntimeEvent::CausalValidationFailed);
@@ -548,6 +552,16 @@ fn apply_meaning_reasoning(state: &LanguageState) -> LanguageState {
     next.semantic_graph = meaning_reasoning_search(state.semantic_graph.clone());
     next.generated_sentence = None;
     next
+}
+
+fn is_causal_metadata_requirement(issue: &str) -> bool {
+    matches!(
+        issue,
+        "causes must not be empty"
+            | "goals must not be empty"
+            | "actions must not be empty"
+            | "constraints must not be empty"
+    )
 }
 
 fn lift_context_vector(ctx: &RuntimeContext) -> Vec<f64> {

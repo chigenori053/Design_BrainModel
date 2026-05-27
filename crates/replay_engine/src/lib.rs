@@ -93,6 +93,27 @@ pub fn load_scenario(name: &str) -> Result<ScenarioInput> {
                 "event:AccountCreated".to_string(),
             ],
         },
+        "break-beam-instability"
+        | "break-codegen-order"
+        | "break-hashmap-order"
+        | "break-ir-shuffle"
+        | "break-knowledge-order"
+        | "break-memory-drift"
+        | "break-memory-order"
+        | "break-memory-tie"
+        | "break-patch-order"
+        | "break-search-tie"
+        | "break-websearch-nondet" => ScenarioInput {
+            name: name.to_string(),
+            description: format!("Determinism verification fixture for {name}"),
+            architecture: "determinism-break".to_string(),
+            components: vec![
+                "entrypoint".to_string(),
+                "application".to_string(),
+                "repository".to_string(),
+            ],
+            endpoints: vec!["GET /fixture".to_string(), "POST /fixture".to_string()],
+        },
         _ => bail!("undefined scenario: {name}"),
     };
 
@@ -161,7 +182,9 @@ pub fn replay_with_limits(trace: &ExecutionTrace, limits: Limits) -> Result<Exec
         bail!("Replay limit exceeded");
     }
     let scenario: ScenarioInput = serde_json::from_value(trace.input.clone())?;
-    capture(&scenario)
+    let mut replayed = capture(&scenario)?;
+    apply_determinism_break(&scenario.name, &mut replayed);
+    Ok(replayed)
 }
 
 pub fn diff(left: &ExecutionTrace, right: &ExecutionTrace) -> Result<DiffReport> {
@@ -212,12 +235,42 @@ fn first_changed_layer<'a>(left: &'a Value, right: &'a Value) -> Option<&'a str>
 fn classify_cause(layer: &str) -> &'static str {
     match layer {
         "memory" => "RetrievalInstability",
-        "search" => "SearchOrderInstability",
-        "code" | "patch" => "CodegenInstability",
-        "knowledge" => "KnowledgeInstability",
-        "ir" => "IrInstability",
+        "search" => "SearchOrderingBug",
+        "code" => "CodegenBug",
+        "patch" => "PatchBug",
+        "knowledge" => "ExternalNondeterminism",
+        "ir" => "IRGenerationBug",
         "input" => "InputMismatch",
         _ => "TraceMismatch",
+    }
+}
+
+fn apply_determinism_break(scenario: &str, replayed: &mut ExecutionTrace) {
+    match scenario {
+        "break-beam-instability" => replayed.search.reverse(),
+        "break-codegen-order" => replayed.code.push_str("\n// nondeterministic order"),
+        "break-hashmap-order" | "break-ir-shuffle" => {
+            if let Some(nodes) = replayed.ir.get_mut("nodes").and_then(Value::as_array_mut) {
+                nodes.reverse();
+            }
+        }
+        "break-knowledge-order" | "break-websearch-nondet" => {
+            replayed.knowledge = json!({
+                "architecture": "determinism-break",
+                "component_count": 3,
+                "endpoint_count": 2,
+                "external_nonce": scenario,
+            });
+        }
+        "break-memory-drift" => replayed
+            .memory
+            .push(json!({ "key": "drifted", "source": scenario })),
+        "break-patch-order" => replayed.patch.push(json!({
+            "op": "verify",
+            "scenario": scenario,
+            "status": "replayed",
+        })),
+        _ => {}
     }
 }
 

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use clap::{Args, CommandFactory, Parser, Subcommand};
 use design_cli::core::{CoreExecutor, CoreRequest, RuntimeCoreBridge};
 use design_cli::runtime::bootstrap::start_runtime_tui;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -50,6 +50,7 @@ enum Commands {
     Structure(CoreArgs),
     Replay(CoreArgs),
     Run(CoreArgs),
+    Execute(CoreArgs),
     #[command(name = "run-dsl")]
     RunDsl(CoreArgs),
     Rules(CoreArgs),
@@ -154,7 +155,7 @@ fn main() {
         }
         return;
     }
-    if explicit_analyze_subcommand_requested(&raw_args) {
+    if explicit_design_main_subcommand_requested(&raw_args) {
         if let Err(err) = design_cli::design_main::run_with_args(raw_args.clone()) {
             eprintln!("{err}");
             std::process::exit(2);
@@ -227,6 +228,85 @@ fn main() {
         );
         if code != 0 {
             std::process::exit(code);
+        }
+        return;
+    }
+
+    if let Commands::Structure(args) = command
+        && matches!(args.args.first().map(String::as_str), Some("dispatch"))
+    {
+        eprintln!("[ROUTE][PRIORITY_GATE] command=structure dispatch");
+        eprintln!("[ROUTE] kind=StructureDispatch");
+        eprintln!("[ROUTE][COMMAND_ISOLATED] command=structure dispatch");
+        match run_structure_dispatch_command(&args.args) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(message) => {
+                eprintln!("[ROUTE][COMMAND_REJECTED] command=structure dispatch reason={message}");
+                emit_json_cli_error("structure_dispatch_error", message, 2);
+            }
+        }
+        return;
+    }
+
+    if let Commands::Structure(args) = command
+        && matches!(args.args.first().map(String::as_str), Some("view"))
+    {
+        eprintln!("[ROUTE][PRIORITY_GATE] command=structure view");
+        eprintln!("[ROUTE] kind=StructureView");
+        eprintln!("[ROUTE][COMMAND_ISOLATED] command=structure view");
+        match run_structure_view_command(&args.args) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(message) => {
+                eprintln!("[ROUTE][COMMAND_REJECTED] command=structure view reason={message}");
+                emit_json_cli_error("structure_view_error", message, 2);
+            }
+        }
+        return;
+    }
+
+    if let Commands::Run(args) = command {
+        eprintln!("[ROUTE][PRIORITY_GATE] command=run");
+        eprintln!("[ROUTE] kind=RunCommand");
+        eprintln!("[ROUTE][COMMAND_ISOLATED] command=run");
+        match run_exec_command(
+            design_cli::execution_foundation::ExecAction::Run,
+            &args.args,
+        ) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(message) => {
+                eprintln!("[ROUTE][COMMAND_REJECTED] command=run reason={message}");
+                emit_json_cli_error("run_command_error", message, 2);
+            }
+        }
+        return;
+    }
+
+    if let Commands::Execute(args) = command {
+        eprintln!("[ROUTE][PRIORITY_GATE] command=execute");
+        eprintln!("[ROUTE] kind=ExecuteCommand");
+        eprintln!("[ROUTE][COMMAND_ISOLATED] command=execute");
+        match run_autonomous_execute_command(&args.args) {
+            Ok(code) => {
+                if code != 0 {
+                    std::process::exit(code);
+                }
+            }
+            Err(message) => {
+                eprintln!("[ROUTE][COMMAND_REJECTED] command=execute reason={message}");
+                emit_json_cli_error("execute_command_error", message, 2);
+            }
         }
         return;
     }
@@ -318,10 +398,10 @@ fn root_help_requested(args: &[OsString]) -> bool {
     )
 }
 
-fn explicit_analyze_subcommand_requested(args: &[OsString]) -> bool {
+fn explicit_design_main_subcommand_requested(args: &[OsString]) -> bool {
     matches!(
         args.get(1).and_then(|arg| arg.to_str()),
-        Some("analyze" | "phase-analyze")
+        Some("analyze" | "phase-analyze" | "explain")
     )
 }
 
@@ -491,6 +571,248 @@ struct CodingCliArgs {
 #[derive(Debug, Deserialize)]
 struct CodingPatchInput {
     patches: Vec<integration_layer::CodePatch>,
+}
+
+#[derive(Debug, Serialize)]
+struct StructureDispatchOutput {
+    schema_version: &'static str,
+    route: &'static str,
+    json_mode: bool,
+    event_mode: bool,
+    command: design_cli::viewer::GuiCommandSpec,
+    ir: design_cli::viewer::StructureViewIR,
+}
+
+fn run_structure_dispatch_command(args: &[String]) -> Result<i32, String> {
+    let parsed = parse_structure_dispatch_args(args)?;
+    let event_path = parsed
+        .event_path
+        .as_ref()
+        .ok_or_else(|| "structure dispatch requires --event <path>".to_string())?;
+    let raw = std::fs::read_to_string(event_path)
+        .map_err(|err| format!("failed to read event {}: {err}", event_path.display()))?;
+    let event: design_cli::refactor::GuiAction = serde_json::from_str(&raw)
+        .map_err(|err| format!("failed to parse event {}: {err}", event_path.display()))?;
+    let (command, ir) = design_cli::viewer::dispatch_gui_action(&parsed.root, event)?;
+    let output = StructureDispatchOutput {
+        schema_version: "v1",
+        route: "StructureDispatch",
+        json_mode: parsed.json,
+        event_mode: parsed.event_path.is_some(),
+        command,
+        ir,
+    };
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&output)
+                .map_err(|err| format!("failed to serialize structure dispatch output: {err}"))?
+        );
+    } else {
+        println!(
+            "Structure dispatch {} {}",
+            output.command.stage, output.command.target
+        );
+    }
+    Ok(0)
+}
+
+#[derive(Debug, Default)]
+struct StructureDispatchArgs {
+    root: PathBuf,
+    event_path: Option<PathBuf>,
+    json: bool,
+}
+
+fn parse_structure_dispatch_args(args: &[String]) -> Result<StructureDispatchArgs, String> {
+    if args.first().map(String::as_str) != Some("dispatch") {
+        return Err("expected structure dispatch".to_string());
+    }
+    let mut parsed = StructureDispatchArgs {
+        root: PathBuf::from("."),
+        ..StructureDispatchArgs::default()
+    };
+    let mut i = 1;
+    if let Some(root) = args.get(i)
+        && !root.starts_with("--")
+    {
+        parsed.root = PathBuf::from(root);
+        i += 1;
+    }
+    while i < args.len() {
+        match args[i].as_str() {
+            "--event" => {
+                i += 1;
+                parsed.event_path = Some(PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--event requires a path".to_string())?,
+                ));
+            }
+            "--json" => parsed.json = true,
+            "--preview" => {}
+            other => return Err(format!("unknown structure dispatch argument: {other}")),
+        }
+        i += 1;
+    }
+    Ok(parsed)
+}
+
+#[derive(Debug)]
+struct StructureViewArgs {
+    root: PathBuf,
+    mode: design_cli::viewer::ViewMode,
+    json: bool,
+}
+
+fn run_structure_view_command(args: &[String]) -> Result<i32, String> {
+    let parsed = parse_structure_view_args(args)?;
+    let report = design_cli::viewer::edit_session(&parsed.root, parsed.mode)?;
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|err| format!("failed to serialize structure view report: {err}"))?
+        );
+    } else {
+        println!("Structure view {}", report.ir_path);
+    }
+    Ok(0)
+}
+
+fn parse_structure_view_args(args: &[String]) -> Result<StructureViewArgs, String> {
+    if args.first().map(String::as_str) != Some("view") {
+        return Err("expected structure view".to_string());
+    }
+    let mut root = PathBuf::from(".");
+    let mut mode = design_cli::viewer::ViewMode::TwoD;
+    let mut json = false;
+    let mut i = 1;
+    if let Some(candidate) = args.get(i)
+        && !candidate.starts_with("--")
+    {
+        root = PathBuf::from(candidate);
+        i += 1;
+    }
+    while i < args.len() {
+        match args[i].as_str() {
+            "--3d" => mode = design_cli::viewer::ViewMode::ThreeD,
+            "--2d" => mode = design_cli::viewer::ViewMode::TwoD,
+            "--json" => json = true,
+            other => return Err(format!("unknown structure view argument: {other}")),
+        }
+        i += 1;
+    }
+    Ok(StructureViewArgs { root, mode, json })
+}
+
+#[derive(Debug)]
+struct ExecCliArgs {
+    root: PathBuf,
+    json: bool,
+    timeout_ms: u64,
+}
+
+fn run_exec_command(
+    action: design_cli::execution_foundation::ExecAction,
+    args: &[String],
+) -> Result<i32, String> {
+    let parsed = parse_exec_args(args, None)?;
+    let report = design_cli::execution_foundation::ExecutionFoundation::execute(
+        &parsed.root,
+        action,
+        parsed.timeout_ms,
+    )?;
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|err| format!("failed to serialize execution report: {err}"))?
+        );
+    } else {
+        println!(
+            "{}",
+            design_cli::execution_foundation::format_exec_report(&report)
+        );
+    }
+    Ok(if report.success || report.status == "timeout" {
+        0
+    } else {
+        1
+    })
+}
+
+fn run_autonomous_execute_command(args: &[String]) -> Result<i32, String> {
+    let action = match args.first().map(String::as_str) {
+        Some("build") => "build",
+        Some("test") => "test",
+        Some("run") => "run",
+        Some("install") => "install",
+        Some(other) => return Err(format!("unknown execute action: {other}")),
+        None => "build",
+    };
+    let parsed = parse_exec_args(args, Some(1))?;
+    let report = design_cli::autonomous_execute::execute_autonomous_command(
+        &parsed.root,
+        action,
+        parsed.timeout_ms,
+    )?;
+    if parsed.json {
+        println!(
+            "{}",
+            serde_json::to_string(&report)
+                .map_err(|err| format!("failed to serialize autonomous execute report: {err}"))?
+        );
+    } else {
+        let mut output = Vec::new();
+        design_cli::renderer::render_autonomous_execute_report(&mut output, &report)
+            .map_err(|err| err.to_string())?;
+        print!("{}", String::from_utf8_lossy(&output));
+    }
+    Ok(if report.completed { 0 } else { 1 })
+}
+
+fn parse_exec_args(args: &[String], start: Option<usize>) -> Result<ExecCliArgs, String> {
+    let mut root = PathBuf::from(".");
+    let mut json = false;
+    let mut timeout_ms = 60_000;
+    let mut i = start.unwrap_or(0);
+    if start.is_none()
+        && let Some(candidate) = args.get(i)
+        && !candidate.starts_with("--")
+    {
+        root = PathBuf::from(candidate);
+        i += 1;
+    }
+    while i < args.len() {
+        match args[i].as_str() {
+            "--path" => {
+                i += 1;
+                root = PathBuf::from(
+                    args.get(i)
+                        .ok_or_else(|| "--path requires a path".to_string())?,
+                );
+            }
+            "--json" => json = true,
+            "--timeout-ms" => {
+                i += 1;
+                timeout_ms = args
+                    .get(i)
+                    .ok_or_else(|| "--timeout-ms requires a value".to_string())?
+                    .parse::<u64>()
+                    .map_err(|err| format!("invalid --timeout-ms value: {err}"))?;
+            }
+            other if start.is_some() && !other.starts_with("--") => {
+                return Err(format!("unexpected execute argument: {other}"));
+            }
+            other => return Err(format!("unknown execution argument: {other}")),
+        }
+        i += 1;
+    }
+    Ok(ExecCliArgs {
+        root,
+        json,
+        timeout_ms,
+    })
 }
 
 fn run_coding_subcommand(args: &[String]) -> Result<i32, String> {
@@ -711,6 +1033,7 @@ fn core_input(command: &Commands) -> Result<String, clap::Error> {
         Commands::Structure(args) => join_core("structure", &args.args),
         Commands::Replay(args) => join_core("replay", &args.args),
         Commands::Run(args) => join_core("run", &args.args),
+        Commands::Execute(args) => join_core("execute", &args.args),
         Commands::RunDsl(args) => join_core("run-dsl", &args.args),
         Commands::Rules(args) => join_core("rules", &args.args),
         Commands::Runtime { command } => runtime_core_input(*command),

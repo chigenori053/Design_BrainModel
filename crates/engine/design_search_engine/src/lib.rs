@@ -31,7 +31,7 @@ pub use audit::{
 };
 pub use constraint::{ConstraintEngine, IntentNode};
 pub use design_state::{
-    DesignState, DesignStateId, DesignUnit, DesignUnitId, DesignUnitType, EvaluationScore,
+    DesignEvaluationScore, DesignState, DesignStateId, DesignUnit, DesignUnitId, DesignUnitType,
 };
 pub use engine::DesignSearchEngine;
 pub use evaluator::Evaluator;

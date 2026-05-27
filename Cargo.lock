@@ -3816,6 +3816,7 @@ dependencies = [
  "design_cli",
  "design_search_engine",
  "integration_layer",
+ "memory_engine",
  "memory_space_phase14",
  "runtime_core",
  "world_model",

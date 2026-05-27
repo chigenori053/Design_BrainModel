@@ -1,6 +1,4 @@
-use memory_space_phase14::stable_v03::{
-    InMemoryEngine, MemoryEngine, MemoryRecord, RecallConfig, RecallInput,
-};
+use memory_engine::{InMemoryEngine, MemoryEngine, MemoryRecord, RecallConfig, RecallInput};
 use pipeline_tests::{extract_fn_body, read_workspace_file};
 use world_model::stable_v03::IntentState;
 
@@ -81,7 +79,7 @@ fn recall_applies_threshold_and_top_k() {
 
 #[test]
 fn recall_layer_does_not_generate_hypotheses() {
-    let source = read_workspace_file("crates/memory_space/src/stable_v03.rs");
+    let source = read_workspace_file("crates/memory_engine/src/lib.rs");
     let body = extract_fn_body(&source, "pub fn recall_candidates(");
 
     assert!(!body.contains("Hypothesis"));

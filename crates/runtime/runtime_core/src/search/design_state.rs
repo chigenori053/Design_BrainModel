@@ -23,13 +23,13 @@ pub struct DesignUnit {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-pub struct EvaluationScore {
+pub struct DesignEvaluationScore {
     pub structural: f64,
     pub dependency: f64,
     pub concept_alignment: f64,
 }
 
-impl EvaluationScore {
+impl DesignEvaluationScore {
     pub fn total(&self) -> f64 {
         0.4 * self.structural + 0.3 * self.dependency + 0.3 * self.concept_alignment
     }
@@ -39,6 +39,6 @@ impl EvaluationScore {
 pub struct DesignState {
     pub id: DesignStateId,
     pub design_units: Vec<DesignUnit>,
-    pub evaluation: Option<EvaluationScore>,
+    pub evaluation: Option<DesignEvaluationScore>,
     pub state_vector: ComplexField,
 }

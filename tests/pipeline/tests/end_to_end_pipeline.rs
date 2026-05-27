@@ -3,7 +3,7 @@ use std::sync::Arc;
 use design_search_engine::stable_v03::{
     DesignSearchEngine, DeterministicBeamSearchEngine, ReasoningCore,
 };
-use memory_space_phase14::stable_v03::{InMemoryEngine, MemoryEngine};
+use memory_engine::{InMemoryEngine, MemoryEngine};
 use runtime_core::CoreRuntime;
 use world_model::stable_v03::IntentInput;
 

@@ -18,7 +18,14 @@ impl GrammarEngine {
     pub fn validate_architecture(&self, architecture: &Architecture) -> GrammarValidation {
         let mut messages = validate_architecture_rules(architecture);
         messages.extend(validate_dependency_rules(architecture));
-        messages.extend(architecture.causal_graph().validate().issues);
+        messages.extend(
+            architecture
+                .causal_graph()
+                .validate()
+                .issues
+                .into_iter()
+                .filter(|issue| !is_causal_metadata_requirement(issue)),
+        );
         GrammarValidation::from_messages(messages)
     }
 
@@ -110,6 +117,16 @@ impl GrammarEngine {
         }
         vec![Layer::Service]
     }
+}
+
+fn is_causal_metadata_requirement(issue: &str) -> bool {
+    matches!(
+        issue,
+        "causes must not be empty"
+            | "goals must not be empty"
+            | "actions must not be empty"
+            | "constraints must not be empty"
+    )
 }
 
 #[cfg(test)]

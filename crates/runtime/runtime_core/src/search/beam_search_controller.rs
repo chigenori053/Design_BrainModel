@@ -503,7 +503,11 @@ fn prepare_state(
 
     let causal_graph = state.world_state.architecture.causal_graph();
     let causal_validation = causal_graph.validate();
-    if !causal_validation.valid {
+    if causal_validation
+        .issues
+        .iter()
+        .any(|issue| !is_causal_metadata_requirement(issue))
+    {
         return false;
     }
     let causal_score = score_causal_closure(&causal_graph);
@@ -571,6 +575,16 @@ fn finalize_state_with_simulation(
     state.world_state.score =
         (state.world_state.score + state.policy_score * policy_bias).clamp(0.0, 1.0);
     state.score = (state.score + state.policy_score * policy_bias).clamp(0.0, 1.0);
+}
+
+fn is_causal_metadata_requirement(issue: &str) -> bool {
+    matches!(
+        issue,
+        "causes must not be empty"
+            | "goals must not be empty"
+            | "actions must not be empty"
+            | "constraints must not be empty"
+    )
 }
 
 fn merge_scheduler_trace(

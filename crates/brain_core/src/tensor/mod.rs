@@ -21,6 +21,7 @@ impl Tensor {
 pub struct PhaseModule;
 
 impl PhaseModule {
+    #[inline(always)]
     pub fn compute(input: &Tensor) -> Tensor {
         input.clone()
     }
@@ -30,6 +31,7 @@ impl PhaseModule {
 pub struct TensorEngine;
 
 impl TensorEngine {
+    #[inline(always)]
     pub fn run(&self, input: &Tensor) -> Tensor {
         PhaseModule::compute(input)
     }
