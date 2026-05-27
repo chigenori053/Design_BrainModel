@@ -39,7 +39,7 @@ use crate::nl::context_aware_plan_target_resolver::{
     stable_context_hash,
 };
 use crate::nl::language_core_ir_adapter::{ExecutionMode, IrAction, IrTarget};
-use crate::nl::normalization::target_only_input_target;
+use crate::nl::normalization::{TargetResolutionFailure, target_only_input_resolution};
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
 use crate::state_graph::StateGraph;
@@ -693,8 +693,12 @@ impl RuntimeCoreBridge {
             context: context.clone(),
         };
 
-        if let Some(target) = target_only_input_target(input) {
-            return Some(target_context_response(target, id));
+        match target_only_input_resolution(input) {
+            Ok(Some(target)) => return Some(target_context_response(target, id)),
+            Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) => {
+                return Some(self.execute_natural_language(request));
+            }
+            Ok(None) | Err(TargetResolutionFailure::Unresolved { .. }) => {}
         }
 
         let has_followup_context = kind == CoreRequestKind::Followup || !state.proposals.is_empty();
@@ -828,7 +832,28 @@ impl RuntimeCoreBridge {
 
         let lc_intent = classify_language_core_intent(&request.input);
         let mut ir_request = language_core_to_ir(lc_intent, &request.input);
-        if ir_request.safety_constraints.no_apply && ir_request.action == IrAction::Apply {
+        if let Some(crate::nl::normalization::TargetResolutionFailure::ConfirmationTokenLike {
+            raw,
+        }) = ir_request.target_failure.clone()
+        {
+            events.push(CoreEvent::Debug {
+                message: format!(
+                    "[IR-TRACE][TARGET_REJECTED] target={raw} reason=ConfirmationTokenLike"
+                ),
+            });
+            let original_raw_input = ir_request.raw_input.clone();
+            let original_confidence = ir_request.confidence;
+            ir_request = fallback_for_confirmation_like_target_failure(
+                &self.history.lock().unwrap().current().clone(),
+                &ir_request.safety_constraints,
+                &raw,
+            );
+            ir_request.raw_input = original_raw_input;
+            ir_request.confidence = original_confidence;
+            push_confirmation_like_fallback_trace(&mut events, &session_context_snapshot);
+        } else if ir_request.safety_constraints.no_apply
+            && matches!(ir_request.action, IrAction::Apply | IrAction::ReviewSafety)
+        {
             if session_context_snapshot.validated_plan.is_some() {
                 ir_request.action = IrAction::ReviewValidatedPlan;
                 ir_request.mode = ExecutionMode::ValidateOnly;
@@ -925,6 +950,9 @@ impl RuntimeCoreBridge {
         }
         if ir_request.action == IrAction::ReviewValidatedPlan {
             return self.review_validated_plan(ir_request, events);
+        }
+        if ir_request.action == IrAction::ReviewSafety {
+            return self.review_safety(ir_request, events);
         }
         if ir_request.action == IrAction::ValidatePlan {
             return self.validate_selected_plan(request, events);
@@ -1179,6 +1207,14 @@ impl RuntimeCoreBridge {
                 validated,
                 current.session_context.previous_validation_context.as_ref(),
                 ir_request.safety_constraints.no_apply,
+                matches!(
+                    ir_request.target_failure,
+                    Some(
+                        crate::nl::normalization::TargetResolutionFailure::ConfirmationTokenLike {
+                            ..
+                        }
+                    )
+                ),
             ),
         });
 
@@ -1187,6 +1223,45 @@ impl RuntimeCoreBridge {
             status: ExecutionStatus::Executed,
             design: None,
             core_state: Some(current),
+        }
+    }
+
+    fn review_safety(
+        &self,
+        ir_request: crate::nl::language_core_ir_adapter::IrIntentRequest,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
+        if !matches!(
+            ir_request.target_failure,
+            Some(crate::nl::normalization::TargetResolutionFailure::ConfirmationTokenLike { .. })
+        ) {
+            events.push(CoreEvent::Debug {
+                message: "[IR-TRACE][INTENT_DOWNGRADE] to=ReviewSafety reason=SafetyReviewReadOnly"
+                    .to_string(),
+            });
+        }
+        events.push(CoreEvent::Debug {
+            message: "[IR-TRACE][APPLY_DEFERRED] reason=ReviewSafetyReadOnly".to_string(),
+        });
+        events.push(CoreEvent::Result {
+            message: format_safety_review(
+                ir_request.safety_constraints.no_apply,
+                matches!(
+                    ir_request.target_failure,
+                    Some(
+                        crate::nl::normalization::TargetResolutionFailure::ConfirmationTokenLike {
+                            ..
+                        }
+                    )
+                ),
+            ),
+        });
+
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: Some(self.history.lock().unwrap().current().clone()),
         }
     }
 
@@ -1729,9 +1804,14 @@ impl RuntimeCoreBridge {
 
     fn route_preview_input(&self, request: InternalRequest) -> CoreResponse {
         let action = parse_preview_confirmation(&request.input);
-        let mut events = vec![CoreEvent::Debug {
-            message: format!("[IR-TRACE][PREVIEW_CONFIRMATION] action={action:?}"),
-        }];
+        let mut events = vec![
+            CoreEvent::Debug {
+                message: format!("[IR-TRACE][PREVIEW_CONFIRMATION] action={action:?}"),
+            },
+            CoreEvent::Debug {
+                message: confirmation_token_check_trace(&request.input, action),
+            },
+        ];
 
         match action {
             PreviewConfirmation::Confirm => self.apply_validated_plan_guard(request, events),
@@ -1785,7 +1865,10 @@ impl RuntimeCoreBridge {
                     };
                 }
                 if should_route_preview_input_to_language(&request.input) {
-                    return self.execute_natural_language(request);
+                    let mut response = self.execute_natural_language(request);
+                    events.extend(response.events);
+                    response.events = events;
+                    return response;
                 }
                 events.extend([
                     CoreEvent::Result {
@@ -3322,22 +3405,123 @@ fn format_validation_review(
     validated: &ValidatedPlanContext,
     previous_validation: Option<&PreviousValidationContext>,
     no_apply: bool,
+    rejected_confirmation_like_target: bool,
 ) -> String {
     let status = previous_validation
         .map(|ctx| format!("{:?}", ctx.validation_status))
         .unwrap_or_else(|| "Passed".to_string());
+    let reason = if rejected_confirmation_like_target {
+        "confirmation-like token was rejected as target; Core fallback priority prevented unresolved target."
+    } else if no_apply {
+        "no_apply constraint is active."
+    } else {
+        "Apply was not explicitly confirmed."
+    };
     format!(
-        "# Validation Review\n\nCandidate: {}\nTarget: {}\nStatus: {}\nApply allowed: {}\nApply status: Deferred\nReason: {} No files modified.\n\n## Safety\n- No files modified\n- No apply executed\n- Existing validated_plan preserved\n- Awaiting explicit confirmation",
-        validated.candidate_id,
-        validated.target,
-        status,
-        validated.apply_allowed,
-        if no_apply {
-            "no_apply constraint is active."
-        } else {
-            "Apply was not explicitly confirmed."
-        }
+        "# Validation Review\n\nCandidate: {}\nTarget: {}\nStatus: {}\nApply allowed: {}\nApply status: Deferred\nReason: {}\n\n## Safety\n- yes/no treated as referenced text, not confirmation\n- y/n treated as referenced text, not confirmation\n- No files modified\n- No apply executed\n- Existing validated_plan preserved\n- Awaiting explicit confirmation",
+        validated.candidate_id, validated.target, status, validated.apply_allowed, reason
     )
+}
+
+fn format_safety_review(no_apply: bool, rejected_confirmation_like_target: bool) -> String {
+    let target_extraction = if rejected_confirmation_like_target {
+        "Rejected confirmation-like token"
+    } else {
+        "None"
+    };
+    format!(
+        "# Safety Review\n\nStatus: Reviewed\nConfirmation handling: Not triggered\nTarget extraction: {target_extraction}\nApply status: Deferred\n\n## Safety\n- yes/no treated as referenced text, not confirmation\n- y/n treated as referenced text, not confirmation\n- No files modified\n- No apply executed\n- no_apply constraint: {}",
+        if no_apply { "active" } else { "inactive" },
+    )
+}
+
+fn fallback_for_confirmation_like_target_failure(
+    state: &CoreState,
+    safety: &crate::nl::language_core_ir_adapter::SafetyConstraints,
+    raw_target: &str,
+) -> crate::nl::language_core_ir_adapter::IrIntentRequest {
+    use crate::nl::language_core_ir_adapter::IrIntentRequest;
+    use crate::nl::normalization::TargetResolutionFailure;
+
+    let session = &state.session_context;
+    let (action, mode, target) = if session.validated_plan.is_some() {
+        let target = session
+            .selected_candidate
+            .as_ref()
+            .map(|selected| narrow_target_to_ir_target(&selected.target))
+            .or_else(|| {
+                session
+                    .validated_plan
+                    .as_ref()
+                    .map(|validated| narrow_target_to_ir_target(&validated.target))
+            })
+            .unwrap_or(IrTarget::None);
+        (
+            IrAction::ReviewValidatedPlan,
+            ExecutionMode::ValidateOnly,
+            target,
+        )
+    } else if let Some(selected) = session.selected_candidate.as_ref() {
+        (
+            IrAction::ValidatePlan,
+            ExecutionMode::ValidateOnly,
+            narrow_target_to_ir_target(&selected.target),
+        )
+    } else {
+        (
+            IrAction::ReviewSafety,
+            ExecutionMode::ReadOnly,
+            IrTarget::None,
+        )
+    };
+
+    IrIntentRequest {
+        action,
+        target,
+        mode,
+        raw_input: raw_target.to_string(),
+        confidence: 0.85,
+        safety_constraints: *safety,
+        target_failure: Some(TargetResolutionFailure::ConfirmationTokenLike {
+            raw: raw_target.to_string(),
+        }),
+    }
+}
+
+fn push_confirmation_like_fallback_trace(
+    events: &mut Vec<CoreEvent>,
+    session: &crate::nl::context_aware_plan_target_resolver::ReplSessionContext,
+) {
+    events.push(CoreEvent::Debug {
+        message:
+            "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+                .to_string(),
+    });
+    if let Some(validated) = session.validated_plan.as_ref() {
+        events.push(CoreEvent::Debug {
+            message:
+                "[IR-TRACE][INTENT_DOWNGRADE] to=ReviewValidatedPlan reason=RejectedConfirmationLikeTargetWithValidatedPlan"
+                    .to_string(),
+        });
+        events.push(CoreEvent::Debug {
+            message: format!(
+                "[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id={} target={}",
+                validated.candidate_id, validated.target
+            ),
+        });
+    } else if session.selected_candidate.is_some() {
+        events.push(CoreEvent::Debug {
+            message:
+                "[IR-TRACE][INTENT_DOWNGRADE] to=ValidatePlan reason=RejectedConfirmationLikeTargetWithSelectedCandidate"
+                    .to_string(),
+        });
+    } else {
+        events.push(CoreEvent::Debug {
+            message:
+                "[IR-TRACE][INTENT_DOWNGRADE] to=ReviewSafety reason=RejectedConfirmationLikeTargetWithoutContext"
+                    .to_string(),
+        });
+    }
 }
 
 fn narrow_target_to_ir_target(target: &NarrowTarget) -> IrTarget {
@@ -3531,6 +3715,19 @@ fn parse_preview_confirmation(input: &str) -> PreviewConfirmation {
         "cancel" => PreviewConfirmation::Cancel,
         _ => PreviewConfirmation::Reconfirm,
     }
+}
+
+fn confirmation_token_check_trace(input: &str, action: PreviewConfirmation) -> String {
+    let (result, reason) = match action {
+        PreviewConfirmation::Confirm => ("Confirm", "ExactToken"),
+        PreviewConfirmation::Reject => ("Reject", "ExactToken"),
+        PreviewConfirmation::Cancel => ("Cancel", "ExactToken"),
+        PreviewConfirmation::Reconfirm => ("NotConfirmation", "NotExactToken"),
+    };
+    format!(
+        "[IR-TRACE][CONFIRMATION_TOKEN_CHECK] result={result} reason={reason} input={:?}",
+        input.trim()
+    )
 }
 
 fn should_route_preview_input_to_language(input: &str) -> bool {
@@ -4192,6 +4389,10 @@ mod tests {
         CoreRequest::new(input.to_string())
     }
 
+    fn event_text(events: &[CoreEvent]) -> String {
+        format!("{events:?}")
+    }
+
     fn current_dir_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
@@ -4373,6 +4574,55 @@ mod tests {
         );
         assert_eq!(
             parse_preview_confirmation("maybe"),
+            PreviewConfirmation::Reconfirm
+        );
+    }
+
+    #[test]
+    fn confirmation_exact_y_is_confirm() {
+        assert_eq!(
+            parse_preview_confirmation("y"),
+            PreviewConfirmation::Confirm
+        );
+    }
+
+    #[test]
+    fn confirmation_token_exact_y_is_confirm() {
+        confirmation_exact_y_is_confirm();
+    }
+
+    #[test]
+    fn confirmation_exact_yes_is_confirm() {
+        assert_eq!(
+            parse_preview_confirmation(" yes "),
+            PreviewConfirmation::Confirm
+        );
+    }
+
+    #[test]
+    fn confirmation_token_exact_yes_is_confirm() {
+        confirmation_exact_yes_is_confirm();
+    }
+
+    #[test]
+    fn confirmation_sentence_yes_no_is_not_confirmation() {
+        assert_eq!(
+            parse_preview_confirmation("この変更案について yes/no の確認ではなく評価してください"),
+            PreviewConfirmation::Reconfirm
+        );
+    }
+
+    #[test]
+    fn confirmation_token_sentence_yes_no_is_not_confirmation() {
+        confirmation_sentence_yes_no_is_not_confirmation();
+    }
+
+    #[test]
+    fn confirmation_sentence_y_n_is_not_confirmation() {
+        assert_eq!(
+            parse_preview_confirmation(
+                "y や n という文字が含まれていても confirmation として扱わない"
+            ),
             PreviewConfirmation::Reconfirm
         );
     }
@@ -4562,6 +4812,88 @@ mod tests {
         assert!(state.session_context.selected_candidate.is_none());
         assert!(state.session_context.validated_plan.is_none());
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Cancel"))));
+    }
+
+    #[test]
+    fn no_apply_blocks_governed_transaction_preview() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state_with_context(&core);
+
+        let response = core.execute(request("この変更案について yes/no の確認ではなく、設計上の安全性を文章で評価してください。y や n という文字が含まれていても confirmation として扱わず、自然言語入力として解釈してください。まだapplyしないでください。"));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains("[IR-TRACE][CONFIRMATION_TOKEN_CHECK] result=NotConfirmation"),
+            "{text}"
+        );
+        assert!(text.contains("# Validation Review"), "{text}");
+        assert!(text.contains("No files modified"), "{text}");
+        assert!(text.contains("No apply executed"), "{text}");
+        assert!(!text.contains("preparing governed transaction"), "{text}");
+        assert!(!text.contains("transaction active"), "{text}");
+        assert!(!text.contains("preview ready"), "{text}");
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_not_confirmation() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_previewed_long_yes_no_sentence_uses_confirmation_like_fallback() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_previewed_long_yes_no_priority_gate_blocks_unresolved_target() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_followup_long_yes_no_sentence_uses_confirmation_like_fallback() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_followup_long_yes_no_priority_gate_blocks_unresolved_target() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_not_target() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state_with_context(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains("[IR-TRACE][TARGET_REJECTED] target=yes/no reason=ConfirmationTokenLike"),
+            "{text}"
+        );
+        assert!(!text.contains("Target: yes/no"), "{text}");
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_not_unresolved() {
+        let core = RuntimeCoreBridge::with_defaults();
+        set_preview_state_with_context(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+        assert!(!text.contains("unresolved target"), "{text}");
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_does_not_start_transaction() {
+        no_apply_blocks_governed_transaction_preview();
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_does_not_apply() {
+        no_apply_blocks_governed_transaction_preview();
     }
 
     #[test]
@@ -5441,6 +5773,10 @@ mod tests {
         "この候補が安全であれば適用してもよいか検討してください。ただし、この入力ではまだapplyしないでください。まず検証結果だけを表示し、validated_planが作成されてもファイル変更は次の明示的な確認まで停止してください。"
     }
 
+    fn long_yes_no_review_input() -> &'static str {
+        "この変更案について yes/no の確認ではなく、設計上の安全性を文章で評価してください。y や n という文字が含まれていても confirmation として扱わず、自然言語入力として解釈してください。まだapplyしないでください。"
+    }
+
     fn prepare_selected_candidate(core: &RuntimeCoreBridge) {
         core.execute(request("このプロジェクトの構造を解析して"));
         core.execute(request(
@@ -5472,6 +5808,193 @@ mod tests {
             "action",
             "ReviewValidatedPlan"
         ));
+    }
+
+    #[test]
+    fn confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains("[IR-TRACE][TARGET_REJECTED] target=yes/no reason=ConfirmationTokenLike"),
+            "{text}"
+        );
+        assert!(
+            text.contains(
+                "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ReviewValidatedPlan reason=RejectedConfirmationLikeTargetWithValidatedPlan"), "{text}");
+        assert!(
+            text.contains(
+                "[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1 target=File(Cargo.toml)"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("# Validation Review"), "{text}");
+        assert!(text.contains("Apply status: Deferred"), "{text}");
+        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_with_validated_plan_reviews_validation() {
+        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_with_validated_plan_uses_priority_gate() {
+        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_failure_fallback_with_validated_plan_returns_review_validated_plan() {
+        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_runs_before_unresolved_target() {
+        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_with_validated_plan_returns_review_validated_plan() {
+        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_selected_candidate(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains(
+                "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ValidatePlan reason=RejectedConfirmationLikeTargetWithSelectedCandidate"), "{text}");
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "ValidatePlan"
+        ));
+        assert!(text.contains("# Plan Validation"), "{text}");
+        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+    }
+
+    #[test]
+    fn confirmation_like_failure_fallback_with_selected_candidate_returns_validate_plan() {
+        confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan();
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_with_selected_candidate_returns_validate_plan() {
+        confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan();
+    }
+
+    #[test]
+    fn confirmation_like_target_without_context_falls_back_to_review_safety() {
+        let core = RuntimeCoreBridge::with_defaults();
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains(
+                "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+            ),
+            "{text}"
+        );
+        assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ReviewSafety reason=RejectedConfirmationLikeTargetWithoutContext"), "{text}");
+        assert!(text.contains("# Safety Review"), "{text}");
+        assert!(
+            text.contains("Target extraction: Rejected confirmation-like token"),
+            "{text}"
+        );
+        assert!(text.contains("No files modified"), "{text}");
+        assert!(text.contains("No apply executed"), "{text}");
+        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+    }
+
+    #[test]
+    fn confirmation_like_failure_fallback_without_context_returns_review_safety() {
+        confirmation_like_target_without_context_falls_back_to_review_safety();
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_without_context_returns_review_safety() {
+        confirmation_like_target_without_context_falls_back_to_review_safety();
+    }
+
+    #[test]
+    fn confirmation_like_failure_never_returns_unresolved_target() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let text = event_text(&response.events);
+
+        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+        assert!(!text.contains("unresolved target"), "{text}");
+    }
+
+    #[test]
+    fn confirmation_like_target_rejection_preserves_validated_plan() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+        let before = core.history.lock().unwrap().current().clone();
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let after = response.core_state.expect("state");
+
+        assert_eq!(
+            before.session_context.validated_plan,
+            after.session_context.validated_plan
+        );
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_preserves_validated_plan() {
+        confirmation_like_target_rejection_preserves_validated_plan();
+    }
+
+    #[test]
+    fn repl_long_yes_no_sentence_preserves_validated_plan() {
+        confirmation_like_target_rejection_preserves_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_failure_preserves_validated_plan() {
+        confirmation_like_target_rejection_preserves_validated_plan();
+    }
+
+    #[test]
+    fn confirmation_like_target_rejection_preserves_selected_candidate() {
+        let core = RuntimeCoreBridge::with_defaults();
+        prepare_validated_plan(&core);
+
+        let response = core.execute(request(long_yes_no_review_input()));
+        let state = response.core_state.expect("state");
+
+        assert!(state.session_context.selected_candidate.is_some());
+    }
+
+    #[test]
+    fn confirmation_like_failure_preserves_selected_candidate() {
+        confirmation_like_target_rejection_preserves_selected_candidate();
+    }
+
+    #[test]
+    fn confirmation_like_priority_gate_preserves_selected_candidate() {
+        confirmation_like_target_rejection_preserves_selected_candidate();
     }
 
     #[test]
@@ -5771,6 +6294,7 @@ mod tests {
             raw_input: "apply".to_string(),
             confidence: 1.0,
             safety_constraints: crate::nl::language_core_ir_adapter::SafetyConstraints::default(),
+            target_failure: None,
         };
 
         let rendered = format_change_plan(&ir_request, &[]);

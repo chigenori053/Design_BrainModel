@@ -20,6 +20,12 @@ pub enum RuntimeNormalizationRejection {
     UnresolvedTarget,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TargetResolutionFailure {
+    ConfirmationTokenLike { raw: String },
+    Unresolved { raw: Option<String> },
+}
+
 pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
     let raw = input.trim();
     if raw.is_empty() {
@@ -97,9 +103,15 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
 }
 
 pub fn target_only_input_target(input: &str) -> Option<PathBuf> {
+    target_only_input_resolution(input).ok().flatten()
+}
+
+pub fn target_only_input_resolution(
+    input: &str,
+) -> Result<Option<PathBuf>, TargetResolutionFailure> {
     let raw = input.trim();
     if raw.is_empty() || target_only_has_mutation(raw) {
-        return None;
+        return Ok(None);
     }
 
     let target_text = raw
@@ -110,15 +122,36 @@ pub fn target_only_input_target(input: &str) -> Option<PathBuf> {
         .unwrap_or(raw);
 
     if target_text.is_empty() || target_text.split_whitespace().count() != 1 {
-        return None;
+        return Ok(None);
     }
 
     let target = clean_target(target_text);
+    if crate::nl::language_core_ir_adapter::is_confirmation_token_like_target(&target) {
+        eprintln!("[IR-TRACE][TARGET_REJECTED] target={target} reason=ConfirmationTokenLike");
+        return Err(TargetResolutionFailure::ConfirmationTokenLike { raw: target });
+    }
     if target.is_empty() || !looks_like_explicit_target_token(&target) {
-        return None;
+        return Ok(None);
     }
 
-    Some(PathBuf::from(target))
+    Ok(Some(PathBuf::from(target)))
+}
+
+pub fn confirmation_like_target_failure(input: &str) -> Option<TargetResolutionFailure> {
+    let raw = input.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let sentences = segment_sentences(raw);
+    for sentence in sentences {
+        if let Some(failure) = extract_header_target_failure(&sentence) {
+            return Some(failure);
+        }
+        if let Some(failure) = extract_sentence_target_failure(&sentence) {
+            return Some(failure);
+        }
+    }
+    None
 }
 
 fn target_only_has_mutation(input: &str) -> bool {
@@ -163,10 +196,27 @@ fn extract_header_target(sentence: &str) -> Option<PathBuf> {
         return None;
     }
     let target = clean_target(target_text);
+    if crate::nl::language_core_ir_adapter::is_confirmation_token_like_target(&target) {
+        eprintln!("[IR-TRACE][TARGET_REJECTED] target={target} reason=ConfirmationTokenLike");
+        return None;
+    }
     if target.is_empty() || !looks_like_explicit_target_token(&target) {
         return None;
     }
     Some(PathBuf::from(target))
+}
+
+fn extract_header_target_failure(sentence: &str) -> Option<TargetResolutionFailure> {
+    let raw = sentence.trim();
+    let target_text = raw
+        .strip_prefix("Target:")
+        .or_else(|| raw.strip_prefix("target:"))
+        .or_else(|| raw.strip_prefix("対象:"))?
+        .trim();
+    if target_text.is_empty() || target_text.split_whitespace().count() != 1 {
+        return None;
+    }
+    confirmation_like_failure(clean_target(target_text))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -402,8 +452,35 @@ fn extract_sentence_target(sentence: &str) -> Option<PathBuf> {
         .split_whitespace()
         .find(|token| looks_like_explicit_target_token(token))
         .map(clean_target)
+        .inspect(|target| {
+            if crate::nl::language_core_ir_adapter::is_confirmation_token_like_target(target) {
+                eprintln!(
+                    "[IR-TRACE][TARGET_REJECTED] target={target} reason=ConfirmationTokenLike"
+                );
+            }
+        })
+        .filter(|target| {
+            !crate::nl::language_core_ir_adapter::is_confirmation_token_like_target(target)
+        })
         .filter(|target| !target.is_empty())
         .map(PathBuf::from)
+}
+
+fn extract_sentence_target_failure(sentence: &str) -> Option<TargetResolutionFailure> {
+    sentence
+        .split_whitespace()
+        .filter(|token| looks_like_explicit_target_token(token))
+        .map(clean_target)
+        .find_map(confirmation_like_failure)
+}
+
+fn confirmation_like_failure(target: String) -> Option<TargetResolutionFailure> {
+    if crate::nl::language_core_ir_adapter::is_confirmation_token_like_target(&target) {
+        eprintln!("[IR-TRACE][TARGET_REJECTED] target={target} reason=ConfirmationTokenLike");
+        Some(TargetResolutionFailure::ConfirmationTokenLike { raw: target })
+    } else {
+        None
+    }
 }
 
 fn segment_sentences(input: &str) -> Vec<String> {
@@ -621,6 +698,24 @@ mod tests {
             target_only_input_target("apps/cli/src/git_guard.rs の parser を変更"),
             None
         );
+    }
+
+    #[test]
+    fn confirmation_like_target_rejection_returns_typed_failure() {
+        assert_eq!(
+            target_only_input_resolution("Target: yes/no"),
+            Err(TargetResolutionFailure::ConfirmationTokenLike {
+                raw: "yes/no".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn confirmation_like_target_rejection_does_not_return_plain_none() {
+        assert!(matches!(
+            target_only_input_resolution("Target: yes/no"),
+            Err(TargetResolutionFailure::ConfirmationTokenLike { .. })
+        ));
     }
 
     #[test]

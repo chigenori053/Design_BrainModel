@@ -12,6 +12,8 @@
 
 use std::fmt;
 
+use crate::nl::normalization::{TargetResolutionFailure, confirmation_like_target_failure};
+
 // ── LanguageCoreIntent ────────────────────────────────────────────────────────
 
 /// LanguageCore が解釈した意味 Intent。
@@ -41,6 +43,8 @@ pub enum LanguageCoreIntent {
     },
     /// 適用要求（直前の検証済み Plan が必要）
     ApplyRequest,
+    /// 確認・適用ではない安全性レビュー要求
+    SafetyReview,
     /// 未分類
     Unknown { raw: String },
 }
@@ -49,8 +53,10 @@ pub enum LanguageCoreIntent {
 pub enum ClauseRole {
     PrimaryRequest,
     ReferencedConcept,
+    ReferencedToken,
     SafetyConstraint,
     ExecutionRequest,
+    MetaInstruction,
     Unknown,
 }
 
@@ -58,6 +64,11 @@ pub enum ClauseRole {
 pub struct ClassifiedClause {
     pub text: String,
     pub role: ClauseRole,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferencedToken {
+    ConfirmationLike(String),
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -96,6 +107,7 @@ pub enum PrimaryIntent {
     AnalyzeProject,
     ValidatePlan,
     ReviewValidatedPlan,
+    ReviewSafety,
     GenerateChangePlan,
     Apply,
     Unknown,
@@ -113,6 +125,7 @@ impl fmt::Display for LanguageCoreIntent {
             Self::GenerateChangePlan { .. } => write!(f, "GenerateChangePlan"),
             Self::RefactorRequest { .. } => write!(f, "RefactorRequest"),
             Self::ApplyRequest => write!(f, "ApplyRequest"),
+            Self::SafetyReview => write!(f, "SafetyReview"),
             Self::Unknown { raw } => write!(f, "Unknown({raw})"),
         }
     }
@@ -132,6 +145,7 @@ pub enum IrAction {
     GenerateChangePlan,
     ValidatePlan,
     ReviewValidatedPlan,
+    ReviewSafety,
     Refactor,
     Apply,
     Unknown,
@@ -166,6 +180,7 @@ impl fmt::Display for IrAction {
             Self::GenerateChangePlan => write!(f, "GenerateChangePlan"),
             Self::ValidatePlan => write!(f, "ValidatePlan"),
             Self::ReviewValidatedPlan => write!(f, "ReviewValidatedPlan"),
+            Self::ReviewSafety => write!(f, "ReviewSafety"),
             Self::Refactor => write!(f, "Refactor"),
             Self::Apply => write!(f, "Apply"),
             Self::Unknown => write!(f, "Unknown"),
@@ -232,6 +247,7 @@ pub struct IrIntentRequest {
     pub raw_input: String,
     pub confidence: f32,
     pub safety_constraints: SafetyConstraints,
+    pub target_failure: Option<TargetResolutionFailure>,
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -258,6 +274,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         PrimaryIntent::Apply => {
             return LanguageCoreIntent::ApplyRequest;
         }
+        PrimaryIntent::ReviewSafety => return LanguageCoreIntent::SafetyReview,
         PrimaryIntent::ValidatePlan
         | PrimaryIntent::ReviewValidatedPlan
         | PrimaryIntent::Unknown => {}
@@ -320,6 +337,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
 /// spec 5.2 の変換ルールに従う。
 pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrIntentRequest {
     let safety_constraints = extract_safety_constraints(raw_input);
+    let target_failure = confirmation_like_target_failure(raw_input);
     match intent {
         LanguageCoreIntent::ProjectStructureAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeProject,
@@ -328,6 +346,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.90,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::WorkspaceAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeWorkspace,
@@ -336,6 +355,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.85,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::DependencyAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeDependencies,
@@ -344,6 +364,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.85,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::ModuleStructureAnalyze => IrIntentRequest {
             action: IrAction::AnalyzeModuleStructure,
@@ -352,6 +373,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.85,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::FileAnalyze { file } => IrIntentRequest {
             action: IrAction::AnalyzeFile,
@@ -360,6 +382,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.95,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::SymbolAnalyze { symbol } => IrIntentRequest {
             action: IrAction::AnalyzeSymbol,
@@ -368,6 +391,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.90,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::GenerateChangePlan { target, .. } => IrIntentRequest {
             action: IrAction::GenerateChangePlan,
@@ -378,6 +402,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.80,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::RefactorRequest { target, .. } => IrIntentRequest {
             action: IrAction::Refactor,
@@ -389,6 +414,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.75,
             safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::ApplyRequest => IrIntentRequest {
             action: IrAction::Apply,
@@ -398,6 +424,16 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.95,
             safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::SafetyReview => IrIntentRequest {
+            action: IrAction::ReviewSafety,
+            target: IrTarget::None,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.85,
+            safety_constraints,
+            target_failure: target_failure.clone(),
         },
         LanguageCoreIntent::Unknown { .. } => IrIntentRequest {
             action: IrAction::Unknown,
@@ -406,6 +442,7 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             raw_input: raw_input.to_string(),
             confidence: 0.0,
             safety_constraints,
+            target_failure,
         },
     }
 }
@@ -427,6 +464,10 @@ pub fn classify_clauses(input: &str) -> Vec<ClassifiedClause> {
             let lower = clause.to_lowercase();
             let role = if is_safety_constraint(&lower) {
                 ClauseRole::SafetyConstraint
+            } else if is_referenced_token(&lower) {
+                ClauseRole::ReferencedToken
+            } else if is_meta_instruction(&lower) {
+                ClauseRole::MetaInstruction
             } else if is_explicit_analyze_primary(&lower) || is_explicit_plan_primary(&lower) {
                 ClauseRole::PrimaryRequest
             } else if is_explicit_apply(&lower) {
@@ -445,6 +486,12 @@ pub fn classify_clauses(input: &str) -> Vec<ClassifiedClause> {
 }
 
 pub fn select_primary_intent(clauses: &[ClassifiedClause]) -> PrimaryIntent {
+    if clauses
+        .iter()
+        .any(|clause| is_safety_review_primary(&clause.text.to_lowercase()))
+    {
+        return PrimaryIntent::ReviewSafety;
+    }
     if clauses
         .iter()
         .filter(|clause| clause.role == ClauseRole::PrimaryRequest)
@@ -527,7 +574,12 @@ fn emit_long_input_traces(
     }
     let referenced = clauses
         .iter()
-        .filter(|clause| clause.role == ClauseRole::ReferencedConcept)
+        .filter(|clause| {
+            matches!(
+                clause.role,
+                ClauseRole::ReferencedConcept | ClauseRole::ReferencedToken
+            )
+        })
         .map(|clause| referenced_label(&clause.text))
         .collect::<Vec<_>>()
         .join(",");
@@ -548,6 +600,14 @@ fn emit_long_input_traces(
         safety_constraints.no_git_operation,
         safety_constraints.no_external_command
     );
+    for clause in clauses
+        .iter()
+        .filter(|clause| clause.role == ClauseRole::ReferencedToken)
+    {
+        for token in referenced_tokens(&clause.text.to_lowercase()) {
+            eprintln!("[IR-TRACE][TOKEN_ISOLATION] token={token} role=ReferencedToken");
+        }
+    }
     if primary_intent == PrimaryIntent::AnalyzeProject {
         eprintln!(
             "[IR-TRACE][TARGET_RESOLUTION] target=WorkspaceRoot reason=AnalyzeProjectDefault"
@@ -560,6 +620,7 @@ fn primary_reason(intent: PrimaryIntent) -> &'static str {
         PrimaryIntent::AnalyzeProject => "ExplicitAnalyzePrimaryRequest",
         PrimaryIntent::ValidatePlan => "ExplicitValidatePrimaryRequest",
         PrimaryIntent::ReviewValidatedPlan => "NoApplyWithValidatedPlan",
+        PrimaryIntent::ReviewSafety => "ExplicitSafetyReviewPrimaryRequest",
         PrimaryIntent::GenerateChangePlan => "ExplicitPlanPrimaryRequest",
         PrimaryIntent::Apply => "ExplicitApplyRequest",
         PrimaryIntent::Unknown => "Unknown",
@@ -568,7 +629,9 @@ fn primary_reason(intent: PrimaryIntent) -> &'static str {
 
 fn referenced_label(text: &str) -> &'static str {
     let lower = text.to_lowercase();
-    if lower.contains("apply guard") {
+    if is_referenced_token(&lower) {
+        "ReferencedToken"
+    } else if lower.contains("apply guard") {
         "ApplyGuard"
     } else if lower.contains("preview") {
         "PreviewConfirmation"
@@ -577,6 +640,51 @@ fn referenced_label(text: &str) -> &'static str {
     } else {
         "ReferencedConcept"
     }
+}
+
+pub fn is_confirmation_token_like_target(s: &str) -> bool {
+    matches!(
+        s.trim().to_ascii_lowercase().as_str(),
+        "y" | "n" | "yes" | "no" | "yes/no" | "y/n" | "confirmation"
+    )
+}
+
+fn is_referenced_token(lower: &str) -> bool {
+    lower.contains("yes/no")
+        || lower.contains("y/n")
+        || lower.contains("y や n")
+        || lower.contains("yes と no")
+        || lower.contains("yes ではなく")
+        || lower.contains("n という文字")
+}
+
+fn referenced_tokens(lower: &str) -> Vec<&'static str> {
+    let mut tokens = Vec::new();
+    if lower.contains("yes/no") {
+        tokens.push("yes/no");
+    }
+    if lower.contains("y/n") || lower.contains("y や n") {
+        tokens.push("y");
+        tokens.push("n");
+    }
+    if lower.contains("confirmation") {
+        tokens.push("confirmation");
+    }
+    tokens
+}
+
+fn is_meta_instruction(lower: &str) -> bool {
+    lower.contains("confirmation として扱わず")
+        || lower.contains("確認ではなく")
+        || lower.contains("自然言語入力として解釈")
+        || lower.contains("natural language")
+}
+
+fn is_safety_review_primary(lower: &str) -> bool {
+    (lower.contains("安全性") && lower.contains("評価"))
+        || lower.contains("設計上の安全性")
+        || lower.contains("自然言語入力として解釈")
+        || lower.contains("確認ではなく評価")
 }
 
 fn is_explicit_analyze_primary(lower: &str) -> bool {
@@ -1005,5 +1113,57 @@ mod tests {
         let input = analyze_request_with_referenced_plan_terms();
         let ir = language_core_to_ir(classify_language_core_intent(&input), &input);
         assert_eq!(ir.target, IrTarget::WorkspaceRoot);
+    }
+
+    #[test]
+    fn confirmation_sentence_yes_no_is_not_confirmation() {
+        assert!(!matches!(
+            classify_language_core_intent("yes/no の確認ではなく、文章で評価してください"),
+            LanguageCoreIntent::ApplyRequest
+        ));
+    }
+
+    #[test]
+    fn confirmation_sentence_y_n_is_not_confirmation() {
+        assert!(!matches!(
+            classify_language_core_intent(
+                "y や n という文字が含まれていても confirmation として扱わない"
+            ),
+            LanguageCoreIntent::ApplyRequest
+        ));
+    }
+
+    #[test]
+    fn target_yes_no_is_rejected() {
+        assert!(is_confirmation_token_like_target("yes/no"));
+    }
+
+    #[test]
+    fn target_y_n_is_rejected() {
+        assert!(is_confirmation_token_like_target("y/n"));
+    }
+
+    #[test]
+    fn long_input_yes_no_classified_as_referenced_token() {
+        let clauses =
+            classify_clauses("この変更案について yes/no の確認ではなく評価してください。");
+        assert!(
+            clauses
+                .iter()
+                .any(|clause| clause.role == ClauseRole::ReferencedToken),
+            "{clauses:?}"
+        );
+    }
+
+    #[test]
+    fn long_input_y_n_classified_as_referenced_token() {
+        let clauses =
+            classify_clauses("y や n という文字が含まれていても confirmation として扱わない。");
+        assert!(
+            clauses
+                .iter()
+                .any(|clause| clause.role == ClauseRole::ReferencedToken),
+            "{clauses:?}"
+        );
     }
 }

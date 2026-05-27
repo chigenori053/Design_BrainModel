@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
-use crate::nl::normalization::normalize_runtime_input;
+use crate::nl::normalization::{
+    RuntimeNormalizationRejection, confirmation_like_target_failure, normalize_runtime_input,
+};
 use crate::nl::planner::InstructionPlan;
 use crate::nl::runtime_intent::RuntimeIntent;
 use crate::pipeline::PipelineState;
@@ -509,6 +511,13 @@ fn dispatch_normalized_runtime_intent(
     input: &str,
 ) -> Option<Vec<crate::tui::state::RuntimeNarrativeEvent>> {
     let normalized = normalize_runtime_input(input)?;
+    if matches!(
+        normalized.rejection,
+        Some(RuntimeNormalizationRejection::UnresolvedTarget)
+    ) && confirmation_like_target_failure(input).is_some()
+    {
+        return None;
+    }
     match normalized.command.intent {
         RuntimeIntent::Preview => {
             let Some(target) = normalized.command.target else {
