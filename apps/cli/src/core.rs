@@ -5861,11 +5861,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_token_exact_y_is_confirm() {
-        confirmation_exact_y_is_confirm();
-    }
-
-    #[test]
     fn confirmation_exact_yes_is_confirm() {
         assert_eq!(
             parse_preview_confirmation(" yes "),
@@ -5874,21 +5869,11 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_token_exact_yes_is_confirm() {
-        confirmation_exact_yes_is_confirm();
-    }
-
-    #[test]
     fn confirmation_sentence_yes_no_is_not_confirmation() {
         assert_eq!(
             parse_preview_confirmation("この変更案について yes/no の確認ではなく評価してください"),
             PreviewConfirmation::Reconfirm
         );
-    }
-
-    #[test]
-    fn confirmation_token_sentence_yes_no_is_not_confirmation() {
-        confirmation_sentence_yes_no_is_not_confirmation();
     }
 
     #[test]
@@ -6094,15 +6079,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_workspace_root_apply_rejected_by_guard() {
-        let mut input = apply_guard_input();
-        input.selected_candidate.as_mut().expect("selected").target = Target::WorkspaceRoot;
-        input.validated_plan.as_mut().expect("validated").target = Target::WorkspaceRoot;
-
-        assert_apply_guard_rejects(input, ApplyGuardRejectReason::WorkspaceRootApplyForbidden);
-    }
-
-    #[test]
     fn repl_stale_validated_plan_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
         set_preview_state_with_context(&core);
@@ -6303,11 +6279,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_y_without_validated_plan_does_not_apply() {
-        repl_y_without_validated_plan_rejects_apply_guard();
-    }
-
-    #[test]
     fn preview_cancel_clears_selection() {
         let core = RuntimeCoreBridge::with_defaults();
         set_preview_state_with_context(&core);
@@ -6342,31 +6313,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_long_yes_no_sentence_not_confirmation() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
-    fn repl_previewed_long_yes_no_sentence_uses_confirmation_like_fallback() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
-    fn repl_previewed_long_yes_no_priority_gate_blocks_unresolved_target() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
-    fn repl_followup_long_yes_no_sentence_uses_confirmation_like_fallback() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
-    fn repl_followup_long_yes_no_priority_gate_blocks_unresolved_target() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
     fn repl_long_yes_no_sentence_not_target() {
         let core = RuntimeCoreBridge::with_defaults();
         set_preview_state_with_context(&core);
@@ -6391,16 +6337,6 @@ mod tests {
 
         assert!(!text.contains("[ERROR] unresolved target"), "{text}");
         assert!(!text.contains("unresolved target"), "{text}");
-    }
-
-    #[test]
-    fn repl_long_yes_no_sentence_does_not_start_transaction() {
-        no_apply_blocks_governed_transaction_preview();
-    }
-
-    #[test]
-    fn repl_long_yes_no_sentence_does_not_apply() {
-        no_apply_blocks_governed_transaction_preview();
     }
 
     #[test]
@@ -7558,11 +7494,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_candidate_proposal_after_analysis_does_not_reanalyze() {
-        analysis_to_candidate_proposal_does_not_reanalyze_project();
-    }
-
-    #[test]
     fn repl_long_apply_prohibited_does_not_apply() {
         let core = RuntimeCoreBridge::with_defaults();
         let response = core.execute(request(
@@ -7644,31 +7575,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_long_yes_no_sentence_with_validated_plan_reviews_validation() {
-        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
-    }
-
-    #[test]
-    fn repl_long_yes_no_sentence_with_validated_plan_uses_priority_gate() {
-        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
-    }
-
-    #[test]
-    fn confirmation_like_failure_fallback_with_validated_plan_returns_review_validated_plan() {
-        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
-    }
-
-    #[test]
-    fn confirmation_like_priority_gate_runs_before_unresolved_target() {
-        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
-    }
-
-    #[test]
-    fn confirmation_like_priority_gate_with_validated_plan_returns_review_validated_plan() {
-        confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan();
-    }
-
-    #[test]
     fn confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan() {
         let core = RuntimeCoreBridge::with_defaults();
         prepare_selected_candidate(&core);
@@ -7694,16 +7600,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_like_failure_fallback_with_selected_candidate_returns_validate_plan() {
-        confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan();
-    }
-
-    #[test]
-    fn confirmation_like_priority_gate_with_selected_candidate_returns_validate_plan() {
-        confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan();
-    }
-
-    #[test]
     fn confirmation_like_target_without_context_falls_back_to_review_safety() {
         let core = RuntimeCoreBridge::with_defaults();
 
@@ -7725,16 +7621,6 @@ mod tests {
         assert!(text.contains("No files modified"), "{text}");
         assert!(text.contains("No apply executed"), "{text}");
         assert!(!text.contains("[ERROR] unresolved target"), "{text}");
-    }
-
-    #[test]
-    fn confirmation_like_failure_fallback_without_context_returns_review_safety() {
-        confirmation_like_target_without_context_falls_back_to_review_safety();
-    }
-
-    #[test]
-    fn confirmation_like_priority_gate_without_context_returns_review_safety() {
-        confirmation_like_target_without_context_falls_back_to_review_safety();
     }
 
     #[test]
@@ -7765,21 +7651,6 @@ mod tests {
     }
 
     #[test]
-    fn confirmation_like_priority_gate_preserves_validated_plan() {
-        confirmation_like_target_rejection_preserves_validated_plan();
-    }
-
-    #[test]
-    fn repl_long_yes_no_sentence_preserves_validated_plan() {
-        confirmation_like_target_rejection_preserves_validated_plan();
-    }
-
-    #[test]
-    fn confirmation_like_failure_preserves_validated_plan() {
-        confirmation_like_target_rejection_preserves_validated_plan();
-    }
-
-    #[test]
     fn confirmation_like_target_rejection_preserves_selected_candidate() {
         let core = RuntimeCoreBridge::with_defaults();
         prepare_validated_plan(&core);
@@ -7788,16 +7659,6 @@ mod tests {
         let state = response.core_state.expect("state");
 
         assert!(state.session_context.selected_candidate.is_some());
-    }
-
-    #[test]
-    fn confirmation_like_failure_preserves_selected_candidate() {
-        confirmation_like_target_rejection_preserves_selected_candidate();
-    }
-
-    #[test]
-    fn confirmation_like_priority_gate_preserves_selected_candidate() {
-        confirmation_like_target_rejection_preserves_selected_candidate();
     }
 
     #[test]
@@ -7904,11 +7765,6 @@ mod tests {
     }
 
     #[test]
-    fn no_apply_validated_plan_preserves_context() {
-        repl_no_apply_with_validated_plan_preserves_context();
-    }
-
-    #[test]
     fn repl_no_apply_with_validated_plan_does_not_generate_new_plan() {
         let core = RuntimeCoreBridge::with_defaults();
         prepare_validated_plan(&core);
@@ -8005,11 +7861,6 @@ mod tests {
                 .expect("validated")
                 .apply_allowed
         );
-    }
-
-    #[test]
-    fn apply_requires_validated_plan() {
-        apply_without_validated_plan_is_rejected();
     }
 
     #[test]

@@ -1155,11 +1155,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_precore_runtime_preview_with_target_works() {
-        repl_precore_explicit_runtime_preview_with_target_works();
-    }
-
-    #[test]
     fn repl_precore_confirmation_exact_token_still_works() {
         let output = run_preview_confirmation_script("y");
 
@@ -1319,11 +1314,6 @@ mod tests {
     }
 
     #[test]
-    fn repl_workspace_root_apply_is_rejected() {
-        repl_apply_without_validation_is_rejected();
-    }
-
-    #[test]
     fn repl_plan_validate_apply_happy_path() {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -1354,21 +1344,6 @@ mod tests {
         assert!(!output.contains("git add"), "{output}");
         assert!(!output.contains("git commit"), "{output}");
         assert!(!output.contains("git push"), "{output}");
-    }
-
-    #[test]
-    fn repl_two_turn_analysis_then_plan_uses_previous_context() {
-        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
-    }
-
-    #[test]
-    fn repl_two_turn_analysis_then_plan_is_plan_only() {
-        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
-    }
-
-    #[test]
-    fn repl_two_turn_analysis_then_plan_does_not_apply() {
-        repl_two_turn_analysis_then_plan_does_not_unresolved_target();
     }
 
     #[test]
