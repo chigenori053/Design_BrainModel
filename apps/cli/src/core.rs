@@ -5145,6 +5145,7 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::MutexGuard;
     use std::sync::{Mutex, OnceLock};
     use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
 
@@ -5159,6 +5160,77 @@ mod tests {
     fn current_dir_lock() -> &'static Mutex<()> {
         static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
         LOCK.get_or_init(|| Mutex::new(()))
+    }
+
+    struct CurrentDirGuard<'a> {
+        _lock: MutexGuard<'a, ()>,
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard<'_> {
+        fn enter(root: &Path) -> Self {
+            let lock = current_dir_lock().lock().expect("cwd lock");
+            let previous = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(root).expect("set cwd");
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for CurrentDirGuard<'_> {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("restore cwd");
+        }
+    }
+
+    struct SafeApplyFixture {
+        _tempdir: tempfile::TempDir,
+        root: PathBuf,
+        target: PathBuf,
+    }
+
+    impl SafeApplyFixture {
+        fn new() -> Self {
+            let tempdir = tempfile::tempdir().expect("tempdir");
+            let root = tempdir.path().to_path_buf();
+            let src = root.join("src");
+            std::fs::create_dir_all(&src).expect("src dir");
+            let target = root.join("Cargo.toml");
+            std::fs::write(&target, "[package]\nname = \"fixture\"\n").expect("write target");
+            std::fs::write(src.join("lib.rs"), "pub fn fixture() {}\n").expect("write lib");
+            Self {
+                _tempdir: tempdir,
+                root,
+                target,
+            }
+        }
+
+        fn before_contents(&self) -> String {
+            std::fs::read_to_string(&self.target).expect("read fixture target")
+        }
+
+        fn planned_contents(&self) -> String {
+            format!("{}# DBM safe apply candidate 1\n", self.before_contents())
+        }
+
+        fn safe_apply_state(&self, planned_content: &str) -> (RuntimeCoreBridge, CoreState) {
+            safe_apply_state("Cargo.toml", planned_content)
+        }
+
+        fn with_current_dir<T>(&self, run: impl FnOnce() -> T) -> T {
+            with_current_dir(&self.root, run)
+        }
+    }
+
+    fn repo_root() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("apps dir")
+            .parent()
+            .expect("repo root")
+            .to_path_buf()
     }
 
     fn init_git_repo(root: &Path) {
@@ -5191,12 +5263,8 @@ mod tests {
     }
 
     fn with_current_dir<T>(root: &Path, run: impl FnOnce() -> T) -> T {
-        let _guard = current_dir_lock().lock().expect("cwd lock");
-        let previous = std::env::current_dir().expect("cwd");
-        std::env::set_current_dir(root).expect("set cwd");
-        let result = run();
-        std::env::set_current_dir(previous).expect("restore cwd");
-        result
+        let _guard = CurrentDirGuard::enter(root);
+        run()
     }
 
     fn request_with_state(
@@ -5540,51 +5608,56 @@ mod tests {
 
     #[test]
     fn safe_apply_creates_transaction() {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
         let tx = create_safe_apply_transaction(
             1,
             42,
             Target::File("Cargo.toml".to_string()),
-            PathBuf::from("Cargo.toml"),
-            "before\n".to_string(),
+            fixture.target.clone(),
+            before,
             7,
         );
 
         assert_eq!(tx.candidate_id, 1);
         assert_eq!(tx.validated_plan_hash, 42);
         assert_eq!(tx.target, Target::File("Cargo.toml".to_string()));
+        assert!(tx.rollback_snapshot.target_path.starts_with(&fixture.root));
         assert_eq!(tx.planned_diff_checksum, 7);
     }
 
     #[test]
     fn safe_apply_creates_rollback_snapshot() {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
         let tx = create_safe_apply_transaction(
             1,
             42,
             Target::File("Cargo.toml".to_string()),
-            PathBuf::from("Cargo.toml"),
-            "before\n".to_string(),
+            fixture.target.clone(),
+            before.clone(),
             7,
         );
 
-        assert_eq!(tx.rollback_snapshot.original_contents, "before\n");
-        assert_eq!(
-            tx.rollback_snapshot.target_path,
-            PathBuf::from("Cargo.toml")
-        );
+        assert_eq!(tx.rollback_snapshot.original_contents, before);
+        assert_eq!(tx.rollback_snapshot.target_path, fixture.target);
+        assert!(tx.rollback_snapshot.target_path.starts_with(&fixture.root));
     }
 
     #[test]
     fn safe_apply_records_pre_checksum() {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
         let tx = create_safe_apply_transaction(
             1,
             42,
             Target::File("Cargo.toml".to_string()),
-            PathBuf::from("Cargo.toml"),
-            "before\n".to_string(),
+            fixture.target,
+            before.clone(),
             7,
         );
 
-        assert_eq!(tx.pre_apply_checksum, checksum_u64("before\n".as_bytes()));
+        assert_eq!(tx.pre_apply_checksum, checksum_u64(before.as_bytes()));
         assert_eq!(
             tx.pre_apply_checksum,
             tx.rollback_snapshot.original_checksum
@@ -5593,12 +5666,12 @@ mod tests {
 
     #[test]
     fn safe_apply_requires_apply_guard_allow() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let (core, state) = safe_apply_state("Cargo.toml", "after\n");
+        let fixture = SafeApplyFixture::new();
+        let (core, state) = fixture.safe_apply_state("after\n");
         let mut events = Vec::new();
 
         let result = core.execute_safe_apply(
-            temp.path(),
+            &fixture.root,
             &state,
             &ApplyGuardDecision::Reject {
                 reason: ApplyGuardRejectReason::MissingValidatedPlan,
@@ -5616,14 +5689,14 @@ mod tests {
 
     #[test]
     fn safe_apply_rejects_without_validated_plan() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(temp.path().join("Cargo.toml"), "before\n").expect("write");
-        let (core, mut state) = safe_apply_state("Cargo.toml", "after\n");
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let (core, mut state) = fixture.safe_apply_state("after\n");
         state.session_context.validated_plan = None;
         let mut events = Vec::new();
 
         let result = core.execute_safe_apply(
-            temp.path(),
+            &fixture.root,
             &state,
             &ApplyGuardDecision::Allow {
                 candidate_id: 1,
@@ -5640,19 +5713,19 @@ mod tests {
             }
         );
         assert_eq!(
-            std::fs::read_to_string(temp.path().join("Cargo.toml")).expect("read"),
-            "before\n"
+            std::fs::read_to_string(&fixture.target).expect("read"),
+            before
         );
     }
 
     #[test]
     fn safe_apply_rejects_workspace_root() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let (core, state) = safe_apply_state("Cargo.toml", "after\n");
+        let fixture = SafeApplyFixture::new();
+        let (core, state) = fixture.safe_apply_state("after\n");
         let mut events = Vec::new();
 
         let result = core.execute_safe_apply(
-            temp.path(),
+            &fixture.root,
             &state,
             &ApplyGuardDecision::Allow {
                 candidate_id: 1,
@@ -5672,18 +5745,17 @@ mod tests {
 
     #[test]
     fn safe_apply_rolls_back_on_checksum_mismatch() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        std::fs::write(&target, "before\n").expect("write");
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
         let tx = create_safe_apply_transaction(
             1,
             42,
             Target::File("Cargo.toml".to_string()),
-            target.clone(),
-            "before\n".to_string(),
+            fixture.target.clone(),
+            before.clone(),
             7,
         );
-        std::fs::write(&target, "partial\n").expect("partial");
+        std::fs::write(&fixture.target, "partial\n").expect("partial");
         let mut events = Vec::new();
 
         let result = rollback_safe_apply(&tx, ApplyFailureReason::ChecksumMismatch, &mut events);
@@ -5695,20 +5767,22 @@ mod tests {
                 reason: ApplyFailureReason::ChecksumMismatch
             }
         );
-        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert_eq!(
+            std::fs::read_to_string(&fixture.target).expect("read"),
+            before
+        );
         assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=ChecksumMismatch"))));
     }
 
     #[test]
     fn safe_apply_rolls_back_on_post_validation_failure() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        std::fs::write(&target, "before\n").expect("write");
-        let (core, state) = safe_apply_state("Cargo.toml", "DBM_POST_VALIDATION_FAIL\n");
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let (core, state) = fixture.safe_apply_state("DBM_POST_VALIDATION_FAIL\n");
         let guard = apply_guard_decide(ApplyGuardInput::from(&state));
         let mut events = Vec::new();
 
-        let result = core.execute_safe_apply(temp.path(), &state, &guard, &mut events);
+        let result = core.execute_safe_apply(&fixture.root, &state, &guard, &mut events);
 
         assert!(matches!(
             result,
@@ -5717,8 +5791,65 @@ mod tests {
                 ..
             }
         ));
-        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert_eq!(
+            std::fs::read_to_string(&fixture.target).expect("read"),
+            before
+        );
         assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=PostValidationFailed"))));
+    }
+
+    #[test]
+    fn safe_apply_uses_isolated_fixture_workspace() {
+        let fixture = SafeApplyFixture::new();
+        let repo_cargo_before =
+            std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("repo cargo before");
+        let planned = fixture.planned_contents();
+        let (core, state) = fixture.safe_apply_state(&planned);
+        let guard = apply_guard_decide(ApplyGuardInput::from(&state));
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(&fixture.root, &state, &guard, &mut events);
+
+        assert!(matches!(result, ApplyResult::Applied { .. }));
+        assert!(fixture.target.starts_with(&fixture.root));
+        assert!(
+            std::fs::read_to_string(&fixture.target)
+                .expect("fixture after")
+                .contains("# DBM safe apply candidate 1")
+        );
+        assert_eq!(
+            std::fs::read_to_string(repo_root().join("Cargo.toml")).expect("repo cargo after"),
+            repo_cargo_before
+        );
+        assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_BEGIN]") && message.contains("target=File(Cargo.toml)"))));
+        assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][ROLLBACK_SNAPSHOT_CREATED]"))));
+        assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_SUCCESS]"))));
+    }
+
+    #[test]
+    fn safe_apply_tests_do_not_modify_repository_worktree() {
+        let repo_root = repo_root();
+        let repo_cargo = repo_root.join("Cargo.toml");
+        let cli_cargo = repo_root.join("apps/cli/Cargo.toml");
+        let repo_cargo_before = std::fs::read_to_string(&repo_cargo).expect("repo cargo before");
+        let cli_cargo_before = std::fs::read_to_string(&cli_cargo).expect("cli cargo before");
+        let fixture = SafeApplyFixture::new();
+        let planned = fixture.planned_contents();
+        let (core, state) = fixture.safe_apply_state(&planned);
+        let guard = apply_guard_decide(ApplyGuardInput::from(&state));
+        let mut events = Vec::new();
+
+        let result = core.execute_safe_apply(&fixture.root, &state, &guard, &mut events);
+
+        assert!(matches!(result, ApplyResult::Applied { .. }));
+        assert_eq!(
+            std::fs::read_to_string(&repo_cargo).expect("repo cargo after"),
+            repo_cargo_before
+        );
+        assert_eq!(
+            std::fs::read_to_string(&cli_cargo).expect("cli cargo after"),
+            cli_cargo_before
+        );
     }
 
     #[test]
@@ -6001,16 +6132,11 @@ mod tests {
 
     #[test]
     fn safe_apply_rejects_stale_validated_plan_hash() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        let before = "[package]\nname = \"fixture\"\n";
-        std::fs::write(&target, before).expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
-            let (fixture_core, mut state) = safe_apply_state(
-                "Cargo.toml",
-                "[package]\nname = \"fixture\"\n# DBM safe apply candidate 1\n",
-            );
+            let (fixture_core, mut state) = fixture.safe_apply_state(&fixture.planned_contents());
             state
                 .session_context
                 .validated_plan
@@ -6029,21 +6155,20 @@ mod tests {
             core.execute(request("y"))
         });
 
-        assert_guard_rejected_without_apply(&response, "PlanHashMismatch", (&target, before));
+        assert_guard_rejected_without_apply(
+            &response,
+            "PlanHashMismatch",
+            (&fixture.target, &before),
+        );
     }
 
     #[test]
     fn safe_apply_rejects_validated_plan_candidate_mismatch() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        let before = "[package]\nname = \"fixture\"\n";
-        std::fs::write(&target, before).expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
-            let (fixture_core, mut state) = safe_apply_state(
-                "Cargo.toml",
-                "[package]\nname = \"fixture\"\n# DBM safe apply candidate 1\n",
-            );
+            let (fixture_core, mut state) = fixture.safe_apply_state(&fixture.planned_contents());
             state
                 .session_context
                 .validated_plan
@@ -6062,21 +6187,20 @@ mod tests {
             core.execute(request("y"))
         });
 
-        assert_guard_rejected_without_apply(&response, "CandidateMismatch", (&target, before));
+        assert_guard_rejected_without_apply(
+            &response,
+            "CandidateMismatch",
+            (&fixture.target, &before),
+        );
     }
 
     #[test]
     fn safe_apply_rejects_missing_preview_snapshot_even_with_validated_plan() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        let before = "[package]\nname = \"fixture\"\n";
-        std::fs::write(&target, before).expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
-            let (fixture_core, mut state) = safe_apply_state(
-                "Cargo.toml",
-                "[package]\nname = \"fixture\"\n# DBM safe apply candidate 1\n",
-            );
+            let (fixture_core, mut state) = fixture.safe_apply_state(&fixture.planned_contents());
             state.preview_snapshot = None;
             *core.pending_files.lock().expect("pending lock") = fixture_core
                 .pending_files
@@ -6090,23 +6214,19 @@ mod tests {
             core.execute(request("y"))
         });
 
-        assert_guard_rejected_without_apply(&response, "MissingPreviewSnapshot", (&target, before));
+        assert_guard_rejected_without_apply(
+            &response,
+            "MissingPreviewSnapshot",
+            (&fixture.target, &before),
+        );
     }
 
     #[test]
     fn repl_validated_preview_y_passes_apply_guard() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\n",
-        )
-        .expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
-            let (fixture_core, state) = safe_apply_state(
-                "Cargo.toml",
-                "[package]\nname = \"fixture\"\n# DBM safe apply candidate 1\n",
-            );
+            let (fixture_core, state) = fixture.safe_apply_state(&fixture.planned_contents());
             *core.pending_files.lock().expect("pending lock") = fixture_core
                 .pending_files
                 .lock()
@@ -6126,13 +6246,8 @@ mod tests {
 
     #[test]
     fn repl_validated_preview_y_executes_safe_apply() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        std::fs::write(
-            temp.path().join("Cargo.toml"),
-            "[package]\nname = \"fixture\"\n",
-        )
-        .expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
             core.execute(request("このプロジェクトの構造を解析して"));
             core.execute(request(
@@ -6150,7 +6265,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_BEGIN]"))));
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_SUCCESS]"))));
         assert!(
-            std::fs::read_to_string(temp.path().join("Cargo.toml"))
+            std::fs::read_to_string(&fixture.target)
                 .expect("read")
                 .contains("# DBM safe apply candidate 1")
         );
@@ -6158,13 +6273,11 @@ mod tests {
 
     #[test]
     fn repl_apply_failure_rolls_back() {
-        let temp = tempfile::tempdir().expect("tempdir");
-        let target = temp.path().join("Cargo.toml");
-        std::fs::write(&target, "before\n").expect("write");
-        let response = with_current_dir(temp.path(), || {
+        let fixture = SafeApplyFixture::new();
+        let before = fixture.before_contents();
+        let response = fixture.with_current_dir(|| {
             let core = RuntimeCoreBridge::with_defaults();
-            let (fixture_core, state) =
-                safe_apply_state("Cargo.toml", "DBM_POST_VALIDATION_FAIL\n");
+            let (fixture_core, state) = fixture.safe_apply_state("DBM_POST_VALIDATION_FAIL\n");
             *core.pending_files.lock().expect("pending lock") = fixture_core
                 .pending_files
                 .lock()
@@ -6182,7 +6295,10 @@ mod tests {
         assert_eq!(state.status, PipelineState::Previewed);
         assert!(state.session_context.validated_plan.is_some());
         assert!(state.session_context.selected_candidate.is_some());
-        assert_eq!(std::fs::read_to_string(&target).expect("read"), "before\n");
+        assert_eq!(
+            std::fs::read_to_string(&fixture.target).expect("read"),
+            before
+        );
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK]"))));
     }
 

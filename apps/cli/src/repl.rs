@@ -712,6 +712,7 @@ mod tests {
     use crate::nl::session::ConversationState;
     use crate::planner::PlannerMode;
     use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     struct CountingCore {
         calls: AtomicUsize,
@@ -741,6 +742,47 @@ mod tests {
         }
     }
 
+    struct CurrentDirGuard<'a> {
+        _lock: MutexGuard<'a, ()>,
+        previous: PathBuf,
+    }
+
+    impl CurrentDirGuard<'_> {
+        fn enter(root: &Path) -> Self {
+            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+            let lock = LOCK
+                .get_or_init(|| Mutex::new(()))
+                .lock()
+                .expect("cwd lock");
+            let previous = std::env::current_dir().expect("cwd");
+            std::env::set_current_dir(root).expect("set cwd");
+            Self {
+                _lock: lock,
+                previous,
+            }
+        }
+    }
+
+    impl Drop for CurrentDirGuard<'_> {
+        fn drop(&mut self) {
+            std::env::set_current_dir(&self.previous).expect("restore cwd");
+        }
+    }
+
+    fn run_repl_with_core_in_workspace<R, W>(
+        workspace_root: PathBuf,
+        reader: &mut R,
+        writer: &mut W,
+        core: &dyn CoreExecutor,
+    ) -> Result<(), String>
+    where
+        R: BufRead,
+        W: Write,
+    {
+        let _guard = CurrentDirGuard::enter(&workspace_root);
+        run_repl_with_core(workspace_root, reader, writer, core)
+    }
+
     fn run_preview_confirmation_script(confirm_input: &str) -> String {
         let temp = tempfile::tempdir().expect("tempdir");
         std::fs::write(
@@ -755,7 +797,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         String::from_utf8(output).expect("utf8")
     }
@@ -932,7 +974,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -954,7 +996,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -976,7 +1018,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -999,7 +1041,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1020,7 +1062,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1039,7 +1081,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1086,7 +1128,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1104,7 +1146,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1134,7 +1176,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1156,7 +1198,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1195,7 +1237,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1218,7 +1260,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1242,7 +1284,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1268,7 +1310,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1295,7 +1337,7 @@ mod tests {
         let mut output = Vec::new();
         let core = RuntimeCoreBridge::with_defaults();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1340,7 +1382,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
         let status_lines = output
@@ -1365,7 +1407,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
 
         assert_eq!(core.calls(), 0);
@@ -1397,7 +1439,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
         let output = String::from_utf8(output).expect("utf8");
 
@@ -1415,7 +1457,7 @@ mod tests {
         let mut output = Vec::new();
         let core = CountingCore::new();
 
-        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
 
         assert_eq!(core.calls(), 1);
