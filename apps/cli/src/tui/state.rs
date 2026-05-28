@@ -290,7 +290,7 @@ impl UiEvent {
             Self::Execution { step } => step.clone(),
             Self::Preview { diff } => format!("Preview generated ({} lines)", diff.len()),
             Self::Diff { file, changes } => {
-                format!("Applied {} changes to {}", changes.len(), file)
+                format!("Previewed {} changes to {}", changes.len(), file)
             }
             Self::Result { message }
             | Self::Runtime { message }
@@ -1533,6 +1533,24 @@ mod tests {
         assert!(state.active_transaction.is_none());
         assert!(state.active_transaction_id.is_none());
         assert!(state.active_target.is_none());
+    }
+
+    #[test]
+    fn preview_diff_label_renders_previewed_not_applied() {
+        let text = UiEvent::Diff {
+            file: "Cargo.toml".to_string(),
+            changes: vec![DiffChunk {
+                old_line: Some(1),
+                new_line: Some(1),
+                old: Some("version = \"0.1.0\"".to_string()),
+                new: Some("version = \"0.1.1\"".to_string()),
+            }],
+        }
+        .text();
+
+        assert!(text.contains("Previewed"));
+        assert!(!text.contains("Applied"));
+        assert!(text.contains("Cargo.toml"));
     }
 
     #[test]

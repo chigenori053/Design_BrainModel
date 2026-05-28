@@ -523,6 +523,26 @@ pub fn select_primary_intent(clauses: &[ClassifiedClause]) -> PrimaryIntent {
     PrimaryIntent::Unknown
 }
 
+pub fn is_candidate_proposal_intent(lower: &str) -> bool {
+    [
+        "候補",
+        "提案",
+        "修正候補",
+        "修正案",
+        "改善案",
+        "安全な修正",
+        "最小で安全",
+        "3つ提案",
+        "candidate",
+        "proposal",
+        "change plan",
+        "safe fix",
+        "smallest safe change",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
 pub fn extract_safety_constraints(input: &str) -> SafetyConstraints {
     extract_safety_constraints_from_clauses(&classify_clauses(input))
 }
@@ -542,6 +562,7 @@ fn extract_safety_constraints_from_clauses(clauses: &[ClassifiedClause]) -> Safe
             }
             if lower.contains("ファイル変更しない")
                 || (lower.contains("ファイル変更") && contains_no_execute(&lower))
+                || (lower.contains("修正") && contains_no_execute(&lower))
                 || lower.contains("file write")
                 || lower.contains("files modified")
             {
@@ -591,7 +612,7 @@ fn emit_long_input_traces(
     eprintln!(
         "[IR-TRACE][PRIMARY_INTENT] selected={:?} reason={}",
         primary_intent,
-        primary_reason(primary_intent)
+        primary_reason(primary_intent, clauses)
     );
     eprintln!(
         "[IR-TRACE][SAFETY_CONSTRAINTS] no_apply={} no_file_write={} no_git_operation={} no_external_command={}",
@@ -615,12 +636,20 @@ fn emit_long_input_traces(
     }
 }
 
-fn primary_reason(intent: PrimaryIntent) -> &'static str {
+fn primary_reason(intent: PrimaryIntent, clauses: &[ClassifiedClause]) -> &'static str {
     match intent {
         PrimaryIntent::AnalyzeProject => "ExplicitAnalyzePrimaryRequest",
         PrimaryIntent::ValidatePlan => "ExplicitValidatePrimaryRequest",
         PrimaryIntent::ReviewValidatedPlan => "NoApplyWithValidatedPlan",
         PrimaryIntent::ReviewSafety => "ExplicitSafetyReviewPrimaryRequest",
+        PrimaryIntent::GenerateChangePlan
+            if clauses.iter().any(|clause| {
+                let lower = clause.text.to_lowercase();
+                has_analysis_result_reference(&lower) && is_candidate_proposal_intent(&lower)
+            }) =>
+        {
+            "AnalysisToCandidateProposal"
+        }
         PrimaryIntent::GenerateChangePlan => "ExplicitPlanPrimaryRequest",
         PrimaryIntent::Apply => "ExplicitApplyRequest",
         PrimaryIntent::Unknown => "Unknown",
@@ -713,9 +742,36 @@ fn is_explicit_plan_primary(lower: &str) -> bool {
         "変更プランを作成して",
         "安全な小規模修正プランを作成して",
         "候補を提示して",
+        "候補を提案",
+        "修正候補",
+        "修正案",
+        "改善案",
+        "安全な修正",
+        "最小で安全",
+        "3つ提案",
         "fix plan",
         "change plan",
         "create a plan",
+        "candidate proposal",
+        "safe fix",
+        "smallest safe change",
+    ]
+    .iter()
+    .any(|kw| lower.contains(kw))
+}
+
+fn has_analysis_result_reference(lower: &str) -> bool {
+    [
+        "解析結果を元に",
+        "解析結果をもとに",
+        "解析結果を基に",
+        "分析結果を元に",
+        "分析結果をもとに",
+        "この解析結果",
+        "前回の解析結果",
+        "analysis result",
+        "previous analysis",
+        "based on this result",
     ]
     .iter()
     .any(|kw| lower.contains(kw))

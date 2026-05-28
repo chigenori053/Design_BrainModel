@@ -1051,11 +1051,30 @@ impl RuntimeCoreBridge {
             has_context_reference, is_plan_only_intent, resolve_plan_target,
         };
         use crate::nl::language_core_ir_adapter::{
-            classify_language_core_intent, language_core_to_ir,
+            classify_language_core_intent, is_candidate_proposal_intent, language_core_to_ir,
         };
 
         let lc_intent = classify_language_core_intent(&request.input);
         let mut ir_request = language_core_to_ir(lc_intent, &request.input);
+        let lower_input = request.input.to_lowercase();
+        if session_context_snapshot.previous_analysis_context.is_some()
+            && session_context_snapshot.previous_plan_context.is_none()
+            && is_candidate_proposal_intent(&lower_input)
+            && !matches!(ir_request.action, IrAction::GenerateChangePlan)
+        {
+            ir_request.action = IrAction::GenerateChangePlan;
+            ir_request.mode = ExecutionMode::PlanOnly;
+            ir_request.target = session_context_snapshot
+                .previous_analysis_context
+                .as_ref()
+                .map(|ctx| ctx.target.clone())
+                .unwrap_or(IrTarget::WorkspaceRoot);
+            events.push(CoreEvent::Debug {
+                message:
+                    "[IR-TRACE][PRIMARY_INTENT] selected=GenerateChangePlan reason=AnalysisToCandidateProposal"
+                        .to_string(),
+            });
+        }
         if let Some(crate::nl::normalization::TargetResolutionFailure::ConfirmationTokenLike {
             raw,
         }) = ir_request.target_failure.clone()
@@ -1117,7 +1136,6 @@ impl RuntimeCoreBridge {
         }
 
         // コンテキストアウェアなターゲット解決 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0)
-        let lower_input = request.input.to_lowercase();
         let is_plan_only = is_plan_only_intent(&lower_input);
         let has_context_ref = has_context_reference(&lower_input);
 
@@ -6973,7 +6991,7 @@ mod tests {
     fn repl_session_context_stores_previous_analysis() {
         let core = RuntimeCoreBridge::with_defaults();
         let response = core.execute(request("このプロジェクトの構造を解析して"));
-        let state = response.core_state.expect("core state");
+        let state = response.core_state.as_ref().expect("core state");
 
         assert!(state.session_context.previous_analysis_context.is_some());
         assert_eq!(
@@ -7022,10 +7040,11 @@ mod tests {
         let response = core.execute(request(
             "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
         ));
-        let state = response.core_state.expect("core state");
+        let state = response.core_state.as_ref().expect("core state");
         let plan = state
             .session_context
             .previous_plan_context
+            .as_ref()
             .expect("plan context");
 
         assert_eq!(plan.target, IrTarget::WorkspaceRoot);
@@ -7058,6 +7077,10 @@ mod tests {
             "ただし、まだファイル変更、apply、git操作、外部コマンド実行は行わず、候補ごとに対象ファイル、想定変更、リスク、検証方法だけを提示してください",
         ]
         .join("。")
+    }
+
+    fn analysis_to_candidate_proposal_input() -> &'static str {
+        "この解析結果を元に、最小で安全な修正候補を3つ提案してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"
     }
 
     fn has_trace_value(response: &CoreResponse, stage: &str, key: &str, value: &str) -> bool {
@@ -7149,6 +7172,96 @@ mod tests {
             "target",
             "WorkspaceRoot"
         ));
+    }
+
+    #[test]
+    fn analysis_context_candidate_proposal_intent() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
+
+        let response = core.execute(request(analysis_to_candidate_proposal_input()));
+        let state = response.core_state.as_ref().expect("core state");
+
+        assert!(has_trace_value(
+            &response,
+            "LANGUAGE_CORE",
+            "intent",
+            "GenerateChangePlan"
+        ));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "action",
+            "GenerateChangePlan"
+        ));
+        assert!(has_trace_value(&response, "ADAPTER", "mode", "PlanOnly"));
+        assert!(has_trace_value(
+            &response,
+            "ADAPTER",
+            "target",
+            "WorkspaceRoot"
+        ));
+        assert!(state.session_context.previous_plan_context.is_some());
+        assert_eq!(state.status, PipelineState::Proposed);
+    }
+
+    #[test]
+    fn analysis_to_candidate_proposal_does_not_reanalyze_project() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
+
+        let response = core.execute(request(analysis_to_candidate_proposal_input()));
+
+        assert!(!has_trace_value(
+            &response,
+            "LANGUAGE_CORE",
+            "intent",
+            "AnalyzeProject"
+        ));
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Debug { message }
+                if message.contains("[IR-TRACE][CONTEXT_STORE] kind=plan")
+        )));
+    }
+
+    #[test]
+    fn analysis_to_candidate_proposal_preserves_no_apply_constraints() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
+
+        let response = core.execute(request(analysis_to_candidate_proposal_input()));
+        let text = event_text(&response.events);
+
+        assert!(
+            text.contains("[IR-TRACE][SAFETY_CONSTRAINTS] no_apply=true no_file_write=true no_git_operation=true no_external_command=true"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn repl_analysis_to_candidate_proposal_allows_select() {
+        let core = RuntimeCoreBridge::with_defaults();
+        core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
+        core.execute(request(analysis_to_candidate_proposal_input()));
+
+        let response = core.execute(request("select 1"));
+        let text = event_text(&response.events);
+
+        assert!(!text.contains("Cannot select in current state"), "{text}");
+        assert!(
+            text.contains("[IR-TRACE][CONTEXT_STORE] kind=selection candidate_id=1"),
+            "{text}"
+        );
+        assert!(response.events.iter().any(|event| matches!(
+            event,
+            CoreEvent::Pipeline { state } if state == PipelineState::Previewed.label()
+        )));
+    }
+
+    #[test]
+    fn repl_candidate_proposal_after_analysis_does_not_reanalyze() {
+        analysis_to_candidate_proposal_does_not_reanalyze_project();
     }
 
     #[test]

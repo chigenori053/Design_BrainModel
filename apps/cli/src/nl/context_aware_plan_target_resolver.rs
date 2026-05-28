@@ -325,9 +325,14 @@ pub fn is_plan_only_intent(lower: &str) -> bool {
     let jp = [
         "プラン",
         "計画",
+        "候補",
+        "提案",
+        "修正候補",
         "修正案",
         "改善案",
         "変更候補",
+        "安全な修正",
+        "最小で安全",
         "作成して",
         "出して",
         "まだ適用しない",
@@ -335,9 +340,12 @@ pub fn is_plan_only_intent(lower: &str) -> bool {
     ];
     let en = [
         "plan",
+        "candidate",
         "proposal",
         "change plan",
         "fix plan",
+        "safe fix",
+        "smallest safe change",
         "improvement proposal",
         "do not apply",
         "without applying",
@@ -351,8 +359,12 @@ pub fn is_plan_only_intent(lower: &str) -> bool {
 pub fn has_context_reference(lower: &str) -> bool {
     let jp = [
         "構造解析結果をもとに",
+        "解析結果をもとに",
+        "解析結果を元に",
+        "解析結果を基に",
         "前回の解析結果",
         "今の解析結果",
+        "この解析結果",
         "この結果をもとに",
         "先ほどの結果",
         "分析結果から",
