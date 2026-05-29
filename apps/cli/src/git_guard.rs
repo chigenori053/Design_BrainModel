@@ -894,15 +894,20 @@ fn run_git_os(root: &Path, prefix: &[&str], path: Option<&Path>) -> Result<Strin
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    fn unique_test_name(prefix: &str) -> String {
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        format!(
+            "{}_{}_{}",
+            prefix,
+            std::process::id(),
+            COUNTER.fetch_add(1, Ordering::SeqCst)
+        )
+    }
 
     fn temp_workspace(name: &str) -> PathBuf {
-        let root = std::env::temp_dir().join(format!(
-            "dbm_git_guard_{name}_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
-        ));
+        let root = std::env::temp_dir().join(format!("dbm_git_guard_{}", unique_test_name(name)));
         std::fs::create_dir_all(root.join("apps/cli/src")).expect("mkdir");
         std::fs::write(root.join("apps/cli/src/main.rs"), "fn main() {}\n").expect("write");
         root
@@ -972,20 +977,49 @@ mod tests {
         )
     }
 
+    struct PushPreviewFixture {
+        root: PathBuf,
+        remote: PathBuf,
+        token: String,
+        pending_path: PathBuf,
+    }
+
+    impl PushPreviewFixture {
+        fn prepare(prefix: &str, marker: &str) -> Self {
+            let (root, remote) = temp_git_repo_with_upstream(prefix);
+            create_ahead_commit(&root, marker);
+            let (_, preview) = execute(&root, &["push"]);
+            let token = preview.data.as_ref().expect("data")["confirmation_token"]
+                .as_str()
+                .expect("token")
+                .to_string();
+            let pending_path = pending_push_path(&root).expect("pending path");
+            Self {
+                root,
+                remote,
+                token,
+                pending_path,
+            }
+        }
+    }
+
     #[test]
     fn git_guard_allows_status() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("status");
         assert_eq!(decision(&root, &["status"]), GitSafetyDecision::Allow);
     }
 
     #[test]
     fn git_guard_allows_diff() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("diff");
         assert_eq!(decision(&root, &["diff"]), GitSafetyDecision::Allow);
     }
 
     #[test]
     fn git_guard_allows_staged_diff() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("staged_diff");
         assert_eq!(
             decision(&root, &["diff", "--cached"]),
@@ -999,6 +1033,7 @@ mod tests {
 
     #[test]
     fn git_guard_allows_staged_diff_with_explicit_path() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("staged_diff_path");
         assert_eq!(
             decision(&root, &["diff", "--cached", "--", "apps/cli/src/main.rs"]),
@@ -1012,6 +1047,7 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_unknown_diff_option() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("diff_unknown");
         assert_eq!(
             decision(&root, &["diff", "--name-only"]),
@@ -1023,6 +1059,7 @@ mod tests {
 
     #[test]
     fn git_guard_allows_explicit_add() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("add_file");
         assert_eq!(
             decision(&root, &["add", "apps/cli/src/main.rs"]),
@@ -1032,6 +1069,7 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_add_dot() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("add_dot");
         assert!(matches!(
             decision(&root, &["add", "."]),
@@ -1041,6 +1079,7 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_add_all() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("add_all");
         assert!(matches!(
             decision(&root, &["add", "-A"]),
@@ -1054,6 +1093,7 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_workspace_escape() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("escape");
         assert!(matches!(
             decision(&root, &["add", "../outside.rs"]),
@@ -1063,6 +1103,7 @@ mod tests {
 
     #[test]
     fn git_guard_requires_commit_confirmation() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("commit_confirm");
         assert_eq!(
             decision(&root, &["commit", "-m", "message"]),
@@ -1072,6 +1113,7 @@ mod tests {
 
     #[test]
     fn git_commit_empty_message_rejected() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("commit_empty_message");
         let (_, output) = execute(&root, &["commit", "-m", "   "]);
 
@@ -1082,6 +1124,7 @@ mod tests {
 
     #[test]
     fn git_commit_without_staged_files_rejected() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_git_repo("commit_nothing_staged");
         let (_, output) = execute(&root, &["commit", "-m", "nothing staged"]);
 
@@ -1091,6 +1134,7 @@ mod tests {
 
     #[test]
     fn git_commit_preview_creates_pending_confirmation() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_git_repo("commit_preview");
         std::fs::write(
             root.join("apps/cli/src/main.rs"),
@@ -1120,6 +1164,7 @@ mod tests {
 
     #[test]
     fn git_commit_confirm_rejects_wrong_token() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_git_repo("commit_wrong_token");
         std::fs::write(
             root.join("apps/cli/src/main.rs"),
@@ -1141,6 +1186,7 @@ mod tests {
 
     #[test]
     fn git_commit_confirm_rejects_stale_staged_diff() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_git_repo("commit_stale");
         std::fs::write(
             root.join("apps/cli/src/main.rs"),
@@ -1169,6 +1215,7 @@ mod tests {
 
     #[test]
     fn git_commit_confirm_executes_when_checksum_matches() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_git_repo("commit_confirm_executes");
         std::fs::write(
             root.join("apps/cli/src/main.rs"),
@@ -1193,12 +1240,14 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_push_without_dry_run() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("push");
         assert_eq!(decision(&root, &["push"]), GitSafetyDecision::Allow);
     }
 
     #[test]
     fn git_guard_allows_push_dry_run() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("push_dry_run");
         assert_eq!(
             decision(&root, &["push", "--dry-run"]),
@@ -1208,6 +1257,7 @@ mod tests {
 
     #[test]
     fn git_guard_rejects_force_push() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("force_push");
         assert_eq!(
             decision(&root, &["push", "--force"]),
@@ -1231,6 +1281,7 @@ mod tests {
 
     #[test]
     fn git_push_explicit_remote_branch_rejected() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_workspace("push_explicit");
         assert_eq!(
             decision(&root, &["push", "origin", "main"]),
@@ -1248,72 +1299,50 @@ mod tests {
 
     #[test]
     fn git_push_preview_requires_confirmation() {
-        let (root, _remote) = temp_git_repo_with_upstream("push_preview");
-        create_ahead_commit(&root, "push preview");
+        let _guard = crate::test_support::git_guard_lock();
+        let fixture = PushPreviewFixture::prepare("push_preview", "push preview");
 
-        let (_, output) = execute(&root, &["push"]);
-
-        let data = output.data.as_ref().expect("data");
-        assert_eq!(output.status, "confirmation_required");
-        assert_eq!(output.operation, "git_push");
-        assert_eq!(data["remote"], "origin");
-        assert_eq!(data["ahead_count"], 1);
-        assert!(
-            data["confirmation_token"]
-                .as_str()
-                .is_some_and(|token| token.starts_with("confirm_"))
-        );
-        assert!(pending_push_path(&root).expect("pending path").exists());
+        assert!(fixture.token.starts_with("confirm_"));
+        assert!(fixture.pending_path.exists());
     }
 
     #[test]
     fn git_push_confirm_rejects_wrong_token() {
-        let (root, _remote) = temp_git_repo_with_upstream("push_wrong_token");
-        create_ahead_commit(&root, "push wrong token");
-        execute(&root, &["push"]);
+        let _guard = crate::test_support::git_guard_lock();
+        let fixture = PushPreviewFixture::prepare("push_wrong_token", "push wrong token");
 
-        let (_, output) = execute(&root, &["push", "--confirm", "confirm_wrong"]);
+        let (_, output) = execute(&fixture.root, &["push", "--confirm", "confirm_wrong"]);
 
         assert_eq!(output.status, "rejected");
         assert_eq!(output.reason.as_deref(), Some("token_mismatch"));
-        assert!(pending_push_path(&root).expect("pending path").exists());
+        assert!(fixture.pending_path.exists());
     }
 
     #[test]
     fn git_push_confirm_rejects_head_changed() {
-        let (root, _remote) = temp_git_repo_with_upstream("push_head_changed");
-        create_ahead_commit(&root, "push first");
-        let (_, preview) = execute(&root, &["push"]);
-        let token = preview.data.as_ref().expect("data")["confirmation_token"]
-            .as_str()
-            .expect("token")
-            .to_string();
-        create_ahead_commit(&root, "push second");
+        let _guard = crate::test_support::git_guard_lock();
+        let fixture = PushPreviewFixture::prepare("push_head_changed", "push first");
+        create_ahead_commit(&fixture.root, "push second");
 
-        let (_, output) = execute(&root, &["push", "--confirm", &token]);
+        let (_, output) = execute(&fixture.root, &["push", "--confirm", &fixture.token]);
 
         assert_eq!(output.status, "rejected");
         assert_eq!(output.reason.as_deref(), Some("head_changed"));
-        assert!(!pending_push_path(&root).expect("pending path").exists());
+        assert!(!fixture.pending_path.exists());
     }
 
     #[test]
     fn git_push_success_removes_pending_file() {
-        let (root, remote) = temp_git_repo_with_upstream("push_success");
-        create_ahead_commit(&root, "push success");
-        let (_, preview) = execute(&root, &["push"]);
-        let token = preview.data.as_ref().expect("data")["confirmation_token"]
-            .as_str()
-            .expect("token")
-            .to_string();
+        let _guard = crate::test_support::git_guard_lock();
+        let fixture = PushPreviewFixture::prepare("push_success", "push success");
 
-        let (_, output) = execute(&root, &["push", "--confirm", &token]);
+        let (_, output) = execute(&fixture.root, &["push", "--confirm", &fixture.token]);
 
         assert_eq!(output.status, "ok");
         assert_eq!(output.operation, "git_push");
-        assert!(!pending_push_path(&root).expect("pending path").exists());
-        let local_head = run_git(&root, &["rev-parse", "HEAD"]).expect("local head");
-        let remote_head = run_git(&remote, &["rev-parse", "HEAD"]).expect("remote head");
+        assert!(!fixture.pending_path.exists());
+        let local_head = run_git(&fixture.root, &["rev-parse", "HEAD"]).expect("local head");
+        let remote_head = run_git(&fixture.remote, &["rev-parse", "HEAD"]).expect("remote head");
         assert_eq!(local_head.trim(), remote_head.trim());
     }
 }

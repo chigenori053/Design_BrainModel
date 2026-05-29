@@ -1749,6 +1749,7 @@ mod tests {
     #[test]
     fn remote_integration_skips_duplicate_pr_creation() {
         let _guard = gh_env_lock();
+        let _git_guard = crate::test_support::git_guard_lock();
         let repo = temp_git_repo("remote_duplicate");
         let _bare = attach_origin_remote(&repo, "remote_duplicate");
         let fake_gh = write_fake_gh(true);

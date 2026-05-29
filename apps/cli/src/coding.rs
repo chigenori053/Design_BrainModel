@@ -8989,12 +8989,19 @@ mod tests {
     };
     use std::path::Path;
 
+    fn unique_test_name(prefix: &str) -> String {
+        static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+        format!(
+            "{}_{}_{}",
+            prefix,
+            std::process::id(),
+            COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        )
+    }
+
     fn temp_dir(name: &str) -> PathBuf {
-        let unique = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .expect("time")
-            .as_nanos();
-        let dir = std::env::temp_dir().join(format!("design_cli_coding_{name}_{unique}"));
+        let unique = unique_test_name(name);
+        let dir = std::env::temp_dir().join(format!("design_cli_coding_{unique}"));
         fs::create_dir_all(dir.join("src")).expect("create src");
         dir
     }
@@ -9103,6 +9110,7 @@ mod tests {
     }
 
     fn init_git_repo(root: &Path) {
+        let _guard = crate::test_support::git_guard_lock();
         let status = Command::new("git")
             .args(["init"])
             .current_dir(root)
@@ -9992,10 +10000,7 @@ mod tests {
         init_git_repo_with_branch(&root, "dbm/push-decline");
         let bare = std::env::temp_dir().join(format!(
             "design_cli_push_decline_remote_{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
+            unique_test_name("remote")
         ));
         let status = Command::new("git")
             .args(["init", "--bare", bare.to_str().expect("utf8 bare")])
@@ -10030,10 +10035,7 @@ mod tests {
         init_git_repo_with_branch(&root, "dbm/push-auth");
         let bare = std::env::temp_dir().join(format!(
             "design_cli_push_auth_remote_{}",
-            SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .expect("time")
-                .as_nanos()
+            unique_test_name("remote")
         ));
         let status = Command::new("git")
             .args(["init", "--bare", bare.to_str().expect("utf8 bare")])
