@@ -1077,7 +1077,44 @@ impl RuntimeCoreBridge {
             classify_language_core_intent, is_candidate_proposal_intent, language_core_to_ir,
         };
 
-        let lc_intent = classify_language_core_intent(&request.input);
+        let lc_intent = {
+            // DBM-DOCUMENT-CLASSIFIER-SPEC v1.0 §8
+            use crate::runtime::document_classifier::{DocumentClassifier, InputKind as DocInputKind};
+            let doc_kind = DocumentClassifier::classify(&request.input);
+
+            if observability_enabled() {
+                println!(
+                    "[DOCUMENT_CLASSIFIER] input_kind={} confidence=1.0",
+                    doc_kind
+                );
+            }
+
+            match doc_kind {
+                DocInputKind::NaturalLanguage | DocInputKind::Command | DocInputKind::Unknown => {
+                    // 通常の処理を続行
+                    classify_language_core_intent(&request.input)
+                }
+                DocInputKind::MarkdownDocument
+                | DocInputKind::JsonDocument
+                | DocInputKind::LogDocument
+                | DocInputKind::StructuredSpec => {
+                    // LanguageCore への送信を禁止 (Rule 1-4)
+                    events.push(CoreEvent::Result {
+                        message: format!(
+                            "# Document Detected ({})\n\nThe input was classified as a **{}**. DBM does not process document fragments as natural language instructions directly to avoid irrelevant clarifications.\n\nIf you intended to provide a command, please ensure it follows the correct syntax.",
+                            doc_kind, doc_kind
+                        ),
+                    });
+                    return CoreResponse {
+                        events,
+                        status: ExecutionStatus::Executed,
+                        design: None,
+                        core_state: Some(self.history.lock().unwrap().current().clone()),
+                    };
+                }
+            }
+        };
+
         let mut ir_request = language_core_to_ir(lc_intent, &request.input);
         let lower_input = request.input.to_lowercase();
         if session_context_snapshot.previous_analysis_context.is_some()

@@ -1,3 +1,4 @@
+pub mod document_classifier;
 pub mod autonomous;
 pub mod autonomous_control;
 pub mod bootstrap;
