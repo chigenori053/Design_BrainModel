@@ -42,7 +42,7 @@ use crate::nl::context_aware_plan_target_resolver::{
     PreviousValidationContext, ReplSessionContext, SelectedCandidateContext, ValidatedPlanContext,
     ValidationStatus, stable_context_hash,
 };
-use crate::nl::language_core_ir_adapter::{ExecutionMode, IrAction, IrTarget};
+use crate::nl::language_core_ir_adapter::{ConstraintKind, ExecutionMode, IrAction, IrTarget};
 use crate::nl::normalization::{TargetResolutionFailure, target_only_input_resolution};
 use crate::pipeline::PipelineState;
 use crate::refactor::PatchScope;
@@ -917,12 +917,19 @@ impl RuntimeCoreBridge {
             return Some(response);
         }
 
-        match target_only_input_resolution(input) {
-            Ok(Some(target)) => return Some(target_context_response(target, id)),
-            Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) => {
-                return Some(self.execute_natural_language(request));
+        // DBM-LANGUAGECORE-CONSTRAINT-RECOGNITION-SPEC v1.0
+        // 自然言語指示がコマンドとして誤認されるのを防ぐ
+        use crate::runtime::document_classifier::{DocumentClassifier, InputKind as DocInputKind};
+        let is_natural_language = DocumentClassifier::classify(input) == DocInputKind::NaturalLanguage;
+
+        if !is_natural_language {
+            if let Ok(Some(target)) = target_only_input_resolution(input) {
+                return Some(target_context_response(target, id));
             }
-            Ok(None) | Err(TargetResolutionFailure::Unresolved { .. }) => {}
+        }
+        
+        if let Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) = target_only_input_resolution(input) {
+             return Some(self.execute_natural_language(request));
         }
 
         let has_followup_context = kind == CoreRequestKind::Followup || !state.proposals.is_empty();
@@ -942,22 +949,30 @@ impl RuntimeCoreBridge {
             }
         }
 
-        if let Some(git_route) = crate::routing::git_router::route_git_command(input) {
-            return Some(match git_route {
-                Ok(command) => self.execute_git_command(command, id, &context.working_dir),
-                Err(err) => error_response("ExecutionRejected", &err, id),
-            });
+        if !is_natural_language {
+            if let Some(git_route) = crate::routing::git_router::route_git_command(input) {
+                return Some(match git_route {
+                    Ok(command) => self.execute_git_command(command, id, &context.working_dir),
+                    Err(err) => error_response("ExecutionRejected", &err, id),
+                });
+            }
         }
 
-        match lower.as_str() {
-            "undo" => Some(self.undo(&request)),
-            "replay" => Some(self.replay(&request, None)),
-            _ if lower.starts_with("replay ") => {
-                Some(self.replay(&request, input.split_whitespace().nth(1)))
+        if !is_natural_language {
+            match lower.as_str() {
+                "undo" => return Some(self.undo(&request)),
+                "replay" => return Some(self.replay(&request, None)),
+                _ if lower.starts_with("replay ") => {
+                    return Some(self.replay(&request, input.split_whitespace().nth(1)));
+                }
+                _ if is_forbidden_command(&lower) => {
+                    return Some(error_response("SafetyViolation", input, id));
+                }
+                _ => {}
             }
-            _ if is_forbidden_command(&lower) => Some(error_response("SafetyViolation", input, id)),
-            _ => None,
         }
+
+        None
     }
 
     fn try_handle_priority_command(
@@ -1114,6 +1129,10 @@ impl RuntimeCoreBridge {
                 }
             }
         };
+
+        if let crate::nl::language_core_ir_adapter::LanguageCoreIntent::Constraint(kind) = lc_intent {
+            return self.execute_lc_constraint(kind, events);
+        }
 
         let mut ir_request = language_core_to_ir(lc_intent, &request.input);
         let lower_input = request.input.to_lowercase();
@@ -1388,6 +1407,50 @@ impl RuntimeCoreBridge {
         response.core_state = Some(history.current().clone());
 
         response
+    }
+
+    fn execute_lc_constraint(&self, kind: ConstraintKind, mut events: Vec<CoreEvent>) -> CoreResponse {
+        if observability_enabled() {
+            println!("[LANGUAGE_CORE] intent=Constraint");
+            println!("[CONSTRAINT] kind={kind}");
+        }
+
+        let mut history = self.history.lock().unwrap();
+        let mut next_state = history.current().clone();
+
+        match kind {
+            ConstraintKind::NoApply => next_state.session_context.constraints.no_apply = true,
+            ConstraintKind::NoDelete => next_state.session_context.constraints.no_delete = true,
+            ConstraintKind::NoModify => next_state.session_context.constraints.no_modify = true,
+            ConstraintKind::NoGit => next_state.session_context.constraints.no_git_operation = true,
+            ConstraintKind::NoExternalCommand => {
+                next_state.session_context.constraints.no_external_command = true
+            }
+        }
+
+        if observability_enabled() {
+            let c = &next_state.session_context.constraints;
+            println!(
+                "[RUNTIME] no_apply={} no_delete={} no_modify={} no_git={} no_external={}",
+                c.no_apply, c.no_delete, c.no_modify, c.no_git_operation, c.no_external_command
+            );
+        }
+
+        events.push(CoreEvent::Result {
+            message: format!(
+                "# Constraint Applied\n\nExecution constraint **{}** has been enabled for the current session. DBM will respect this restriction in subsequent operations.\n\nStatus: **Executed**",
+                kind
+            ),
+        });
+
+        history.push(next_state.clone());
+
+        CoreResponse {
+            events,
+            status: ExecutionStatus::Executed,
+            design: None,
+            core_state: Some(next_state),
+        }
     }
 
     /// LanguageCoreToIrAdapter によって分類された Analyze 系 Intent を直接ハンドルする。
@@ -8158,6 +8221,58 @@ mod tests {
             !has_apply_mode,
             "Refactor request must not produce Apply mode in ADAPTER trace"
         );
+    }
+
+    #[test]
+    fn test_constraint_persistence_in_session() {
+        let core = RuntimeCoreBridge::with_defaults();
+        
+        // 制約なしの状態
+        {
+            let res = core.execute(request("status"));
+            let state = res.core_state.unwrap();
+            assert!(!state.session_context.constraints.no_apply);
+        }
+
+        // apply 禁止制約を追加
+        {
+            let res = core.execute(request("まだ apply は実行しないでください"));
+            assert_eq!(res.status, ExecutionStatus::Executed);
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_apply);
+        }
+
+        // 後続の操作でも制約が維持されていることを確認
+        {
+            let res = core.execute(request("status"));
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_apply);
+        }
+
+        // git 禁止制約を追加
+        {
+            let res = core.execute(request("git は実行禁止です"));
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_apply); // 前の制約も維持
+            assert!(state.session_context.constraints.no_git_operation);
+        }
+
+        // その他の制約を追加
+        {
+            let res = core.execute(request("削除しないでください"));
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_delete);
+        }
+        {
+            let res = core.execute(request("修正は不要です"));
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_modify);
+        }
+        {
+            let res = core.execute(request("外部コマンドは禁止です"));
+            let state = res.core_state.unwrap();
+            assert!(state.session_context.constraints.no_external_command);
+        }
     }
 }
 // DBM clarification execution guarantee

@@ -50,8 +50,31 @@ pub enum LanguageCoreIntent {
     SafetyReview,
     /// プロジェクト内テスト群の棚卸し・一覧化（ReadOnly）
     AnalyzeTests,
+    /// 安全指示・実行制約
+    Constraint(ConstraintKind),
     /// 未分類
     Unknown { raw: String },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstraintKind {
+    NoApply,
+    NoDelete,
+    NoModify,
+    NoGit,
+    NoExternalCommand,
+}
+
+impl fmt::Display for ConstraintKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoApply => write!(f, "NoApply"),
+            Self::NoDelete => write!(f, "NoDelete"),
+            Self::NoModify => write!(f, "NoModify"),
+            Self::NoGit => write!(f, "NoGit"),
+            Self::NoExternalCommand => write!(f, "NoExternalCommand"),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -132,6 +155,7 @@ impl fmt::Display for LanguageCoreIntent {
             Self::ApplyRequest => write!(f, "ApplyRequest"),
             Self::SafetyReview => write!(f, "SafetyReview"),
             Self::AnalyzeTests => write!(f, "AnalyzeTests"),
+            Self::Constraint(kind) => write!(f, "Constraint({kind})"),
             Self::Unknown { raw } => write!(f, "Unknown({raw})"),
         }
     }
@@ -156,11 +180,13 @@ pub enum IrAction {
     Apply,
     /// プロジェクト内テスト群の棚卸し（ReadOnly）
     AnalyzeTests,
+    /// 安全指示・実行制約
+    Constraint,
     Unknown,
 }
 
 impl IrAction {
-    /// ReadOnly な analyze アクションか否か。
+    /// ReadOnly な analyze アクションまたは制約アクションか否か。
     ///
     /// true の場合、`execute_from_text` を経由せず直接ハンドルできる。
     pub fn is_analyze(&self) -> bool {
@@ -173,6 +199,7 @@ impl IrAction {
                 | Self::AnalyzeFile
                 | Self::AnalyzeSymbol
                 | Self::AnalyzeTests
+                | Self::Constraint
         )
     }
 }
@@ -193,6 +220,7 @@ impl fmt::Display for IrAction {
             Self::Refactor => write!(f, "Refactor"),
             Self::Apply => write!(f, "Apply"),
             Self::AnalyzeTests => write!(f, "AnalyzeTests"),
+            Self::Constraint => write!(f, "Constraint"),
             Self::Unknown => write!(f, "Unknown"),
         }
     }
@@ -354,6 +382,19 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         {
             return LanguageCoreIntent::AnalyzeTests;
         }
+
+        // ── 制約認識 ────────────────────────────────────────────────────────
+        if result.action == SemanticAction::Constraint {
+            let kind = match result.target {
+                SemanticTarget::Apply => ConstraintKind::NoApply,
+                SemanticTarget::Delete => ConstraintKind::NoDelete,
+                SemanticTarget::Modify => ConstraintKind::NoModify,
+                SemanticTarget::Git => ConstraintKind::NoGit,
+                SemanticTarget::ExternalCommand => ConstraintKind::NoExternalCommand,
+                _ => return LanguageCoreIntent::Unknown { raw: input.to_string() },
+            };
+            return LanguageCoreIntent::Constraint(kind);
+        }
     }
 
     LanguageCoreIntent::Unknown {
@@ -471,6 +512,15 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.85,
+            safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::Constraint(_) => IrIntentRequest {
+            action: IrAction::Constraint,
+            target: IrTarget::None,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.95,
             safety_constraints,
             target_failure: target_failure.clone(),
         },
@@ -1345,5 +1395,26 @@ mod tests {
             LanguageCoreIntent::AnalyzeTests,
             "input without test context should not be AnalyzeTests"
         );
+    }
+
+    /// spec §Regression Test: constraint recognition
+    #[test]
+    fn test_constraint_recognition() {
+        let cases = [
+            ("まだ apply は実行しないでください", ConstraintKind::NoApply),
+            ("まだ削除しないでください", ConstraintKind::NoDelete),
+            ("まだ修正しないでください", ConstraintKind::NoModify),
+            ("git は実行しないでください", ConstraintKind::NoGit),
+            ("外部コマンドは禁止です", ConstraintKind::NoExternalCommand),
+        ];
+
+        for (input, expected_kind) in cases {
+            let intent = classify_language_core_intent(input);
+            assert_eq!(
+                intent,
+                LanguageCoreIntent::Constraint(expected_kind),
+                "input={input:?} failed"
+            );
+        }
     }
 }

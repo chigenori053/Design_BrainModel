@@ -122,6 +122,17 @@ pub struct ValidatedPlanContext {
     pub timestamp: u64,
 }
 
+/// 実行時制約。
+/// Spec DBM-LANGUAGECORE-CONSTRAINT-RECOGNITION-SPEC v1.0
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RuntimeConstraint {
+    pub no_apply: bool,
+    pub no_delete: bool,
+    pub no_modify: bool,
+    pub no_git_operation: bool,
+    pub no_external_command: bool,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ReplSessionContext {
     pub previous_analysis_context: Option<PreviousAnalysisContext>,
@@ -129,6 +140,8 @@ pub struct ReplSessionContext {
     pub previous_validation_context: Option<PreviousValidationContext>,
     pub selected_candidate: Option<SelectedCandidateContext>,
     pub validated_plan: Option<ValidatedPlanContext>,
+    /// セッション全体で有効な実行制約
+    pub constraints: RuntimeConstraint,
 }
 
 impl ReplSessionContext {
