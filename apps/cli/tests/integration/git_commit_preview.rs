@@ -5,10 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use design_cli::refactor::{GitCommitPreview, PromoteResult, generate_git_commit_preview};
 
-fn current_dir_lock() -> &'static Mutex<()> {
-    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-    LOCK.get_or_init(|| Mutex::new(()))
-}
+use design_cli::test_support::with_current_dir;
 
 fn temp_git_workspace(name: &str, branch: &str) -> PathBuf {
     let unique = SystemTime::now()
@@ -52,12 +49,7 @@ fn temp_git_workspace(name: &str, branch: &str) -> PathBuf {
 }
 
 fn with_workspace_root<T>(root: &Path, f: impl FnOnce() -> T) -> T {
-    let _guard = current_dir_lock().lock().expect("lock");
-    let previous = std::env::current_dir().expect("cwd");
-    std::env::set_current_dir(root).expect("set cwd");
-    let result = f();
-    std::env::set_current_dir(previous).expect("restore cwd");
-    result
+    with_current_dir(root, f)
 }
 
 fn promote_result(workspace_write: bool) -> PromoteResult {

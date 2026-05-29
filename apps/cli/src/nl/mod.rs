@@ -17,6 +17,7 @@ pub mod normalization;
 pub mod planner;
 pub mod planner_v2;
 pub mod runtime_intent;
+pub mod semantic_action_normalizer;
 pub mod session;
 pub mod target;
 pub mod types;

@@ -13,6 +13,9 @@
 use std::fmt;
 
 use crate::nl::normalization::{TargetResolutionFailure, confirmation_like_target_failure};
+use crate::nl::semantic_action_normalizer::{
+    SemanticAction, SemanticTarget, normalize_semantic_action,
+};
 
 // ── LanguageCoreIntent ────────────────────────────────────────────────────────
 
@@ -45,6 +48,8 @@ pub enum LanguageCoreIntent {
     ApplyRequest,
     /// 確認・適用ではない安全性レビュー要求
     SafetyReview,
+    /// プロジェクト内テスト群の棚卸し・一覧化（ReadOnly）
+    AnalyzeTests,
     /// 未分類
     Unknown { raw: String },
 }
@@ -126,6 +131,7 @@ impl fmt::Display for LanguageCoreIntent {
             Self::RefactorRequest { .. } => write!(f, "RefactorRequest"),
             Self::ApplyRequest => write!(f, "ApplyRequest"),
             Self::SafetyReview => write!(f, "SafetyReview"),
+            Self::AnalyzeTests => write!(f, "AnalyzeTests"),
             Self::Unknown { raw } => write!(f, "Unknown({raw})"),
         }
     }
@@ -148,6 +154,8 @@ pub enum IrAction {
     ReviewSafety,
     Refactor,
     Apply,
+    /// プロジェクト内テスト群の棚卸し（ReadOnly）
+    AnalyzeTests,
     Unknown,
 }
 
@@ -164,6 +172,7 @@ impl IrAction {
                 | Self::AnalyzeModuleStructure
                 | Self::AnalyzeFile
                 | Self::AnalyzeSymbol
+                | Self::AnalyzeTests
         )
     }
 }
@@ -183,6 +192,7 @@ impl fmt::Display for IrAction {
             Self::ReviewSafety => write!(f, "ReviewSafety"),
             Self::Refactor => write!(f, "Refactor"),
             Self::Apply => write!(f, "Apply"),
+            Self::AnalyzeTests => write!(f, "AnalyzeTests"),
             Self::Unknown => write!(f, "Unknown"),
         }
     }
@@ -327,6 +337,25 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         return LanguageCoreIntent::ProjectStructureAnalyze;
     }
 
+    // ── SemanticActionNormalization フォールバック ────────────────────────────
+    // 通常の分類が Unknown になる入力（「棚卸し」「監査」など）を
+    // SemanticActionNormalizer で抽象アクションへ変換する。
+    if let Some(result) = normalize_semantic_action(&lower) {
+        eprintln!(
+            "[IR-TRACE][SEMANTIC_NORMALIZATION]\nterm={}\nnormalized={}\nconfidence={}",
+            result.matched_term,
+            result.action.as_str(),
+            result.confidence
+        );
+        if let (
+            SemanticAction::Inventory | SemanticAction::Analyze | SemanticAction::Audit,
+            SemanticTarget::ProjectTests,
+        ) = (&result.action, &result.target)
+        {
+            return LanguageCoreIntent::AnalyzeTests;
+        }
+    }
+
     LanguageCoreIntent::Unknown {
         raw: input.to_string(),
     }
@@ -429,6 +458,16 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
         LanguageCoreIntent::SafetyReview => IrIntentRequest {
             action: IrAction::ReviewSafety,
             target: IrTarget::None,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.85,
+            safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::AnalyzeTests => IrIntentRequest {
+            action: IrAction::AnalyzeTests,
+            target: IrTarget::WorkspaceRoot,
+            // spec §安全条件: ReadOnly のみ生成する
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.85,
@@ -1220,6 +1259,91 @@ mod tests {
                 .iter()
                 .any(|clause| clause.role == ClauseRole::ReferencedToken),
             "{clauses:?}"
+        );
+    }
+
+    // ── DBM-SEMANTIC-ACTION-NORMALIZATION-SPEC v1.0 tests ─────────────────────
+
+    /// spec §テスト追加: project_test_inventory_maps_to_analyze_tests
+    ///
+    /// 入力: このプロジェクトの全テストを棚卸ししてください
+    /// 期待: Intent=AnalyzeTests, Mode=ReadOnly, Action=AnalyzeTests
+    #[test]
+    fn project_test_inventory_maps_to_analyze_tests() {
+        let input = "このプロジェクトの全テストを棚卸ししてください";
+        let intent = classify_language_core_intent(input);
+        assert_eq!(
+            intent,
+            LanguageCoreIntent::AnalyzeTests,
+            "input={input:?} should be AnalyzeTests, got {intent:?}"
+        );
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::AnalyzeTests, "input={input:?}");
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly, "input={input:?}");
+        assert_eq!(ir.target, IrTarget::WorkspaceRoot, "input={input:?}");
+    }
+
+    /// spec §テスト追加: inventory_request_never_maps_to_apply
+    ///
+    /// 期待: Mode=ReadOnly であり Apply にならない
+    #[test]
+    fn inventory_request_never_maps_to_apply() {
+        let inputs = [
+            "このプロジェクトの全テストを棚卸ししてください",
+            "テストを一覧化してください",
+            "全テストを整理してください",
+            "audit all tests",
+        ];
+        for input in &inputs {
+            let intent = classify_language_core_intent(input);
+            let ir = language_core_to_ir(intent, input);
+            assert_eq!(
+                ir.mode,
+                ExecutionMode::ReadOnly,
+                "input={input:?} must be ReadOnly, got {:?}",
+                ir.mode
+            );
+            assert_ne!(
+                ir.action,
+                IrAction::Apply,
+                "input={input:?} must not be Apply"
+            );
+        }
+    }
+
+    /// spec §Regression: 以前は Unknown → RuntimeError になっていた入力が
+    /// AnalyzeTests に変換されることを確認する。
+    #[test]
+    fn regression_test_inventory_input_no_longer_unknown() {
+        let input = "このプロジェクトの全テストを棚卸ししてください";
+        let intent = classify_language_core_intent(input);
+        // Unknown ではなく AnalyzeTests に変換される
+        assert_ne!(
+            intent,
+            LanguageCoreIntent::Unknown {
+                raw: input.to_string()
+            },
+            "input should no longer map to Unknown"
+        );
+        assert_eq!(intent, LanguageCoreIntent::AnalyzeTests);
+    }
+
+    /// AnalyzeTests の IrAction は is_analyze() = true である。
+    #[test]
+    fn analyze_tests_ir_action_is_analyze() {
+        assert!(IrAction::AnalyzeTests.is_analyze());
+    }
+
+    /// テストに関連しない棚卸し入力は AnalyzeTests にならない。
+    #[test]
+    fn inventory_without_test_context_is_not_analyze_tests() {
+        let input = "プロジェクトの構成を棚卸ししてください";
+        let intent = classify_language_core_intent(input);
+        // テストキーワードなし → AnalyzeTests にはならない
+        assert_ne!(
+            intent,
+            LanguageCoreIntent::AnalyzeTests,
+            "input without test context should not be AnalyzeTests"
         );
     }
 }

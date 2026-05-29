@@ -143,7 +143,10 @@ impl ReplSessionContext {
             && mode == ExecutionMode::ReadOnly
             && matches!(
                 action,
-                IrAction::AnalyzeProject | IrAction::AnalyzeFile | IrAction::AnalyzeSymbol
+                IrAction::AnalyzeProject
+                    | IrAction::AnalyzeFile
+                    | IrAction::AnalyzeSymbol
+                    | IrAction::AnalyzeTests
             )
         {
             self.previous_analysis_context = Some(PreviousAnalysisContext::new(

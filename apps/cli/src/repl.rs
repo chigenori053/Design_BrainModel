@@ -712,7 +712,6 @@ mod tests {
     use crate::nl::session::ConversationState;
     use crate::planner::PlannerMode;
     use std::sync::atomic::{AtomicUsize, Ordering};
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     struct CountingCore {
         calls: AtomicUsize,
@@ -742,32 +741,7 @@ mod tests {
         }
     }
 
-    struct CurrentDirGuard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        previous: PathBuf,
-    }
-
-    impl CurrentDirGuard<'_> {
-        fn enter(root: &Path) -> Self {
-            static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-            let lock = LOCK
-                .get_or_init(|| Mutex::new(()))
-                .lock()
-                .expect("cwd lock");
-            let previous = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(root).expect("set cwd");
-            Self {
-                _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for CurrentDirGuard<'_> {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("restore cwd");
-        }
-    }
+    use crate::test_support::CurrentDirGuard;
 
     fn run_repl_with_core_in_workspace<R, W>(
         workspace_root: PathBuf,
