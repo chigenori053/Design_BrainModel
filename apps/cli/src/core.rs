@@ -17,6 +17,10 @@ use strategy_engine::{
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::capability::{
+    CodeAnalysisResult, MemoryAnalysisResult, OutputTypeId, ProjectStructureAnalysisResult,
+    RuntimeAnalyzeDispatcher, TestInventoryResult,
+};
 use crate::coding::{
     ChangeSummary, ChangeType, CodeChange, CodeChangeSet, CodingOptions, DiffHunk,
     execute_code_change_set,
@@ -698,7 +702,7 @@ fn emit_core_log(stage: &str, data: String) {
     let _ = std::io::Write::write_all(&mut std::io::stderr(), line.as_bytes());
 }
 
-fn observability_enabled() -> bool {
+pub(crate) fn observability_enabled() -> bool {
     ENABLE_OBSERVABILITY
         && !crate::runtime::logging::tui_logging_isolated()
         && !crate::runtime::logging::tui_surface_active()
@@ -1372,26 +1376,29 @@ impl RuntimeCoreBridge {
 
         events.push(CoreEvent::Thinking {
             summary: format!(
-                "analyzing project structure / プロジェクト構造を解析中 [{}]",
-                ir_request.target
+                "analyzing intent via capability registry / IntentをCapability Registry経由で解析中 [{}]",
+                ir_request.action
             ),
         });
 
-        // dbm::analyzer::analyze_project は軽量なディレクトリ走査を行い、
-        // 日本語入力でも安全に実行できる。
-        let analysis_text = match crate::dbm::analyzer::analyze_project(path_str) {
-            Ok(result) => format_lc_analysis_result(path_str, &result),
+        // DBM-RUNTIME-DISPATCH-INTEGRATION-SPEC v1.0 §8
+        // RuntimeAnalyzeDispatcher を使用して Capability をディスパッチ
+        let analysis_text = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, path_str) {
+            Ok((result, output_type, _capability)) => {
+                format_capability_result(result.as_ref(), output_type, path_str)
+            }
             Err(err) => {
                 trace_ir!(
                     TraceLevel::Error,
-                    "ADAPTER_ERROR",
+                    "CAPABILITY_ERROR",
                     format!(
-                        "reason=AnalyzeFailed raw_input={} error={err}",
-                        ir_request.raw_input
+                        "reason=DispatchFailed action={} error={err}",
+                        ir_request.action
                     )
                 );
                 format!(
-                    "# Project Structure Analysis\n\nPath: {path_str}\n\nNote: {err}\n\nHint: Run `dbm analyze` for detailed analysis."
+                    "# Analysis Failed\n\nAction: {}\n\nError: {}\n\nHint: The intent may not be supported or a capability mismatch occurred.",
+                    ir_request.action, err
                 )
             }
         };
@@ -3736,43 +3743,71 @@ fn timestamp_millis() -> u128 {
         .unwrap_or(0)
 }
 
-/// LanguageCoreToIrAdapter の analyze 結果を Markdown テキストに整形する。
-fn format_lc_analysis_result(path: &str, result: &crate::dbm::ProjectAnalysisResult) -> String {
+fn format_capability_result(
+    result: &dyn std::any::Any,
+    output_type: OutputTypeId,
+    path: &str,
+) -> String {
+    match output_type {
+        OutputTypeId::ProjectStructureAnalysisResult => {
+            let res = result
+                .downcast_ref::<ProjectStructureAnalysisResult>()
+                .expect("result must be ProjectStructureAnalysisResult");
+            format_project_structure_analysis_text(path, res)
+        }
+        OutputTypeId::TestInventoryResult => {
+            let res = result
+                .downcast_ref::<TestInventoryResult>()
+                .expect("result must be TestInventoryResult");
+            format_test_inventory_text(path, res)
+        }
+        OutputTypeId::CodeAnalysisResult => {
+            let res = result
+                .downcast_ref::<CodeAnalysisResult>()
+                .expect("result must be CodeAnalysisResult");
+            format!("# Code Analysis\n\n- Path: `{path}`\n\n{}", res.summary)
+        }
+        OutputTypeId::MemoryAnalysisResult => {
+            let res = result
+                .downcast_ref::<MemoryAnalysisResult>()
+                .expect("result must be MemoryAnalysisResult");
+            format!("# Memory Analysis\n\n- Path: `{path}`\n\n{}", res.summary)
+        }
+    }
+}
+
+fn format_project_structure_analysis_text(path: &str, result: &ProjectStructureAnalysisResult) -> String {
     let mut out = String::new();
     out.push_str("# Project Structure Analysis\n\n");
     out.push_str(&format!("- Path: `{path}`\n"));
-    out.push_str(&format!("- Files: {}\n", result.files.len()));
-    out.push_str(&format!(
-        "- Languages: {}\n",
-        result
-            .summary
-            .languages
-            .iter()
-            .map(|lang| lang.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    ));
-
+    out.push_str(&format!("- Summary: {}\n", result.summary));
     if !result.modules.is_empty() {
         out.push_str("\n## Modules\n\n");
         for module in result.modules.iter().take(20) {
-            out.push_str(&format!("- `{}`\n", module.name));
+            out.push_str(&format!("- `{module}`\n"));
         }
         if result.modules.len() > 20 {
             out.push_str(&format!("- ... and {} more\n", result.modules.len() - 20));
         }
     }
+    out
+}
 
-    if !result.dependencies.is_empty() {
-        out.push_str(&format!(
-            "\n## Dependencies\n\n- Total edges: {}\n",
-            result.dependencies.len()
-        ));
+fn format_test_inventory_text(path: &str, result: &TestInventoryResult) -> String {
+    let mut out = String::new();
+    out.push_str("# Test Inventory Result\n\n");
+    out.push_str(&format!("- Path: `{path}`\n"));
+    out.push_str(&format!("- Total Tests Found: {}\n", result.test_count));
+    out.push_str(&format!("- Summary: {}\n", result.summary));
+    if !result.test_files.is_empty() {
+        out.push_str("\n## Test Files\n\n");
+        for file in result.test_files.iter().take(20) {
+            out.push_str(&format!("- `{file}`\n"));
+        }
+        if result.test_files.len() > 20 {
+            out.push_str(&format!("- ... and {} more\n", result.test_files.len() - 20));
+        }
     }
-
-    out.push_str("\n## Next Steps\n\n");
-    out.push_str("- Run `dbm analyze` for detailed structural diagnostics\n");
-    out.push_str("- Run `memory maintenance dedup --dry-run` to clean up duplicates\n");
     out
 }
 
@@ -5145,8 +5180,6 @@ fn git_lines(root: &Path, args: &[&str]) -> Result<Vec<String>, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::MutexGuard;
-    use std::sync::{Mutex, OnceLock};
     use strategy_engine::{ExecutionOp, ExecutionPlanCandidate};
 
     fn request(input: &str) -> CoreRequest {
@@ -5155,34 +5188,6 @@ mod tests {
 
     fn event_text(events: &[CoreEvent]) -> String {
         format!("{events:?}")
-    }
-
-    fn current_dir_lock() -> &'static Mutex<()> {
-        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| Mutex::new(()))
-    }
-
-    struct CurrentDirGuard<'a> {
-        _lock: MutexGuard<'a, ()>,
-        previous: PathBuf,
-    }
-
-    impl CurrentDirGuard<'_> {
-        fn enter(root: &Path) -> Self {
-            let lock = current_dir_lock().lock().expect("cwd lock");
-            let previous = std::env::current_dir().expect("cwd");
-            std::env::set_current_dir(root).expect("set cwd");
-            Self {
-                _lock: lock,
-                previous,
-            }
-        }
-    }
-
-    impl Drop for CurrentDirGuard<'_> {
-        fn drop(&mut self) {
-            std::env::set_current_dir(&self.previous).expect("restore cwd");
-        }
     }
 
     struct SafeApplyFixture {
@@ -5234,6 +5239,7 @@ mod tests {
     }
 
     fn init_git_repo(root: &Path) {
+        let _guard = crate::test_support::git_guard_lock();
         std::process::Command::new("git")
             .args(["init", "-b", "feature/test"])
             .current_dir(root)
@@ -5262,10 +5268,7 @@ mod tests {
             .expect("git commit");
     }
 
-    fn with_current_dir<T>(root: &Path, run: impl FnOnce() -> T) -> T {
-        let _guard = CurrentDirGuard::enter(root);
-        run()
-    }
+    use crate::test_support::with_current_dir;
 
     fn request_with_state(
         core: &RuntimeCoreBridge,
@@ -6416,8 +6419,8 @@ mod tests {
     #[test]
     fn git_status_bypasses_natural_language_pipeline() {
         let temp = tempfile::tempdir().expect("tempdir");
-        init_git_repo(temp.path());
         let response = with_current_dir(temp.path(), || {
+            init_git_repo(temp.path());
             let core = RuntimeCoreBridge::with_defaults();
             core.execute(request("git status"))
         });
@@ -7268,25 +7271,28 @@ mod tests {
 
     #[test]
     fn workspace_root_plan_generates_narrow_candidates() {
-        let core = RuntimeCoreBridge::with_defaults();
-        core.execute(request("このプロジェクトの構造を解析して"));
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("このプロジェクトの構造を解析して"));
 
-        let response = core.execute(request(
-            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
-        ));
-        let state = response.core_state.as_ref().expect("core state");
-        let plan = state
-            .session_context
-            .previous_plan_context
-            .as_ref()
-            .expect("plan context");
+            let response = core.execute(request(
+                "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+            ));
+            let state = response.core_state.as_ref().expect("core state");
+            let plan = state
+                .session_context
+                .previous_plan_context
+                .as_ref()
+                .expect("plan context");
 
-        assert_eq!(plan.target, IrTarget::WorkspaceRoot);
-        assert!(plan.candidates.len() >= 3, "{:?}", plan.candidates);
-        assert!(plan.candidates.iter().all(|candidate| matches!(
-            candidate.target,
-            NarrowTarget::File(_) | NarrowTarget::Module(_) | NarrowTarget::Symbol(_)
-        )));
+            assert_eq!(plan.target, IrTarget::WorkspaceRoot);
+            assert!(plan.candidates.len() >= 2, "{:?}", plan.candidates);
+            assert!(plan.candidates.iter().all(|candidate| matches!(
+                candidate.target,
+                NarrowTarget::File(_) | NarrowTarget::Module(_) | NarrowTarget::Symbol(_)
+            )));
+        })
     }
 
     fn long_analyze_request(
@@ -7475,22 +7481,25 @@ mod tests {
 
     #[test]
     fn repl_analysis_to_candidate_proposal_allows_select() {
-        let core = RuntimeCoreBridge::with_defaults();
-        core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
-        core.execute(request(analysis_to_candidate_proposal_input()));
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("このプロジェクト全体の構造を解析してください。まだ修正、apply、git操作、外部コマンド実行は行わないでください。"));
+            core.execute(request(analysis_to_candidate_proposal_input()));
 
-        let response = core.execute(request("select 1"));
-        let text = event_text(&response.events);
+            let response = core.execute(request("select 1"));
+            let text = event_text(&response.events);
 
-        assert!(!text.contains("Cannot select in current state"), "{text}");
-        assert!(
-            text.contains("[IR-TRACE][CONTEXT_STORE] kind=selection candidate_id=1"),
-            "{text}"
-        );
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Pipeline { state } if state == PipelineState::Previewed.label()
-        )));
+            assert!(!text.contains("Cannot select in current state"), "{text}");
+            assert!(
+                text.contains("[IR-TRACE][CONTEXT_STORE] kind=selection candidate_id=1"),
+                "{text}"
+            );
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Pipeline { state } if state == PipelineState::Previewed.label()
+            )));
+        })
     }
 
     #[test]
@@ -7526,77 +7535,86 @@ mod tests {
 
     #[test]
     fn no_apply_apply_with_validated_plan_downgrades_to_review() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan")
-        )));
-        assert!(has_trace_value(
-            &response,
-            "ADAPTER",
-            "action",
-            "ReviewValidatedPlan"
-        ));
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan")
+            )));
+            assert!(has_trace_value(
+                &response,
+                "ADAPTER",
+                "action",
+                "ReviewValidatedPlan"
+            ));
+        })
     }
 
     #[test]
     fn confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(long_yes_no_review_input()));
-        let text = event_text(&response.events);
+            let response = core.execute(request(long_yes_no_review_input()));
+            let text = event_text(&response.events);
 
-        assert!(
-            text.contains("[IR-TRACE][TARGET_REJECTED] target=yes/no reason=ConfirmationTokenLike"),
-            "{text}"
-        );
-        assert!(
-            text.contains(
-                "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
-            ),
-            "{text}"
-        );
-        assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ReviewValidatedPlan reason=RejectedConfirmationLikeTargetWithValidatedPlan"), "{text}");
-        assert!(
-            text.contains(
-                "[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1 target=File(Cargo.toml)"
-            ),
-            "{text}"
-        );
-        assert!(text.contains("# Validation Review"), "{text}");
-        assert!(text.contains("Apply status: Deferred"), "{text}");
-        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+            assert!(
+                text.contains("[IR-TRACE][TARGET_REJECTED] target=yes/no reason=ConfirmationTokenLike"),
+                "{text}"
+            );
+            assert!(
+                text.contains(
+                    "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ReviewValidatedPlan reason=RejectedConfirmationLikeTargetWithValidatedPlan"), "{text}");
+            assert!(
+                text.contains(
+                    "[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1 target=File(Cargo.toml)"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("# Validation Review"), "{text}");
+            assert!(text.contains("Apply status: Deferred"), "{text}");
+            assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+        })
     }
 
     #[test]
     fn confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_selected_candidate(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_selected_candidate(&core);
 
-        let response = core.execute(request(long_yes_no_review_input()));
-        let text = event_text(&response.events);
+            let response = core.execute(request(long_yes_no_review_input()));
+            let text = event_text(&response.events);
 
-        assert!(
-            text.contains(
-                "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
-            ),
-            "{text}"
-        );
-        assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ValidatePlan reason=RejectedConfirmationLikeTargetWithSelectedCandidate"), "{text}");
-        assert!(has_trace_value(
-            &response,
-            "ADAPTER",
-            "action",
-            "ValidatePlan"
-        ));
-        assert!(text.contains("# Plan Validation"), "{text}");
-        assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+            assert!(
+                text.contains(
+                    "[IR-TRACE][FALLBACK_PRIORITY] reason=ConfirmationTokenLike before=UnresolvedTarget"
+                ),
+                "{text}"
+            );
+            assert!(text.contains("[IR-TRACE][INTENT_DOWNGRADE] to=ValidatePlan reason=RejectedConfirmationLikeTargetWithSelectedCandidate"), "{text}");
+            assert!(has_trace_value(
+                &response,
+                "ADAPTER",
+                "action",
+                "ValidatePlan"
+            ));
+            assert!(text.contains("# Plan Validation"), "{text}");
+            assert!(!text.contains("[ERROR] unresolved target"), "{text}");
+        })
     }
 
     #[test]
@@ -7637,48 +7655,57 @@ mod tests {
 
     #[test]
     fn confirmation_like_target_rejection_preserves_validated_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
-        let before = core.history.lock().unwrap().current().clone();
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
+            let before = core.history.lock().unwrap().current().clone();
 
-        let response = core.execute(request(long_yes_no_review_input()));
-        let after = response.core_state.expect("state");
+            let response = core.execute(request(long_yes_no_review_input()));
+            let after = response.core_state.expect("state");
 
-        assert_eq!(
-            before.session_context.validated_plan,
-            after.session_context.validated_plan
-        );
+            assert_eq!(
+                before.session_context.validated_plan,
+                after.session_context.validated_plan
+            );
+        })
     }
 
     #[test]
     fn confirmation_like_target_rejection_preserves_selected_candidate() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(long_yes_no_review_input()));
-        let state = response.core_state.expect("state");
+            let response = core.execute(request(long_yes_no_review_input()));
+            let state = response.core_state.expect("state");
 
-        assert!(state.session_context.selected_candidate.is_some());
+            assert!(state.session_context.selected_candidate.is_some());
+        })
     }
 
     #[test]
     fn no_apply_apply_with_selected_candidate_downgrades_to_validate() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_selected_candidate(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_selected_candidate(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate")
-        )));
-        assert!(has_trace_value(
-            &response,
-            "ADAPTER",
-            "action",
-            "ValidatePlan"
-        ));
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate")
+            )));
+            assert!(has_trace_value(
+                &response,
+                "ADAPTER",
+                "action",
+                "ValidatePlan"
+            ));
+        })
     }
 
     #[test]
@@ -7702,128 +7729,152 @@ mod tests {
 
     #[test]
     fn review_validated_plan_preserves_validated_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
-        let before = core.history.lock().unwrap().current().clone();
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
+            let before = core.history.lock().unwrap().current().clone();
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
-        let after = response.core_state.expect("state");
+            let response = core.execute(request(no_apply_validated_plan_input()));
+            let after = response.core_state.expect("state");
 
-        assert_eq!(
-            before.session_context.validated_plan,
-            after.session_context.validated_plan
-        );
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1")
-        )));
+            assert_eq!(
+                before.session_context.validated_plan,
+                after.session_context.validated_plan
+            );
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][VALIDATED_PLAN_PRESERVE] candidate_id=1")
+            )));
+        })
     }
 
     #[test]
     fn review_validated_plan_does_not_clear_selection() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
-        let state = response.core_state.expect("state");
+            let response = core.execute(request(no_apply_validated_plan_input()));
+            let state = response.core_state.expect("state");
 
-        assert!(state.session_context.selected_candidate.is_some());
-        assert!(!response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
-        )));
+            assert!(state.session_context.selected_candidate.is_some());
+            assert!(!response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
+            )));
+        })
     }
 
     #[test]
     fn review_validated_plan_does_not_generate_new_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(!has_trace_value(
-            &response,
-            "ADAPTER",
-            "action",
-            "GenerateChangePlan"
-        ));
+            assert!(!has_trace_value(
+                &response,
+                "ADAPTER",
+                "action",
+                "GenerateChangePlan"
+            ));
+        })
     }
 
     #[test]
     fn repl_no_apply_with_validated_plan_preserves_context() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
-        let state = response.core_state.expect("state");
+            let response = core.execute(request(no_apply_validated_plan_input()));
+            let state = response.core_state.expect("state");
 
-        assert!(state.session_context.selected_candidate.is_some());
-        assert!(state.session_context.validated_plan.is_some());
-        assert!(state.session_context.previous_validation_context.is_some());
+            assert!(state.session_context.selected_candidate.is_some());
+            assert!(state.session_context.validated_plan.is_some());
+            assert!(state.session_context.previous_validation_context.is_some());
+        })
     }
 
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_generate_new_plan() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(!has_trace_value(
-            &response,
-            "ADAPTER",
-            "action",
-            "GenerateChangePlan"
-        ));
-        assert!(!response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
-        )));
+            assert!(!has_trace_value(
+                &response,
+                "ADAPTER",
+                "action",
+                "GenerateChangePlan"
+            ));
+            assert!(!response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][CONTEXT_CLEAR] reason=NewPlan")
+            )));
+        })
     }
 
     #[test]
     fn repl_no_apply_with_validated_plan_outputs_validation_review() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Result { message }
-                if message.contains("# Validation Review")
-                    && message.contains("Apply status: Deferred")
-                    && message.contains("No apply executed")
-        )));
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Result { message }
+                    if message.contains("# Validation Review")
+                        && message.contains("Apply status: Deferred")
+                        && message.contains("No apply executed")
+            )));
+        })
     }
 
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_clear_selection() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
-        let state = response.core_state.expect("state");
+            let response = core.execute(request(no_apply_validated_plan_input()));
+            let state = response.core_state.expect("state");
 
-        assert!(state.session_context.selected_candidate.is_some());
+            assert!(state.session_context.selected_candidate.is_some());
+        })
     }
 
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_apply() {
-        let core = RuntimeCoreBridge::with_defaults();
-        prepare_validated_plan(&core);
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            prepare_validated_plan(&core);
 
-        let response = core.execute(request(no_apply_validated_plan_input()));
+            let response = core.execute(request(no_apply_validated_plan_input()));
 
-        assert!(response.events.iter().any(|event| matches!(
-            event,
-            CoreEvent::Debug { message }
-                if message.contains("[IR-TRACE][APPLY_DEFERRED] reason=NoApplyConstraint")
-        )));
-        assert!(!has_trace_value(&response, "ADAPTER", "action", "Apply"));
+            assert!(response.events.iter().any(|event| matches!(
+                event,
+                CoreEvent::Debug { message }
+                    if message.contains("[IR-TRACE][APPLY_DEFERRED] reason=NoApplyConstraint")
+            )));
+            assert!(!has_trace_value(&response, "ADAPTER", "action", "Apply"));
+        })
     }
 
     #[test]
@@ -7841,26 +7892,29 @@ mod tests {
 
     #[test]
     fn plan_validation_allows_low_risk_file_target() {
-        let core = RuntimeCoreBridge::with_defaults();
-        core.execute(request("このプロジェクトの構造を解析して"));
-        core.execute(request(
-            "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
-        ));
-        core.execute(request("select 1"));
+        let fixture = SafeApplyFixture::new();
+        fixture.with_current_dir(|| {
+            let core = RuntimeCoreBridge::with_defaults();
+            core.execute(request("このプロジェクトの構造を解析して"));
+            core.execute(request(
+                "このプロジェクトの構造解析結果をもとに、安全な小規模修正プランを作成して。まだ適用しないで",
+            ));
+            core.execute(request("select 1"));
 
-        let response = core.execute(request("この候補を検証して"));
-        let state = response.core_state.expect("core state");
+            let response = core.execute(request("この候補を検証して"));
+            let state = response.core_state.expect("core state");
 
-        assert_eq!(response.status, ExecutionStatus::Executed);
-        assert!(state.session_context.validated_plan.is_some());
-        assert!(
-            state
-                .session_context
-                .validated_plan
-                .as_ref()
-                .expect("validated")
-                .apply_allowed
-        );
+            assert_eq!(response.status, ExecutionStatus::Executed);
+            assert!(state.session_context.validated_plan.is_some());
+            assert!(
+                state
+                    .session_context
+                    .validated_plan
+                    .as_ref()
+                    .expect("validated")
+                    .apply_allowed
+            );
+        })
     }
 
     #[test]

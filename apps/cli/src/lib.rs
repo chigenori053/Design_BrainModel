@@ -1,6 +1,7 @@
 pub mod app;
 pub mod app_commands_interface;
 pub mod autonomous_execute;
+pub mod capability;
 pub mod cli;
 pub mod coding;
 pub mod coding_service_interface;
@@ -53,6 +54,7 @@ pub mod session;
 pub mod source_index;
 pub mod state;
 pub mod state_graph;
+pub mod telemetry;
 pub mod test_support;
 pub mod tui;
 pub mod ui;
