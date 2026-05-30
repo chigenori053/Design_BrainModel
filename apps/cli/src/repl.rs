@@ -143,34 +143,49 @@ where
         let input = line.map_err(|err| err.to_string())?;
         let trimmed = input.trim();
         
-        // ── 仕様書バッファリング (DBM-SPECIFICATION-CAPTURE-RUNTIME-FIX-SPEC v1.0) ──
         let is_start = is_specification_start(trimmed);
-        if is_start {
-            if spec_capture.state == SpecificationCaptureState::Completed || spec_capture.state == SpecificationCaptureState::Idle {
-                if spec_capture.state == SpecificationCaptureState::Completed {
-                    eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
-                }
-                spec_capture.reset();
-                eprintln!("[SPEC_CAPTURE_START]\nsession_id={}", spec_capture.session_id);
-            } else if spec_capture.state == SpecificationCaptureState::Capturing && trimmed.to_lowercase().starts_with("dbm-") && !spec_capture.lines.is_empty() {
-                // Interrupted capture (FR-4)
-                let prev_len = spec_capture.lines.join("\n").len();
-                eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
-                eprintln!("[SPEC_BUFFER_FLUSH]\nprevious_length={}\nnew_length=0", prev_len);
-                spec_capture.reset();
-                eprintln!("[SPEC_CAPTURE_START]\nsession_id={}", spec_capture.session_id);
+
+        // FR-2 & FR-3: New Specification Isolation & Deterministic Dispatch
+        if is_start && spec_capture.state == SpecificationCaptureState::Capturing {
+            // New spec detected while already capturing -> Dispatch OLD session first
+            let prev_session_id = spec_capture.session_id.clone();
+            let payload = std::mem::take(&mut spec_capture.lines); // FR-1: Ownership Transfer
+            
+            if !payload.is_empty() {
+                let full_text = payload.join("\n");
+                eprintln!("[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_length={}", prev_session_id, full_text.len()); // TR-3
+                
+                handle_submit(
+                    full_text,
+                    workspace_root.as_path(),
+                    core,
+                    &mut ui,
+                    writer,
+                )?;
             }
+            
+            eprintln!("[SPEC_SESSION]\nsession={}\naction=reset", prev_session_id); // TR-4
+            eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
+            spec_capture.reset(); // FR-2 Step 3: Reset
+            eprintln!("[SPEC_SESSION]\nsession={}\naction=create", spec_capture.session_id); // TR-1
+        } else if is_start {
+            // Normal start from Idle or Completed
+            if spec_capture.state == SpecificationCaptureState::Completed {
+                eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
+            }
+            spec_capture.reset();
+            eprintln!("[SPEC_SESSION]\nsession={}\naction=create", spec_capture.session_id); // TR-1
         }
 
         if spec_capture.state == SpecificationCaptureState::Capturing {
             // Phase B / FR-2: 明示的な終了判定 (/end 完全一致)
             if trimmed == "/end" {
-                let captured_lines = std::mem::take(&mut spec_capture.lines);
+                let current_session_id = spec_capture.session_id.clone();
+                let captured_lines = std::mem::take(&mut spec_capture.lines); // FR-1: Ownership Transfer
                 let full_text = captured_lines.join("\n");
                 
                 eprintln!("[SPEC_BUFFER_FLUSH]\nprevious_length={}\nnew_length=0", full_text.len());
-                eprintln!("[SPEC_CAPTURE_COMPLETE]\nsession_id={}\nlines={}\nlength={}", spec_capture.session_id, captured_lines.len(), full_text.len());
-                eprintln!("[SPEC_DISPATCH]");
+                eprintln!("[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_length={}", current_session_id, full_text.len()); // TR-3
                 
                 handle_submit(
                     full_text,
@@ -184,13 +199,17 @@ where
                 continue;
             }
             
-            // TR-5: 異常連結検出
+            // TR-5: 異常連結検出 (Boundary Violation Guard)
             if trimmed.contains("DBM-") && !trimmed.starts_with("DBM-") {
                 let token = extract_contamination_token(trimmed);
                 eprintln!("[SPEC_BOUNDARY_WARNING]\ntoken=\"{}\"", token);
+                eprintln!("[SPEC_BOUNDARY_VIOLATION]\nsession={}\nreason=\"contamination_detected\"", spec_capture.session_id); // TR-5
             }
             
+            // TR-2: Buffer Append
+            let added_len = input.len();
             spec_capture.lines.push(input);
+            eprintln!("[SPEC_SESSION]\nsession={}\naction=append\nlength={}", spec_capture.session_id, added_len); // TR-2
             continue;
         }
         // ───────────────────────────────────────────────────────────────────
