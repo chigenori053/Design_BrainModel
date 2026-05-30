@@ -1238,26 +1238,70 @@ impl RuntimeCoreBridge {
             push_confirmation_like_fallback_trace(&mut events, &session_context_snapshot);
         }
 
+        // DBM-CONSTRAINT-ENFORCEMENT-SPEC v1.0 § Evaluation Order Improvement
+        // 制約（no_apply等）によるインテントのダウングレードを評価の前に行う
+        // 対象は Apply インテントのみとする（ReviewSafety 等は既に安全なため維持する）
+        if ir_request.safety_constraints.no_apply && ir_request.action == IrAction::Apply {
+            if session_context_snapshot.validated_plan.is_some() {
+                ir_request.action = IrAction::ReviewValidatedPlan;
+                ir_request.mode = ExecutionMode::ValidateOnly;
+                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
+                    ir_request.target = narrow_target_to_ir_target(&selected.target);
+                }
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan"
+                            .to_string(),
+                });
+            } else if session_context_snapshot.selected_candidate.is_some() {
+                ir_request.action = IrAction::ValidatePlan;
+                ir_request.mode = ExecutionMode::ValidateOnly;
+                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
+                    ir_request.target = narrow_target_to_ir_target(&selected.target);
+                }
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate"
+                            .to_string(),
+                });
+            } else {
+                ir_request.action = IrAction::GenerateChangePlan;
+                ir_request.mode = ExecutionMode::PlanOnly;
+                ir_request.target = session_context_snapshot
+                    .previous_analysis_context
+                    .as_ref()
+                    .map(|ctx| ctx.target.clone())
+                    .unwrap_or(IrTarget::WorkspaceRoot);
+                events.push(CoreEvent::Debug {
+                    message:
+                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=GenerateChangePlan reason=NoApplyWithoutSelection"
+                            .to_string(),
+                });
+            }
+        }
+
+
         // DBM-POLICY-LAYER-SPEC v1.0
         // ポリシーの評価
-        use crate::runtime::policy::{PolicyEvaluator, PolicyDecision};
+        use crate::runtime::policy::{PolicyDecision, PolicyEvaluator};
         let mut policy_profile = session_context_snapshot.policy.clone();
         // 既存制約との統合 (互換モード)
         policy_profile.apply_constraints(&session_context_snapshot.constraints);
 
         let policy_decision = PolicyEvaluator::evaluate_ir_request(&ir_request, &policy_profile);
         if let PolicyDecision::Reject { reason } = policy_decision {
+            let required_permission = PolicyEvaluator::required_permission(&ir_request.action, &ir_request.raw_input);
             if observability_enabled() {
                 println!(
-                    "[POLICY_EVALUATION] role={} action={} permission=Modify decision=Reject",
-                    policy_profile.role, ir_request.action
+                    "[POLICY_EVALUATION] role={} action={} permission={:?} decision=Reject",
+                    policy_profile.role, ir_request.action, required_permission
                 );
                 println!("[EXECUTION] status=Rejected reason=PermissionDenied");
             }
             events.push(CoreEvent::Debug {
                 message: format!(
-                    "[POLICY_EVALUATION] role={} action={} permission=Modify decision=Reject",
-                    policy_profile.role, ir_request.action
+                    "[POLICY_EVALUATION] role={} action={} permission={:?} decision=Reject",
+                    policy_profile.role, ir_request.action, required_permission
                 ),
             });
             events.push(CoreEvent::Error {
@@ -1299,46 +1343,6 @@ impl RuntimeCoreBridge {
             return error_response("ExecutionRejected", &reason, id);
         }
 
-        if ir_request.safety_constraints.no_apply
-            && matches!(ir_request.action, IrAction::Apply | IrAction::ReviewSafety)
-        {
-            if session_context_snapshot.validated_plan.is_some() {
-                ir_request.action = IrAction::ReviewValidatedPlan;
-                ir_request.mode = ExecutionMode::ValidateOnly;
-                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
-                    ir_request.target = narrow_target_to_ir_target(&selected.target);
-                }
-                events.push(CoreEvent::Debug {
-                    message:
-                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ReviewValidatedPlan reason=NoApplyWithValidatedPlan"
-                            .to_string(),
-                });
-            } else if session_context_snapshot.selected_candidate.is_some() {
-                ir_request.action = IrAction::ValidatePlan;
-                ir_request.mode = ExecutionMode::ValidateOnly;
-                if let Some(selected) = session_context_snapshot.selected_candidate.as_ref() {
-                    ir_request.target = narrow_target_to_ir_target(&selected.target);
-                }
-                events.push(CoreEvent::Debug {
-                    message:
-                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=ValidatePlan reason=NoApplyWithSelectedCandidate"
-                            .to_string(),
-                });
-            } else {
-                ir_request.action = IrAction::GenerateChangePlan;
-                ir_request.mode = ExecutionMode::PlanOnly;
-                ir_request.target = session_context_snapshot
-                    .previous_analysis_context
-                    .as_ref()
-                    .map(|ctx| ctx.target.clone())
-                    .unwrap_or(IrTarget::WorkspaceRoot);
-                events.push(CoreEvent::Debug {
-                    message:
-                        "[IR-TRACE][INTENT_DOWNGRADE] from=Apply to=GenerateChangePlan reason=NoApplyWithoutSelection"
-                            .to_string(),
-                });
-            }
-        }
 
         // コンテキストアウェアなターゲット解決 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0)
         let is_plan_only = is_plan_only_intent(&lower_input);
@@ -1584,7 +1588,7 @@ impl RuntimeCoreBridge {
         let input_for_dispatch = &ir_request.raw_input;
         println!("[SPEC_RUNTIME] raw_input={}", input_for_dispatch);
 
-        let (result, output_type, _) = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, input_for_dispatch) {
+        let (result, output_type, _) = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, input_for_dispatch, None) {
             Ok(res) => res,
             Err(e) => {
                 events.push(CoreEvent::Error { message: e });
@@ -1763,7 +1767,17 @@ impl RuntimeCoreBridge {
 
         // DBM-RUNTIME-DISPATCH-INTEGRATION-SPEC v1.0 §8
         // RuntimeAnalyzeDispatcher を使用して Capability をディスパッチ
-        let analysis_text = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, path_str) {
+        let specification = self
+            .history
+            .lock()
+            .unwrap()
+            .current()
+            .session_context
+            .specification_context
+            .as_ref()
+            .map(|ctx| ctx.specification.clone());
+
+        let analysis_text = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, path_str, specification) {
             Ok((result, output_type, _capability)) => {
                 format_capability_result(result.as_ref(), output_type, path_str)
             }
@@ -2940,26 +2954,34 @@ impl RuntimeCoreBridge {
         request: &InternalRequest,
     ) -> CoreResponse {
         // DBM-POLICY-LAYER-SPEC v1.0
-        use crate::runtime::policy::{PolicyEvaluator, PolicyDecision};
+        use crate::runtime::policy::{PolicyDecision, PolicyEvaluator};
         let (session_policy, constraints) = {
             let history = self.history.lock().unwrap();
             let current = history.current();
-            (current.session_context.policy.clone(), current.session_context.constraints.clone())
+            (
+                current.session_context.policy.clone(),
+                current.session_context.constraints.clone(),
+            )
         };
         let mut policy_profile = session_policy;
         policy_profile.apply_constraints(&constraints);
 
-        if let PolicyDecision::Reject { reason } =
-            PolicyEvaluator::evaluate_external(command, &policy_profile)
-        {
-            if observability_enabled() {
-                println!(
-                    "[POLICY_EVALUATION] role={} action={} permission=ExternalCommand decision=Reject",
-                    policy_profile.role, command
-                );
-                println!("[EXECUTION] status=Rejected reason=PermissionDenied");
+        // 内部コマンド（Registry に登録されているもの）は ExternalCommand 権限を要求しない
+        let is_internal = self.registry.contains(command);
+
+        if !is_internal {
+            if let PolicyDecision::Reject { reason } =
+                PolicyEvaluator::evaluate_external(command, &policy_profile)
+            {
+                if observability_enabled() {
+                    println!(
+                        "[POLICY_EVALUATION] role={} action={} permission=ExternalCommand decision=Reject",
+                        policy_profile.role, command
+                    );
+                    println!("[EXECUTION] status=Rejected reason=PermissionDenied");
+                }
+                return error_response("PermissionDenied", &reason, request.id);
             }
-            return error_response("PermissionDenied", &reason, request.id);
         }
 
         // DBM-CONSTRAINT-ENFORCEMENT-SPEC v1.0
@@ -5973,7 +5995,6 @@ mod tests {
     }
 
     fn init_git_repo(root: &Path) {
-        let _guard = crate::test_support::git_guard_lock();
         std::process::Command::new("git")
             .args(["init", "-b", "feature/test"])
             .current_dir(root)
@@ -6211,6 +6232,7 @@ mod tests {
         )
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_confirmation_parser_maps_confirm_reject_cancel_and_reconfirm() {
         assert_eq!(
@@ -6240,6 +6262,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_without_validated_plan() {
         let mut input = apply_guard_input();
@@ -6248,6 +6271,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::MissingValidatedPlan);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_without_selected_candidate() {
         let mut input = apply_guard_input();
@@ -6256,6 +6280,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::MissingSelectedCandidate);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_workspace_root_apply() {
         let mut input = apply_guard_input();
@@ -6265,6 +6290,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::WorkspaceRootApplyForbidden);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_candidate_mismatch() {
         let mut input = apply_guard_input();
@@ -6277,6 +6303,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::CandidateMismatch);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_plan_hash_mismatch() {
         let mut input = apply_guard_input();
@@ -6285,6 +6312,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::PlanHashMismatch);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_missing_preview_snapshot() {
         let mut input = apply_guard_input();
@@ -6293,6 +6321,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::MissingPreviewSnapshot);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_preview_plan_hash_mismatch() {
         let mut input = apply_guard_input();
@@ -6301,6 +6330,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::PlanHashMismatch);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_target_mismatch() {
         let mut input = apply_guard_input();
@@ -6310,6 +6340,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::TargetMismatch);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_non_previewed_pipeline() {
         let mut input = apply_guard_input();
@@ -6318,6 +6349,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::PreviewNotActive);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_rejects_stale_validated_plan() {
         let mut input = apply_guard_input();
@@ -6331,6 +6363,7 @@ mod tests {
         assert_apply_guard_rejects(input, ApplyGuardRejectReason::StaleValidatedPlan);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_guard_allows_validated_narrow_target() {
         assert_eq!(
@@ -6343,6 +6376,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_creates_transaction() {
         let fixture = SafeApplyFixture::new();
@@ -6363,6 +6397,7 @@ mod tests {
         assert_eq!(tx.planned_diff_checksum, 7);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_creates_rollback_snapshot() {
         let fixture = SafeApplyFixture::new();
@@ -6381,6 +6416,7 @@ mod tests {
         assert!(tx.rollback_snapshot.target_path.starts_with(&fixture.root));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_records_pre_checksum() {
         let fixture = SafeApplyFixture::new();
@@ -6401,6 +6437,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_requires_apply_guard_allow() {
         let fixture = SafeApplyFixture::new();
@@ -6424,6 +6461,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rejects_without_validated_plan() {
         let fixture = SafeApplyFixture::new();
@@ -6455,6 +6493,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rejects_workspace_root() {
         let fixture = SafeApplyFixture::new();
@@ -6480,6 +6519,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rolls_back_on_checksum_mismatch() {
         let fixture = SafeApplyFixture::new();
@@ -6511,6 +6551,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=ChecksumMismatch"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rolls_back_on_post_validation_failure() {
         let fixture = SafeApplyFixture::new();
@@ -6535,6 +6576,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK] reason=PostValidationFailed"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_uses_isolated_fixture_workspace() {
         let fixture = SafeApplyFixture::new();
@@ -6563,6 +6605,7 @@ mod tests {
         assert!(events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_SUCCESS]"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_tests_do_not_modify_repository_worktree() {
         let repo_root = repo_root();
@@ -6589,6 +6632,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_exact_y_is_confirm() {
         assert_eq!(
@@ -6597,6 +6641,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_exact_yes_is_confirm() {
         assert_eq!(
@@ -6605,6 +6650,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_sentence_yes_no_is_not_confirmation() {
         assert_eq!(
@@ -6613,6 +6659,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_sentence_y_n_is_not_confirmation() {
         assert_eq!(
@@ -6623,6 +6670,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn derive_pipeline_state_previewed_requires_preview_snapshot() {
         let mut state = state_with_plan_context();
@@ -6641,6 +6689,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn derive_pipeline_state_previewed_requires_selected_candidate() {
         let state = state_with_plan_context();
@@ -6658,6 +6707,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn derive_pipeline_state_previous_plan_without_selection_returns_proposed() {
         let state = state_with_plan_context();
@@ -6668,6 +6718,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn rollback_state_downgrades_previewed_without_selection() {
         let mut restored = state_with_plan_context();
@@ -6687,6 +6738,7 @@ mod tests {
         assert_eq!(restored.status, PipelineState::Proposed);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn rollback_state_downgrades_previewed_without_preview_snapshot() {
         let mut restored = state_with_plan_context();
@@ -6707,6 +6759,7 @@ mod tests {
         assert_eq!(restored.status, PipelineState::Proposed);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_empty_input_reconfirms() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6722,6 +6775,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_unknown_input_reconfirms() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6737,6 +6791,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_uncertain_japanese_apply_input_reconfirms() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6752,6 +6807,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_unknown_input_does_not_route_to_language_core() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6763,6 +6819,7 @@ mod tests {
         assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ClarificationRequired"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_reject_cancels_without_clarification() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6779,6 +6836,7 @@ mod tests {
         assert!(state.session_context.selected_candidate.is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_confirm_without_validated_plan_rejects_apply() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6796,6 +6854,7 @@ mod tests {
         assert!(state.session_context.selected_candidate.is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_y_without_validated_plan_rejects_apply_guard() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -6815,6 +6874,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_stale_validated_plan_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -6843,6 +6903,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true reason=StaleValidatedPlan"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rejects_stale_validated_plan_hash() {
         let fixture = SafeApplyFixture::new();
@@ -6875,6 +6936,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rejects_validated_plan_candidate_mismatch() {
         let fixture = SafeApplyFixture::new();
@@ -6907,6 +6969,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn safe_apply_rejects_missing_preview_snapshot_even_with_validated_plan() {
         let fixture = SafeApplyFixture::new();
@@ -6934,6 +6997,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_validated_preview_y_passes_apply_guard() {
         let fixture = SafeApplyFixture::new();
@@ -6957,6 +7021,7 @@ mod tests {
         assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][APPLY_GUARD] rejected=true"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_validated_preview_y_executes_safe_apply() {
         let fixture = SafeApplyFixture::new();
@@ -6984,6 +7049,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_apply_failure_rolls_back() {
         let fixture = SafeApplyFixture::new();
@@ -7015,6 +7081,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][SAFE_APPLY_ROLLBACK]"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn preview_cancel_clears_selection() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7029,6 +7096,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Debug { message } if message.contains("[IR-TRACE][PREVIEW_CONFIRMATION] action=Cancel"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn no_apply_blocks_governed_transaction_preview() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7049,6 +7117,7 @@ mod tests {
         assert!(!text.contains("preview ready"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_yes_no_sentence_not_target() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7064,6 +7133,7 @@ mod tests {
         assert!(!text.contains("Target: yes/no"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_yes_no_sentence_not_unresolved() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7076,6 +7146,7 @@ mod tests {
         assert!(!text.contains("unresolved target"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn ambiguous_input_returns_proposal() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7088,6 +7159,7 @@ mod tests {
         assert!(!response.events.iter().any(|event| matches!(event, CoreEvent::Thinking { summary } if summary == "strategy execution started")));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn clear_input_returns_plan_and_result() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7109,6 +7181,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Result { message } if message == "core execution completed")));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn invalid_input_returns_error() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7118,6 +7191,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Error { message } if message.contains("ExecutionRejected"))));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn target_only_input_does_not_enter_coding_pipeline() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7150,8 +7224,10 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn git_status_bypasses_natural_language_pipeline() {
+        let _guard = crate::test_support::git_guard_lock();
         let temp = tempfile::tempdir().expect("tempdir");
         let response = with_current_dir(temp.path(), || {
             init_git_repo(temp.path());
@@ -7168,6 +7244,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn git_add_dot_is_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7179,8 +7256,10 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn dirty_tree_guard_rejects_unrelated_dirty_files_for_scoped_add() {
+        let _guard = crate::test_support::git_guard_lock();
         let temp = tempfile::tempdir().expect("tempdir");
         init_git_repo(temp.path());
         std::fs::write(temp.path().join("tracked.txt"), "target change\n").expect("target");
@@ -7208,6 +7287,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn same_git_input_produces_same_operation_sequence_and_targets() {
         let left = crate::git::commands::parse_git_command("git add tracked.txt").expect("left");
@@ -7218,6 +7298,7 @@ mod tests {
         assert_eq!(git_command_policy(&left), git_command_policy(&right));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn dirty_tree_policy_ignores_dbm_runtime_paths() {
         let policy = DirtyTreePolicy::default();
@@ -7227,6 +7308,7 @@ mod tests {
         assert!(!policy.is_ignored(Path::new("apps/cli/src/core.rs")));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn same_transaction_input_produces_same_transaction_record() {
         let mut left = ExecutionTransaction::new("tx-fixed".to_string(), 100);
@@ -7251,6 +7333,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn recovery_fail_safe_finalizes_unfinished_transaction() {
         let mut transaction = ExecutionTransaction::new("tx-recovery".to_string(), 100);
@@ -7261,6 +7344,7 @@ mod tests {
         assert_eq!(transaction.finalized_at, Some(300));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn candidate_to_plan_requires_non_empty_steps() {
         let empty = ExecutionPlanCandidate {
@@ -7284,6 +7368,7 @@ mod tests {
         assert!(candidate_to_execution_plan(&valid).is_ok());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn clarification_target_falls_back_to_cli_src_path() {
         let root =
@@ -7300,6 +7385,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn append_comment_line_adds_one_comment_line() {
         let updated = append_comment_line("fn marker() {}\n", "src/coding.rs");
@@ -7307,6 +7393,7 @@ mod tests {
         assert_eq!(updated.lines().count(), 2);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn append_comment_line_is_idempotent() {
         let once = append_comment_line("fn marker() {}\n", "src/coding.rs");
@@ -7322,6 +7409,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn clarification_bypass_applies_through_unified_apply_gate_idempotently() {
         let root =
@@ -7364,6 +7452,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn unified_apply_rejects_pending_file_outside_intent_target() {
         let root = std::env::temp_dir().join(format!("dbm-apply-target-{}", uuid::Uuid::new_v4()));
@@ -7405,6 +7494,7 @@ mod tests {
         std::fs::remove_dir_all(root).expect("cleanup");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn select_candidate_returns_preview_and_confirm_choices() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7431,6 +7521,7 @@ mod tests {
         assert!(response.events.iter().any(|event| matches!(event, CoreEvent::Next { actions } if actions == &vec!["y".to_string(), "n".to_string()])));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn proposals_command_redisplays_active_candidates() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7453,6 +7544,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn slash_structure_executes_through_design_adapter() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7464,6 +7556,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn error_response_includes_recovery_candidates() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7475,6 +7568,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn compare_proposals_returns_comparison_debug() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7498,6 +7592,7 @@ mod tests {
 
     // ── History unit tests (Phase 4.5) ───────────────────────────────────────
 
+    // CATEGORY: UNIT
     #[test]
     fn history_push_increments_version_and_moves_cursor() {
         let mut h = History::default();
@@ -7515,6 +7610,7 @@ mod tests {
         assert_eq!(h.current().version, 2);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_undo_moves_cursor_back_without_mutation() {
         let mut h = History::default();
@@ -7535,12 +7631,14 @@ mod tests {
         assert_eq!(h.entries().len(), 3);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_undo_at_root_returns_none() {
         let mut h = History::default();
         assert!(h.undo().is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_jump_moves_cursor_to_version() {
         let mut h = History::default();
@@ -7562,12 +7660,14 @@ mod tests {
         assert_eq!(h.cursor(), 1);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_jump_unknown_version_returns_none() {
         let mut h = History::default();
         assert!(h.jump(99).is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_replay_from_truncates_forward_chain() {
         let mut h = History::default();
@@ -7599,6 +7699,7 @@ mod tests {
         assert_eq!(h.current().version, 4);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_len_is_limited_to_max_history() {
         let mut h = History::with_limits(Limits {
@@ -7618,6 +7719,7 @@ mod tests {
         assert_eq!(h.current().version, 5);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn history_push_after_undo_truncates_forward() {
         let mut h = History::default();
@@ -7634,6 +7736,7 @@ mod tests {
         assert_eq!(h.current().status, PipelineState::Planned);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn execute_attaches_core_state_to_response() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7644,6 +7747,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn undo_command_returns_core_state_without_push() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7659,6 +7763,7 @@ mod tests {
         assert!(response.core_state.is_some());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn max_depth_returns_result_without_expanding() {
         let core = core_with_limits(Limits {
@@ -7676,6 +7781,7 @@ mod tests {
         assert_eq!(response.core_state.as_ref().map(|s| s.depth), Some(1));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn reselect_is_disabled_at_max_depth() {
         let core = core_with_limits(Limits {
@@ -7718,6 +7824,7 @@ mod tests {
         });
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_invalid_target_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7736,6 +7843,7 @@ mod tests {
         assert_eq!(core.history.lock().unwrap().entries(), before.as_slice());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_zero_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7749,6 +7857,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_future_version_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7762,6 +7871,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_distance_is_limited() {
         let core = core_with_limits(Limits {
@@ -7781,6 +7891,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_limit_exceeded() {
         let core = core_with_limits(Limits {
@@ -7798,6 +7909,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_parse_failure() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7811,6 +7923,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_validation_failure_preserves_pipeline() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7834,6 +7947,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_validation_failure_preserves_context() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7858,6 +7972,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn replay_validation_failure_not_idle() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7875,6 +7990,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn command_dispatch_replay_not_confirmation() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7896,6 +8012,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn command_dispatch_replay_not_nl() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7910,6 +8027,7 @@ mod tests {
         assert!(!text.contains("ClarificationRequired"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn command_dispatch_preview_not_clarification() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7923,6 +8041,7 @@ mod tests {
         assert!(!text.contains("LANGUAGE_CORE"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn command_dispatch_failure_not_idle() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7939,6 +8058,7 @@ mod tests {
     ///
     /// 「このプロジェクトの構造を解析して」は DefaultIntentRefiner の ASCII-only
     /// normalizer を通過せずに Adapter で処理されるため、InvalidInput は返さない。
+    // CATEGORY: UNIT
     #[test]
     fn nl_project_structure_request_does_not_return_invalid_input() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7958,6 +8078,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_session_context_stores_previous_analysis() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -7976,6 +8097,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_session_context_loads_previous_analysis() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8003,6 +8125,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn workspace_root_plan_generates_narrow_candidates() {
         let fixture = SafeApplyFixture::new();
@@ -8068,6 +8191,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_analyze_request_routes_to_analyze_project() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8082,6 +8206,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_analyze_request_is_read_only() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8091,6 +8216,7 @@ mod tests {
         assert!(has_trace_value(&response, "ADAPTER", "mode", "ReadOnly"));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_analyze_request_targets_workspace_root() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8105,6 +8231,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_analyze_with_plan_terms_does_not_generate_plan() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8119,6 +8246,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_plan_request_uses_previous_analysis_context() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8148,6 +8276,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn analysis_context_candidate_proposal_intent() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8179,6 +8308,7 @@ mod tests {
         assert_eq!(state.status, PipelineState::Proposed);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn analysis_to_candidate_proposal_does_not_reanalyze_project() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8199,6 +8329,7 @@ mod tests {
         )));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn analysis_to_candidate_proposal_preserves_no_apply_constraints() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8213,6 +8344,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_analysis_to_candidate_proposal_allows_select() {
         let fixture = SafeApplyFixture::new();
@@ -8236,6 +8368,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_long_apply_prohibited_does_not_apply() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8267,6 +8400,7 @@ mod tests {
         core.execute(request("選択済みの候補について検証してください。対象ファイルがworkspace内に存在すること、WorkspaceRootへの直接Applyではないこと、変更内容が破壊的でないこと、既存のPlan hashと候補IDが一致していること、validated_planなしにApplyへ進まないことを確認してください。検証結果だけを表示し、まだファイル変更は行わないでください。"));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn no_apply_apply_with_validated_plan_downgrades_to_review() {
         let fixture = SafeApplyFixture::new();
@@ -8290,6 +8424,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_target_with_validated_plan_falls_back_to_review_validated_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8323,6 +8458,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_target_with_selected_candidate_falls_back_to_validate_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8351,6 +8487,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_target_without_context_falls_back_to_review_safety() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8375,6 +8512,7 @@ mod tests {
         assert!(!text.contains("[ERROR] unresolved target"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_failure_never_returns_unresolved_target() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8387,6 +8525,7 @@ mod tests {
         assert!(!text.contains("unresolved target"), "{text}");
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_target_rejection_preserves_validated_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8405,6 +8544,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn confirmation_like_target_rejection_preserves_selected_candidate() {
         let fixture = SafeApplyFixture::new();
@@ -8419,6 +8559,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn no_apply_apply_with_selected_candidate_downgrades_to_validate() {
         let fixture = SafeApplyFixture::new();
@@ -8442,6 +8583,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn no_apply_apply_without_selection_downgrades_to_plan() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8461,6 +8603,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn review_validated_plan_preserves_validated_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8484,6 +8627,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn review_validated_plan_does_not_clear_selection() {
         let fixture = SafeApplyFixture::new();
@@ -8503,6 +8647,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn review_validated_plan_does_not_generate_new_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8521,6 +8666,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_no_apply_with_validated_plan_preserves_context() {
         let fixture = SafeApplyFixture::new();
@@ -8537,6 +8683,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_generate_new_plan() {
         let fixture = SafeApplyFixture::new();
@@ -8560,6 +8707,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_no_apply_with_validated_plan_outputs_validation_review() {
         let fixture = SafeApplyFixture::new();
@@ -8579,6 +8727,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_clear_selection() {
         let fixture = SafeApplyFixture::new();
@@ -8593,6 +8742,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn repl_no_apply_with_validated_plan_does_not_apply() {
         let fixture = SafeApplyFixture::new();
@@ -8611,6 +8761,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn plan_validation_requires_selected_candidate() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8624,6 +8775,7 @@ mod tests {
         assert_eq!(response.status, ExecutionStatus::Failed);
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn plan_validation_allows_low_risk_file_target() {
         let fixture = SafeApplyFixture::new();
@@ -8651,6 +8803,7 @@ mod tests {
         })
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn new_analysis_clears_plan_validation_selection() {
         let mut state = CoreState::default();
@@ -8694,6 +8847,7 @@ mod tests {
         assert!(state.session_context.selected_candidate.is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn new_plan_clears_validation_selection() {
         let mut state = CoreState::default();
@@ -8727,6 +8881,7 @@ mod tests {
         assert!(state.session_context.selected_candidate.is_none());
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn workspace_root_apply_is_rejected_even_with_context() {
         let ir_request = crate::nl::language_core_ir_adapter::IrIntentRequest {
@@ -8744,6 +8899,7 @@ mod tests {
         assert!(rendered.contains("WorkspaceRoot apply prohibited"));
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn apply_without_validated_plan_is_rejected() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8756,6 +8912,7 @@ mod tests {
     ///
     /// Adapter が AnalyzeProject + WorkspaceRoot を設定していることを、
     /// [IR-TRACE][ADAPTER] デバッグイベントから確認する。
+    // CATEGORY: UNIT
     #[test]
     fn nl_project_structure_request_targets_workspace_root() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8780,6 +8937,7 @@ mod tests {
     /// spec §11.2 テスト 3: プロジェクト構造解析は ReadOnly モードで実行される
     ///
     /// [IR-TRACE][ADAPTER] イベントの mode フィールドが ReadOnly であること。
+    // CATEGORY: UNIT
     #[test]
     fn nl_project_structure_request_is_read_only() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8804,6 +8962,7 @@ mod tests {
     /// spec §11.2 テスト 4: 依存関係解析要求も WorkspaceRoot をターゲットにする
     ///
     /// 「依存関係を解析して」→ AnalyzeDependencies + WorkspaceRoot + ReadOnly。
+    // CATEGORY: UNIT
     #[test]
     fn nl_dependency_request_targets_workspace_root() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8838,6 +8997,7 @@ mod tests {
     /// また RefactorRequest は Adapter を通過した後、通常の NL pipeline で曖昧として
     /// Proposed になるか、あるいは PlanOnly として処理される。
     /// いずれにせよ ReadOnly な analyze と違い apply は走らない。
+    // CATEGORY: UNIT
     #[test]
     fn nl_refactor_request_does_not_apply_immediately() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8857,6 +9017,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: UNIT
     #[test]
     fn test_constraint_persistence_in_session() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8915,6 +9076,7 @@ mod tests {
     /// raw_input が Dispatcher に伝搬する。
     ///
     /// execute_lc_analyze() (WorkspaceRoot 経路) を通過しないことを保証する。
+    // CATEGORY: UNIT
     #[test]
     fn analyze_specification_routes_to_dedicated_handler() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8943,6 +9105,7 @@ mod tests {
     /// Case 3: WorkspaceRoot パスが Dispatcher に渡らないことを確認する。
     ///
     /// SpecificationDocument の raw_text にワークスペースパスが混入しない。
+    // CATEGORY: UNIT
     #[test]
     fn analyze_specification_does_not_inject_workspace_root_path() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8958,6 +9121,7 @@ mod tests {
     }
 
     /// Case pipeline: BuildingSpecification 状態へ遷移することを確認する。
+    // CATEGORY: UNIT
     #[test]
     fn analyze_specification_transitions_to_building_specification() {
         use crate::pipeline::PipelineState;
@@ -8978,6 +9142,7 @@ mod tests {
     // ── DBM-SPECIFICATION-PERSISTENCE-VALIDATION-SPEC v1.0 Tests ─────────────
 
     /// Phase A: FR-1 - store_specification() が実行されることを確認する。
+    // CATEGORY: UNIT
     #[test]
     fn fr1_store_specification_executed() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -8997,6 +9162,7 @@ mod tests {
     /// Phase B: FR-2 - Turn N で保存された仕様書が Turn N+1 で復元される。
     ///
     /// NT-1: Context Loss 回帰テスト
+    // CATEGORY: UNIT
     #[test]
     fn fr2_specification_context_persists_across_turns() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -9024,6 +9190,7 @@ mod tests {
     }
 
     /// Phase C / FR-4: Incremental Merge - 追加 Deliverable が既存に統合される。
+    // CATEGORY: UNIT
     #[test]
     fn fr4_incremental_merge() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -9050,6 +9217,7 @@ mod tests {
     /// FR-5: Duplicate Prevention - 同一成果物が重複しないこと。
     ///
     /// NT-3: Duplicate Deliverables 回帰テスト
+    // CATEGORY: UNIT
     #[test]
     fn fr5_duplicate_prevention() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -9076,6 +9244,7 @@ mod tests {
     /// FR-6: Goal Preservation - 後続ターンで Goal が消失しないこと。
     ///
     /// NT-2: Goal Overwrite 回帰テスト
+    // CATEGORY: UNIT
     #[test]
     fn fr6_goal_preserved_after_additional_deliverables() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -9102,6 +9271,7 @@ mod tests {
     /// Phase D / FR-3: Specification Retrieval.
     ///
     /// NT-4: Empty Retrieval 回帰テスト
+    // CATEGORY: UNIT
     #[test]
     fn fr3_specification_retrieval_returns_stored_spec() {
         let core = RuntimeCoreBridge::with_defaults();
@@ -9129,6 +9299,7 @@ mod tests {
     }
 
     /// Golden Persistence Test (§6): 3ターンシナリオ全通し検証。
+    // CATEGORY: UNIT
     #[test]
     fn golden_persistence_test_three_turns() {
         use crate::pipeline::PipelineState;
@@ -9181,6 +9352,7 @@ mod tests {
     }
 
     /// FR-4 & FR-5 & VR-2: Raw Text Isolation & Merge Safety Test
+    // CATEGORY: UNIT
     #[test]
     fn fr4_fr5_raw_text_isolation_test() {
         let core = RuntimeCoreBridge::with_defaults();

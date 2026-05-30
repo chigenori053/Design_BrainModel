@@ -9110,7 +9110,6 @@ mod tests {
     }
 
     fn init_git_repo(root: &Path) {
-        let _guard = crate::test_support::git_guard_lock();
         let status = Command::new("git")
             .args(["init"])
             .current_dir(root)
@@ -9551,6 +9550,7 @@ mod tests {
 
     #[test]
     fn plain_check_auto_commit_uses_representative_target() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("plain_check_auto_commit_representative_target");
         fs::create_dir_all(root.join("apps/cli/src")).expect("cli src");
         fs::write(
@@ -9846,6 +9846,7 @@ mod tests {
 
     #[test]
     fn restricted_commit_stages_exact_files_only() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_commit_exact");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo(&root);
@@ -9881,6 +9882,7 @@ mod tests {
 
     #[test]
     fn restricted_commit_decline_leaves_index_clean() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_commit_decline");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo(&root);
@@ -9913,6 +9915,7 @@ mod tests {
 
     #[test]
     fn restricted_commit_blocks_overlapping_dirty_workspace() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_commit_overlap");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo(&root);
@@ -9937,6 +9940,7 @@ mod tests {
 
     #[test]
     fn restricted_commit_allows_detached_head_with_warning_and_persists_telemetry() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_commit_detached");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/detached");
@@ -9985,6 +9989,7 @@ mod tests {
 
     #[test]
     fn restricted_push_rejects_protected_branch() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_push_protected");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo(&root);
@@ -9995,6 +10000,7 @@ mod tests {
 
     #[test]
     fn restricted_push_decline_records_no_push() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_push_decline");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/push-decline");
@@ -10030,6 +10036,7 @@ mod tests {
 
     #[test]
     fn restricted_push_requires_gh_auth() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_push_auth");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/push-auth");
@@ -10061,6 +10068,7 @@ mod tests {
 
     #[test]
     fn restricted_pr_create_rejects_invalid_base() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_pr_invalid_base");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/pr-base");
@@ -10071,6 +10079,7 @@ mod tests {
 
     #[test]
     fn restricted_pr_create_detects_duplicate() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_pr_duplicate");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/pr-duplicate");
@@ -10094,6 +10103,7 @@ mod tests {
 
     #[test]
     fn restricted_pr_create_decline_returns_no_pr() {
+        let _guard = crate::test_support::git_guard_lock();
         let root = temp_dir("restricted_pr_decline");
         write_rust_project(&root, "fn main() {}\n");
         init_git_repo_with_branch(&root, "dbm/pr-decline");
