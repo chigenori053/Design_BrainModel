@@ -14,9 +14,11 @@ pub mod registry;
 pub mod validator;
 
 pub use contract::{
-    AnalyzeCodeCapability, AnalyzeMemoryCapability, AnalyzeProjectCapability,
-    AnalyzeTestsCapability, CapabilityContract, CodeAnalysisResult, MemoryAnalysisResult,
-    ProjectStructureAnalysisResult, TestInventoryResult,
+    AnalyzeCodeCapability, AnalyzeDeadTestsCapability, AnalyzeMemoryCapability,
+    AnalyzeProjectCapability, AnalyzeRegressionTestsCapability, AnalyzeSpecificationCapability,
+    AnalyzeStructuralProblemsCapability, AnalyzeTestsCapability, CapabilityContract,
+    CodeAnalysisResult, DeadTestReport, MemoryAnalysisResult, ProjectStructureAnalysisResult,
+    RegressionRegistry, SpecificationDocument, StructuralDiagnosisReport, TestInventoryResult,
 };
 pub use dispatcher::RuntimeAnalyzeDispatcher;
 pub use registry::{CapabilityKind, CapabilityRegistry, CapabilityResolutionError};

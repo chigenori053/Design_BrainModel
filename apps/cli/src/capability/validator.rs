@@ -27,6 +27,10 @@ pub enum OutputTypeId {
     ProjectStructureAnalysisResult,
     CodeAnalysisResult,
     MemoryAnalysisResult,
+    DeadTestReport,
+    RegressionRegistry,
+    StructuralDiagnosisReport,
+    SpecificationDocument,
 }
 
 impl fmt::Display for OutputTypeId {
@@ -36,6 +40,10 @@ impl fmt::Display for OutputTypeId {
             Self::ProjectStructureAnalysisResult => write!(f, "ProjectStructureAnalysisResult"),
             Self::CodeAnalysisResult => write!(f, "CodeAnalysisResult"),
             Self::MemoryAnalysisResult => write!(f, "MemoryAnalysisResult"),
+            Self::DeadTestReport => write!(f, "DeadTestReport"),
+            Self::RegressionRegistry => write!(f, "RegressionRegistry"),
+            Self::StructuralDiagnosisReport => write!(f, "StructuralDiagnosisReport"),
+            Self::SpecificationDocument => write!(f, "SpecificationDocument"),
         }
     }
 }
@@ -78,6 +86,10 @@ fn expected_output_for_capability(capability: CapabilityKind) -> OutputTypeId {
         CapabilityKind::AnalyzeTests => OutputTypeId::TestInventoryResult,
         CapabilityKind::AnalyzeCode => OutputTypeId::CodeAnalysisResult,
         CapabilityKind::AnalyzeMemory => OutputTypeId::MemoryAnalysisResult,
+        CapabilityKind::AnalyzeDeadTests => OutputTypeId::DeadTestReport,
+        CapabilityKind::AnalyzeRegressionTests => OutputTypeId::RegressionRegistry,
+        CapabilityKind::AnalyzeStructuralProblems => OutputTypeId::StructuralDiagnosisReport,
+        CapabilityKind::AnalyzeSpecification => OutputTypeId::SpecificationDocument,
     }
 }
 

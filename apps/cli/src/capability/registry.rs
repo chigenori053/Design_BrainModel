@@ -32,6 +32,16 @@ pub enum CapabilityKind {
     /// 対応する `IrAction`: `AnalyzeTests`
     AnalyzeTests,
 
+    /// 危険なテストの検出。
+    ///
+    /// 対応する `IrAction`: `AnalyzeDeadTests`
+    AnalyzeDeadTests,
+
+    /// 回帰テストの解析。
+    ///
+    /// 対応する `IrAction`: `AnalyzeRegressionTests`
+    AnalyzeRegressionTests,
+
     /// コード解析。
     ///
     /// 対応する `IrAction`: `AnalyzeFile`, `AnalyzeSymbol`
@@ -39,6 +49,16 @@ pub enum CapabilityKind {
 
     /// メモリ解析（将来拡張用）。
     AnalyzeMemory,
+
+    /// 構造診断。
+    ///
+    /// 対応する `IrAction`: `AnalyzeStructuralProblems`
+    AnalyzeStructuralProblems,
+
+    /// 仕様書解析。
+    ///
+    /// 対応する `IrAction`: `AnalyzeSpecification`
+    AnalyzeSpecification,
 }
 
 impl fmt::Display for CapabilityKind {
@@ -46,8 +66,12 @@ impl fmt::Display for CapabilityKind {
         match self {
             Self::AnalyzeProject => write!(f, "AnalyzeProjectCapability"),
             Self::AnalyzeTests => write!(f, "AnalyzeTestsCapability"),
+            Self::AnalyzeDeadTests => write!(f, "AnalyzeDeadTestsCapability"),
+            Self::AnalyzeRegressionTests => write!(f, "AnalyzeRegressionTestsCapability"),
             Self::AnalyzeCode => write!(f, "AnalyzeCodeCapability"),
             Self::AnalyzeMemory => write!(f, "AnalyzeMemoryCapability"),
+            Self::AnalyzeStructuralProblems => write!(f, "AnalyzeStructuralProblemsCapability"),
+            Self::AnalyzeSpecification => write!(f, "AnalyzeSpecificationCapability"),
         }
     }
 }
@@ -106,8 +130,20 @@ impl CapabilityRegistry {
             // テスト棚卸し → AnalyzeTestsCapability
             IrAction::AnalyzeTests => Ok(CapabilityKind::AnalyzeTests),
 
+            // 危険なテスト → AnalyzeDeadTestsCapability
+            IrAction::AnalyzeDeadTests => Ok(CapabilityKind::AnalyzeDeadTests),
+
+            // 回帰テスト → AnalyzeRegressionTestsCapability
+            IrAction::AnalyzeRegressionTests => Ok(CapabilityKind::AnalyzeRegressionTests),
+
             // コード解析系 → AnalyzeCodeCapability
             IrAction::AnalyzeFile | IrAction::AnalyzeSymbol => Ok(CapabilityKind::AnalyzeCode),
+
+            // 構造診断 → AnalyzeStructuralProblemsCapability
+            IrAction::AnalyzeStructuralProblems => Ok(CapabilityKind::AnalyzeStructuralProblems),
+
+            // 仕様書解析 → AnalyzeSpecificationCapability
+            IrAction::AnalyzeSpecification => Ok(CapabilityKind::AnalyzeSpecification),
 
             // Analyze 系以外は解決不能
             other => Err(CapabilityResolutionError {

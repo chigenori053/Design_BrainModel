@@ -17,7 +17,71 @@
 //! let _: ProjectStructureAnalysisResult = execute(AnalyzeTestsCapability); // ERROR: type mismatch
 //! ```
 
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
 // ── Result types ──────────────────────────────────────────────────────────────
+
+/// テストカテゴリ。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum TestCategory {
+    Unit,
+    Integration,
+    RuntimeScenario,
+    Contract,
+    Benchmark,
+    Regression,
+    Quarantine,
+}
+
+/// テストのメタデータ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestMetadata {
+    pub path: PathBuf,
+    pub category: TestCategory,
+}
+
+/// テストガバナンスレポート。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TestGovernanceReport {
+    pub total_tests: usize,
+    pub category_counts: BTreeMap<TestCategory, usize>,
+    pub quarantine_tests: Vec<PathBuf>,
+    pub regression_tests: Vec<PathBuf>,
+    pub critical_contracts: Vec<CriticalRuntimeContract>,
+    pub regression_registry: Option<RegressionRegistry>,
+    pub dead_test_report: Option<DeadTestReport>,
+    pub repl_scenarios: Vec<ReplScenario>,
+}
+
+/// 重要契約テスト。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CriticalRuntimeContract {
+    pub capability: String,
+    pub test_files: Vec<PathBuf>,
+}
+
+/// 回帰テストレジストリ。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RegressionRegistry {
+    pub entries: Vec<TestMetadata>,
+}
+
+/// Dead Test 検出レポート。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeadTestReport {
+    pub unreferenced_tests: Vec<PathBuf>,
+    pub unreachable_tests: Vec<PathBuf>,
+    pub old_quarantine_tests: Vec<PathBuf>,
+}
+
+/// REPL シナリオ資産。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplScenario {
+    pub name: String,
+    pub inputs: Vec<String>,
+    pub expected_events: Vec<String>,
+}
 
 /// テスト棚卸し結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -25,6 +89,7 @@ pub struct TestInventoryResult {
     pub test_files: Vec<String>,
     pub test_count: usize,
     pub summary: String,
+    pub governance: Option<TestGovernanceReport>,
 }
 
 /// プロジェクト構造解析結果。
@@ -48,6 +113,61 @@ pub struct MemoryAnalysisResult {
     pub summary: String,
 }
 
+/// 構造診断レポート。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralDiagnosisReport {
+    pub circular_dependencies: Vec<String>,
+    pub oversized_modules: Vec<String>,
+    pub dependency_hotspots: Vec<String>,
+    pub boundary_violations: Vec<String>,
+    pub dead_modules: Vec<String>,
+}
+
+/// 仕様書ドキュメント。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SpecificationDocument {
+    pub title: Option<String>,
+    pub goal: Option<String>,
+    pub deliverables: Vec<DeliverableItem>,
+    pub constraints: Vec<ConstraintItem>,
+    pub success_criteria: Vec<SuccessCriterion>,
+    pub assumptions: Vec<AssumptionItem>,
+    pub raw_text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct DeliverableItem {
+    pub name: String,
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ConstraintItem {
+    pub kind: ConstraintKind,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub enum ConstraintKind {
+    NotImplement,
+    ReadOnly,
+    PreviewOnly,
+    NoApply,
+    NoDelete,
+    NoRefactor,
+    Other,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct SuccessCriterion {
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AssumptionItem {
+    pub description: String,
+}
+
 // ── Capability structs ────────────────────────────────────────────────────────
 
 /// テスト棚卸し Capability。`Output = TestInventoryResult`。
@@ -65,6 +185,22 @@ pub struct AnalyzeCodeCapability;
 /// メモリ解析 Capability。`Output = MemoryAnalysisResult`。
 #[derive(Debug, Clone, Copy)]
 pub struct AnalyzeMemoryCapability;
+
+/// Dead Test 解析 Capability。`Output = DeadTestReport`。
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzeDeadTestsCapability;
+
+/// 回帰テスト解析 Capability。`Output = RegressionRegistry`。
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzeRegressionTestsCapability;
+
+/// 構造診断 Capability。`Output = StructuralDiagnosisReport`。
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzeStructuralProblemsCapability;
+
+/// 仕様書解析 Capability。`Output = SpecificationDocument`。
+#[derive(Debug, Clone, Copy)]
+pub struct AnalyzeSpecificationCapability;
 
 // ── CapabilityContract trait ─────────────────────────────────────────────────
 
@@ -92,6 +228,30 @@ impl CapabilityContract for AnalyzeTestsCapability {
 
     fn output_type_name() -> &'static str {
         "TestInventoryResult"
+    }
+}
+
+impl CapabilityContract for AnalyzeDeadTestsCapability {
+    type Output = DeadTestReport;
+
+    fn capability_name() -> &'static str {
+        "AnalyzeDeadTestsCapability"
+    }
+
+    fn output_type_name() -> &'static str {
+        "DeadTestReport"
+    }
+}
+
+impl CapabilityContract for AnalyzeRegressionTestsCapability {
+    type Output = RegressionRegistry;
+
+    fn capability_name() -> &'static str {
+        "AnalyzeRegressionTestsCapability"
+    }
+
+    fn output_type_name() -> &'static str {
+        "RegressionRegistry"
     }
 }
 
@@ -128,6 +288,30 @@ impl CapabilityContract for AnalyzeMemoryCapability {
 
     fn output_type_name() -> &'static str {
         "MemoryAnalysisResult"
+    }
+}
+
+impl CapabilityContract for AnalyzeStructuralProblemsCapability {
+    type Output = StructuralDiagnosisReport;
+
+    fn capability_name() -> &'static str {
+        "AnalyzeStructuralProblemsCapability"
+    }
+
+    fn output_type_name() -> &'static str {
+        "StructuralDiagnosisReport"
+    }
+}
+
+impl CapabilityContract for AnalyzeSpecificationCapability {
+    type Output = SpecificationDocument;
+
+    fn capability_name() -> &'static str {
+        "AnalyzeSpecificationCapability"
+    }
+
+    fn output_type_name() -> &'static str {
+        "SpecificationDocument"
     }
 }
 
