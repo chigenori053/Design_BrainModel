@@ -52,9 +52,17 @@ pub enum SemanticTarget {
     Modify,
     /// Git 操作
     Git,
-    /// 外部コマンド実行
+    /// 外部コマンド
     ExternalCommand,
-    /// 不明
+    /// Role: Reviewer
+    ReviewerRole,
+    /// Role: Developer
+    DeveloperRole,
+    /// Role: OperatorRole
+    OperatorRole,
+    /// 構造的問題
+    StructuralProblem,
+    /// 未知
     Unknown,
 }
 
@@ -126,6 +134,9 @@ const CONSTRAINT_TERMS: &[(&str, f32)] = &[
     ("実行しないで", 0.95),
     ("不要です", 0.70),
     ("不要", 0.70),
+    ("として実行", 0.90),
+    ("モード", 0.80),
+    ("にしてください", 0.70),
 ];
 
 // テスト関連キーワード（spec §ルート変換）
@@ -140,11 +151,47 @@ const TEST_TERMS: &[&str] = &[
     "mod tests",
 ];
 
+const DEAD_TEST_TERMS: &[(&str, f32)] = &[
+    ("危険なテスト", 0.95),
+    ("不要なテスト", 0.95),
+    ("死んだテスト", 0.95),
+    ("dead test", 0.95),
+    ("unreferenced", 0.85),
+    ("unreachable", 0.85),
+];
+
+const REGRESSION_TERMS: &[(&str, f32)] = &[
+    ("回帰テスト", 0.95),
+    ("regression", 0.95),
+    ("デグレ", 0.85),
+    ("デグレード", 0.85),
+];
+
+const STRUCTURAL_PROBLEM_TERMS: &[(&str, f32)] = &[
+    ("構造的問題", 0.95),
+    ("設計問題", 0.95),
+    ("依存関係の問題", 0.95),
+    ("循環依存", 0.95),
+    ("アーキテクチャ問題", 0.95),
+    ("構造診断", 0.95),
+    ("設計診断", 0.95),
+    ("structural problem", 0.95),
+    ("design problem", 0.95),
+    ("dependency problem", 0.95),
+    ("circular dependency", 0.95),
+    ("architectural problem", 0.95),
+    ("structural diagnosis", 0.95),
+    ("design diagnosis", 0.95),
+];
+
 const APPLY_TERMS: &[&str] = &["apply", "適用", "反映"];
 const DELETE_TERMS: &[&str] = &["削除", "delete", "rm", "消去"];
 const MODIFY_TERMS: &[&str] = &["修正", "変更", "更新", "modify", "edit", "change"];
 const GIT_TERMS: &[&str] = &["git", "commit", "push", "checkout"];
 const EXTERNAL_TERMS: &[&str] = &["外部コマンド", "外部実行", "external command", "shell command"];
+const REVIEWER_TERMS: &[&str] = &["reviewer", "査読者", "閲覧のみ"];
+const DEVELOPER_TERMS: &[&str] = &["developer", "開発者"];
+const OPERATOR_TERMS: &[&str] = &["operator", "運用者", "管理者", "admin"];
 
 // ── Public API ────────────────────────────────────────────────────────────────
 
@@ -176,6 +223,9 @@ fn detect_action(input: &str) -> Option<ActionMatchResult> {
         (COMPARE_TERMS, SemanticAction::Compare),
         (VALIDATE_TERMS, SemanticAction::Validate),
         (CONSTRAINT_TERMS, SemanticAction::Constraint),
+        (DEAD_TEST_TERMS, SemanticAction::Analyze),
+        (REGRESSION_TERMS, SemanticAction::Analyze),
+        (STRUCTURAL_PROBLEM_TERMS, SemanticAction::Analyze),
     ];
 
     // 最も高い confidence を持つ候補を選ぶ（同値なら先行優先）
@@ -220,6 +270,28 @@ fn detect_target(input: &str) -> SemanticTarget {
     }
     for term in EXTERNAL_TERMS {
         if lower.contains(*term) { return SemanticTarget::ExternalCommand; }
+    }
+
+    // Role
+    for term in REVIEWER_TERMS {
+        if lower.contains(*term) { return SemanticTarget::ReviewerRole; }
+    }
+    for term in DEVELOPER_TERMS {
+        if lower.contains(*term) { return SemanticTarget::DeveloperRole; }
+    }
+    for term in OPERATOR_TERMS {
+        if lower.contains(*term) { return SemanticTarget::OperatorRole; }
+    }
+
+    for (term, _) in STRUCTURAL_PROBLEM_TERMS {
+        let hit = if term.is_ascii() {
+            lower.contains(*term)
+        } else {
+            input.contains(*term)
+        };
+        if hit {
+            return SemanticTarget::StructuralProblem;
+        }
     }
 
     for term in TEST_TERMS {
@@ -325,5 +397,16 @@ mod tests {
         let res = normalize_semantic_action("外部コマンド禁止").expect("result");
         assert_eq!(res.action, SemanticAction::Constraint);
         assert_eq!(res.target, SemanticTarget::ExternalCommand);
+    }
+
+    #[test]
+    fn test_normalize_structural_problem() {
+        let res = normalize_semantic_action("構造的問題を検出してください").expect("result");
+        assert_eq!(res.action, SemanticAction::Analyze);
+        assert_eq!(res.target, SemanticTarget::StructuralProblem);
+
+        let res = normalize_semantic_action("設計診断を実行").expect("result");
+        assert_eq!(res.action, SemanticAction::Analyze);
+        assert_eq!(res.target, SemanticTarget::StructuralProblem);
     }
 }

@@ -25,6 +25,10 @@ pub enum PipelineState {
     Applied,
     Staged,
     Committed,
+    /// 仕様書構築中
+    BuildingSpecification,
+    /// 仕様書構築完了
+    SpecificationCompleted,
 }
 
 impl PipelineState {
@@ -37,6 +41,8 @@ impl PipelineState {
             Self::Applied => "Applied",
             Self::Staged => "Staged",
             Self::Committed => "Committed",
+            Self::BuildingSpecification => "BuildingSpecification",
+            Self::SpecificationCompleted => "SpecificationCompleted",
         }
     }
 
@@ -77,6 +83,8 @@ impl PipelineState {
             Self::Applied => 4,
             Self::Staged => 5,
             Self::Committed => 6,
+            Self::BuildingSpecification => 7,
+            Self::SpecificationCompleted => 8,
         }
     }
 }
@@ -195,6 +203,8 @@ impl PipelineContext {
             ],
             PipelineState::Staged => &["git commit でコミット"],
             PipelineState::Committed => &[],
+            PipelineState::BuildingSpecification => &["仕様書の続きを入力、またはゴールを定義して完了"],
+            PipelineState::SpecificationCompleted => &["仕様書に基づいた解析・実装を開始"],
         }
     }
 }

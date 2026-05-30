@@ -50,8 +50,22 @@ pub enum LanguageCoreIntent {
     SafetyReview,
     /// プロジェクト内テスト群の棚卸し・一覧化（ReadOnly）
     AnalyzeTests,
+    /// 危険なテスト・不要なテストの検出
+    AnalyzeDeadTests,
+    /// 回帰テストの解析
+    AnalyzeRegressionTests,
+    /// 構造的問題の解析
+    AnalyzeStructuralProblems,
+    /// 仕様書内容の解析・インジェクション
+    AnalyzeSpecification,
     /// 安全指示・実行制約
     Constraint(ConstraintKind),
+    /// ファイル変更要求（コメント追加・修正・追記・書き換え）
+    ModifyFile {
+        target_file: String,
+        operation: String,
+        content: Option<String>,
+    },
     /// 未分類
     Unknown { raw: String },
 }
@@ -63,6 +77,7 @@ pub enum ConstraintKind {
     NoModify,
     NoGit,
     NoExternalCommand,
+    SetRole(crate::runtime::policy::PolicyRole),
 }
 
 impl fmt::Display for ConstraintKind {
@@ -73,6 +88,7 @@ impl fmt::Display for ConstraintKind {
             Self::NoModify => write!(f, "NoModify"),
             Self::NoGit => write!(f, "NoGit"),
             Self::NoExternalCommand => write!(f, "NoExternalCommand"),
+            Self::SetRole(role) => write!(f, "SetRole({})", role),
         }
     }
 }
@@ -155,7 +171,14 @@ impl fmt::Display for LanguageCoreIntent {
             Self::ApplyRequest => write!(f, "ApplyRequest"),
             Self::SafetyReview => write!(f, "SafetyReview"),
             Self::AnalyzeTests => write!(f, "AnalyzeTests"),
+            Self::AnalyzeDeadTests => write!(f, "AnalyzeDeadTests"),
+            Self::AnalyzeRegressionTests => write!(f, "AnalyzeRegressionTests"),
+            Self::AnalyzeStructuralProblems => write!(f, "AnalyzeStructuralProblems"),
+            Self::AnalyzeSpecification => write!(f, "AnalyzeSpecification"),
             Self::Constraint(kind) => write!(f, "Constraint({kind})"),
+            Self::ModifyFile { target_file, operation, .. } => {
+                write!(f, "ModifyFile(target={target_file}, op={operation})")
+            }
             Self::Unknown { raw } => write!(f, "Unknown({raw})"),
         }
     }
@@ -177,9 +200,19 @@ pub enum IrAction {
     ReviewValidatedPlan,
     ReviewSafety,
     Refactor,
+    /// ファイル変更要求（コメント追加・修正・追記・書き換え）
+    ModifyFile,
     Apply,
     /// プロジェクト内テスト群の棚卸し（ReadOnly）
     AnalyzeTests,
+    /// 危険なテストの検出
+    AnalyzeDeadTests,
+    /// 回帰テストの解析
+    AnalyzeRegressionTests,
+    /// 構造的問題の解析
+    AnalyzeStructuralProblems,
+    /// 仕様書解析
+    AnalyzeSpecification,
     /// 安全指示・実行制約
     Constraint,
     Unknown,
@@ -199,6 +232,10 @@ impl IrAction {
                 | Self::AnalyzeFile
                 | Self::AnalyzeSymbol
                 | Self::AnalyzeTests
+                | Self::AnalyzeDeadTests
+                | Self::AnalyzeRegressionTests
+                | Self::AnalyzeStructuralProblems
+                | Self::AnalyzeSpecification
                 | Self::Constraint
         )
     }
@@ -218,8 +255,13 @@ impl fmt::Display for IrAction {
             Self::ReviewValidatedPlan => write!(f, "ReviewValidatedPlan"),
             Self::ReviewSafety => write!(f, "ReviewSafety"),
             Self::Refactor => write!(f, "Refactor"),
+            Self::ModifyFile => write!(f, "ModifyFile"),
             Self::Apply => write!(f, "Apply"),
             Self::AnalyzeTests => write!(f, "AnalyzeTests"),
+            Self::AnalyzeDeadTests => write!(f, "AnalyzeDeadTests"),
+            Self::AnalyzeRegressionTests => write!(f, "AnalyzeRegressionTests"),
+            Self::AnalyzeStructuralProblems => write!(f, "AnalyzeStructuralProblems"),
+            Self::AnalyzeSpecification => write!(f, "AnalyzeSpecification"),
             Self::Constraint => write!(f, "Constraint"),
             Self::Unknown => write!(f, "Unknown"),
         }
@@ -342,6 +384,11 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         return LanguageCoreIntent::WorkspaceAnalyze;
     }
 
+    // 仕様書解析（キーワード：成功条件、Acceptance Criteria、BuildingSpecification 状態など）
+    if is_specification_intent(&lower, input) {
+        return LanguageCoreIntent::AnalyzeSpecification;
+    }
+
     // プロジェクト構造解析（汎用 analyze キーワードも含む fallback）
     if is_project_structure_analyze(&lower) {
         return LanguageCoreIntent::ProjectStructureAnalyze;
@@ -352,6 +399,16 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         return LanguageCoreIntent::ApplyRequest;
     }
 
+    // ── ファイル変更要求（is_refactor_intent より先にチェック）────────────────────────
+    // ファイルパス + 変更動詞が含まれる場合は ModifyFile として扱う。
+    // 例: "apps/cli/src/core.rs に TEST コメントを追加してください"
+    if is_modify_file_intent(&lower, input) {
+        let target_file = extract_target_file(input).unwrap_or_default();
+        let operation = extract_modify_operation(&lower);
+        let content = extract_content(input);
+        return LanguageCoreIntent::ModifyFile { target_file, operation, content };
+    }
+
     // リファクタリング要求（analyze キーワードなし）
     if is_refactor_intent(&lower) && !has_analyze_keyword(&lower) {
         return LanguageCoreIntent::RefactorRequest {
@@ -360,14 +417,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         };
     }
 
-    // analyze キーワードのみ（上記に合致しなかった場合は汎用プロジェクト解析）
-    if has_analyze_keyword(&lower) {
-        return LanguageCoreIntent::ProjectStructureAnalyze;
-    }
-
-    // ── SemanticActionNormalization フォールバック ────────────────────────────
-    // 通常の分類が Unknown になる入力（「棚卸し」「監査」など）を
-    // SemanticActionNormalizer で抽象アクションへ変換する。
+    // ── SemanticActionNormalization 優先 ───────────────────────────
     if let Some(result) = normalize_semantic_action(&lower) {
         eprintln!(
             "[IR-TRACE][SEMANTIC_NORMALIZATION]\nterm={}\nnormalized={}\nconfidence={}",
@@ -380,7 +430,24 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
             SemanticTarget::ProjectTests,
         ) = (&result.action, &result.target)
         {
+            // DBM-TEST-GOVERNANCE-RUNTIME-INTEGRATION-SPEC §Semantic Normalization
+            if lower.contains("危険")
+                || lower.contains("不要")
+                || lower.contains("死んだ")
+                || lower.contains("dead")
+                || lower.contains("unreferenced")
+                || lower.contains("unreachable")
+            {
+                return LanguageCoreIntent::AnalyzeDeadTests;
+            }
+            if lower.contains("回帰") || lower.contains("regression") || lower.contains("デグレ") {
+                return LanguageCoreIntent::AnalyzeRegressionTests;
+            }
             return LanguageCoreIntent::AnalyzeTests;
+        }
+
+        if let SemanticTarget::StructuralProblem = &result.target {
+            return LanguageCoreIntent::AnalyzeStructuralProblems;
         }
 
         // ── 制約認識 ────────────────────────────────────────────────────────
@@ -391,10 +458,24 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
                 SemanticTarget::Modify => ConstraintKind::NoModify,
                 SemanticTarget::Git => ConstraintKind::NoGit,
                 SemanticTarget::ExternalCommand => ConstraintKind::NoExternalCommand,
+                SemanticTarget::ReviewerRole => {
+                    ConstraintKind::SetRole(crate::runtime::policy::PolicyRole::Reviewer)
+                }
+                SemanticTarget::DeveloperRole => {
+                    ConstraintKind::SetRole(crate::runtime::policy::PolicyRole::Developer)
+                }
+                SemanticTarget::OperatorRole => {
+                    ConstraintKind::SetRole(crate::runtime::policy::PolicyRole::Operator)
+                }
                 _ => return LanguageCoreIntent::Unknown { raw: input.to_string() },
             };
             return LanguageCoreIntent::Constraint(kind);
         }
+    }
+
+    // analyze キーワードのみ（上記に合致しなかった場合は汎用プロジェクト解析）
+    if has_analyze_keyword(&lower) {
+        return LanguageCoreIntent::ProjectStructureAnalyze;
     }
 
     LanguageCoreIntent::Unknown {
@@ -515,12 +596,57 @@ pub fn language_core_to_ir(intent: LanguageCoreIntent, raw_input: &str) -> IrInt
             safety_constraints,
             target_failure: target_failure.clone(),
         },
+        LanguageCoreIntent::AnalyzeDeadTests => IrIntentRequest {
+            action: IrAction::AnalyzeDeadTests,
+            target: IrTarget::WorkspaceRoot,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.85,
+            safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::AnalyzeRegressionTests => IrIntentRequest {
+            action: IrAction::AnalyzeRegressionTests,
+            target: IrTarget::WorkspaceRoot,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.85,
+            safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::AnalyzeStructuralProblems => IrIntentRequest {
+            action: IrAction::AnalyzeStructuralProblems,
+            target: IrTarget::WorkspaceRoot,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.9,
+            safety_constraints,
+            target_failure,
+        },
+        LanguageCoreIntent::AnalyzeSpecification => IrIntentRequest {
+            action: IrAction::AnalyzeSpecification,
+            target: IrTarget::None,
+            mode: ExecutionMode::ReadOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.95,
+            safety_constraints,
+            target_failure,
+        },
         LanguageCoreIntent::Constraint(_) => IrIntentRequest {
             action: IrAction::Constraint,
             target: IrTarget::None,
             mode: ExecutionMode::ReadOnly,
             raw_input: raw_input.to_string(),
             confidence: 0.95,
+            safety_constraints,
+            target_failure: target_failure.clone(),
+        },
+        LanguageCoreIntent::ModifyFile { target_file, .. } => IrIntentRequest {
+            action: IrAction::ModifyFile,
+            target: IrTarget::File(target_file),
+            mode: ExecutionMode::PlanOnly,
+            raw_input: raw_input.to_string(),
+            confidence: 0.85,
             safety_constraints,
             target_failure: target_failure.clone(),
         },
@@ -981,6 +1107,30 @@ fn is_workspace_analyze(lower: &str) -> bool {
     jp.iter().any(|p| lower.contains(p)) || en.iter().any(|p| lower.contains(p))
 }
 
+fn is_specification_intent(lower: &str, _input: &str) -> bool {
+    let jp = [
+        "成功条件",
+        "仕様書",
+        "設計書",
+        "要件",
+        "インジェクション",
+        "構築開始",
+        "定義開始",
+    ];
+    let en = [
+        "success criteria",
+        "acceptance criteria",
+        "done definition",
+        "specification",
+        "requirement",
+        "ingestion",
+    ];
+    // DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A のような形式も仕様書開始とみなす
+    let has_id_pattern = lower.contains("dbm-") && (lower.contains("-v") || lower.contains("-phase"));
+    
+    jp.iter().any(|p| lower.contains(p)) || en.iter().any(|p| lower.contains(p)) || has_id_pattern
+}
+
 fn is_refactor_intent(lower: &str) -> bool {
     let jp = [
         "修正して",
@@ -992,6 +1142,103 @@ fn is_refactor_intent(lower: &str) -> bool {
     ];
     let en = ["refactor", "improve", "change", "fix"];
     jp.iter().any(|p| lower.contains(p)) || en.iter().any(|p| lower.contains(p))
+}
+
+// ── ModifyFile 検出ヘルパー ──────────────────────────────────────────────────────
+
+/// ファイルパス + 変更動詞が含まれる場合に `true` を返す。
+///
+/// `is_refactor_intent` より前に呼ばれる。ファイルパスがない汎用的な
+/// 「修正してください」は引き続き `RefactorRequest` になる。
+fn is_modify_file_intent(lower: &str, original: &str) -> bool {
+    if extract_target_file(original).is_none() {
+        return false;
+    }
+    const MODIFY_VERBS_JP: &[&str] = &[
+        "追加してください",
+        "追記してください",
+        "書き換えてください",
+        "修正してください",
+        "変更してください",
+        "削除してください",
+    ];
+    const MODIFY_VERBS_EN: &[&str] = &[
+        "add comment",
+        "add a comment",
+        "append to",
+        "modify",
+        "rewrite",
+    ];
+    MODIFY_VERBS_JP.iter().any(|v| lower.contains(v))
+        || MODIFY_VERBS_EN.iter().any(|v| lower.contains(v))
+}
+
+/// 入力からファイルパスを抽出する。
+///
+/// `path/to/file.ext に` / `path/to/file.ext を` パターン、
+/// または既知拡張子トークンを検索する。
+fn extract_target_file(input: &str) -> Option<String> {
+    for sep in &[" に", "に", " を", "を"] {
+        if let Some(pos) = input.find(sep) {
+            let candidate = input[..pos].trim();
+            if looks_like_file_path(candidate) {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    for token in input.split_whitespace() {
+        if looks_like_file_path(token) {
+            return Some(token.to_string());
+        }
+    }
+    None
+}
+
+fn looks_like_file_path(s: &str) -> bool {
+    if s.contains('。') || s.contains('、') || s.starts_with('.') || s.is_empty() {
+        return false;
+    }
+    let ext = s.rsplit('.').next().unwrap_or("");
+    let known_ext = matches!(
+        ext,
+        "rs" | "toml" | "md" | "ts" | "tsx" | "js" | "json"
+            | "yaml" | "yml" | "go" | "py" | "rb" | "java" | "kt"
+            | "swift" | "c" | "cpp" | "h" | "sh"
+    );
+    let has_slash = s.contains('/');
+    known_ext || (has_slash && s.contains('.'))
+}
+
+/// 変更動詞から操作種別を推論する。
+fn extract_modify_operation(lower: &str) -> String {
+    if lower.contains("コメント") || lower.contains("comment") {
+        "AddComment".to_string()
+    } else if lower.contains("追記") || lower.contains("append") {
+        "Append".to_string()
+    } else if lower.contains("書き換え") || lower.contains("rewrite") {
+        "Rewrite".to_string()
+    } else if lower.contains("削除") || lower.contains("delete") || lower.contains("remove") {
+        "Delete".to_string()
+    } else {
+        "Modify".to_string()
+    }
+}
+
+/// `に <content> を` パターンからコンテンツを抽出する。
+///
+/// 例: `apps/cli/src/core.rs に TEST コメントを追加` → `Some("TEST コメント")`
+fn extract_content(input: &str) -> Option<String> {
+    const SEP: &str = " に ";
+    if let Some(ni_pos) = input.find(SEP) {
+        let after_ni = &input[ni_pos + SEP.len()..]; // SEP.len() = 5 bytes (" に ")
+        if let Some(wo_pos) = after_ni.find(" を") {
+            let content = after_ni[..wo_pos].trim();
+            if !content.is_empty() {
+                return Some(content.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn is_explicit_apply(lower: &str) -> bool {
@@ -1416,5 +1663,104 @@ mod tests {
                 "input={input:?} failed"
             );
         }
+    }
+
+    // ── DBM-LANGUAGECORE-MODIFICATION-INTENT-SPEC v1.0 Regression Tests ───────
+
+    /// Case 1: ファイルパス + コメント追加動詞 → ModifyFile
+    #[test]
+    fn modify_file_case1_add_comment_to_file() {
+        let input = "apps/cli/src/core.rs に TEST コメントを追加してください";
+        let intent = classify_language_core_intent(input);
+        assert!(
+            matches!(intent, LanguageCoreIntent::ModifyFile { .. }),
+            "input={input:?} should be ModifyFile, got {intent:?}"
+        );
+        if let LanguageCoreIntent::ModifyFile { target_file, operation, .. } = &intent {
+            assert_eq!(target_file, "apps/cli/src/core.rs", "target_file mismatch");
+            assert_eq!(operation, "AddComment", "operation mismatch");
+        }
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::ModifyFile, "IrAction should be ModifyFile");
+        assert_eq!(ir.target, IrTarget::File("apps/cli/src/core.rs".to_string()));
+        assert_eq!(ir.mode, ExecutionMode::PlanOnly);
+    }
+
+    /// Case 2: ファイルパス + 修正動詞 → ModifyFile
+    #[test]
+    fn modify_file_case2_modify_file() {
+        let input = "src/main.rs を修正してください";
+        let intent = classify_language_core_intent(input);
+        assert!(
+            matches!(intent, LanguageCoreIntent::ModifyFile { .. }),
+            "input={input:?} should be ModifyFile, got {intent:?}"
+        );
+        if let LanguageCoreIntent::ModifyFile { target_file, .. } = &intent {
+            assert_eq!(target_file, "src/main.rs");
+        }
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::ModifyFile);
+    }
+
+    /// Case 3: README.md + 追加動詞 → ModifyFile
+    #[test]
+    fn modify_file_case3_add_to_readme() {
+        let input = "README.md に説明を追加してください";
+        let intent = classify_language_core_intent(input);
+        assert!(
+            matches!(intent, LanguageCoreIntent::ModifyFile { .. }),
+            "input={input:?} should be ModifyFile, got {intent:?}"
+        );
+        if let LanguageCoreIntent::ModifyFile { target_file, .. } = &intent {
+            assert_eq!(target_file, "README.md");
+        }
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::ModifyFile);
+    }
+
+    /// ModifyFile は IrAction::is_analyze() == false であること。
+    #[test]
+    fn modify_file_ir_action_is_not_analyze() {
+        assert!(!IrAction::ModifyFile.is_analyze());
+    }
+
+    /// ModifyFile は Apply モードにならないこと。
+    #[test]
+    fn modify_file_mode_is_not_apply() {
+        let input = "apps/cli/src/core.rs に TEST コメントを追加してください";
+        let intent = classify_language_core_intent(input);
+        let ir = language_core_to_ir(intent, input);
+        assert_ne!(ir.mode, ExecutionMode::Apply, "ModifyFile must not be Apply mode");
+    }
+
+    /// DBM-TEST-GOVERNANCE-RUNTIME-INTEGRATION-SPEC §Success Conditions
+    #[test]
+    fn test_governance_normalization() {
+        // 危険なテスト
+        let intent = classify_language_core_intent("危険なテストを検出してください");
+        assert_eq!(intent, LanguageCoreIntent::AnalyzeDeadTests);
+
+        // 不要なテスト
+        let intent = classify_language_core_intent("不要なテストを検出してください");
+        assert_eq!(intent, LanguageCoreIntent::AnalyzeDeadTests);
+
+        // 回帰テスト
+        let intent = classify_language_core_intent("回帰テストを一覧表示してください");
+        assert_eq!(intent, LanguageCoreIntent::AnalyzeRegressionTests);
+
+        // Regression
+        let intent = classify_language_core_intent("Regression テストを解析してください");
+        assert_eq!(intent, LanguageCoreIntent::AnalyzeRegressionTests);
+    }
+
+    /// ファイルパスなしの「修正してください」は RefactorRequest のまま（Regression）。
+    #[test]
+    fn refactor_without_file_path_is_not_modify_file() {
+        let input = "修正してください";
+        let intent = classify_language_core_intent(input);
+        assert!(
+            !matches!(intent, LanguageCoreIntent::ModifyFile { .. }),
+            "input without file path should not be ModifyFile"
+        );
     }
 }

@@ -133,15 +133,39 @@ pub struct RuntimeConstraint {
     pub no_external_command: bool,
 }
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
+pub struct SpecificationContext {
+    pub specification: crate::capability::contract::SpecificationDocument,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub struct ReplSessionContext {
     pub previous_analysis_context: Option<PreviousAnalysisContext>,
     pub previous_plan_context: Option<PreviousPlanContext>,
     pub previous_validation_context: Option<PreviousValidationContext>,
     pub selected_candidate: Option<SelectedCandidateContext>,
     pub validated_plan: Option<ValidatedPlanContext>,
+    pub specification_context: Option<SpecificationContext>,
     /// セッション全体で有効な実行制約
     pub constraints: RuntimeConstraint,
+    /// 役割ベースのポリシー
+    pub policy: crate::runtime::policy::PolicyProfile,
+}
+
+impl Default for ReplSessionContext {
+    fn default() -> Self {
+        Self {
+            previous_analysis_context: None,
+            previous_plan_context: None,
+            previous_validation_context: None,
+            selected_candidate: None,
+            validated_plan: None,
+            specification_context: None,
+            constraints: RuntimeConstraint::default(),
+            policy: crate::runtime::policy::PolicyProfile::default_developer(),
+        }
+
+    }
 }
 
 impl ReplSessionContext {
@@ -160,6 +184,9 @@ impl ReplSessionContext {
                     | IrAction::AnalyzeFile
                     | IrAction::AnalyzeSymbol
                     | IrAction::AnalyzeTests
+                    | IrAction::AnalyzeDeadTests
+                    | IrAction::AnalyzeRegressionTests
+                    | IrAction::AnalyzeStructuralProblems
             )
         {
             self.previous_analysis_context = Some(PreviousAnalysisContext::new(
@@ -172,6 +199,73 @@ impl ReplSessionContext {
             eprintln!(
                 "[IR-TRACE][CONTEXT_STORE] kind=analysis action={} target={} mode={} status={:?}",
                 action, target, mode, status
+            );
+        }
+    }
+
+    pub fn store_specification(&mut self, specification: crate::capability::contract::SpecificationDocument) {
+        if let Some(ctx) = &mut self.specification_context {
+            // ── Incremental Merge (FR-4, FR-5, FR-6) ──────────────────────────
+            let spec = &mut ctx.specification;
+
+            // Title: 新規があれば上書き
+            if specification.title.is_some() {
+                spec.title = specification.title;
+            }
+            // Goal Preservation (FR-6): 既存 goal がある場合は消さない
+            if specification.goal.is_some() {
+                spec.goal = specification.goal;
+            }
+
+            // Duplicate-free extend (FR-5)
+            let mut added_deliverables = 0usize;
+            for item in specification.deliverables {
+                if !spec.deliverables.iter().any(|d| d.name == item.name) {
+                    spec.deliverables.push(item);
+                    added_deliverables += 1;
+                }
+            }
+            let mut added_constraints = 0usize;
+            for item in specification.constraints {
+                if !spec.constraints.iter().any(|c| c.description == item.description) {
+                    spec.constraints.push(item);
+                    added_constraints += 1;
+                }
+            }
+            let mut added_criteria = 0usize;
+            for item in specification.success_criteria {
+                if !spec.success_criteria.iter().any(|s| s.description == item.description) {
+                    spec.success_criteria.push(item);
+                    added_criteria += 1;
+                }
+            }
+            let mut added_assumptions = 0usize;
+            for item in specification.assumptions {
+                if !spec.assumptions.iter().any(|a| a.description == item.description) {
+                    spec.assumptions.push(item);
+                    added_assumptions += 1;
+                }
+            }
+            // DBM-SPECIFICATION-CAPTURE-BOUNDARY-FIX-SPEC v1.0 FR-4 Raw Text Separation
+            // spec.raw_text.push_str("\n");
+            // spec.raw_text.push_str(&specification.raw_text);
+
+            println!(
+                "[SPEC_MERGE] added_deliverables={} added_constraints={} added_criteria={} added_assumptions={}",
+                added_deliverables, added_constraints, added_criteria, added_assumptions
+            );
+        } else {
+            self.specification_context = Some(SpecificationContext { specification });
+        }
+
+        if let Some(ctx) = &self.specification_context {
+            println!(
+                "[SPEC_STORE] title={:?} goal={:?} deliverables={} constraints={} success_criteria={}",
+                ctx.specification.title,
+                ctx.specification.goal,
+                ctx.specification.deliverables.len(),
+                ctx.specification.constraints.len(),
+                ctx.specification.success_criteria.len()
             );
         }
     }

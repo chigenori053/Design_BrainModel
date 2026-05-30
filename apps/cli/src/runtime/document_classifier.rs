@@ -90,16 +90,29 @@ impl DocumentClassifier {
     fn is_command(input: &str) -> bool {
         let cmd = input.to_lowercase();
         let first_word = cmd.split_whitespace().next().unwrap_or("");
-        
+
         matches!(
             first_word,
-            "apply" | "undo" | "retry" | "select" | "status" | "diff" | "help" | "exit" | "quit"
+            "apply" | "undo" | "retry" | "select" | "status" | "diff" | "help" | "exit" | "quit" |
+            "git" | "cargo" | "rustc" | "ls" | "pwd" | "cd" | "mkdir" | "rm" | "mv" | "cp"
         ) || input.starts_with('/')
     }
 
     fn is_structured_spec(input: &str) -> bool {
-        // DBM-*-SPEC v1.0 のようなパターンを探す
-        input.contains("DBM-") && input.contains("-SPEC") && input.contains("v1.0")
+        // DBM-*-SPEC v1.0 のような仕様書パターンを検出する。
+        // DBM-*-PHASE-* / DBM-*-V* 形式のフェーズ識別子も対象とする。
+        let first_line = input.lines().next().unwrap_or("").trim();
+        let has_dbm_id = first_line.contains("DBM-")
+            && (first_line.contains("-SPEC")
+                || first_line.contains("-PHASE")
+                || first_line.contains("-V2")
+                || first_line.contains("-V1"));
+        // 仕様書セクションキーワードが含まれる場合も StructuredSpec
+        let has_spec_sections = input.contains("DBM-")
+            && (input.contains("Deliverables") || input.contains("Goal") || input.contains("Constraints")
+                || input.contains("Success Criteria") || input.contains("Assumptions"));
+        has_dbm_id || (input.contains("DBM-") && input.contains("-SPEC") && input.contains("v1.0"))
+            || has_spec_sections
     }
 
     fn is_json(input: &str) -> bool {
@@ -153,6 +166,11 @@ mod tests {
         assert_eq!(DocumentClassifier::classify("undo"), InputKind::Command);
         assert_eq!(DocumentClassifier::classify("select 1"), InputKind::Command);
         assert_eq!(DocumentClassifier::classify("/help"), InputKind::Command);
+        assert_eq!(DocumentClassifier::classify("git add ."), InputKind::Command);
+        assert_eq!(DocumentClassifier::classify("git status"), InputKind::Command);
+        assert_eq!(DocumentClassifier::classify("cargo test"), InputKind::Command);
+        assert_eq!(DocumentClassifier::classify("cargo build"), InputKind::Command);
+        assert_eq!(DocumentClassifier::classify("ls -la"), InputKind::Command);
     }
 
     #[test]
@@ -160,6 +178,7 @@ mod tests {
         assert_eq!(DocumentClassifier::classify("# Title\nContent"), InputKind::MarkdownDocument);
         assert_eq!(DocumentClassifier::classify("Text\n## Findings"), InputKind::MarkdownDocument);
         assert_eq!(DocumentClassifier::classify("- item 1\n- item 2"), InputKind::MarkdownDocument);
+        assert_eq!(DocumentClassifier::classify("# Safety Analysis Result"), InputKind::MarkdownDocument);
     }
 
     #[test]
@@ -172,6 +191,7 @@ mod tests {
     fn test_classify_log() {
         assert_eq!(DocumentClassifier::classify("[IR-TRACE] some event"), InputKind::LogDocument);
         assert_eq!(DocumentClassifier::classify("error[E0425]: cannot find value"), InputKind::LogDocument);
+        assert_eq!(DocumentClassifier::classify("error[E0425]"), InputKind::LogDocument);
     }
 
     #[test]

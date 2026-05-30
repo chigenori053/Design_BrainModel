@@ -1,4 +1,6 @@
 pub mod document_classifier;
+pub mod constraint_evaluator;
+pub mod policy;
 pub mod autonomous;
 pub mod autonomous_control;
 pub mod bootstrap;
