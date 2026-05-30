@@ -5,6 +5,7 @@
 /// - Core is the only execution and reasoning entry point.
 use std::io::{self, BufRead, Write};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
@@ -26,6 +27,39 @@ use crate::tui::composer::ComposerViewState;
 use crate::tui::core::to_ui_event;
 use crate::tui::rendering::{ProjectionSnapshot, RenderSnapshot};
 use crate::tui::state::TuiState;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpecificationCaptureState {
+    Idle,
+    Capturing,
+    Completed,
+}
+
+#[derive(Debug, Clone)]
+pub struct SpecificationCaptureSession {
+    pub session_id: String,
+    pub state: SpecificationCaptureState,
+    pub lines: Vec<String>,
+    pub started_at: SystemTime,
+}
+
+impl SpecificationCaptureSession {
+    pub fn new() -> Self {
+        Self {
+            session_id: uuid::Uuid::new_v4().to_string(),
+            state: SpecificationCaptureState::Idle,
+            lines: Vec::new(),
+            started_at: SystemTime::now(),
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.session_id = uuid::Uuid::new_v4().to_string();
+        self.state = SpecificationCaptureState::Capturing;
+        self.lines.clear();
+        self.started_at = SystemTime::now();
+    }
+}
 
 /// Thin UI cache for the REPL.  Phase 4.5: all pipeline/design/proposal state
 /// lives in `core_snapshot`; this struct is just a read-only cache.
@@ -100,38 +134,68 @@ where
     W: Write,
 {
     let mut ui = ReplUiState::default();
-    let mut spec_capture: Option<Vec<String>> = None;
-    let mut pending_plan: Option<InstructionPlan> = None;
+    let mut spec_capture = SpecificationCaptureSession::new();
+    let pending_plan: Option<InstructionPlan> = None;
 
     print_banner(writer)?;
 
     for line in reader.lines() {
         let input = line.map_err(|err| err.to_string())?;
         let trimmed = input.trim();
-        if trimmed.is_empty() && ui.core_snapshot.status != PipelineState::Previewed {
-            continue;
-        }
-        if is_exit(trimmed) {
-            break;
-        }
-        if trimmed == "/begin spec" {
-            spec_capture = Some(Vec::new());
-            writeln!(writer, "[PLAN] capture: spec").map_err(|err| err.to_string())?;
-            writer.flush().map_err(|err| err.to_string())?;
-            continue;
-        }
-        if let Some(buffer) = spec_capture.as_mut() {
-            if trimmed == "/end" {
-                let plan = InstructionPlan::from_spec(&buffer.join("\n"));
-                for line in plan.render_lines() {
-                    writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+        
+        // ── 仕様書バッファリング (DBM-SPECIFICATION-CAPTURE-RUNTIME-FIX-SPEC v1.0) ──
+        let is_start = is_specification_start(trimmed);
+        if is_start {
+            if spec_capture.state == SpecificationCaptureState::Completed || spec_capture.state == SpecificationCaptureState::Idle {
+                if spec_capture.state == SpecificationCaptureState::Completed {
+                    eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
                 }
-                pending_plan = Some(plan);
-                spec_capture = None;
+                spec_capture.reset();
+                eprintln!("[SPEC_CAPTURE_START]\nsession_id={}", spec_capture.session_id);
+            } else if spec_capture.state == SpecificationCaptureState::Capturing && trimmed.to_lowercase().starts_with("dbm-") && !spec_capture.lines.is_empty() {
+                // Interrupted capture (FR-4)
+                let prev_len = spec_capture.lines.join("\n").len();
+                eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
+                eprintln!("[SPEC_BUFFER_FLUSH]\nprevious_length={}\nnew_length=0", prev_len);
+                spec_capture.reset();
+                eprintln!("[SPEC_CAPTURE_START]\nsession_id={}", spec_capture.session_id);
+            }
+        }
+
+        if spec_capture.state == SpecificationCaptureState::Capturing {
+            // Phase B / FR-2: 明示的な終了判定 (/end 完全一致)
+            if trimmed == "/end" {
+                let captured_lines = std::mem::take(&mut spec_capture.lines);
+                let full_text = captured_lines.join("\n");
+                
+                eprintln!("[SPEC_BUFFER_FLUSH]\nprevious_length={}\nnew_length=0", full_text.len());
+                eprintln!("[SPEC_CAPTURE_COMPLETE]\nsession_id={}\nlines={}\nlength={}", spec_capture.session_id, captured_lines.len(), full_text.len());
+                eprintln!("[SPEC_DISPATCH]");
+                
+                handle_submit(
+                    full_text,
+                    workspace_root.as_path(),
+                    core,
+                    &mut ui,
+                    writer,
+                )?;
+                spec_capture.state = SpecificationCaptureState::Completed;
                 writer.flush().map_err(|err| err.to_string())?;
                 continue;
             }
-            buffer.push(input);
+            
+            // TR-5: 異常連結検出
+            if trimmed.contains("DBM-") && !trimmed.starts_with("DBM-") {
+                let token = extract_contamination_token(trimmed);
+                eprintln!("[SPEC_BOUNDARY_WARNING]\ntoken=\"{}\"", token);
+            }
+            
+            spec_capture.lines.push(input);
+            continue;
+        }
+        // ───────────────────────────────────────────────────────────────────
+
+        if trimmed.is_empty() && ui.core_snapshot.status != PipelineState::Previewed {
             continue;
         }
         if trimmed == "promote" {
@@ -690,6 +754,26 @@ fn print_banner<W: Write>(writer: &mut W) -> Result<(), String> {
 
 fn is_exit(input: &str) -> bool {
     matches!(input, "/exit" | "/quit" | "exit" | "quit")
+}
+
+fn is_specification_start(input: &str) -> bool {
+    let lower = input.to_lowercase();
+    lower.starts_with("dbm-")
+        || lower.starts_with("# ")
+        || lower.starts_with("goal:")
+        || lower.starts_with("deliverables:")
+        || lower.starts_with("constraints:")
+        || lower.starts_with("success criteria:")
+        || lower.starts_with("assumptions:")
+}
+
+fn extract_contamination_token(line: &str) -> String {
+    for word in line.split_whitespace() {
+        if word.contains("DBM-") && !word.starts_with("DBM-") {
+            return word.to_string();
+        }
+    }
+    String::new()
 }
 
 fn save_design<W: Write>(
