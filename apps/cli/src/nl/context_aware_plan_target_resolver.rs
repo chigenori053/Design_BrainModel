@@ -164,7 +164,6 @@ impl Default for ReplSessionContext {
             constraints: RuntimeConstraint::default(),
             policy: crate::runtime::policy::PolicyProfile::default_developer(),
         }
-
     }
 }
 
@@ -203,7 +202,10 @@ impl ReplSessionContext {
         }
     }
 
-    pub fn store_specification(&mut self, specification: crate::capability::contract::SpecificationDocument) {
+    pub fn store_specification(
+        &mut self,
+        specification: crate::capability::contract::SpecificationDocument,
+    ) {
         if let Some(ctx) = &mut self.specification_context {
             // ── Incremental Merge (FR-4, FR-5, FR-6) ──────────────────────────
             let spec = &mut ctx.specification;
@@ -227,21 +229,33 @@ impl ReplSessionContext {
             }
             let mut added_constraints = 0usize;
             for item in specification.constraints {
-                if !spec.constraints.iter().any(|c| c.description == item.description) {
+                if !spec
+                    .constraints
+                    .iter()
+                    .any(|c| c.description == item.description)
+                {
                     spec.constraints.push(item);
                     added_constraints += 1;
                 }
             }
             let mut added_criteria = 0usize;
             for item in specification.success_criteria {
-                if !spec.success_criteria.iter().any(|s| s.description == item.description) {
+                if !spec
+                    .success_criteria
+                    .iter()
+                    .any(|s| s.description == item.description)
+                {
                     spec.success_criteria.push(item);
                     added_criteria += 1;
                 }
             }
             let mut added_assumptions = 0usize;
             for item in specification.assumptions {
-                if !spec.assumptions.iter().any(|a| a.description == item.description) {
+                if !spec
+                    .assumptions
+                    .iter()
+                    .any(|a| a.description == item.description)
+                {
                     spec.assumptions.push(item);
                     added_assumptions += 1;
                 }

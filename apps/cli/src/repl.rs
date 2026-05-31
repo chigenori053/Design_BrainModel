@@ -54,10 +54,12 @@ impl SpecificationCaptureSession {
     }
 
     pub fn reset(&mut self) {
+        let previous = self.state;
         self.session_id = uuid::Uuid::new_v4().to_string();
         self.state = SpecificationCaptureState::Capturing;
         self.lines.clear();
         self.started_at = SystemTime::now();
+        eprintln!("[SPEC_STATE]\nprevious={:?}\nnext=Capturing", previous);
     }
 }
 
@@ -135,81 +137,161 @@ where
 {
     let mut ui = ReplUiState::default();
     let mut spec_capture = SpecificationCaptureSession::new();
-    let pending_plan: Option<InstructionPlan> = None;
+    // DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 §2: mutable to receive parsed plan
+    let mut pending_plan: Option<InstructionPlan> = None;
 
     print_banner(writer)?;
 
     for line in reader.lines() {
         let input = line.map_err(|err| err.to_string())?;
         let trimmed = input.trim();
-        
+
+        // DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 §2
+        // /begin spec is the explicit capture delimiter. Enter capture mode without
+        // buffering the delimiter itself so body lines are pure spec content.
+        if trimmed.to_lowercase() == "/begin spec" {
+            eprintln!("[SPEC_CAPTURE_CONSUMED]\ncommand=\"/begin spec\"");
+            if spec_capture.state == SpecificationCaptureState::Capturing {
+                eprintln!(
+                    "[SPEC_SESSION]\nsession={}\naction=reset",
+                    spec_capture.session_id
+                );
+                eprintln!(
+                    "[SPEC_BOUNDARY_TRACE]\nprevious_state={:?}\nreason=\"new_specification_detected\"",
+                    spec_capture.state
+                );
+            }
+            spec_capture.reset();
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\nstate={:?}\naction=create",
+                spec_capture.session_id, spec_capture.state
+            );
+            continue;
+        }
+
         let is_start = is_specification_start(trimmed);
 
-        // FR-2 & FR-3: New Specification Isolation & Deterministic Dispatch
-        if is_start && spec_capture.state == SpecificationCaptureState::Capturing {
-            // New spec detected while already capturing -> Dispatch OLD session first
-            let prev_session_id = spec_capture.session_id.clone();
-            let payload = std::mem::take(&mut spec_capture.lines); // FR-1: Ownership Transfer
-            
-            if !payload.is_empty() {
-                let full_text = payload.join("\n");
-                eprintln!("[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_length={}", prev_session_id, full_text.len()); // TR-3
-                
-                handle_submit(
-                    full_text,
-                    workspace_root.as_path(),
-                    core,
-                    &mut ui,
-                    writer,
-                )?;
+        // Global case-insensitive /end handling
+        let normalized = trimmed.to_ascii_lowercase();
+        if normalized == "/end" {
+            eprintln!(
+                "[SPEC_END_TRACE] raw='{}' trimmed='{}' normalized='{}'",
+                input, trimmed, normalized
+            );
+            eprintln!("[SPEC_END_TRACE] evaluating_end_command");
+            eprintln!("[SPEC_END_TRACE] end_command_matched");
+
+            match spec_capture.state {
+                SpecificationCaptureState::Capturing => {
+                    eprintln!("[SPEC_CAPTURE_CONSUMED]\ncommand=\"/end\"\nreason=\"success\"");
+                    let current_session_id = spec_capture.session_id.clone();
+                    let captured_lines = std::mem::take(&mut spec_capture.lines);
+                    let full_text = captured_lines.join("\n");
+
+                    eprintln!(
+                        "[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_lines={}\npayload_chars={}",
+                        current_session_id,
+                        captured_lines.len(),
+                        full_text.len()
+                    );
+
+                    if full_text.trim().is_empty() {
+                        writeln!(writer, "[SPEC] rejected: empty specification body")
+                            .map_err(|err| err.to_string())?;
+                        eprintln!(
+                            "[SPEC_COHERENCE]\nsession={}\nstatus=invalid\nreason=\"empty_body\"",
+                            current_session_id
+                        );
+                    } else {
+                        let plan = InstructionPlan::from_spec(&full_text);
+                        for line in plan.render_lines() {
+                            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+                        }
+
+                        let valid = plan.title.is_some()
+                            && plan.goal.is_some()
+                            && !plan.deliverables.is_empty();
+                        if valid {
+                            eprintln!(
+                                "[SPEC_COHERENCE]\nsession={}\nstatus=valid",
+                                current_session_id
+                            );
+                        } else {
+                            eprintln!(
+                                "[SPEC_COHERENCE]\nsession={}\nstatus=invalid\nreason=\"missing_required_fields\"",
+                                current_session_id
+                            );
+                        }
+
+                        pending_plan = Some(plan);
+                    }
+                    eprintln!(
+                        "[SPEC_STATE]\nprevious={:?}\nnext=Completed",
+                        spec_capture.state
+                    );
+                    spec_capture.state = SpecificationCaptureState::Completed;
+                }
+                SpecificationCaptureState::Completed => {
+                    eprintln!(
+                        "[SPEC_CAPTURE_CONSUMED]\ncommand=\"/end\"\nreason=\"duplicate_end\""
+                    );
+                }
+                SpecificationCaptureState::Idle => {
+                    eprintln!(
+                        "[SPEC_CAPTURE_CONSUMED]\ncommand=\"/end\"\nreason=\"no_active_capture\""
+                    );
+                }
             }
-            
-            eprintln!("[SPEC_SESSION]\nsession={}\naction=reset", prev_session_id); // TR-4
-            eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
-            spec_capture.reset(); // FR-2 Step 3: Reset
-            eprintln!("[SPEC_SESSION]\nsession={}\naction=create", spec_capture.session_id); // TR-1
+            writer.flush().map_err(|err| err.to_string())?;
+            continue;
+        }
+
+        // FR-4: Session Lock - Do not reset session if already capturing.
+        if is_start && spec_capture.state == SpecificationCaptureState::Capturing {
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\naction=locked\nstate=Capturing",
+                spec_capture.session_id
+            ); // TR-3
         } else if is_start {
             // Normal start from Idle or Completed
             if spec_capture.state == SpecificationCaptureState::Completed {
-                eprintln!("[SPEC_BOUNDARY_RESET]\nreason=\"new_specification_detected\"");
+                eprintln!(
+                    "[SPEC_BOUNDARY_TRACE]\nprevious_state={:?}\nreason=\"new_specification_detected\"",
+                    spec_capture.state
+                );
             }
             spec_capture.reset();
-            eprintln!("[SPEC_SESSION]\nsession={}\naction=create", spec_capture.session_id); // TR-1
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\nstate={:?}\naction=create",
+                spec_capture.session_id, spec_capture.state
+            ); // TR-1
         }
 
         if spec_capture.state == SpecificationCaptureState::Capturing {
-            // Phase B / FR-2: 明示的な終了判定 (/end 完全一致)
-            if trimmed == "/end" {
-                let current_session_id = spec_capture.session_id.clone();
-                let captured_lines = std::mem::take(&mut spec_capture.lines); // FR-1: Ownership Transfer
-                let full_text = captured_lines.join("\n");
-                
-                eprintln!("[SPEC_BUFFER_FLUSH]\nprevious_length={}\nnew_length=0", full_text.len());
-                eprintln!("[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_length={}", current_session_id, full_text.len()); // TR-3
-                
-                handle_submit(
-                    full_text,
-                    workspace_root.as_path(),
-                    core,
-                    &mut ui,
-                    writer,
-                )?;
-                spec_capture.state = SpecificationCaptureState::Completed;
-                writer.flush().map_err(|err| err.to_string())?;
-                continue;
-            }
-            
-            // TR-5: 異常連結検出 (Boundary Violation Guard)
+            eprintln!(
+                "[SPEC_STATE_TRACE] before_end_check state={:?}",
+                spec_capture.state
+            );
+
+            // TR-5: Contamination detection
             if trimmed.contains("DBM-") && !trimmed.starts_with("DBM-") {
                 let token = extract_contamination_token(trimmed);
                 eprintln!("[SPEC_BOUNDARY_WARNING]\ntoken=\"{}\"", token);
-                eprintln!("[SPEC_BOUNDARY_VIOLATION]\nsession={}\nreason=\"contamination_detected\"", spec_capture.session_id); // TR-5
+                eprintln!(
+                    "[SPEC_BOUNDARY_VIOLATION]\nsession={}\nreason=\"contamination_detected\"",
+                    spec_capture.session_id
+                );
             }
-            
+
             // TR-2: Buffer Append
-            let added_len = input.len();
+            eprintln!("[SPEC_END_TRACE] append_path_entered");
+            eprintln!("[SPEC_END_TRACE] append_payload='{}'", trimmed);
             spec_capture.lines.push(input);
-            eprintln!("[SPEC_SESSION]\nsession={}\naction=append\nlength={}", spec_capture.session_id, added_len); // TR-2
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\naction=append\nbuffer_lines={}",
+                spec_capture.session_id,
+                spec_capture.lines.len()
+            ); // TR-2
             continue;
         }
         // ───────────────────────────────────────────────────────────────────
@@ -297,6 +379,10 @@ where
             continue;
         }
 
+        eprintln!(
+            "[SPEC_STATE_TRACE] before_submit state={:?}",
+            spec_capture.state
+        );
         eprintln!("[UI] Input received");
         handle_submit(
             trimmed.to_string(),
@@ -306,6 +392,41 @@ where
             writer,
         )?;
         writer.flush().map_err(|err| err.to_string())?;
+    }
+
+    // EOF handling: Dispatch any remaining capture session
+    if spec_capture.state == SpecificationCaptureState::Capturing && !spec_capture.lines.is_empty()
+    {
+        let current_session_id = spec_capture.session_id.clone();
+        let full_text = spec_capture.lines.join("\n");
+        eprintln!(
+            "[SPEC_SESSION]\nsession={}\naction=dispatch\npayload_lines={}\npayload_chars={}",
+            current_session_id,
+            spec_capture.lines.len(),
+            full_text.len()
+        );
+        let plan = InstructionPlan::from_spec(&full_text);
+
+        // Render extracted fields
+        for line in plan.render_lines() {
+            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+        }
+
+        // FR-6: Coherence Validation
+        let valid = plan.title.is_some() && plan.goal.is_some() && !plan.deliverables.is_empty();
+        if valid {
+            eprintln!(
+                "[SPEC_COHERENCE]\nsession={}\nstatus=valid",
+                current_session_id
+            );
+        } else {
+            eprintln!(
+                "[SPEC_COHERENCE]\nsession={}\nstatus=invalid\nreason=\"missing_required_fields\"",
+                current_session_id
+            );
+        }
+
+        handle_submit(full_text, workspace_root.as_path(), core, &mut ui, writer)?;
     }
 
     Ok(())
@@ -879,6 +1000,7 @@ mod tests {
         String::from_utf8(output).expect("utf8")
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_routes_ambiguous_input_to_core_proposal() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -901,6 +1023,7 @@ mod tests {
         assert!(output.contains("[PROPOSAL]"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_exit_returns_true() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -922,6 +1045,7 @@ mod tests {
         assert!(output.is_empty());
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_n_cancels_without_clarification() {
         let output = run_preview_confirmation_script("n");
@@ -937,14 +1061,61 @@ mod tests {
         assert!(!output.contains("ClarificationRequired"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
-    fn repl_preview_n_does_not_route_to_language_core() {
-        let output = run_preview_confirmation_script("n");
+    fn repl_multiline_spec_dispatches_on_eof() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        // No /end here
+        let script = "/begin spec\nDBM-A\nGoal: X\nDeliverables: - Y\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
 
-        assert!(!output.contains("intent=Unknown"), "{output}");
-        assert!(!output.contains("ClarificationRequired"), "{output}");
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(core.calls(), 1, "Should dispatch once on EOF");
+        let output_str = String::from_utf8(output).expect("utf8");
+        // Note: [SPEC_SESSION] and [SPEC_COHERENCE] go to stderr, but [SPEC_EXTRACT] goes to stdout (writer)
+        assert!(
+            output_str.contains("[SPEC_EXTRACT] title="),
+            "Should have extraction logs in stdout"
+        );
     }
 
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_multiline_spec_with_end_renders_plan_but_no_immediate_dispatch() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\nDBM-A\nGoal: X\nDeliverables: - Y\n/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(
+            core.calls(),
+            0,
+            "Should not dispatch to core immediately on /end"
+        );
+        let output_str = String::from_utf8(output).expect("utf8");
+        assert!(
+            output_str.contains("[PLAN] summary:"),
+            "Should render the plan"
+        );
+        assert!(
+            output_str.contains("[SPEC_EXTRACT] title=Some(\"DBM-A\")"),
+            "Should have title extraction"
+        );
+        assert!(
+            output_str.contains("[SPEC_EXTRACT] deliverables=1"),
+            "Should have deliverables count"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_reject_then_undo_does_not_return_previewed() {
         let output = run_preview_confirmation_script("n\nundo");
@@ -969,6 +1140,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_y_without_validated_plan_rejects_apply() {
         let output = run_preview_confirmation_script("y");
@@ -985,6 +1157,7 @@ mod tests {
         assert!(output.contains("No files modified."), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_cancel_clears_selection() {
         let output = run_preview_confirmation_script("cancel");
@@ -999,6 +1172,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_confirmation_does_not_emit_unknown_intent() {
         let output = run_preview_confirmation_script("abc");
@@ -1011,6 +1185,7 @@ mod tests {
         assert!(!output.contains("ClarificationRequired"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_empty_input_reconfirms() {
         let output = run_preview_confirmation_script("");
@@ -1026,6 +1201,7 @@ mod tests {
         assert!(!output.contains("ClarificationRequired"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_preview_unknown_input_reconfirms() {
         let output = run_preview_confirmation_script("maybe");
@@ -1041,6 +1217,7 @@ mod tests {
         assert!(output.contains("[PIPELINE] Previewed"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn rollback_bypasses_executor_and_clears_runtime_projection() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1063,6 +1240,7 @@ mod tests {
         assert!(!output.contains("APPLYING"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn preview_short_circuits_executor() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1085,6 +1263,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn preview_dispatch_terminates_pipeline() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1108,6 +1287,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_explicit_runtime_preview_with_target_works() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1132,6 +1312,7 @@ mod tests {
         assert!(!output.contains("Target: (none)"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_natural_language_preview_falls_through() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1149,6 +1330,7 @@ mod tests {
         assert!(!output.contains("transaction active"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_long_analyze_project_falls_through() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1170,6 +1352,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_review_safety_falls_through() {
         assert_precore_falls_through(
@@ -1177,6 +1360,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_validate_plan_falls_through() {
         assert_precore_falls_through(
@@ -1184,6 +1368,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_generate_change_plan_falls_through() {
         assert_precore_falls_through(
@@ -1191,6 +1376,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_yes_no_reference_falls_through() {
         assert_precore_falls_through(
@@ -1198,6 +1384,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_explicit_preview_without_target_errors() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1213,6 +1400,7 @@ mod tests {
         assert!(output.contains("[ERROR] unresolved target"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_explicit_preview_with_target_works() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1231,6 +1419,7 @@ mod tests {
         assert!(output.contains("preview ready"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_precore_confirmation_exact_token_still_works() {
         let output = run_preview_confirmation_script("y");
@@ -1256,6 +1445,7 @@ mod tests {
         assert!(!output.contains("[ERROR] unresolved target"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_two_turn_analysis_then_plan_does_not_unresolved_target() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1295,6 +1485,7 @@ mod tests {
         assert!(!output.contains("[APPLYING]"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_plan_outputs_narrow_candidates() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1318,6 +1509,7 @@ mod tests {
         assert!(output.contains("Validation required: yes"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_select_candidate_stores_selection_context() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1342,6 +1534,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_validate_selected_candidate_stores_validated_plan() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1368,6 +1561,8 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_apply_without_validation_is_rejected() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1390,6 +1585,7 @@ mod tests {
         assert!(output.contains("MissingValidatedPlan"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn repl_plan_validate_apply_happy_path() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1423,6 +1619,7 @@ mod tests {
         assert!(!output.contains("git push"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn invalid_preview_preserves_previous_repl_projection() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1452,6 +1649,7 @@ mod tests {
         assert_eq!(unique_status_lines.len(), 1, "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn runtime_commands_bypass_reasoning_pipeline() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1465,6 +1663,7 @@ mod tests {
         assert_eq!(core.calls(), 0);
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn unsafe_generated_marker_pattern_is_rejected() {
         assert_eq!(
@@ -1479,6 +1678,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn apply_success_does_not_emit_no_active_transaction() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1502,6 +1702,7 @@ mod tests {
         assert!(!output.contains("no active transaction"), "{output}");
     }
 
+    // CATEGORY: REPL_ROUTING
     #[test]
     fn non_runtime_input_still_routes_to_core() {
         let temp = tempfile::tempdir().expect("tempdir");
@@ -1513,6 +1714,160 @@ mod tests {
             .expect("repl");
 
         assert_eq!(core.calls(), 1);
+    }
+
+    // ── DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 tests ────────
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn spec_begin_spec_does_not_route_to_core() {
+        // §2: /begin spec enters capture mode; body lines must NOT be sent to the core.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn lib() {}\n").expect("write");
+        let mut input = io::Cursor::new("/begin spec\nTarget: src/lib.rs\nModify lib\n/end\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        // No core calls: spec lines are captured locally, not forwarded to the core.
+        assert_eq!(core.calls(), 0, "spec lines must not call core: {output}");
+        // Plan summary is rendered to output after /end.
+        assert!(
+            output.contains("[PLAN]"),
+            "plan must be rendered after /end: {output}"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn spec_empty_body_is_rejected() {
+        // §3: A spec with no body lines must be rejected before creating a plan.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("/begin spec\n/end\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            output.contains("[SPEC] rejected: empty specification body"),
+            "{output}"
+        );
+        // No pending_plan → apply must be rejected for the right reason.
+        assert!(
+            !output.contains("[PLAN]"),
+            "empty spec must not render a plan: {output}"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn spec_second_begin_spec_resets_capture() {
+        // §2: A second /begin spec discards the in-progress session and starts fresh.
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn lib() {}\n").expect("write");
+        // First /begin spec is interrupted by a second one before /end.
+        let mut input = io::Cursor::new(
+            "/begin spec\nTarget: src/lib.rs\nFirst body\n/begin spec\nTarget: src/lib.rs\nSecond body\n/end\n",
+        );
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        // The second session should be captured; first is silently discarded.
+        assert_eq!(core.calls(), 0, "no core calls expected: {output}");
+        assert!(
+            output.contains("[PLAN]"),
+            "second spec must produce a plan: {output}"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_multiline_spec_with_end_is_consumed_and_not_routed_to_core() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\ngoal: test\n/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(
+            core.calls(),
+            0,
+            "Core should not be called for /end or capture"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_end_without_capture_is_safely_ignored() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(
+            core.calls(),
+            0,
+            "Core should not be called for /end without capture"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_end_case_insensitivity_is_consumed_locally() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\ngoal: test\n/END\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(
+            core.calls(),
+            0,
+            "Core should not be called since /END is consumed case-insensitively"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_double_end_is_consumed_locally() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\ngoal: test\n/end\n/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(
+            core.calls(),
+            0,
+            "Core should not be called for the second /end"
+        );
     }
 }
 // DBM clarification execution guarantee

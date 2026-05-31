@@ -1,5 +1,5 @@
-use crate::nl::language_core_ir_adapter::{IrAction, IrIntentRequest};
 use crate::nl::context_aware_plan_target_resolver::RuntimeConstraint;
+use crate::nl::language_core_ir_adapter::{IrAction, IrIntentRequest};
 
 /// 制約評価の結果。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -78,7 +78,10 @@ impl ConstraintEvaluator {
     }
 
     /// 外部コマンド実行を評価する。
-    pub fn evaluate_external(_command: &str, constraints: &RuntimeConstraint) -> ConstraintDecision {
+    pub fn evaluate_external(
+        _command: &str,
+        constraints: &RuntimeConstraint,
+    ) -> ConstraintDecision {
         if constraints.no_external_command {
             // 本 SPEC に基づき、shell/cargo/rustc 等の外部実行を拒否する
             // (内部的な読み取りコマンド等を除外する必要がある場合はここで判定する)

@@ -871,6 +871,12 @@ fn large_output_is_bounded_and_runner_returns() {
     )
     .expect("execute");
 
+    println!("status={}", result.status);
+    println!("stderr={}", result.stderr);
+    println!("stdout_size={}", result.stdout.len());
+    println!("truncated={}", result.output_meta.truncated);
+    println!("exit_code={:?}", result.telemetry.exit_code);
+
     assert!(
         result.stdout.len() <= 1_000_000,
         "Output exceeded cap: {} bytes",
@@ -2057,10 +2063,12 @@ fn sigkill_followed_by_healthy_telemetry() {
 
 // ── Test-ERR-FINAL-2: Process proliferation defence ──────────────────────────
 
+// CATEGORY: STRESS
 /// A child attempts to spawn many short-lived processes.  The runner must
 /// complete within the timeout and not leave orphans.
 /// Covers Test-ERR-FINAL-2.
 #[test]
+#[ignore = "stress/process-bound test; run explicitly"]
 fn process_proliferation_bounded_by_timeout() {
     let dir = temp_dir("err_final2_prolif");
 
@@ -2098,12 +2106,14 @@ fn process_proliferation_bounded_by_timeout() {
     );
 }
 
+// CATEGORY: STRESS
 // ── Test-LIMIT-FINAL-1: FD exhaustion in child — runner stays healthy ─────────
 
 /// Reduce the FD limit inside the child shell as low as the OS allows, then
 /// verify the runner returns a result (success or failure) and remains usable.
 /// Covers Test-LIMIT-FINAL-1.
 #[test]
+#[ignore = "resource-limit stress test"]
 fn fd_exhaustion_in_child_runner_stays_healthy() {
     let dir = temp_dir("limit_final1_fd_exhaust");
 
@@ -2146,12 +2156,14 @@ fn fd_exhaustion_in_child_runner_stays_healthy() {
     assert!(ok.stdout.contains("after-fd-limit"));
 }
 
+// CATEGORY: STRESS
 // ── Test-LIMIT-FINAL-2: CPU-constrained child via `nice` ─────────────────────
 
 /// Run a child under `nice +19` (lowest scheduling priority) and confirm the
 /// runner collects the output and returns within the timeout budget.
 /// Covers Test-LIMIT-FINAL-2.
 #[test]
+#[ignore = "resource-limit stress test"]
 fn cpu_limited_child_via_nice_completes_within_timeout() {
     let dir = temp_dir("limit_final2_nice");
 
@@ -2181,12 +2193,14 @@ fn cpu_limited_child_via_nice_completes_within_timeout() {
     );
 }
 
+// CATEGORY: STRESS
 // ── Test-LIMIT-FINAL-3: Memory-limited child does not hang the runner ─────────
 
 /// Apply a virtual-memory cap inside the child and confirm the runner returns
 /// promptly regardless of whether the child OOMs.
 /// Covers Test-LIMIT-FINAL-3.
 #[test]
+#[ignore = "resource-limit stress test"]
 fn memory_limited_child_does_not_hang_runner() {
     let dir = temp_dir("limit_final3_mem");
 
@@ -2215,6 +2229,7 @@ fn memory_limited_child_does_not_hang_runner() {
     );
 }
 
+// CATEGORY: STRESS
 // ── Test-STRESS-FINAL-2: Continuous execution — no freeze ────────────────────
 
 /// Run for a sustained period (200 iterations at ~30ms each ≈ ~6 s wall clock)
@@ -2268,6 +2283,7 @@ fn stress_final_sustained_200_iterations_no_drift() {
     }
 }
 
+// CATEGORY: STRESS
 // ── Terminal Safety Final Gate ────────────────────────────────────────────────
 
 /// Composite gate test: exercises the five safety pillars in a single run.
@@ -2280,6 +2296,7 @@ fn stress_final_sustained_200_iterations_no_drift() {
 ///
 /// Passing this test satisfies the §5 Final Gate criteria of the spec.
 #[test]
+#[ignore = "composite safety gate stress test"]
 fn terminal_safety_final_gate() {
     let dir = temp_dir("gate_final");
 

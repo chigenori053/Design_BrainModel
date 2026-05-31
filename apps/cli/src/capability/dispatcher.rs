@@ -29,6 +29,7 @@ impl RuntimeAnalyzeDispatcher {
     pub fn dispatch(
         action: &IrAction,
         path: &str,
+        specification: Option<crate::capability::contract::SpecificationDocument>,
     ) -> Result<(Box<dyn Any>, OutputTypeId, CapabilityKind), String> {
         // 1. Registry で CapabilityKind を解決
         let capability = CapabilityRegistry::resolve(action)
@@ -79,7 +80,7 @@ impl RuntimeAnalyzeDispatcher {
                 )
             }
             CapabilityKind::AnalyzeStructuralProblems => {
-                let diag_res = Self::execute_analyze_structural_problems(path)?;
+                let diag_res = Self::execute_analyze_structural_problems(path, specification)?;
                 (
                     Box::new(diag_res) as Box<dyn Any>,
                     OutputTypeId::StructuralDiagnosisReport,
@@ -136,11 +137,14 @@ impl RuntimeAnalyzeDispatcher {
 
         // テスト棚卸しの実体
         let res = crate::dbm::analyzer::analyze_project(path)?;
-        
+
         // "test" を含むファイルを抽出
-        let test_files: Vec<String> = res.files
+        let test_files: Vec<String> = res
+            .files
             .iter()
-            .filter(|f| f.path.contains("test") || f.path.contains("spec") || f.path.contains("bench"))
+            .filter(|f| {
+                f.path.contains("test") || f.path.contains("spec") || f.path.contains("bench")
+            })
             .map(|f| f.path.clone())
             .collect();
 
@@ -187,11 +191,15 @@ impl RuntimeAnalyzeDispatcher {
             },
             crate::capability::contract::CriticalRuntimeContract {
                 capability: "PolicyLayer".to_string(),
-                test_files: vec![PathBuf::from("crates/policy_engine/tests/policy_evaluation.rs")],
+                test_files: vec![PathBuf::from(
+                    "crates/policy_engine/tests/policy_evaluation.rs",
+                )],
             },
             crate::capability::contract::CriticalRuntimeContract {
                 capability: "ConstraintLayer".to_string(),
-                test_files: vec![PathBuf::from("crates/constraint_engine/tests/stable_v03_core.rs")],
+                test_files: vec![PathBuf::from(
+                    "crates/constraint_engine/tests/stable_v03_core.rs",
+                )],
             },
             crate::capability::contract::CriticalRuntimeContract {
                 capability: "GitGuard".to_string(),
@@ -223,19 +231,17 @@ impl RuntimeAnalyzeDispatcher {
                 unreachable_tests: vec![],
                 old_quarantine_tests: vec![],
             }),
-            repl_scenarios: vec![
-                crate::capability::contract::ReplScenario {
-                    name: "Policy_Reviewer_Reject_Modify".to_string(),
-                    inputs: vec![
-                        "査読者モードにしてください".to_string(),
-                        "apps/cli/src/core.rs に TEST コメントを追加してください".to_string(),
-                    ],
-                    expected_events: vec![
-                        "POLICY_EVALUATION".to_string(),
-                        "PermissionDenied".to_string(),
-                    ],
-                },
-            ],
+            repl_scenarios: vec![crate::capability::contract::ReplScenario {
+                name: "Policy_Reviewer_Reject_Modify".to_string(),
+                inputs: vec![
+                    "査読者モードにしてください".to_string(),
+                    "apps/cli/src/core.rs に TEST コメントを追加してください".to_string(),
+                ],
+                expected_events: vec![
+                    "POLICY_EVALUATION".to_string(),
+                    "PermissionDenied".to_string(),
+                ],
+            }],
         };
 
         Ok(TestInventoryResult {
@@ -246,17 +252,29 @@ impl RuntimeAnalyzeDispatcher {
         })
     }
 
-    fn execute_analyze_dead_tests(path: &str) -> Result<crate::capability::contract::DeadTestReport, String> {
+    fn execute_analyze_dead_tests(
+        path: &str,
+    ) -> Result<crate::capability::contract::DeadTestReport, String> {
         let res = Self::execute_analyze_tests(path)?;
-        let gov = res.governance.ok_or("Failed to generate governance report")?;
-        let dead = gov.dead_test_report.ok_or("Failed to generate dead test report")?;
+        let gov = res
+            .governance
+            .ok_or("Failed to generate governance report")?;
+        let dead = gov
+            .dead_test_report
+            .ok_or("Failed to generate dead test report")?;
         Ok(dead)
     }
 
-    fn execute_analyze_regression_tests(path: &str) -> Result<crate::capability::contract::RegressionRegistry, String> {
+    fn execute_analyze_regression_tests(
+        path: &str,
+    ) -> Result<crate::capability::contract::RegressionRegistry, String> {
         let res = Self::execute_analyze_tests(path)?;
-        let gov = res.governance.ok_or("Failed to generate governance report")?;
-        let reg = gov.regression_registry.ok_or("Failed to generate regression registry")?;
+        let gov = res
+            .governance
+            .ok_or("Failed to generate governance report")?;
+        let reg = gov
+            .regression_registry
+            .ok_or("Failed to generate regression registry")?;
         Ok(reg)
     }
 
@@ -274,7 +292,30 @@ impl RuntimeAnalyzeDispatcher {
         })
     }
 
-    fn execute_analyze_structural_problems(path: &str) -> Result<StructuralDiagnosisReport, String> {
+    fn execute_analyze_structural_problems(
+        path: &str,
+        specification: Option<crate::capability::contract::SpecificationDocument>,
+    ) -> Result<StructuralDiagnosisReport, String> {
+        let request = crate::capability::contract::StructuralDiagnosisRequest {
+            workspace_root: std::path::PathBuf::from(path),
+            specification,
+        };
+
+        if let Some(spec) = &request.specification {
+            println!("[SPEC_REASONING]\nspecification_present=true");
+            if let Some(goal) = &spec.goal {
+                println!("[SPEC_REASONING]\ngoal=\"{}\"", goal);
+            }
+            for dev in &spec.deliverables {
+                println!("[SPEC_REASONING]\ndeliverable=\"{}\"", dev.name);
+            }
+            for c in &spec.constraints {
+                println!("[SPEC_REASONING]\nconstraint=\"{}\"", c.description);
+            }
+        } else {
+            println!("[SPEC_REASONING]\nspecification_present=false");
+        }
+
         // 構造診断のルール V1 (DBM-STRUCTURAL-DIAGNOSIS-SPEC §Diagnosis Rules v1)
         let res = crate::dbm::analyzer::analyze_project(path)?;
 
@@ -327,7 +368,9 @@ impl RuntimeAnalyzeDispatcher {
         })
     }
 
-    fn execute_analyze_specification(path: &str) -> Result<crate::capability::contract::SpecificationDocument, String> {
+    fn execute_analyze_specification(
+        path: &str,
+    ) -> Result<crate::capability::contract::SpecificationDocument, String> {
         use crate::capability::contract::{
             AssumptionItem, ConstraintItem, ConstraintKind, DeliverableItem, SpecificationDocument,
             SuccessCriterion,
@@ -353,11 +396,20 @@ impl RuntimeAnalyzeDispatcher {
         let mut current_section = "";
 
         // セクションヘッダーが全くない場合、全体を成果物とみなすデフォルト挙動
-        let has_any_section = lower.contains("deliverable") || lower.contains("納品物") || lower.contains("成果物")
-            || lower.contains("constraint") || lower.contains("制約") || lower.contains("禁止")
-            || lower.contains("success criteria") || lower.contains("成功条件") || lower.contains("done")
-            || lower.contains("assumption") || lower.contains("前提")
-            || lower.contains("goal") || lower.contains("目的") || lower.contains("目標");
+        let has_any_section = lower.contains("deliverable")
+            || lower.contains("納品物")
+            || lower.contains("成果物")
+            || lower.contains("constraint")
+            || lower.contains("制約")
+            || lower.contains("禁止")
+            || lower.contains("success criteria")
+            || lower.contains("成功条件")
+            || lower.contains("done")
+            || lower.contains("assumption")
+            || lower.contains("前提")
+            || lower.contains("goal")
+            || lower.contains("目的")
+            || lower.contains("目標");
 
         if !has_any_section && !lower.contains("dbm-") && !lower.starts_with("#") {
             current_section = "deliverables";
@@ -365,10 +417,15 @@ impl RuntimeAnalyzeDispatcher {
 
         for line in lines {
             let trimmed = line.trim();
-            if trimmed.is_empty() { continue; }
+            if trimmed.is_empty() {
+                continue;
+            }
 
             // ログノイズの排除 (Negative Test 4.2)
-            if trimmed.starts_with("[DEBUG]") || trimmed.starts_with("[TRACE]") || trimmed.starts_with("[IR-TRACE]") {
+            if trimmed.starts_with("[DEBUG]")
+                || trimmed.starts_with("[TRACE]")
+                || trimmed.starts_with("[IR-TRACE]")
+            {
                 continue;
             }
             // 環境パスの排除 (Negative Test 4.1)
@@ -390,32 +447,56 @@ impl RuntimeAnalyzeDispatcher {
 
             // セクション切り替え
             let lower_trimmed = trimmed.to_lowercase();
-            if lower_trimmed.contains("deliverable") || lower_trimmed.contains("納品物") || lower_trimmed.contains("成果物") {
+            if lower_trimmed.contains("deliverable")
+                || lower_trimmed.contains("納品物")
+                || lower_trimmed.contains("成果物")
+            {
                 current_section = "deliverables";
                 continue;
-            } else if lower_trimmed.contains("constraint") || lower_trimmed.contains("制約") || lower_trimmed.contains("禁止") {
+            } else if lower_trimmed.contains("constraint")
+                || lower_trimmed.contains("制約")
+                || lower_trimmed.contains("禁止")
+            {
                 current_section = "constraints";
                 continue;
-            } else if lower_trimmed.contains("success criteria") || lower_trimmed.contains("成功条件") || lower_trimmed.contains("done") {
+            } else if lower_trimmed.contains("success criteria")
+                || lower_trimmed.contains("成功条件")
+                || lower_trimmed.contains("done")
+            {
                 current_section = "success_criteria";
                 continue;
             } else if lower_trimmed.contains("assumption") || lower_trimmed.contains("前提") {
                 current_section = "assumptions";
                 continue;
-            } else if lower_trimmed.contains("goal:") || lower_trimmed.contains("目的:") || lower_trimmed.contains("目標:") {
+            } else if lower_trimmed.contains("goal:")
+                || lower_trimmed.contains("目的:")
+                || lower_trimmed.contains("目標:")
+            {
                 current_section = "goal";
                 continue;
-            } else if lower_trimmed == "goal" || lower_trimmed == "目的" || lower_trimmed == "目標" {
+            } else if lower_trimmed == "goal" || lower_trimmed == "目的" || lower_trimmed == "目標"
+            {
                 current_section = "goal";
                 continue;
             }
 
             // アイテム抽出
-            let is_bullet = trimmed.starts_with("- ") || trimmed.starts_with("* ") || (trimmed.chars().next().map_or(false, |c| c.is_ascii_digit()) && trimmed.contains(". "));
-            
+            let is_bullet = trimmed.starts_with("- ")
+                || trimmed.starts_with("* ")
+                || (trimmed.chars().next().map_or(false, |c| c.is_ascii_digit())
+                    && trimmed.contains(". "));
+
             if current_section == "goal" {
-                 let content = if is_bullet {
-                    trimmed.trim_start_matches(|c: char| c == '-' || c == '*' || c == '.' || c.is_ascii_digit() || c.is_whitespace()).to_string()
+                let content = if is_bullet {
+                    trimmed
+                        .trim_start_matches(|c: char| {
+                            c == '-'
+                                || c == '*'
+                                || c == '.'
+                                || c.is_ascii_digit()
+                                || c.is_whitespace()
+                        })
+                        .to_string()
                 } else {
                     trimmed.to_string()
                 };
@@ -432,32 +513,54 @@ impl RuntimeAnalyzeDispatcher {
 
             if is_bullet || (current_section == "deliverables" && !trimmed.is_empty()) {
                 let content = if is_bullet {
-                    trimmed.trim_start_matches(|c: char| c == '-' || c == '*' || c == '.' || c.is_ascii_digit() || c.is_whitespace()).to_string()
+                    trimmed
+                        .trim_start_matches(|c: char| {
+                            c == '-'
+                                || c == '*'
+                                || c == '.'
+                                || c.is_ascii_digit()
+                                || c.is_whitespace()
+                        })
+                        .to_string()
                 } else {
                     trimmed.to_string()
                 };
-                
+
                 match current_section {
                     "deliverables" => {
-                        deliverables.push(DeliverableItem { name: content, description: None });
+                        deliverables.push(DeliverableItem {
+                            name: content,
+                            description: None,
+                        });
                     }
                     "constraints" => {
-                        let kind = if content.contains("実装しない") || content.contains("まだ") || content.contains("not implement") {
+                        let kind = if content.contains("実装しない")
+                            || content.contains("まだ")
+                            || content.contains("not implement")
+                        {
                             ConstraintKind::NotImplement
                         } else if content.contains("読み取り") || content.contains("readonly") {
                             ConstraintKind::ReadOnly
-                        } else if content.contains("適用しない") || content.contains("noapply") {
+                        } else if content.contains("適用しない") || content.contains("noapply")
+                        {
                             ConstraintKind::NoApply
                         } else {
                             ConstraintKind::Other
                         };
-                        constraints.push(ConstraintItem { kind, description: content });
+                        constraints.push(ConstraintItem {
+                            kind,
+                            description: content,
+                        });
                     }
                     "success_criteria" => {
-                        success_criteria.push(SuccessCriterion { description: content });
+                        success_criteria.push(SuccessCriterion {
+                            description: content,
+                        });
                     }
                     "assumptions" => {
-                        assumptions.push(AssumptionItem { description: content });
+                        assumptions.push(AssumptionItem {
+                            description: content,
+                        });
                     }
                     _ => {}
                 }
@@ -498,16 +601,20 @@ mod tests {
     fn test_dispatch_analyze_tests() {
         let action = IrAction::AnalyzeTests;
         let path = ".";
-        let (result, output_type, capability) = RuntimeAnalyzeDispatcher::dispatch(&action, path).unwrap();
+        let (result, output_type, capability) =
+            RuntimeAnalyzeDispatcher::dispatch(&action, path, None).unwrap();
 
         assert_eq!(capability, CapabilityKind::AnalyzeTests);
         assert_eq!(output_type, OutputTypeId::TestInventoryResult);
-        
+
         let test_res = result.downcast_ref::<TestInventoryResult>().unwrap();
         assert!(test_res.summary.contains("Test inventory completed"));
-        
+
         // ガバナンスレポートの検証
-        let gov = test_res.governance.as_ref().expect("governance report should exist");
+        let gov = test_res
+            .governance
+            .as_ref()
+            .expect("governance report should exist");
         assert!(gov.total_tests > 0);
         assert!(!gov.category_counts.is_empty());
     }
@@ -518,24 +625,30 @@ mod tests {
         // 実際のプロジェクト構造を使って分類が行われているか確認
         let res = RuntimeAnalyzeDispatcher::execute_analyze_tests(".").unwrap();
         let gov = res.governance.unwrap();
-        
+
         // 少なくとも Unit か Integration は見つかるはず
         use crate::capability::contract::TestCategory;
         let has_unit = gov.category_counts.contains_key(&TestCategory::Unit);
         let has_integration = gov.category_counts.contains_key(&TestCategory::Integration);
-        assert!(has_unit || has_integration, "Should find at least some tests");
+        assert!(
+            has_unit || has_integration,
+            "Should find at least some tests"
+        );
     }
 
     #[test]
     fn test_dispatch_analyze_project() {
         let action = IrAction::AnalyzeProject;
         let path = ".";
-        let (result, output_type, capability) = RuntimeAnalyzeDispatcher::dispatch(&action, path).unwrap();
+        let (result, output_type, capability) =
+            RuntimeAnalyzeDispatcher::dispatch(&action, path, None).unwrap();
 
         assert_eq!(capability, CapabilityKind::AnalyzeProject);
         assert_eq!(output_type, OutputTypeId::ProjectStructureAnalysisResult);
 
-        let project_res = result.downcast_ref::<ProjectStructureAnalysisResult>().unwrap();
+        let project_res = result
+            .downcast_ref::<ProjectStructureAnalysisResult>()
+            .unwrap();
         assert!(project_res.summary.contains("Project structure analyzed"));
     }
 
@@ -565,24 +678,34 @@ Assumptions:
 - Rust workspace
 - Cargo available
 "#;
-        let res = RuntimeAnalyzeDispatcher::execute_analyze_specification(input).expect("Should succeed");
-        
-        assert_eq!(res.title.as_deref(), Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A"));
+        let res =
+            RuntimeAnalyzeDispatcher::execute_analyze_specification(input).expect("Should succeed");
+
+        assert_eq!(
+            res.title.as_deref(),
+            Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A")
+        );
         assert_eq!(res.goal.as_deref(), Some("Detect architectural problems."));
-        
+
         assert_eq!(res.deliverables.len(), 3);
         assert_eq!(res.deliverables[0].name, "Dependency Graph");
         assert_eq!(res.deliverables[1].name, "Circular Dependency Report");
         assert_eq!(res.deliverables[2].name, "Hotspot Analysis");
-        
+
         assert_eq!(res.constraints.len(), 2);
         assert_eq!(res.constraints[0].description, "Read Only");
         assert_eq!(res.constraints[1].description, "No Apply");
-        
+
         assert_eq!(res.success_criteria.len(), 2);
-        assert_eq!(res.success_criteria[0].description, "Circular dependencies detected");
-        assert_eq!(res.success_criteria[1].description, "Dependency hotspots ranked");
-        
+        assert_eq!(
+            res.success_criteria[0].description,
+            "Circular dependencies detected"
+        );
+        assert_eq!(
+            res.success_criteria[1].description,
+            "Dependency hotspots ranked"
+        );
+
         assert_eq!(res.assumptions.len(), 2);
         assert_eq!(res.assumptions[0].description, "Rust workspace");
         assert_eq!(res.assumptions[1].description, "Cargo available");
@@ -606,5 +729,72 @@ Assumptions:
         assert!(res.title.is_none());
         assert!(res.goal.is_none());
         assert!(res.deliverables.is_empty());
+    }
+
+    // ── DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 ─────────────
+
+    #[test]
+    fn test_analyze_specification_multiline_goal() {
+        // §FR-ML-1: A goal spanning multiple lines must be concatenated into one field.
+        let input = "Goal:\nDetect architectural problems.\nImprove maintainability.\n";
+        let res =
+            RuntimeAnalyzeDispatcher::execute_analyze_specification(input).expect("should succeed");
+        let goal = res.goal.as_deref().expect("goal must be set");
+        assert!(
+            goal.contains("Detect architectural problems."),
+            "first goal line missing: {goal}"
+        );
+        assert!(
+            goal.contains("Improve maintainability."),
+            "second goal line missing: {goal}"
+        );
+    }
+
+    #[test]
+    fn test_analyze_specification_idempotent() {
+        // §FR-ML-2: Calling extraction twice with identical input must produce identical output.
+        let input =
+            "DBM-IDEMPOTENCY-TEST\nGoal:\nDo something.\nDeliverables:\n- Widget\n- Gadget\n";
+        let res1 =
+            RuntimeAnalyzeDispatcher::execute_analyze_specification(input).expect("first call ok");
+        let res2 =
+            RuntimeAnalyzeDispatcher::execute_analyze_specification(input).expect("second call ok");
+        assert_eq!(res1.title, res2.title, "title must be idempotent");
+        assert_eq!(res1.goal, res2.goal, "goal must be idempotent");
+        assert_eq!(
+            res1.deliverables.len(),
+            res2.deliverables.len(),
+            "deliverable count must be idempotent"
+        );
+        for (d1, d2) in res1.deliverables.iter().zip(res2.deliverables.iter()) {
+            assert_eq!(d1.name, d2.name, "deliverable name must be idempotent");
+        }
+    }
+
+    #[test]
+    fn test_analyze_specification_section_order_independence() {
+        // §FR-ML-3: Section order must not affect extraction results.
+        let input_normal = "DBM-ORDER-TEST\nGoal:\nDo something.\nDeliverables:\n- Widget\nConstraints:\n- Read Only\n";
+        let input_reversed = "DBM-ORDER-TEST\nConstraints:\n- Read Only\nDeliverables:\n- Widget\nGoal:\nDo something.\n";
+
+        let res_normal = RuntimeAnalyzeDispatcher::execute_analyze_specification(input_normal)
+            .expect("normal order ok");
+        let res_reversed = RuntimeAnalyzeDispatcher::execute_analyze_specification(input_reversed)
+            .expect("reversed order ok");
+
+        assert_eq!(
+            res_normal.goal, res_reversed.goal,
+            "goal must be order-independent"
+        );
+        assert_eq!(
+            res_normal.deliverables.len(),
+            res_reversed.deliverables.len(),
+            "deliverable count must be order-independent"
+        );
+        assert_eq!(
+            res_normal.constraints.len(),
+            res_reversed.constraints.len(),
+            "constraint count must be order-independent"
+        );
     }
 }

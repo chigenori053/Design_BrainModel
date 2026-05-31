@@ -203,7 +203,9 @@ impl PipelineContext {
             ],
             PipelineState::Staged => &["git commit でコミット"],
             PipelineState::Committed => &[],
-            PipelineState::BuildingSpecification => &["仕様書の続きを入力、またはゴールを定義して完了"],
+            PipelineState::BuildingSpecification => {
+                &["仕様書の続きを入力、またはゴールを定義して完了"]
+            }
             PipelineState::SpecificationCompleted => &["仕様書に基づいた解析・実装を開始"],
         }
     }

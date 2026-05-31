@@ -1,0 +1,20 @@
+RUNNER_FAILURE_REPORT
+
+Command:
+cargo test -p design_cli runner::tests::large_output_is_bounded_and_runner_returns -- --nocapture
+
+Observed:
+status=success
+stderr=
+stdout_size=1000000
+truncated=true
+exit_code=0
+
+Classification:
+RC-A2: output limit reached.
+
+Root Cause:
+The target runner test did not fail in this run. The runner capped stdout at
+1,000,000 bytes, set output_meta.truncated=true, returned status=success, and
+reported exit_code=0. No stderr evidence was observed for Broken pipe, SIGPIPE,
+Killed, sandbox denial, resource limit exceeded, or timeout.

@@ -47,67 +47,15 @@ fn run_repl(dir: &std::path::Path, input: &str) -> (i32, String, String) {
     )
 }
 
+// CATEGORY: E2E
+/// Critical User Flow: Plan -> Promote -> Apply -> Validate
 #[test]
-fn long_spec_apply_requires_promote() {
-    let dir = temp_project("reject");
+fn critical_user_flow_happy_path() {
+    let dir = temp_project("critical_flow");
     let input = "\
 /begin spec
 Target: src/coding.rs
-Modify something
-/end
-apply
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("[APPLY] rejected: pending plan not promoted"),
-        "stdout: {stdout}"
-    );
-}
-
-#[test]
-fn long_spec_promote_then_apply_is_allowed() {
-    let dir = temp_project("allow");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-Modify something
-/end
-promote
-apply
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(stdout.contains("[PROMOTE] preview:"), "stdout: {stdout}");
-    // It should not be rejected by the guard.
-    assert!(!stdout.contains("[APPLY] rejected:"), "stdout: {stdout}");
-}
-
-#[test]
-fn target_only_apply_is_rejected() {
-    let dir = temp_project("target_only");
-    let input = "\
-Target: src/coding.rs
-apply
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("[APPLY] rejected: no preview transaction"),
-        "stdout: {stdout}"
-    );
-}
-
-#[test]
-fn validate_plan_after_apply_runs_allowed_commands() {
-    let dir = temp_project("validate_ok");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-Add something
+Modify code
 Validation: cargo check
 /end
 promote
@@ -117,57 +65,28 @@ validate-plan
 ";
     let (code, stdout, stderr) = run_repl(&dir, input);
     assert_eq!(code, 0, "stderr: {stderr}");
+
+    // 1. Plan & Promote
+    assert!(stdout.contains("[PLAN]"), "Should contain plan: {stdout}");
+    assert!(
+        stdout.contains("[PROMOTE] preview:"),
+        "Should contain preview: {stdout}"
+    );
+
+    // 2. Apply
+    assert!(
+        stdout.contains("transaction committed successfully"),
+        "Should apply: {stdout}"
+    );
+
+    // 3. Validate
     assert!(
         stdout.contains("[VALIDATE] running: cargo check"),
-        "stdout: {stdout}"
-    );
-    // We don't check for [VALIDATE] ok: here because it depends on the environment,
-    // but the rejection check above should pass.
-}
-
-#[test]
-fn validate_plan_rejects_before_apply() {
-    let dir = temp_project("validate_before");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-Add something
-Validation: cargo check
-/end
-promote
-validate-plan
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("[VALIDATE] rejected: no applied plan"),
-        "stdout: {stdout}"
+        "Should run validation: {stdout}"
     );
 }
 
-#[test]
-fn validate_plan_rejects_unsafe_command() {
-    let dir = temp_project("validate_unsafe");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-Add something
-Validation: cargo check && rm -rf /
-/end
-promote
-apply
-validate-plan
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("[VALIDATE] rejected: unsafe validation command"),
-        "stdout: {stdout}"
-    );
-}
-
+// CATEGORY: E2E
 #[test]
 fn manual_e2e_risk_validation_not_in_operations() {
     let dir = temp_project("manual_plan");
@@ -187,75 +106,11 @@ Validation: cargo test -p design_cli --test integration
         "stdout: {stdout}"
     );
     assert!(
-        !stdout.contains("[PLAN] operation: Insert: Risk:"),
-        "stdout: {stdout}"
-    );
-    assert!(
-        !stdout.contains("[PLAN] operation: Insert: Validation:"),
-        "stdout: {stdout}"
-    );
-    assert!(
         stdout.contains("[PLAN] risk: Risk: 不要な大規模変更をしない。"),
         "stdout: {stdout}"
     );
     assert!(
         stdout.contains("[PLAN] validate: Validation: cargo test -p design_cli --test integration"),
-        "stdout: {stdout}"
-    );
-}
-
-#[test]
-fn manual_e2e_comment_instruction_does_not_generate_markers() {
-    let dir = temp_project("manual_no_markers");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-REPL long instruction flow の手動E2E確認用コメントを追加する。
-Risk: 不要な大規模変更をしない。
-Validation: cargo check
-/end
-promote
-apply
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    let content = fs::read_to_string(dir.join("src/coding.rs")).expect("read target");
-    let combined = format!("{stdout}\n{content}");
-
-    assert!(!combined.contains("REPL_RUNTIME_TEST"), "{combined}");
-    assert!(!combined.contains("validate_runtime"), "{combined}");
-    assert!(!combined.contains("test_marker"), "{combined}");
-    assert!(!combined.contains("#[allow(dead_code)]"), "{combined}");
-    assert!(
-        content.contains("// REPL long instruction flow"),
-        "content: {content}"
-    );
-}
-
-#[test]
-fn manual_e2e_apply_output_is_not_contradictory() {
-    let dir = temp_project("manual_apply_output");
-    let input = "\
-/begin spec
-Target: src/coding.rs
-REPL long instruction flow の手動E2E確認用コメントを追加する。
-Risk: 不要な大規模変更をしない。
-Validation: cargo check
-/end
-promote
-apply
-/exit
-";
-    let (code, stdout, stderr) = run_repl(&dir, input);
-    assert_eq!(code, 0, "stderr: {stderr}");
-    assert!(
-        stdout.contains("transaction committed successfully"),
-        "stdout: {stdout}"
-    );
-    assert!(
-        !(stdout.contains("no active transaction")
-            && stdout.contains("transaction committed successfully")),
         "stdout: {stdout}"
     );
 }

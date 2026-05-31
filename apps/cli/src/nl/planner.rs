@@ -195,6 +195,12 @@ pub struct InstructionPlan {
     pub operations: Vec<String>,
     pub risks: Vec<String>,
     pub validation_plan: Vec<String>,
+    pub title: Option<String>,
+    pub goal: Option<String>,
+    pub deliverables: Vec<String>,
+    pub constraints: Vec<String>,
+    pub success_criteria: Vec<String>,
+    pub assumptions: Vec<String>,
 }
 
 impl InstructionPlan {
@@ -244,12 +250,43 @@ impl InstructionPlan {
             operations,
             risks,
             validation_plan,
+            title: plan_lines.title,
+            goal: if plan_lines.goal.is_empty() {
+                None
+            } else {
+                Some(plan_lines.goal.join("\n"))
+            },
+            deliverables: plan_lines.deliverables,
+            constraints: plan_lines.constraints,
+            success_criteria: plan_lines.success_criteria,
+            assumptions: plan_lines.assumptions,
         }
     }
 
     /// Render the plan as `[PLAN]`-prefixed lines suitable for REPL output.
     pub fn render_lines(&self) -> Vec<String> {
         let mut lines = Vec::new();
+
+        if let Some(t) = &self.title {
+            lines.push(format!("[SPEC_EXTRACT] title=Some(\"{}\")", t));
+        } else {
+            lines.push("[SPEC_EXTRACT] title=None".to_string());
+        }
+
+        if let Some(g) = &self.goal {
+            lines.push(format!(
+                "[SPEC_EXTRACT] goal=Some(\"{}\")",
+                plan_truncate(g, 40)
+            ));
+        } else {
+            lines.push("[SPEC_EXTRACT] goal=None".to_string());
+        }
+
+        lines.push(format!(
+            "[SPEC_EXTRACT] deliverables={}",
+            self.deliverables.len()
+        ));
+
         lines.push(format!("[PLAN] summary: {}", self.summary));
         match &self.target {
             Some(t) => lines.push(format!("[PLAN] target: {}", t.display())),
@@ -278,6 +315,12 @@ struct ClassifiedPlanLines {
     body: Vec<String>,
     risks: Vec<String>,
     validation: Vec<String>,
+    title: Option<String>,
+    goal: Vec<String>,
+    deliverables: Vec<String>,
+    constraints: Vec<String>,
+    success_criteria: Vec<String>,
+    assumptions: Vec<String>,
 }
 
 impl ClassifiedPlanLines {
@@ -297,15 +340,95 @@ impl ClassifiedPlanLines {
 
 fn split_plan_lines(input: &str) -> ClassifiedPlanLines {
     let mut lines = ClassifiedPlanLines::default();
+    let mut current_section: Option<&str> = None;
+
     for line in input.lines().map(str::trim).filter(|line| !line.is_empty()) {
+        let lower = line.to_lowercase();
+
+        if lower.starts_with("dbm-") {
+            lines.title = Some(line.to_string());
+            continue;
+        }
+
+        if lower.starts_with("goal:") {
+            current_section = Some("goal");
+            let content = line
+                .strip_prefix("Goal:")
+                .or(line.strip_prefix("goal:"))
+                .unwrap_or("")
+                .trim();
+            if !content.is_empty() {
+                lines.goal.push(content.to_string());
+            }
+            continue;
+        }
+        if lower.starts_with("deliverables:") {
+            current_section = Some("deliverables");
+            let content = line
+                .strip_prefix("Deliverables:")
+                .or(line.strip_prefix("deliverables:"))
+                .unwrap_or("")
+                .trim();
+            if !content.is_empty() {
+                lines.deliverables.push(content.to_string());
+            }
+            continue;
+        }
+        if lower.starts_with("constraints:") {
+            current_section = Some("constraints");
+            let content = line
+                .strip_prefix("Constraints:")
+                .or(line.strip_prefix("constraints:"))
+                .unwrap_or("")
+                .trim();
+            if !content.is_empty() {
+                lines.constraints.push(content.to_string());
+            }
+            continue;
+        }
+        if lower.starts_with("success criteria:") {
+            current_section = Some("success_criteria");
+            let content = line
+                .strip_prefix("Success Criteria:")
+                .or(line.strip_prefix("success criteria:"))
+                .unwrap_or("")
+                .trim();
+            if !content.is_empty() {
+                lines.success_criteria.push(content.to_string());
+            }
+            continue;
+        }
+        if lower.starts_with("assumptions:") {
+            current_section = Some("assumptions");
+            let content = line
+                .strip_prefix("Assumptions:")
+                .or(line.strip_prefix("assumptions:"))
+                .unwrap_or("")
+                .trim();
+            if !content.is_empty() {
+                lines.assumptions.push(content.to_string());
+            }
+            continue;
+        }
+
         if is_plan_validation_line(line) {
             lines.validation.push(line.to_string());
+            current_section = None;
         } else if is_plan_risk_line(line) {
             lines.risks.push(line.to_string());
+            current_section = None;
         } else if is_target_header_line(line) {
             lines.target.push(line.to_string());
+            current_section = None;
         } else {
-            lines.body.push(line.to_string());
+            match current_section {
+                Some("goal") => lines.goal.push(line.to_string()),
+                Some("deliverables") => lines.deliverables.push(line.to_string()),
+                Some("constraints") => lines.constraints.push(line.to_string()),
+                Some("success_criteria") => lines.success_criteria.push(line.to_string()),
+                Some("assumptions") => lines.assumptions.push(line.to_string()),
+                _ => lines.body.push(line.to_string()),
+            }
         }
     }
     lines
@@ -595,5 +718,31 @@ mod instruction_plan_tests {
             "{:?}",
             plan.validation_plan
         );
+    }
+
+    #[test]
+    fn instruction_plan_extracts_fr6_fields() {
+        let input = "DBM-TEST-SPEC\n\
+                     Goal: Verify FR-6 field extraction.\n\
+                     Deliverables:\n\
+                     - Field 1\n\
+                     - Field 2\n\
+                     Constraints:\n\
+                     - Constraint A\n\
+                     Success Criteria:\n\
+                     - Criteria X\n\
+                     Assumptions:\n\
+                     - Assumption Y\n\
+                     Target: src/main.rs\n\
+                     Implement feature.";
+        let plan = InstructionPlan::from_spec(input);
+
+        assert_eq!(plan.title, Some("DBM-TEST-SPEC".to_string()));
+        assert_eq!(plan.goal, Some("Verify FR-6 field extraction.".to_string()));
+        assert_eq!(plan.deliverables.len(), 2);
+        assert_eq!(plan.constraints.len(), 1);
+        assert_eq!(plan.success_criteria.len(), 1);
+        assert_eq!(plan.assumptions.len(), 1);
+        assert_eq!(plan.target, Some(PathBuf::from("src/main.rs")));
     }
 }

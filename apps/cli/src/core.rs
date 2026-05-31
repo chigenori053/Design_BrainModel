@@ -920,16 +920,19 @@ impl RuntimeCoreBridge {
         // DBM-LANGUAGECORE-CONSTRAINT-RECOGNITION-SPEC v1.0
         // 自然言語指示がコマンドとして誤認されるのを防ぐ
         use crate::runtime::document_classifier::{DocumentClassifier, InputKind as DocInputKind};
-        let is_natural_language = DocumentClassifier::classify(input) == DocInputKind::NaturalLanguage;
+        let is_natural_language =
+            DocumentClassifier::classify(input) == DocInputKind::NaturalLanguage;
 
         if !is_natural_language {
             if let Ok(Some(target)) = target_only_input_resolution(input) {
                 return Some(target_context_response(target, id));
             }
         }
-        
-        if let Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) = target_only_input_resolution(input) {
-             return Some(self.execute_natural_language(request));
+
+        if let Err(TargetResolutionFailure::ConfirmationTokenLike { .. }) =
+            target_only_input_resolution(input)
+        {
+            return Some(self.execute_natural_language(request));
         }
 
         let has_followup_context = kind == CoreRequestKind::Followup || !state.proposals.is_empty();
@@ -1072,7 +1075,10 @@ impl RuntimeCoreBridge {
                         "None"
                     },
                     if let Some(spec_ctx) = &session_context_snapshot.specification_context {
-                        format!("Some(title={:?}, goal={:?})", spec_ctx.specification.title, spec_ctx.specification.goal)
+                        format!(
+                            "Some(title={:?}, goal={:?})",
+                            spec_ctx.specification.title, spec_ctx.specification.goal
+                        )
                     } else {
                         "None".to_string()
                     },
@@ -1103,8 +1109,7 @@ impl RuntimeCoreBridge {
             events.push(CoreEvent::Debug {
                 message: format!(
                     "[SPEC_LOAD] specification_context=Some(title={:?}, goal={:?})",
-                    spec_ctx.specification.title,
-                    spec_ctx.specification.goal
+                    spec_ctx.specification.title, spec_ctx.specification.goal
                 ),
             });
         }
@@ -1126,7 +1131,9 @@ impl RuntimeCoreBridge {
 
         let lc_intent = {
             // DBM-DOCUMENT-CLASSIFIER-SPEC v1.0 §8
-            use crate::runtime::document_classifier::{DocumentClassifier, InputKind as DocInputKind};
+            use crate::runtime::document_classifier::{
+                DocumentClassifier, InputKind as DocInputKind,
+            };
             let doc_kind = DocumentClassifier::classify(&request.input);
 
             if observability_enabled() {
@@ -1143,8 +1150,13 @@ impl RuntimeCoreBridge {
 
                     // DBM-SPECIFICATION-INGESTION-SYSTEM v1 §7 Failure Prevention
                     // BuildingSpecification 状態では Unknown を AnalyzeSpecification として扱う
-                    if matches!(request.context.pipeline_state, PipelineState::BuildingSpecification)
-                        && matches!(intent, crate::nl::language_core_ir_adapter::LanguageCoreIntent::Unknown { .. }) {
+                    if matches!(
+                        request.context.pipeline_state,
+                        PipelineState::BuildingSpecification
+                    ) && matches!(
+                        intent,
+                        crate::nl::language_core_ir_adapter::LanguageCoreIntent::Unknown { .. }
+                    ) {
                         intent = crate::nl::language_core_ir_adapter::LanguageCoreIntent::AnalyzeSpecification;
                     }
                     intent
@@ -1167,10 +1179,13 @@ impl RuntimeCoreBridge {
                     crate::nl::language_core_ir_adapter::LanguageCoreIntent::AnalyzeSpecification
                 }
                 // BuildingSpecification 状態では Markdown 入力も仕様書追記として扱う (FR-4 Incremental Merge)
-                DocInputKind::MarkdownDocument if matches!(
-                    request.context.pipeline_state,
-                    PipelineState::BuildingSpecification | PipelineState::SpecificationCompleted
-                ) => {
+                DocInputKind::MarkdownDocument
+                    if matches!(
+                        request.context.pipeline_state,
+                        PipelineState::BuildingSpecification
+                            | PipelineState::SpecificationCompleted
+                    ) =>
+                {
                     crate::nl::language_core_ir_adapter::LanguageCoreIntent::AnalyzeSpecification
                 }
                 DocInputKind::MarkdownDocument
@@ -1193,7 +1208,8 @@ impl RuntimeCoreBridge {
             }
         };
 
-        if let crate::nl::language_core_ir_adapter::LanguageCoreIntent::Constraint(kind) = lc_intent {
+        if let crate::nl::language_core_ir_adapter::LanguageCoreIntent::Constraint(kind) = lc_intent
+        {
             return self.execute_lc_constraint(kind, events);
         }
 
@@ -1280,7 +1296,6 @@ impl RuntimeCoreBridge {
             }
         }
 
-
         // DBM-POLICY-LAYER-SPEC v1.0
         // ポリシーの評価
         use crate::runtime::policy::{PolicyDecision, PolicyEvaluator};
@@ -1290,7 +1305,8 @@ impl RuntimeCoreBridge {
 
         let policy_decision = PolicyEvaluator::evaluate_ir_request(&ir_request, &policy_profile);
         if let PolicyDecision::Reject { reason } = policy_decision {
-            let required_permission = PolicyEvaluator::required_permission(&ir_request.action, &ir_request.raw_input);
+            let required_permission =
+                PolicyEvaluator::required_permission(&ir_request.action, &ir_request.raw_input);
             if observability_enabled() {
                 println!(
                     "[POLICY_EVALUATION] role={} action={} permission={:?} decision=Reject",
@@ -1342,7 +1358,6 @@ impl RuntimeCoreBridge {
             });
             return error_response("ExecutionRejected", &reason, id);
         }
-
 
         // コンテキストアウェアなターゲット解決 (DBM-CONTEXT-AWARE-PLAN-TARGET-RESOLUTION-SPEC v1.0)
         let is_plan_only = is_plan_only_intent(&lower_input);
@@ -1564,11 +1579,14 @@ impl RuntimeCoreBridge {
                     message: "[SPEC_RETRIEVE] success=true".to_string(),
                 });
                 let result_text = format_specification_document_text(&spec_ctx.specification);
-                events.push(CoreEvent::Result { message: result_text });
+                events.push(CoreEvent::Result {
+                    message: result_text,
+                });
             } else {
                 println!("[SPEC_RETRIEVE] success=false reason=no_specification_stored");
                 events.push(CoreEvent::Debug {
-                    message: "[SPEC_RETRIEVE] success=false reason=no_specification_stored".to_string(),
+                    message: "[SPEC_RETRIEVE] success=false reason=no_specification_stored"
+                        .to_string(),
                 });
                 events.push(CoreEvent::Result {
                     message: "# No Specification Stored\n\nまだ仕様書が登録されていません。仕様書テキストを入力してください。".to_string(),
@@ -1588,7 +1606,11 @@ impl RuntimeCoreBridge {
         let input_for_dispatch = &ir_request.raw_input;
         println!("[SPEC_RUNTIME] raw_input={}", input_for_dispatch);
 
-        let (result, output_type, _) = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, input_for_dispatch, None) {
+        let (result, output_type, _) = match RuntimeAnalyzeDispatcher::dispatch(
+            &ir_request.action,
+            input_for_dispatch,
+            None,
+        ) {
             Ok(res) => res,
             Err(e) => {
                 events.push(CoreEvent::Error { message: e });
@@ -1620,10 +1642,9 @@ impl RuntimeCoreBridge {
         // DBM-SPECIFICATION-CAPTURE-RUNTIME-STABILIZATION-SPEC v1.0 Phase D
         if let Some(spec_ctx) = &next_state.session_context.specification_context {
             let spec = &spec_ctx.specification;
-            let is_completed = spec.title.is_some() 
-                && spec.goal.is_some() 
-                && !spec.deliverables.is_empty();
-            
+            let is_completed =
+                spec.title.is_some() && spec.goal.is_some() && !spec.deliverables.is_empty();
+
             if is_completed {
                 eprintln!("[SPEC_COMPLETED]");
                 next_state.status = PipelineState::SpecificationCompleted;
@@ -1634,12 +1655,15 @@ impl RuntimeCoreBridge {
         }
 
         // 結果表示: 保存後のフル仕様書（マージ後）を返す
-        let result_text = if let Some(spec_ctx) = &next_state.session_context.specification_context {
+        let result_text = if let Some(spec_ctx) = &next_state.session_context.specification_context
+        {
             format_specification_document_text(&spec_ctx.specification)
         } else {
             format_capability_result(result.as_ref(), output_type, &request.input)
         };
-        events.push(CoreEvent::Result { message: result_text });
+        events.push(CoreEvent::Result {
+            message: result_text,
+        });
 
         events.push(CoreEvent::Pipeline {
             state: next_state.status.label().to_string(),
@@ -1655,7 +1679,11 @@ impl RuntimeCoreBridge {
         }
     }
 
-    fn execute_lc_constraint(&self, kind: ConstraintKind, mut events: Vec<CoreEvent>) -> CoreResponse {
+    fn execute_lc_constraint(
+        &self,
+        kind: ConstraintKind,
+        mut events: Vec<CoreEvent>,
+    ) -> CoreResponse {
         if observability_enabled() {
             println!("[LANGUAGE_CORE] intent=Constraint");
             println!("[CONSTRAINT] kind={kind}");
@@ -1673,7 +1701,8 @@ impl RuntimeCoreBridge {
                 next_state.session_context.constraints.no_external_command = true
             }
             ConstraintKind::SetRole(role) => {
-                next_state.session_context.policy = crate::runtime::policy::PolicyProfile::from_role(role);
+                next_state.session_context.policy =
+                    crate::runtime::policy::PolicyProfile::from_role(role);
             }
         }
 
@@ -1682,7 +1711,12 @@ impl RuntimeCoreBridge {
             let p = &next_state.session_context.policy;
             let runtime_status = format!(
                 "[RUNTIME] role={} no_apply={} no_delete={} no_modify={} no_git={} no_external={}",
-                p.role, c.no_apply, c.no_delete, c.no_modify, c.no_git_operation, c.no_external_command
+                p.role,
+                c.no_apply,
+                c.no_delete,
+                c.no_modify,
+                c.no_git_operation,
+                c.no_external_command
             );
             println!("{}", runtime_status);
             events.push(CoreEvent::Debug {
@@ -1777,7 +1811,11 @@ impl RuntimeCoreBridge {
             .as_ref()
             .map(|ctx| ctx.specification.clone());
 
-        let analysis_text = match RuntimeAnalyzeDispatcher::dispatch(&ir_request.action, path_str, specification) {
+        let analysis_text = match RuntimeAnalyzeDispatcher::dispatch(
+            &ir_request.action,
+            path_str,
+            specification,
+        ) {
             Ok((result, output_type, _capability)) => {
                 format_capability_result(result.as_ref(), output_type, path_str)
             }
@@ -2840,11 +2878,14 @@ impl RuntimeCoreBridge {
         working_dir: &Path,
     ) -> CoreResponse {
         // DBM-POLICY-LAYER-SPEC v1.0
-        use crate::runtime::policy::{PolicyEvaluator, PolicyDecision};
+        use crate::runtime::policy::{PolicyDecision, PolicyEvaluator};
         let (session_policy, constraints) = {
             let history = self.history.lock().unwrap();
             let current = history.current();
-            (current.session_context.policy.clone(), current.session_context.constraints.clone())
+            (
+                current.session_context.policy.clone(),
+                current.session_context.constraints.clone(),
+            )
         };
         let mut policy_profile = session_policy;
         policy_profile.apply_constraints(&constraints);
@@ -3452,17 +3493,22 @@ impl RuntimeCoreBridge {
         }
 
         // DBM-POLICY-LAYER-SPEC v1.0
-        use crate::runtime::policy::{PolicyEvaluator, PolicyDecision};
+        use crate::runtime::policy::{PolicyDecision, PolicyEvaluator};
         let (policy, constraints) = {
             let history = self.history.lock().unwrap();
             let current = history.current();
-            (current.session_context.policy.clone(), current.session_context.constraints.clone())
+            (
+                current.session_context.policy.clone(),
+                current.session_context.constraints.clone(),
+            )
         };
         let mut policy_profile = policy;
         policy_profile.apply_constraints(&constraints);
 
         // Apply 権限チェック用のモック IR
-        use crate::nl::language_core_ir_adapter::{IrAction, IrIntentRequest, IrTarget, ExecutionMode, SafetyConstraints};
+        use crate::nl::language_core_ir_adapter::{
+            ExecutionMode, IrAction, IrIntentRequest, IrTarget, SafetyConstraints,
+        };
         let mock_ir = IrIntentRequest {
             action: IrAction::Apply,
             target: IrTarget::None,
@@ -3473,7 +3519,9 @@ impl RuntimeCoreBridge {
             target_failure: None,
         };
 
-        if let PolicyDecision::Reject { reason } = PolicyEvaluator::evaluate_ir_request(&mock_ir, &policy_profile) {
+        if let PolicyDecision::Reject { reason } =
+            PolicyEvaluator::evaluate_ir_request(&mock_ir, &policy_profile)
+        {
             if observability_enabled() {
                 println!(
                     "[POLICY_EVALUATION] role={} action=Apply permission=Apply decision=Reject",
@@ -4258,11 +4306,27 @@ fn timestamp_millis() -> u128 {
 /// "現在の仕様書を表示してください" など、既存仕様書の表示・取得を求める入力を検出する。
 fn is_specification_retrieval_query(input: &str) -> bool {
     let lower = input.to_lowercase();
-    let jp = ["仕様書を表示", "仕様書を見せ", "仕様書を確認", "仕様書を教え", "仕様書を出し",
-              "現在の仕様", "今の仕様", "登録済みの仕様", "保存された仕様"];
-    let en = ["show specification", "display specification", "retrieve specification",
-              "get specification", "current specification", "show current spec",
-              "what is the specification", "show the spec"];
+    let jp = [
+        "仕様書を表示",
+        "仕様書を見せ",
+        "仕様書を確認",
+        "仕様書を教え",
+        "仕様書を出し",
+        "現在の仕様",
+        "今の仕様",
+        "登録済みの仕様",
+        "保存された仕様",
+    ];
+    let en = [
+        "show specification",
+        "display specification",
+        "retrieve specification",
+        "get specification",
+        "current specification",
+        "show current spec",
+        "what is the specification",
+        "show the spec",
+    ];
     jp.iter().any(|p| lower.contains(p)) || en.iter().any(|p| lower.contains(p))
 }
 
@@ -4323,10 +4387,15 @@ fn format_capability_result(
     }
 }
 
-fn format_specification_document_text(result: &crate::capability::contract::SpecificationDocument) -> String {
+fn format_specification_document_text(
+    result: &crate::capability::contract::SpecificationDocument,
+) -> String {
     // 抽出内容のJSONダンプ (DBM-SPECIFICATION-INGESTION-RUNTIME-PATH-DEBUG-SPEC §6)
     if let Ok(json) = serde_json::to_string_pretty(result) {
-        eprintln!("[TRACE] format_specification_document_text input (JSON):\n{}", json);
+        eprintln!(
+            "[TRACE] format_specification_document_text input (JSON):\n{}",
+            json
+        );
     }
 
     let mut out = String::new();
@@ -4374,7 +4443,9 @@ fn format_specification_document_text(result: &crate::capability::contract::Spec
     out
 }
 
-fn format_structural_diagnosis_text(result: &crate::capability::contract::StructuralDiagnosisReport) -> String {
+fn format_structural_diagnosis_text(
+    result: &crate::capability::contract::StructuralDiagnosisReport,
+) -> String {
     let mut out = String::new();
     out.push_str("# Structural Diagnosis Report\n\n");
 
@@ -4415,16 +4486,23 @@ fn format_structural_diagnosis_text(result: &crate::capability::contract::Struct
     }
 
     out.push_str("\n## Recommendations\n");
-    if result.circular_dependencies.is_empty() 
-        && result.oversized_modules.is_empty() 
-        && result.dead_modules.is_empty() {
-        out.push_str("- No immediate structural issues detected. Maintain current modular boundaries.\n");
+    if result.circular_dependencies.is_empty()
+        && result.oversized_modules.is_empty()
+        && result.dead_modules.is_empty()
+    {
+        out.push_str(
+            "- No immediate structural issues detected. Maintain current modular boundaries.\n",
+        );
     } else {
         if !result.circular_dependencies.is_empty() {
-            out.push_str("- Refactor circular dependencies to follow a directed acyclic graph (DAG).\n");
+            out.push_str(
+                "- Refactor circular dependencies to follow a directed acyclic graph (DAG).\n",
+            );
         }
         if !result.oversized_modules.is_empty() {
-            out.push_str("- Consider splitting oversized modules into smaller, more focused components.\n");
+            out.push_str(
+                "- Consider splitting oversized modules into smaller, more focused components.\n",
+            );
         }
         if !result.dead_modules.is_empty() {
             out.push_str("- Verify and remove unreferenced or legacy modules to reduce project complexity.\n");
@@ -4437,7 +4515,7 @@ fn format_structural_diagnosis_text(result: &crate::capability::contract::Struct
 fn format_dead_test_report_text(result: &crate::capability::contract::DeadTestReport) -> String {
     let mut out = String::new();
     out.push_str("# Dead Test Report\n\n");
-    
+
     out.push_str("## Unreferenced Tests\n");
     if result.unreferenced_tests.is_empty() {
         out.push_str("- None detected\n");
@@ -4446,7 +4524,7 @@ fn format_dead_test_report_text(result: &crate::capability::contract::DeadTestRe
             out.push_str(&format!("- `{:?}`\n", test));
         }
     }
-    
+
     out.push_str("\n## Unreachable Tests\n");
     if result.unreachable_tests.is_empty() {
         out.push_str("- None detected\n");
@@ -4455,7 +4533,7 @@ fn format_dead_test_report_text(result: &crate::capability::contract::DeadTestRe
             out.push_str(&format!("- `{:?}`\n", test));
         }
     }
-    
+
     out.push_str("\n## Old Quarantine Tests\n");
     if result.old_quarantine_tests.is_empty() {
         out.push_str("- None detected\n");
@@ -4464,14 +4542,16 @@ fn format_dead_test_report_text(result: &crate::capability::contract::DeadTestRe
             out.push_str(&format!("- `{:?}`\n", test));
         }
     }
-    
+
     out
 }
 
-fn format_regression_registry_text(result: &crate::capability::contract::RegressionRegistry) -> String {
+fn format_regression_registry_text(
+    result: &crate::capability::contract::RegressionRegistry,
+) -> String {
     let mut out = String::new();
     out.push_str("# Regression Registry Report\n\n");
-    
+
     if result.entries.is_empty() {
         out.push_str("- No regression tests found\n");
     } else {
@@ -4479,11 +4559,14 @@ fn format_regression_registry_text(result: &crate::capability::contract::Regress
             out.push_str(&format!("- `{:?}`\n", entry.path));
         }
     }
-    
+
     out
 }
 
-fn format_project_structure_analysis_text(path: &str, result: &ProjectStructureAnalysisResult) -> String {
+fn format_project_structure_analysis_text(
+    path: &str,
+    result: &ProjectStructureAnalysisResult,
+) -> String {
     let mut out = String::new();
     out.push_str("# Project Structure Analysis\n\n");
     out.push_str(&format!("- Path: `{path}`\n"));
@@ -4502,11 +4585,11 @@ fn format_project_structure_analysis_text(path: &str, result: &ProjectStructureA
 
 fn format_test_inventory_text(path: &str, result: &TestInventoryResult) -> String {
     let mut out = String::new();
-    
+
     if let Some(gov) = &result.governance {
         out.push_str("# Test Governance Report\n\n");
         out.push_str(&format!("Total Tests: {}\n\n", gov.total_tests));
-        
+
         // スペック通りの順序で出力するためにカテゴリを定義
         let categories = [
             crate::capability::contract::TestCategory::Unit,
@@ -4561,7 +4644,10 @@ fn format_test_inventory_text(path: &str, result: &TestInventoryResult) -> Strin
             out.push_str(&format!("- `{file}`\n"));
         }
         if result.test_files.len() > 20 {
-            out.push_str(&format!("- ... and {} more\n", result.test_files.len() - 20));
+            out.push_str(&format!(
+                "- ... and {} more\n",
+                result.test_files.len() - 20
+            ));
         }
     }
     out
@@ -9021,7 +9107,7 @@ mod tests {
     #[test]
     fn test_constraint_persistence_in_session() {
         let core = RuntimeCoreBridge::with_defaults();
-        
+
         // 制約なしの状態
         {
             let res = core.execute(request("status"));
@@ -9151,12 +9237,23 @@ mod tests {
 
         assert_eq!(res.status, ExecutionStatus::Executed);
         let state = res.core_state.expect("core_state");
-        let spec_ctx = state.session_context.specification_context
+        let spec_ctx = state
+            .session_context
+            .specification_context
             .expect("FR-1: specification_context must be Some after store_specification()");
-        assert_eq!(spec_ctx.specification.title.as_deref(), Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A"));
-        assert_eq!(spec_ctx.specification.goal.as_deref(), Some("Detect architectural problems."));
+        assert_eq!(
+            spec_ctx.specification.title.as_deref(),
+            Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A")
+        );
+        assert_eq!(
+            spec_ctx.specification.goal.as_deref(),
+            Some("Detect architectural problems.")
+        );
         assert_eq!(spec_ctx.specification.deliverables.len(), 1);
-        assert_eq!(spec_ctx.specification.deliverables[0].name, "Dependency Graph");
+        assert_eq!(
+            spec_ctx.specification.deliverables[0].name,
+            "Dependency Graph"
+        );
     }
 
     /// Phase B: FR-2 - Turn N で保存された仕様書が Turn N+1 で復元される。
@@ -9170,18 +9267,30 @@ mod tests {
         // Turn 1: 仕様書を登録
         let turn1_input = "DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A\n\nGoal:\nDetect architectural problems.\n\nDeliverables:\n- Dependency Graph\n";
         let res1 = core.execute(request(turn1_input));
-        assert_eq!(res1.status, ExecutionStatus::Executed, "Turn 1 must succeed");
+        assert_eq!(
+            res1.status,
+            ExecutionStatus::Executed,
+            "Turn 1 must succeed"
+        );
         let state1 = res1.core_state.expect("turn1 core_state");
-        assert!(state1.session_context.specification_context.is_some(), "Turn 1 must store spec");
+        assert!(
+            state1.session_context.specification_context.is_some(),
+            "Turn 1 must store spec"
+        );
 
         // Turn 2: 別の入力を実行（specification は保持されるべき）
         let res2 = core.execute(request("プロジェクトの構造を解析してください"));
-        assert_eq!(res2.status, ExecutionStatus::Executed, "Turn 2 must succeed");
+        assert_eq!(
+            res2.status,
+            ExecutionStatus::Executed,
+            "Turn 2 must succeed"
+        );
 
         // NT-1: Turn 2 後も specification_context が None にならないこと
         let state2 = res2.core_state.expect("turn2 core_state");
-        let spec_ctx2 = state2.session_context.specification_context
-            .expect("NT-1: specification_context must NOT be None after Turn 2 (Context Loss regression)");
+        let spec_ctx2 = state2.session_context.specification_context.expect(
+            "NT-1: specification_context must NOT be None after Turn 2 (Context Loss regression)",
+        );
         assert_eq!(
             spec_ctx2.specification.title.as_deref(),
             Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A"),
@@ -9205,11 +9314,17 @@ mod tests {
         assert_eq!(res2.status, ExecutionStatus::Executed);
 
         let state2 = res2.core_state.expect("core_state");
-        let spec = &state2.session_context.specification_context
+        let spec = &state2
+            .session_context
+            .specification_context
             .expect("FR-4: specification_context must be Some after merge")
             .specification;
 
-        assert_eq!(spec.deliverables.len(), 2, "FR-4: merged spec must have 2 deliverables");
+        assert_eq!(
+            spec.deliverables.len(),
+            2,
+            "FR-4: merged spec must have 2 deliverables"
+        );
         assert_eq!(spec.deliverables[0].name, "Dependency Graph");
         assert_eq!(spec.deliverables[1].name, "Circular Dependency Report");
     }
@@ -9224,20 +9339,26 @@ mod tests {
 
         // Turn 1
         core.execute(request(
-            "DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A\n\nDeliverables:\n- Dependency Graph\n"
+            "DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A\n\nDeliverables:\n- Dependency Graph\n",
         ));
         // Turn 2: 同一成果物を再登録
         let res2 = core.execute(request("Deliverables:\n- Dependency Graph\n"));
 
         let state2 = res2.core_state.expect("core_state");
-        let spec = &state2.session_context.specification_context
+        let spec = &state2
+            .session_context
+            .specification_context
             .expect("spec_ctx")
             .specification;
 
         assert_eq!(
-            spec.deliverables.len(), 1,
+            spec.deliverables.len(),
+            1,
             "NT-3: duplicate deliverables must be prevented, got {:?}",
-            spec.deliverables.iter().map(|d| &d.name).collect::<Vec<_>>()
+            spec.deliverables
+                .iter()
+                .map(|d| &d.name)
+                .collect::<Vec<_>>()
         );
     }
 
@@ -9257,7 +9378,9 @@ mod tests {
         let res2 = core.execute(request("Deliverables:\n- Circular Dependency Report\n"));
 
         let state2 = res2.core_state.expect("core_state");
-        let spec = &state2.session_context.specification_context
+        let spec = &state2
+            .session_context
+            .specification_context
             .expect("spec_ctx")
             .specification;
 
@@ -9283,13 +9406,20 @@ mod tests {
 
         // Turn 2: 仕様書を取得
         let res2 = core.execute(request("現在の仕様書を表示してください"));
-        assert_eq!(res2.status, ExecutionStatus::Executed, "FR-3: retrieval must succeed");
+        assert_eq!(
+            res2.status,
+            ExecutionStatus::Executed,
+            "FR-3: retrieval must succeed"
+        );
 
         // NT-4: 空でないこと
-        let has_result = res2.events.iter().any(|e| {
-            matches!(e, CoreEvent::Result { message } if message.contains("Dependency Graph"))
-        });
-        assert!(has_result, "NT-4: retrieval result must contain stored deliverables");
+        let has_result = res2.events.iter().any(
+            |e| matches!(e, CoreEvent::Result { message } if message.contains("Dependency Graph")),
+        );
+        assert!(
+            has_result,
+            "NT-4: retrieval result must contain stored deliverables"
+        );
 
         // goal も含まれること
         let has_goal = res2.events.iter().any(|e| {
@@ -9312,13 +9442,24 @@ mod tests {
         assert_eq!(res1.status, ExecutionStatus::Executed, "Turn 1 failed");
         {
             let state = res1.core_state.expect("turn1 state");
-            let spec = &state.session_context.specification_context.expect("turn1 spec").specification;
-            assert_eq!(spec.title.as_deref(), Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A"));
+            let spec = &state
+                .session_context
+                .specification_context
+                .expect("turn1 spec")
+                .specification;
+            assert_eq!(
+                spec.title.as_deref(),
+                Some("DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A")
+            );
             assert_eq!(spec.goal.as_deref(), Some("Detect architectural problems."));
             assert_eq!(spec.deliverables.len(), 1);
             assert!(
-                matches!(state.status, PipelineState::BuildingSpecification | PipelineState::SpecificationCompleted),
-                "Turn 1 pipeline state: {:?}", state.status
+                matches!(
+                    state.status,
+                    PipelineState::BuildingSpecification | PipelineState::SpecificationCompleted
+                ),
+                "Turn 1 pipeline state: {:?}",
+                state.status
             );
         }
 
@@ -9327,14 +9468,30 @@ mod tests {
         assert_eq!(res2.status, ExecutionStatus::Executed, "Turn 2 failed");
         {
             let state = res2.core_state.expect("turn2 state");
-            let spec = &state.session_context.specification_context.expect("turn2 spec").specification;
-            assert_eq!(spec.goal.as_deref(), Some("Detect architectural problems."), "Goal must survive Turn 2");
-            assert_eq!(spec.deliverables.len(), 2, "Turn 2 must have 2 deliverables");
+            let spec = &state
+                .session_context
+                .specification_context
+                .expect("turn2 spec")
+                .specification;
+            assert_eq!(
+                spec.goal.as_deref(),
+                Some("Detect architectural problems."),
+                "Goal must survive Turn 2"
+            );
+            assert_eq!(
+                spec.deliverables.len(),
+                2,
+                "Turn 2 must have 2 deliverables"
+            );
         }
 
         // Turn 3: 仕様書を取得して確認
         let res3 = core.execute(request("現在の仕様書を表示してください"));
-        assert_eq!(res3.status, ExecutionStatus::Executed, "Turn 3 retrieval failed");
+        assert_eq!(
+            res3.status,
+            ExecutionStatus::Executed,
+            "Turn 3 retrieval failed"
+        );
         {
             let has_goal = res3.events.iter().any(|e|
                 matches!(e, CoreEvent::Result { message } if message.contains("Detect architectural problems"))
@@ -9347,7 +9504,10 @@ mod tests {
             );
             assert!(has_goal, "Golden: Turn 3 must return Goal");
             assert!(has_dep_graph, "Golden: Turn 3 must return Dependency Graph");
-            assert!(has_circular, "Golden: Turn 3 must return Circular Dependency Report");
+            assert!(
+                has_circular,
+                "Golden: Turn 3 must return Circular Dependency Report"
+            );
         }
     }
 
@@ -9368,14 +9528,28 @@ mod tests {
         ));
 
         let state2 = res2.core_state.expect("core_state");
-        let spec = &state2.session_context.specification_context.expect("spec").specification;
+        let spec = &state2
+            .session_context
+            .specification_context
+            .expect("spec")
+            .specification;
 
         // FR-5: Deliverables are merged
-        assert_eq!(spec.deliverables.len(), 2, "Deliverables must be merged (1 from A + 1 from B)");
-        
+        assert_eq!(
+            spec.deliverables.len(),
+            2,
+            "Deliverables must be merged (1 from A + 1 from B)"
+        );
+
         // FR-4 & VR-2: raw_text contains first spec ID and NOT second spec ID
-        assert!(spec.raw_text.contains("PHASE-A"), "raw_text must contain first spec ID");
-        assert!(!spec.raw_text.contains("PHASE-B"), "raw_text must NOT contain second spec ID (Isolation)");
+        assert!(
+            spec.raw_text.contains("PHASE-A"),
+            "raw_text must contain first spec ID"
+        );
+        assert!(
+            !spec.raw_text.contains("PHASE-B"),
+            "raw_text must NOT contain second spec ID (Isolation)"
+        );
     }
 }
 // DBM clarification execution guarantee

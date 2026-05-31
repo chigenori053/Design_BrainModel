@@ -53,38 +53,51 @@ impl DocumentClassifier {
             return InputKind::Unknown;
         }
 
-        // 1. Command 判定
+        // 1. NaturalLanguage (Japanese) check FIRST to avoid command misclassification
+        // e.g., "git は実行禁止です" contains "git" but is clearly NL.
+        if Self::has_japanese(trimmed) {
+            return InputKind::NaturalLanguage;
+        }
+
+        // 2. Command 判定
         if Self::is_command(trimmed) {
             return InputKind::Command;
         }
 
-        // 2. StructuredSpec 判定
+        // 3. StructuredSpec 判定
         if Self::is_structured_spec(trimmed) {
             return InputKind::StructuredSpec;
         }
 
-        // 3. JsonDocument 判定
+        // 4. JsonDocument 判定
         if Self::is_json(trimmed) {
             return InputKind::JsonDocument;
         }
 
-        // 4. LogDocument 判定
+        // 5. LogDocument 判定
         if Self::is_log(trimmed) {
             return InputKind::LogDocument;
         }
 
-        // 5. MarkdownDocument 判定
+        // 6. MarkdownDocument 判定
         if Self::is_markdown(trimmed) {
             return InputKind::MarkdownDocument;
         }
 
-        // 6. NaturalLanguage (デフォルト)
-        // 日本語文字が含まれている、または一般的な文章らしい場合は NL とみなす
+        // 7. NaturalLanguage (English/Others)
         if Self::is_natural_language(trimmed) {
             return InputKind::NaturalLanguage;
         }
 
         InputKind::Unknown
+    }
+
+    fn has_japanese(input: &str) -> bool {
+        input.chars().any(|c| {
+            ('\u{3040}'..='\u{309F}').contains(&c) || // ひらがな
+            ('\u{30A0}'..='\u{30FF}').contains(&c) || // カタカナ
+            ('\u{4E00}'..='\u{9FFF}').contains(&c) // 漢字
+        })
     }
 
     fn is_command(input: &str) -> bool {
@@ -93,8 +106,25 @@ impl DocumentClassifier {
 
         matches!(
             first_word,
-            "apply" | "undo" | "retry" | "select" | "status" | "diff" | "help" | "exit" | "quit" |
-            "git" | "cargo" | "rustc" | "ls" | "pwd" | "cd" | "mkdir" | "rm" | "mv" | "cp"
+            "apply"
+                | "undo"
+                | "retry"
+                | "select"
+                | "status"
+                | "diff"
+                | "help"
+                | "exit"
+                | "quit"
+                | "git"
+                | "cargo"
+                | "rustc"
+                | "ls"
+                | "pwd"
+                | "cd"
+                | "mkdir"
+                | "rm"
+                | "mv"
+                | "cp"
         ) || input.starts_with('/')
     }
 
@@ -109,15 +139,19 @@ impl DocumentClassifier {
                 || first_line.contains("-V1"));
         // 仕様書セクションキーワードが含まれる場合も StructuredSpec
         let has_spec_sections = input.contains("DBM-")
-            && (input.contains("Deliverables") || input.contains("Goal") || input.contains("Constraints")
-                || input.contains("Success Criteria") || input.contains("Assumptions"));
-        has_dbm_id || (input.contains("DBM-") && input.contains("-SPEC") && input.contains("v1.0"))
+            && (input.contains("Deliverables")
+                || input.contains("Goal")
+                || input.contains("Constraints")
+                || input.contains("Success Criteria")
+                || input.contains("Assumptions"));
+        has_dbm_id
+            || (input.contains("DBM-") && input.contains("-SPEC") && input.contains("v1.0"))
             || has_spec_sections
     }
 
     fn is_json(input: &str) -> bool {
-        (input.starts_with('{') && input.ends_with('}')) || 
-        (input.starts_with('[') && input.ends_with(']'))
+        (input.starts_with('{') && input.ends_with('}'))
+            || (input.starts_with('[') && input.ends_with(']'))
     }
 
     fn is_log(input: &str) -> bool {
@@ -130,21 +164,16 @@ impl DocumentClassifier {
     }
 
     fn is_markdown(input: &str) -> bool {
-        input.starts_with('#') || 
-        input.contains("\n## ") || 
-        input.contains("\n- ") ||
-        input.contains("```")
+        input.starts_with('#')
+            || input.contains("\n## ")
+            || input.contains("\n- ")
+            || input.contains("```")
     }
 
     fn is_natural_language(input: &str) -> bool {
         // 日本語文字 (ひらがな、カタカナ、漢字) が含まれているか
-        let has_japanese = input.chars().any(|c| {
-            ('\u{3040}'..='\u{309F}').contains(&c) || // ひらがな
-            ('\u{30A0}'..='\u{30FF}').contains(&c) || // カタカナ
-            ('\u{4E00}'..='\u{9FFF}').contains(&c)    // 漢字
-        });
-
-        if has_japanese {
+        // (既に has_japanese でチェック済みだが一応残す)
+        if Self::has_japanese(input) {
             return true;
         }
 
@@ -166,32 +195,71 @@ mod tests {
         assert_eq!(DocumentClassifier::classify("undo"), InputKind::Command);
         assert_eq!(DocumentClassifier::classify("select 1"), InputKind::Command);
         assert_eq!(DocumentClassifier::classify("/help"), InputKind::Command);
-        assert_eq!(DocumentClassifier::classify("git add ."), InputKind::Command);
-        assert_eq!(DocumentClassifier::classify("git status"), InputKind::Command);
-        assert_eq!(DocumentClassifier::classify("cargo test"), InputKind::Command);
-        assert_eq!(DocumentClassifier::classify("cargo build"), InputKind::Command);
+        assert_eq!(
+            DocumentClassifier::classify("git add ."),
+            InputKind::Command
+        );
+        assert_eq!(
+            DocumentClassifier::classify("git status"),
+            InputKind::Command
+        );
+        assert_eq!(
+            DocumentClassifier::classify("cargo test"),
+            InputKind::Command
+        );
+        assert_eq!(
+            DocumentClassifier::classify("cargo build"),
+            InputKind::Command
+        );
         assert_eq!(DocumentClassifier::classify("ls -la"), InputKind::Command);
     }
 
     #[test]
     fn test_classify_markdown() {
-        assert_eq!(DocumentClassifier::classify("# Title\nContent"), InputKind::MarkdownDocument);
-        assert_eq!(DocumentClassifier::classify("Text\n## Findings"), InputKind::MarkdownDocument);
-        assert_eq!(DocumentClassifier::classify("- item 1\n- item 2"), InputKind::MarkdownDocument);
-        assert_eq!(DocumentClassifier::classify("# Safety Analysis Result"), InputKind::MarkdownDocument);
+        assert_eq!(
+            DocumentClassifier::classify("# Title\nContent"),
+            InputKind::MarkdownDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("Text\n## Findings"),
+            InputKind::MarkdownDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("- item 1\n- item 2"),
+            InputKind::MarkdownDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("# Safety Analysis Result"),
+            InputKind::MarkdownDocument
+        );
     }
 
     #[test]
     fn test_classify_json() {
-        assert_eq!(DocumentClassifier::classify("{\"key\": \"value\"}"), InputKind::JsonDocument);
-        assert_eq!(DocumentClassifier::classify("[1, 2, 3]"), InputKind::JsonDocument);
+        assert_eq!(
+            DocumentClassifier::classify("{\"key\": \"value\"}"),
+            InputKind::JsonDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("[1, 2, 3]"),
+            InputKind::JsonDocument
+        );
     }
 
     #[test]
     fn test_classify_log() {
-        assert_eq!(DocumentClassifier::classify("[IR-TRACE] some event"), InputKind::LogDocument);
-        assert_eq!(DocumentClassifier::classify("error[E0425]: cannot find value"), InputKind::LogDocument);
-        assert_eq!(DocumentClassifier::classify("error[E0425]"), InputKind::LogDocument);
+        assert_eq!(
+            DocumentClassifier::classify("[IR-TRACE] some event"),
+            InputKind::LogDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("error[E0425]: cannot find value"),
+            InputKind::LogDocument
+        );
+        assert_eq!(
+            DocumentClassifier::classify("error[E0425]"),
+            InputKind::LogDocument
+        );
     }
 
     #[test]
@@ -210,6 +278,11 @@ mod tests {
         );
         assert_eq!(
             DocumentClassifier::classify("Please analyze the project structure"),
+            InputKind::NaturalLanguage
+        );
+        // "git は実行禁止です" should be NL even though it starts with "git"
+        assert_eq!(
+            DocumentClassifier::classify("git は実行禁止です"),
             InputKind::NaturalLanguage
         );
     }

@@ -1,0 +1,78 @@
+INTEGRATION_FAILURE_REPORT
+
+Command:
+cargo test -p design_cli --test integration constraint_enforcement::test_constraint_enforcement -- --nocapture
+
+test_name:
+constraint_enforcement::test_constraint_enforcement
+
+assertion:
+apps/cli/tests/integration/constraint_enforcement.rs:34
+assert!(res3.events.iter().any(|e| matches!(e, design_cli::core::CoreEvent::Error { message } if message.contains("NoGitConstraint"))))
+
+expected:
+CoreEvent::Error message containing "NoGitConstraint"
+
+actual:
+constraint.case3_no_git.status=Failed
+CoreEvent::Error message:
+"PermissionDenied: PermissionDenied: Role Developer requires Git permission"
+
+root_cause:
+RC-B2: Policy Runtime Failure / policy evaluation takes precedence over the
+NoGit constraint for "git status". The observed failure is PermissionDenied,
+not NoGitConstraint.
+
+---
+
+Command:
+cargo test -p design_cli --test integration policy_layer::test_policy_layer_enforcement -- --nocapture
+
+test_name:
+policy_layer::test_policy_layer_enforcement
+
+assertion:
+apps/cli/tests/integration/policy_layer.rs:34
+assert!(_res3.events.iter().any(|e| matches!(e, design_cli::core::CoreEvent::Error { message } if message.contains("PermissionDenied"))))
+
+expected:
+CoreEvent::Error message containing "PermissionDenied"
+
+actual:
+policy.case3_developer_apply.status=Failed
+CoreEvent::Error message:
+"ExecutionError: apply requires Previewed state"
+
+root_cause:
+RC-B1: expected value / flow assumption mismatch. The apply command reaches the
+apply state-machine precondition first and fails because the previous turn left
+the session in Proposed, not Previewed. It does not reach policy denial.
+
+---
+
+Command:
+cargo test -p design_cli --test integration runtime_bootstrap_isolation::repl_bootstrap_does_not_enter_nl_pipeline -- --nocapture
+
+test_name:
+runtime_bootstrap_isolation::repl_bootstrap_does_not_enter_nl_pipeline
+
+assertion:
+apps/cli/tests/integration/runtime_bootstrap_isolation.rs:34
+assert!(!combined.contains("[ROUTE]"), "{combined}")
+
+expected:
+combined stdout/stderr does not contain "[ROUTE]"
+
+actual:
+bootstrap.status=exit status: 0
+stdout contains:
+"[ROUTE][id=1] kind=SlashCommand reason=\"starts_with('/')\""
+"[ROUTE][id=1] input=\"/exit\""
+"[ROUTE][id=1] normalized=\"exit\""
+stderr contains:
+"[IR-TRACE][CONTEXT_LOAD] previous_analysis_context=None previous_plan_context=None previous_validation_context=None selected_candidate=None validated_plan=None"
+
+root_cause:
+RC-B3: Bootstrap Runtime Failure. REPL startup itself prints the expected banner,
+but /exit is routed through Core as a SlashCommand and policy evaluation runs,
+which emits [ROUTE] output and fails the isolation assertion.

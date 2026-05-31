@@ -188,7 +188,12 @@ const APPLY_TERMS: &[&str] = &["apply", "適用", "反映"];
 const DELETE_TERMS: &[&str] = &["削除", "delete", "rm", "消去"];
 const MODIFY_TERMS: &[&str] = &["修正", "変更", "更新", "modify", "edit", "change"];
 const GIT_TERMS: &[&str] = &["git", "commit", "push", "checkout"];
-const EXTERNAL_TERMS: &[&str] = &["外部コマンド", "外部実行", "external command", "shell command"];
+const EXTERNAL_TERMS: &[&str] = &[
+    "外部コマンド",
+    "外部実行",
+    "external command",
+    "shell command",
+];
 const REVIEWER_TERMS: &[&str] = &["reviewer", "査読者", "閲覧のみ"];
 const DEVELOPER_TERMS: &[&str] = &["developer", "開発者"];
 const OPERATOR_TERMS: &[&str] = &["operator", "運用者", "管理者", "admin"];
@@ -254,33 +259,49 @@ fn detect_action(input: &str) -> Option<ActionMatchResult> {
 
 fn detect_target(input: &str) -> SemanticTarget {
     let lower = input.to_ascii_lowercase();
-    
+
     // 制約系ターゲットを優先
     for term in APPLY_TERMS {
-        if lower.contains(*term) { return SemanticTarget::Apply; }
+        if lower.contains(*term) {
+            return SemanticTarget::Apply;
+        }
     }
     for term in DELETE_TERMS {
-        if lower.contains(*term) { return SemanticTarget::Delete; }
+        if lower.contains(*term) {
+            return SemanticTarget::Delete;
+        }
     }
     for term in MODIFY_TERMS {
-        if lower.contains(*term) { return SemanticTarget::Modify; }
+        if lower.contains(*term) {
+            return SemanticTarget::Modify;
+        }
     }
     for term in GIT_TERMS {
-        if lower.contains(*term) { return SemanticTarget::Git; }
+        if lower.contains(*term) {
+            return SemanticTarget::Git;
+        }
     }
     for term in EXTERNAL_TERMS {
-        if lower.contains(*term) { return SemanticTarget::ExternalCommand; }
+        if lower.contains(*term) {
+            return SemanticTarget::ExternalCommand;
+        }
     }
 
     // Role
     for term in REVIEWER_TERMS {
-        if lower.contains(*term) { return SemanticTarget::ReviewerRole; }
+        if lower.contains(*term) {
+            return SemanticTarget::ReviewerRole;
+        }
     }
     for term in DEVELOPER_TERMS {
-        if lower.contains(*term) { return SemanticTarget::DeveloperRole; }
+        if lower.contains(*term) {
+            return SemanticTarget::DeveloperRole;
+        }
     }
     for term in OPERATOR_TERMS {
-        if lower.contains(*term) { return SemanticTarget::OperatorRole; }
+        if lower.contains(*term) {
+            return SemanticTarget::OperatorRole;
+        }
     }
 
     for (term, _) in STRUCTURAL_PROBLEM_TERMS {

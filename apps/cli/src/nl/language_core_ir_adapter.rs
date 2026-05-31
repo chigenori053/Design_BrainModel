@@ -176,7 +176,11 @@ impl fmt::Display for LanguageCoreIntent {
             Self::AnalyzeStructuralProblems => write!(f, "AnalyzeStructuralProblems"),
             Self::AnalyzeSpecification => write!(f, "AnalyzeSpecification"),
             Self::Constraint(kind) => write!(f, "Constraint({kind})"),
-            Self::ModifyFile { target_file, operation, .. } => {
+            Self::ModifyFile {
+                target_file,
+                operation,
+                ..
+            } => {
                 write!(f, "ModifyFile(target={target_file}, op={operation})")
             }
             Self::Unknown { raw } => write!(f, "Unknown({raw})"),
@@ -406,7 +410,11 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         let target_file = extract_target_file(input).unwrap_or_default();
         let operation = extract_modify_operation(&lower);
         let content = extract_content(input);
-        return LanguageCoreIntent::ModifyFile { target_file, operation, content };
+        return LanguageCoreIntent::ModifyFile {
+            target_file,
+            operation,
+            content,
+        };
     }
 
     // リファクタリング要求（analyze キーワードなし）
@@ -440,7 +448,8 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
             {
                 return LanguageCoreIntent::AnalyzeDeadTests;
             }
-            if lower.contains("回帰") || lower.contains("regression") || lower.contains("デグレ") {
+            if lower.contains("回帰") || lower.contains("regression") || lower.contains("デグレ")
+            {
                 return LanguageCoreIntent::AnalyzeRegressionTests;
             }
             return LanguageCoreIntent::AnalyzeTests;
@@ -467,7 +476,11 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
                 SemanticTarget::OperatorRole => {
                     ConstraintKind::SetRole(crate::runtime::policy::PolicyRole::Operator)
                 }
-                _ => return LanguageCoreIntent::Unknown { raw: input.to_string() },
+                _ => {
+                    return LanguageCoreIntent::Unknown {
+                        raw: input.to_string(),
+                    };
+                }
             };
             return LanguageCoreIntent::Constraint(kind);
         }
@@ -1126,8 +1139,9 @@ fn is_specification_intent(lower: &str, _input: &str) -> bool {
         "ingestion",
     ];
     // DBM-STRUCTURAL-DIAGNOSIS-V2-PHASE-A のような形式も仕様書開始とみなす
-    let has_id_pattern = lower.contains("dbm-") && (lower.contains("-v") || lower.contains("-phase"));
-    
+    let has_id_pattern =
+        lower.contains("dbm-") && (lower.contains("-v") || lower.contains("-phase"));
+
     jp.iter().any(|p| lower.contains(p)) || en.iter().any(|p| lower.contains(p)) || has_id_pattern
 }
 
@@ -1201,9 +1215,24 @@ fn looks_like_file_path(s: &str) -> bool {
     let ext = s.rsplit('.').next().unwrap_or("");
     let known_ext = matches!(
         ext,
-        "rs" | "toml" | "md" | "ts" | "tsx" | "js" | "json"
-            | "yaml" | "yml" | "go" | "py" | "rb" | "java" | "kt"
-            | "swift" | "c" | "cpp" | "h" | "sh"
+        "rs" | "toml"
+            | "md"
+            | "ts"
+            | "tsx"
+            | "js"
+            | "json"
+            | "yaml"
+            | "yml"
+            | "go"
+            | "py"
+            | "rb"
+            | "java"
+            | "kt"
+            | "swift"
+            | "c"
+            | "cpp"
+            | "h"
+            | "sh"
     );
     let has_slash = s.contains('/');
     known_ext || (has_slash && s.contains('.'))
@@ -1676,13 +1705,25 @@ mod tests {
             matches!(intent, LanguageCoreIntent::ModifyFile { .. }),
             "input={input:?} should be ModifyFile, got {intent:?}"
         );
-        if let LanguageCoreIntent::ModifyFile { target_file, operation, .. } = &intent {
+        if let LanguageCoreIntent::ModifyFile {
+            target_file,
+            operation,
+            ..
+        } = &intent
+        {
             assert_eq!(target_file, "apps/cli/src/core.rs", "target_file mismatch");
             assert_eq!(operation, "AddComment", "operation mismatch");
         }
         let ir = language_core_to_ir(intent, input);
-        assert_eq!(ir.action, IrAction::ModifyFile, "IrAction should be ModifyFile");
-        assert_eq!(ir.target, IrTarget::File("apps/cli/src/core.rs".to_string()));
+        assert_eq!(
+            ir.action,
+            IrAction::ModifyFile,
+            "IrAction should be ModifyFile"
+        );
+        assert_eq!(
+            ir.target,
+            IrTarget::File("apps/cli/src/core.rs".to_string())
+        );
         assert_eq!(ir.mode, ExecutionMode::PlanOnly);
     }
 
@@ -1730,7 +1771,11 @@ mod tests {
         let input = "apps/cli/src/core.rs に TEST コメントを追加してください";
         let intent = classify_language_core_intent(input);
         let ir = language_core_to_ir(intent, input);
-        assert_ne!(ir.mode, ExecutionMode::Apply, "ModifyFile must not be Apply mode");
+        assert_ne!(
+            ir.mode,
+            ExecutionMode::Apply,
+            "ModifyFile must not be Apply mode"
+        );
     }
 
     /// DBM-TEST-GOVERNANCE-RUNTIME-INTEGRATION-SPEC §Success Conditions

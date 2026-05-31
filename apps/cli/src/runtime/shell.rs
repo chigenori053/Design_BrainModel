@@ -1676,6 +1676,7 @@ mod tests {
         }
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_events_propagate_target_authority() {
         let mut state = TuiState::new(empty_runtime_payload());
@@ -1714,6 +1715,7 @@ mod tests {
         }));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_authority_target_rejects_empty_authority() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1728,6 +1730,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_state_transitions_are_governed() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1748,6 +1751,7 @@ mod tests {
         assert!(output.contains("runtime idle"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn stabilization_phase_is_present() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1765,6 +1769,7 @@ mod tests {
         assert!(apply_output.contains("runtime stabilized"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_always_clears_transaction_projection_and_target() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1793,6 +1798,7 @@ mod tests {
         assert!(!output.contains("APPLYING"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_never_enters_failed_state() {
         let (state, output) = state_after_preview_then_rollback();
@@ -1801,6 +1807,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_always_clears_transaction() {
         let (state, output) = state_after_preview_then_rollback();
@@ -1810,6 +1817,7 @@ mod tests {
         assert!(output.contains("no active transaction"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_always_clears_projection() {
         let (_state, output) = state_after_preview_then_rollback();
@@ -1817,6 +1825,7 @@ mod tests {
         assert!(output.contains("runtime idle"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_always_enters_idle() {
         let (state, output) = state_after_preview_then_rollback();
@@ -1825,6 +1834,7 @@ mod tests {
         assert!(output.contains("runtime idle"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_clears_target() {
         let (state, output) = state_after_preview_then_rollback();
@@ -1833,6 +1843,7 @@ mod tests {
         assert!(output.contains("runtime idle"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_always_clears_diff() {
         let (state, output) = state_after_preview_then_rollback();
@@ -1847,6 +1858,7 @@ mod tests {
         assert!(output.contains("runtime idle"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_apply_state() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1865,6 +1877,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_applying() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1882,6 +1895,7 @@ mod tests {
         assert!(!output.contains("mutation in progress"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_calls_begin_apply() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1896,6 +1910,7 @@ mod tests {
         assert!(state.active_transaction.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_transitions_to_applying() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1914,6 +1929,7 @@ mod tests {
         assert!(!output.contains("APPLIED"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_mutation_pipeline() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1938,6 +1954,7 @@ mod tests {
         assert!(!output.contains("APPLIED"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_dispatch_actual_state_matches_render_snapshot() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1973,6 +1990,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_failed() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -1990,6 +2008,7 @@ mod tests {
         assert!(!output.contains("state=FAILED"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_no_auto_failed_transition() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2015,6 +2034,7 @@ mod tests {
         assert!(!output.contains("FAILED_RECOVERABLE"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_no_runtime_tick_mutation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2031,6 +2051,7 @@ mod tests {
         assert_eq!(state.active_target, before.active_target);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_is_non_mutating() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2051,6 +2072,7 @@ mod tests {
         assert!(!output.contains("APPLYING"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_sets_preview_ready() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2067,6 +2089,7 @@ mod tests {
         assert!(output.contains("preview ready"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_creates_transaction_only() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2086,6 +2109,7 @@ mod tests {
         assert!(!tx.diff.changes.is_empty());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_requires_explicit_apply() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2099,6 +2123,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::Git);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_command_parser_recognizes_owned_commands() {
         for command in [
@@ -2115,6 +2140,7 @@ mod tests {
         ));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_edit_mode() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2125,6 +2151,7 @@ mod tests {
         assert!(!trace.edit_mode_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_enters_apply_lifecycle() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2135,6 +2162,7 @@ mod tests {
         assert!(!trace.apply_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_calls_executor() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2145,6 +2173,7 @@ mod tests {
         assert!(!trace.executor_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_never_calls_planner() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2155,6 +2184,7 @@ mod tests {
         assert!(!trace.planner_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_is_only_mutating_command() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2172,6 +2202,7 @@ mod tests {
         assert!(state.last_command_trace.as_ref().unwrap().apply_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_consumes_transaction() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2186,6 +2217,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_clears_transaction() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2196,6 +2228,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn rollback_returns_idle() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2206,6 +2239,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::Idle);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_trace_matches_state_machine() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2217,6 +2251,7 @@ mod tests {
         assert_eq!(trace.state_after, RuntimeShellState::PreviewReady);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_trace_contains_no_mutation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2229,6 +2264,7 @@ mod tests {
         assert!(!trace.planner_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_trace_contains_mutation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2240,6 +2276,7 @@ mod tests {
         assert!(trace.apply_entered);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn surface_state_matches_runtime_state() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2263,6 +2300,7 @@ mod tests {
         assert!(output.contains("transaction committed"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_ready_always_visible() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2277,6 +2315,7 @@ mod tests {
         assert!(output.contains("preview ready"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn applying_only_visible_during_apply() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2300,6 +2339,7 @@ mod tests {
         assert!(output.contains("mutation in progress"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn failed_state_requires_real_failure() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2315,6 +2355,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::Failed);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn invalid_preview_preserves_active_owner() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2331,6 +2372,7 @@ mod tests {
         assert_eq!(state.runtime_state, before.runtime_state);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn invalid_preview_never_allocates_tx() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2350,6 +2392,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn invalid_preview_never_enters_preview_ready() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2369,6 +2412,7 @@ mod tests {
         assert!(!output.contains("PREVIEW_READY"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn invalid_preview_never_publishes_projection() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2389,6 +2433,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_state_bit_identical_after_failed_preview() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2425,6 +2470,7 @@ mod tests {
         assert!(after_render.contains("rejected: REJECTED: target missing or invalid"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn ownership_commit_occurs_after_validation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2441,6 +2487,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::PreviewReady);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn staged_transaction_invisible_before_commit() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2463,6 +2510,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn failed_staged_transaction_preserves_committed_runtime() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2505,6 +2553,7 @@ mod tests {
         assert!(after_render.contains("rejected: REJECTED: staged transaction validation failed"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn commit_is_atomic() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2542,6 +2591,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn stale_staged_transaction_never_resurrects() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2560,6 +2610,7 @@ mod tests {
         assert_eq!(state.runtime_state, before.runtime_state);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn render_publication_after_commit_only() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2590,6 +2641,7 @@ mod tests {
     // ── Branch runtime integration tests ─────────────────────────────────
 
     /// Step 2: first successful preview commit establishes committed_branch.
+    // CATEGORY: STATE
     #[test]
     fn first_preview_establishes_committed_branch() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2614,6 +2666,7 @@ mod tests {
     /// Step 3 + authority promotion: second preview creates a speculative
     /// child and promotes the validated staged transaction to active
     /// authority. The branch runtime remains projection memory.
+    // CATEGORY: STATE
     #[test]
     fn second_preview_stages_speculative_child() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2648,6 +2701,7 @@ mod tests {
         assert_eq!(br.committed_branch.tx_id, first_tx_id.unwrap());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn authority_promotion_creates_active_transaction_with_branch_runtime() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2667,6 +2721,7 @@ mod tests {
         assert!(state.branch_runtime.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_ready_requires_active_transaction() {
         let mut state = TuiState::new(empty_runtime_payload());
@@ -2678,6 +2733,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn mutation_in_progress_without_transaction_returns_idle() {
         let mut state = TuiState::new(empty_runtime_payload());
@@ -2694,6 +2750,7 @@ mod tests {
         assert!(!output.contains("mutation in progress"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runtime_rejects_apply_without_explicit_target() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2728,6 +2785,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_executes_code_change_set_and_mutates_existing_file() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2750,6 +2808,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::Git);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_uses_active_transaction_target_even_if_active_target_none() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2771,6 +2830,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::Git);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_consumes_transaction_only_after_successful_filesystem_mutation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2806,6 +2866,7 @@ mod tests {
         assert_eq!(state.active_transaction, before);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn failed_apply_preserves_or_rejects_transaction_deterministically() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2842,6 +2903,7 @@ mod tests {
         assert!(state.rejection.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn session_sync_cannot_destroy_runtime_active_transaction() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2864,6 +2926,7 @@ mod tests {
         assert!(state.active_transaction.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_rejects_noop_change_set() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2904,6 +2967,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_rejects_invalid_syntax_before_filesystem_mutation() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2938,6 +3002,7 @@ mod tests {
         assert!(state.active_transaction.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn stale_halt_does_not_block_valid_active_transaction_apply() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2970,6 +3035,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn current_transaction_halt_still_blocks_apply() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -2998,6 +3064,7 @@ mod tests {
         assert!(state.active_transaction.is_some());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn preview_success_clears_stale_bounded_halt_projection() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3026,6 +3093,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn apply_without_transaction_still_rejected_in_halt() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3044,6 +3112,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn new_file_preview_then_apply_not_blocked_by_stale_halt() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3078,6 +3147,7 @@ mod tests {
 
     /// Explicit `commit` promotes the speculative child to committed authority
     /// and updates the surface.
+    // CATEGORY: STATE
     #[test]
     fn commit_command_promotes_speculative_to_committed() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3104,6 +3174,7 @@ mod tests {
 
     /// Step 4 / Rule 4: rollback destroys speculative child and restores
     /// the committed parent surface bit-identically.
+    // CATEGORY: STATE
     #[test]
     fn rollback_restores_parent_surface_identically() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3131,6 +3202,7 @@ mod tests {
     }
 
     /// Rule 4: rollback clears branch_runtime if no committed branch exists.
+    // CATEGORY: STATE
     #[test]
     fn rollback_resets_to_idle_if_no_runtime() {
         let mut state = TuiState::new(empty_runtime_payload());
@@ -3143,6 +3215,7 @@ mod tests {
     }
 
     /// Rule 4: apply clears branch_runtime; transaction is consumed.
+    // CATEGORY: STATE
     #[test]
     fn apply_resets_branch_runtime() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3158,6 +3231,7 @@ mod tests {
 
     /// Rule 1: committed branch is the single runtime authority — the
     /// surface never exposes the speculative branch.
+    // CATEGORY: STATE
     #[test]
     fn branch_surface_never_exposes_speculative() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3205,6 +3279,7 @@ mod tests {
     }
 
     /// Rule 4: rollback budget enforced.
+    // CATEGORY: STATE
     #[test]
     fn rollback_budget_prevents_storm() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3241,6 +3316,7 @@ mod tests {
         assert_eq!(state.runtime_state, RuntimeShellState::BoundedHalt);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn governance_runaway_restriction_halts_preview_flow() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3266,6 +3342,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn projection_cleanup_precedes_governance_publication() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3284,6 +3361,7 @@ mod tests {
         assert!(output.contains("governance halt active"));
     }
 
+    // CATEGORY: STATE
     #[test]
     fn stale_projection_never_survives_governance_halt() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3309,6 +3387,7 @@ mod tests {
     }
 
     /// budget exhaustion triggers BoundedHalt.
+    // CATEGORY: STATE
     #[test]
     fn bounded_halt_prevents_execution() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3332,6 +3411,7 @@ mod tests {
     }
 
     /// Rule 12: repair_branch_generated_on_failure
+    // CATEGORY: STATE
     #[test]
     fn repair_branch_generated_on_failure() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3347,6 +3427,7 @@ mod tests {
         let _staged = stage_preview_transaction(&target).expect("staged");
     }
 
+    // CATEGORY: STATE
     #[test]
     fn successful_repair_promoted_atomically() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3382,6 +3463,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn failed_repair_restores_previous_state() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3411,6 +3493,7 @@ mod tests {
         assert!(!state.branch_runtime.as_ref().unwrap().has_speculative());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn governance_cannot_mutate_projection() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3430,6 +3513,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn governance_cannot_mutate_tx_ownership() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3444,6 +3528,7 @@ mod tests {
         assert_eq!(state.active_transaction_id, before_tx_id);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn runaway_cleanup_precedes_halt() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3465,6 +3550,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn observable_rejection_published() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3485,6 +3571,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn governance_rejection_visible() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3510,6 +3597,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn semantic_rejection_visible() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3532,6 +3620,7 @@ mod tests {
         );
     }
 
+    // CATEGORY: STATE
     #[test]
     fn projection_preserved_on_reject() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3559,6 +3648,7 @@ mod tests {
         assert_eq!(state.active_transaction, before_tx);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn cleanup_precedes_halt_publish() {
         let root = tempfile::tempdir().expect("tempdir");
@@ -3585,6 +3675,7 @@ mod tests {
         assert!(state.active_transaction.is_none());
     }
 
+    // CATEGORY: STATE
     #[test]
     fn deterministic_rejection_sequence() {
         let mut s1 = TuiState::new(empty_runtime_payload());
@@ -3613,6 +3704,7 @@ mod tests {
         assert_eq!(s1.runtime_state, s2.runtime_state);
     }
 
+    // CATEGORY: STATE
     #[test]
     fn deployment_divergence_halts_runtime() {
         let root = tempfile::tempdir().expect("tempdir");

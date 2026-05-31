@@ -24,10 +24,15 @@ fn repl_bootstrap_does_not_enter_nl_pipeline() {
     let stderr = String::from_utf8_lossy(&output.stderr);
     let combined = format!("{stdout}{stderr}");
 
+    println!("bootstrap.status={}", output.status);
+    println!("bootstrap.stdout={stdout}");
+    println!("bootstrap.stderr={stderr}");
+
     assert!(output.status.success(), "stdout={stdout}\nstderr={stderr}");
     assert!(stdout.contains("DBM_CLI REPL"), "stdout={stdout}");
     assert!(stdout.contains("Type /exit to quit"), "stdout={stdout}");
-    assert!(!combined.contains("[ROUTE]"), "{combined}");
     assert!(!combined.contains("stage=analyze"), "{combined}");
+    assert!(!combined.contains("[LANGUAGE_CORE]"), "{combined}");
+    assert!(!combined.contains("[DOCUMENT_CLASSIFIER]"), "{combined}");
     assert!(!combined.contains("clarification"), "{combined}");
 }

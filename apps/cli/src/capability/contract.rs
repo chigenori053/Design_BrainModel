@@ -113,6 +113,13 @@ pub struct MemoryAnalysisResult {
     pub summary: String,
 }
 
+/// 構造診断リクエスト。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StructuralDiagnosisRequest {
+    pub workspace_root: std::path::PathBuf,
+    pub specification: Option<SpecificationDocument>,
+}
+
 /// 構造診断レポート。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuralDiagnosisReport {

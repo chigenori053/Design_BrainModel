@@ -1,7 +1,7 @@
+use crate::nl::context_aware_plan_target_resolver::RuntimeConstraint;
+use crate::nl::language_core_ir_adapter::{IrAction, IrIntentRequest};
 use std::collections::HashSet;
 use std::fmt;
-use crate::nl::language_core_ir_adapter::{IrAction, IrIntentRequest};
-use crate::nl::context_aware_plan_target_resolver::RuntimeConstraint;
 
 /// ユーザーの役割。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -55,11 +55,13 @@ pub struct PolicyProfile {
 }
 
 impl PolicyProfile {
-    /// デフォルトのポリシー（Developer）を作成する。
+    /// デフォルトの Developer プロファイル。
     pub fn default_developer() -> Self {
         let mut permissions = HashSet::new();
         permissions.insert(Permission::Analyze);
         permissions.insert(Permission::Modify);
+        permissions.insert(Permission::Apply);
+        permissions.insert(Permission::Git);
         Self {
             role: PolicyRole::Developer,
             permissions,
@@ -77,6 +79,8 @@ impl PolicyProfile {
             }
             PolicyRole::Developer => {
                 permissions.insert(Permission::Modify);
+                permissions.insert(Permission::Apply);
+                permissions.insert(Permission::Git);
             }
             PolicyRole::Operator => {
                 permissions.insert(Permission::Modify);
@@ -127,14 +131,9 @@ pub enum PolicyDecision {
 pub struct PolicyEvaluator;
 
 impl PolicyEvaluator {
-    /// 自然言語インテント (IR レベル) を評価する。
-    pub fn evaluate_ir_request(
-        ir_request: &IrIntentRequest,
-        profile: &PolicyProfile,
-    ) -> PolicyDecision {
-        let action = &ir_request.action;
-        
-        let required_permission = match action {
+    /// アクションに必要な権限を返す。
+    pub fn required_permission(action: &IrAction, raw_input: &str) -> Permission {
+        match action {
             IrAction::AnalyzeProject
             | IrAction::AnalyzeWorkspace
             | IrAction::AnalyzeDependencies
@@ -149,8 +148,9 @@ impl PolicyEvaluator {
 
             IrAction::ModifyFile | IrAction::Refactor | IrAction::GenerateChangePlan => {
                 // Delete 操作が含まれる場合は Delete 権限が必要
-                let lower = ir_request.raw_input.to_lowercase();
-                if lower.contains("削除") || lower.contains("delete") || lower.contains("remove") {
+                let lower = raw_input.to_lowercase();
+                if lower.contains("削除") || lower.contains("delete") || lower.contains("remove")
+                {
                     Permission::Delete
                 } else {
                     Permission::Modify
@@ -158,7 +158,7 @@ impl PolicyEvaluator {
             }
 
             IrAction::Apply => Permission::Apply,
-            
+
             IrAction::ValidatePlan | IrAction::ReviewValidatedPlan | IrAction::ReviewSafety => {
                 // これらは Apply の前段階だが、便宜上 Analyze または専用権限が必要
                 // SPEC では明示されていないが、ReadOnly 的なので Analyze 扱いとする
@@ -167,14 +167,25 @@ impl PolicyEvaluator {
 
             IrAction::Constraint => Permission::Analyze, // 制約設定自体は誰でも可能（あるいは専用権限）
             IrAction::Unknown => Permission::Analyze,
-        };
+        }
+    }
+
+    /// 自然言語インテント (IR レベル) を評価する。
+    pub fn evaluate_ir_request(
+        ir_request: &IrIntentRequest,
+        profile: &PolicyProfile,
+    ) -> PolicyDecision {
+        let action = &ir_request.action;
+        let required_permission = Self::required_permission(action, &ir_request.raw_input);
 
         if profile.permissions.contains(&required_permission) {
             PolicyDecision::Allow
         } else {
             PolicyDecision::Reject {
-                reason: format!("PermissionDenied: Role {} requires {} permission for action {}", 
-                    profile.role, required_permission, action),
+                reason: format!(
+                    "PermissionDenied: Role {} requires {} permission for action {}",
+                    profile.role, required_permission, action
+                ),
             }
         }
     }
@@ -185,7 +196,10 @@ impl PolicyEvaluator {
             PolicyDecision::Allow
         } else {
             PolicyDecision::Reject {
-                reason: format!("PermissionDenied: Role {} requires Git permission", profile.role),
+                reason: format!(
+                    "PermissionDenied: Role {} requires Git permission",
+                    profile.role
+                ),
             }
         }
     }
@@ -196,8 +210,10 @@ impl PolicyEvaluator {
             PolicyDecision::Allow
         } else {
             PolicyDecision::Reject {
-                reason: format!("PermissionDenied: Role {} requires ExternalCommand permission for '{}'", 
-                    profile.role, command),
+                reason: format!(
+                    "PermissionDenied: Role {} requires ExternalCommand permission for '{}'",
+                    profile.role, command
+                ),
             }
         }
     }

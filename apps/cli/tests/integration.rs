@@ -7,6 +7,10 @@ mod constraint_enforcement;
 #[path = "integration/policy_layer.rs"]
 mod policy_layer;
 
+// DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0
+#[path = "integration/repl_multiline_instruction.rs"]
+mod repl_multiline_instruction;
+
 #[cfg(feature = "integration-late")]
 #[path = "integration/external_integration_late.rs"]
 mod external_integration_late;
