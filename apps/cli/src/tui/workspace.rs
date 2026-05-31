@@ -24,6 +24,10 @@ impl WorkspaceProjector {
                     .map(|violation| violation.rule.clone())
                     .chain(result.warnings.iter().map(|warning| warning.rule.clone()))
                     .collect();
+                eprintln!(
+                    "[WORKSPACE_TRACE] diagnosis_count={}",
+                    workspace.analysis_result.diagnosis.len()
+                );
             }
             UiEvent::RepairPlan { plan } => {
                 workspace.analysis_result.repair_plan = plan
@@ -31,10 +35,18 @@ impl WorkspaceProjector {
                     .iter()
                     .map(|suggestion| suggestion.title.clone())
                     .collect();
+                eprintln!(
+                    "[WORKSPACE_TRACE] repair_count={}",
+                    workspace.analysis_result.repair_plan.len()
+                );
             }
             UiEvent::ImplementationPlan { plan } => {
                 workspace.analysis_result.implementation_plan =
                     plan.tasks.iter().map(|task| task.title.clone()).collect();
+                eprintln!(
+                    "[WORKSPACE_TRACE] implementation_count={}",
+                    workspace.analysis_result.implementation_plan.len()
+                );
             }
             _ => {}
         }

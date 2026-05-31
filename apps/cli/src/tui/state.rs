@@ -1290,6 +1290,7 @@ impl TuiState {
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
                 }
+                eprintln!("[EDITOR_PAYLOAD]\n{}", submitted);
                 TuiAction::Submit(submitted)
             }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
@@ -1698,6 +1699,32 @@ mod tests {
         assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
         assert_eq!(state.history, vec!["fix parser bug"]);
         assert_eq!(state.editor_state.editor.text(), "fix parser bug");
+    }
+
+    #[test]
+    fn editor_ctrl_d_preserves_multiline_submitted_payload() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        let payload =
+            "system_name: DBM_TUI_Test\n\nrules:\n  - Runtime must pass through ApplyGate";
+        for ch in payload.chars() {
+            if ch == '\n' {
+                state.handle_key_event(key(KeyCode::Enter));
+            } else {
+                state.handle_key_event(key(KeyCode::Char(ch)));
+            }
+        }
+
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+
+        assert_eq!(action, TuiAction::Submit(payload.to_string()));
+        assert_ne!(
+            action,
+            TuiAction::Submit(
+                "system_name: DBM_TUI_Testrules:_Runtime must pass through ApplyGate".to_string()
+            )
+        );
     }
 
     #[test]

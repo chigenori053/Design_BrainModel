@@ -86,12 +86,17 @@ fn run_event_loop(
             }
 
             if let Event::Key(key) = evt {
+                eprintln!(
+                    "[KEY_TRACE] code={:?} modifiers={:?}",
+                    key.code, key.modifiers
+                );
                 if key.kind != event::KeyEventKind::Press {
                     continue;
                 }
                 match state.handle_key_event(key) {
                     TuiAction::Quit => break,
                     TuiAction::Submit(input) => {
+                        eprintln!("[SUBMIT_TRACE] action_received chars={}", input.len());
                         state.append_chat(UiEvent::Runtime {
                             message: "[SUBMIT_TRACE]\nentered".to_string(),
                         });
@@ -148,10 +153,13 @@ fn dispatch_runtime_command_to_projection(
     working_dir: &std::path::Path,
     input: &str,
 ) -> bool {
+    eprintln!("[RUNTIME_ROUTE_TRACE] input={}", input);
     state.append_chat(UiEvent::Runtime {
         message: format!("[RUNTIME_ROUTE_TRACE]\ninput={input}"),
     });
     if classify_specification(input) == SpecificationKind::DesignSpecification {
+        eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
+        eprintln!("[RUNTIME_ROUTE_TRACE] reason=design_specification_guard");
         state.append_chat(UiEvent::Runtime {
             message: "[RUNTIME_ROUTE_TRACE]\nmatched=false\nreason=design_specification_guard"
                 .to_string(),
@@ -162,11 +170,15 @@ fn dispatch_runtime_command_to_projection(
     let Some(events) =
         crate::runtime::shell::RuntimeCommandDispatcher::dispatch(state, working_dir, input)
     else {
+        eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
+        eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_no_match");
         state.append_chat(UiEvent::Runtime {
             message: "[RUNTIME_ROUTE_TRACE]\nmatched=false\nreason=dispatcher_no_match".to_string(),
         });
         return false;
     };
+    eprintln!("[RUNTIME_ROUTE_TRACE] matched=true");
+    eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_matched");
     state.append_chat(UiEvent::Runtime {
         message: "[RUNTIME_ROUTE_TRACE]\nmatched=true\nreason=dispatcher_matched".to_string(),
     });

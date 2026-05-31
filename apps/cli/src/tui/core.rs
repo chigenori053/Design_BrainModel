@@ -58,11 +58,14 @@ pub fn handle_submit(
     input: String,
     _working_dir: PathBuf,
 ) {
+    eprintln!("[CORE_PAYLOAD]\n{}", input);
+    eprintln!("[CORE_SUBMIT_TRACE] entered");
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
     state.event_queue.push(UiEvent::Runtime {
         message: "[CORE_SUBMIT_TRACE]\nentered".to_string(),
     });
     let classification = classify_specification(input.trim());
+    eprintln!("[CORE_SUBMIT_TRACE] classification={:?}", classification);
     state.event_queue.push(UiEvent::Runtime {
         message: format!("[CORE_SUBMIT_TRACE]\nclassification={classification:?}"),
     });
@@ -126,6 +129,7 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let request = StructuralDiagnosisRequest::new(context);
+    eprintln!("[CORE_SUBMIT_TRACE] diagnosis_started");
     state.event_queue.push(UiEvent::Runtime {
         message: "[CORE_SUBMIT_TRACE]\ndiagnosis_started".to_string(),
     });
@@ -135,6 +139,7 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let repair_plan = RepairPlanner::generate(&diagnosis);
+    eprintln!("[CORE_SUBMIT_TRACE] repair_plan_generated");
     state.event_queue.push(UiEvent::RepairPlan {
         plan: repair_plan.clone(),
     });
@@ -143,12 +148,14 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
+    eprintln!("[CORE_SUBMIT_TRACE] implementation_plan_generated");
     state.event_queue.push(UiEvent::ImplementationPlan {
         plan: implementation_plan,
     });
     state.event_queue.push(UiEvent::Runtime {
         message: "[CORE_SUBMIT_TRACE]\nimplementation_plan_generated".to_string(),
     });
+    eprintln!("[CORE_SUBMIT_TRACE] analysis_workspace_updated");
     state.event_queue.push(UiEvent::Runtime {
         message: "[CORE_SUBMIT_TRACE]\nanalysis_workspace_updated".to_string(),
     });

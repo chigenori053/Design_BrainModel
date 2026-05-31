@@ -162,6 +162,18 @@ fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.diff;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
+    eprintln!(
+        "[RENDER_TRACE] diagnosis_count={}",
+        snapshot.workspace.analysis_result.diagnosis.len()
+    );
+    eprintln!(
+        "[RENDER_TRACE] repair_count={}",
+        snapshot.workspace.analysis_result.repair_plan.len()
+    );
+    eprintln!(
+        "[RENDER_TRACE] implementation_count={}",
+        snapshot.workspace.analysis_result.implementation_plan.len()
+    );
 
     let block = Block::default()
         .borders(Borders::ALL)
