@@ -185,6 +185,7 @@ impl TerminalRenderer {
         request_id: u64,
         snapshot: &RenderSnapshot,
     ) -> Result<(), String> {
+        crate::tui::render_trace::record("full_repaint");
         assert_alternate_screen_exclusive_output()?;
         self.lifecycle.begin_frame();
         self.terminal.clear().map_err(|err| err.to_string())?;
@@ -280,6 +281,19 @@ mod tests {
         assert!(second.frame_generation_id > first.frame_generation_id);
         assert!(second.repaint_generation_id > first.repaint_generation_id);
         assert!(second.present_completed_generation > first.present_completed_generation);
+    }
+
+    #[test]
+    fn full_repaint_records_render_trace() {
+        let source = include_str!("mod.rs");
+        let full_repaint_source = source
+            .split("pub fn full_repaint")
+            .nth(1)
+            .and_then(|rest| rest.split("pub fn generation_ids").next())
+            .expect("full_repaint source");
+
+        assert!(full_repaint_source.contains("render_trace::record(\"full_repaint\")"));
+        assert!(full_repaint_source.contains("render::render(frame, snapshot)"));
     }
 
     #[test]

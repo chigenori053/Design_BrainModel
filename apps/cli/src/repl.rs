@@ -507,18 +507,8 @@ fn dispatch_captured_specification<W: Write>(
 
             let request =
                 crate::specification_bridge::StructuralDiagnosisRequest::new(context.clone());
-            let diagnosis_label = if request.domain == DiagnosisDomain::UserInterface {
-                "UI_DIAGNOSIS"
-            } else {
-                "STRUCTURAL_DIAGNOSIS"
-            };
-            eprintln!("[{diagnosis_label}]\nstatus=started");
+            let diagnosis_label = request.domain.diagnosis_log_label();
             let result = request.diagnose();
-            eprintln!(
-                "[{diagnosis_label}]\nstatus=completed\nviolations={}\nwarnings={}",
-                result.violations.len(),
-                result.warnings.len()
-            );
             let repair_label = if request.domain == DiagnosisDomain::UserInterface {
                 "UI_REPAIR_PLAN"
             } else {
@@ -2074,7 +2064,7 @@ mod tests {
             "context must be generated: {output}"
         );
         assert!(
-            output.contains("[STRUCTURAL_DIAGNOSIS] violations=0 warnings=0"),
+            output.contains("[RUNTIME_DIAGNOSIS] violations=0 warnings=0"),
             "diagnosis result must be rendered: {output}"
         );
         assert!(output.contains("Violations:"), "{output}");

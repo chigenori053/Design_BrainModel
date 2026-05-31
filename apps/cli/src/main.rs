@@ -21,7 +21,7 @@ struct Cli {
     #[arg(long, global = true)]
     repl: bool,
 
-    /// Start the Phase1 DBM TUI foundation.
+    /// Start the Phase3 DBM TUI.
     #[arg(long, global = true)]
     tui: bool,
 
@@ -175,7 +175,7 @@ fn main() {
     };
     let Some(command) = cli.command.as_ref() else {
         if cli.tui {
-            if let Err(err) = design_cli::tui::foundation::run_phase1_tui() {
+            if let Err(err) = run_tui_entrypoint(cli.diagnostic_input) {
                 eprintln!("{err}");
                 std::process::exit(1);
             }
@@ -195,7 +195,7 @@ fn main() {
     }
 
     if cli.tui {
-        if let Err(err) = design_cli::tui::foundation::run_phase1_tui() {
+        if let Err(err) = run_tui_entrypoint(cli.diagnostic_input) {
             eprintln!("{err}");
             std::process::exit(1);
         }
@@ -469,7 +469,7 @@ Advanced:
   help           Print this message or the help of the given subcommand(s)
 
 Options:
-  --tui         Start the Phase1 DBM TUI foundation
+  --tui         Start the Phase3 DBM TUI
   -h, --help     Print help
   -V, --version  Print version
 
@@ -988,6 +988,10 @@ fn run_runtime_repl() {
     }
 }
 
+fn run_tui_entrypoint(diagnostic: bool) -> Result<(), String> {
+    start_runtime_tui(diagnostic)
+}
+
 fn run_repl_direct_dispatch(args: &[OsString]) -> Result<(), String> {
     let input = args
         .iter()
@@ -1352,6 +1356,21 @@ mod tests {
         let cli = Cli::try_parse_from(["dbm", "--repl"]).expect("parse --repl");
         assert!(cli.repl);
         assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn test_global_tui_flag_uses_phase3_runtime_tui() {
+        let cli = Cli::try_parse_from(["dbm", "--tui"]).expect("parse --tui");
+        assert!(cli.tui);
+        assert!(cli.command.is_none());
+
+        let source = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        assert!(source.contains("fn run_tui_entrypoint"));
+        assert!(source.contains("start_runtime_tui(diagnostic)"));
+        assert!(!source.contains("foundation::run_phase1_tui()"));
     }
 
     #[test]

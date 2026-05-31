@@ -31,7 +31,10 @@ pub const MAX_EVENTS: usize = 1000;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiEventCategory {
     Specification,
+    Domain,
     Diagnosis,
+    CoreDiagnosis,
+    RuntimeDiagnosis,
     UiDiagnosis,
     RepairPlan,
     UiRepairPlan,
@@ -60,7 +63,10 @@ impl UiEvent {
     pub fn label(&self) -> &'static str {
         match self.category {
             UiEventCategory::Specification => "SPEC_CONTEXT",
+            UiEventCategory::Domain => "DOMAIN",
             UiEventCategory::Diagnosis => "STRUCTURAL_DIAGNOSIS",
+            UiEventCategory::CoreDiagnosis => "CORE_DIAGNOSIS",
+            UiEventCategory::RuntimeDiagnosis => "RUNTIME_DIAGNOSIS",
             UiEventCategory::UiDiagnosis => "UI_DIAGNOSIS",
             UiEventCategory::RepairPlan => "REPAIR_PLAN",
             UiEventCategory::UiRepairPlan => "UI_REPAIR_PLAN",
@@ -297,6 +303,7 @@ fn dispatch_design_specification(text: &str, sink: &mut dyn UiEventSink) -> Resu
 
     let request = StructuralDiagnosisRequest::new(context);
     let domain = request.domain;
+    sink.emit(UiEvent::new(UiEventCategory::Domain, domain.as_str()));
     let diagnosis = request.diagnose();
     sink.emit(diagnosis_event(&diagnosis, domain));
 
@@ -336,10 +343,10 @@ fn diagnosis_event(diagnosis: &StructuralDiagnosisResult, domain: DiagnosisDomai
                 .map(|w| format!("- {}: {}", w.rule, w.message)),
         );
     }
-    let category = if domain == DiagnosisDomain::UserInterface {
-        UiEventCategory::UiDiagnosis
-    } else {
-        UiEventCategory::Diagnosis
+    let category = match domain {
+        DiagnosisDomain::CoreArchitecture => UiEventCategory::CoreDiagnosis,
+        DiagnosisDomain::RuntimeSafety => UiEventCategory::RuntimeDiagnosis,
+        DiagnosisDomain::UserInterface => UiEventCategory::UiDiagnosis,
     };
     UiEvent::new(category, lines.join("\n"))
 }
@@ -427,8 +434,14 @@ pub fn event_from_log_line(line: &str) -> Option<UiEvent> {
     let trimmed = line.trim();
     let category = if trimmed.starts_with("[SPEC_CONTEXT]") {
         UiEventCategory::Specification
+    } else if trimmed.starts_with("[DOMAIN]") {
+        UiEventCategory::Domain
     } else if trimmed.starts_with("[UI_DIAGNOSIS]") {
         UiEventCategory::UiDiagnosis
+    } else if trimmed.starts_with("[CORE_DIAGNOSIS]") {
+        UiEventCategory::CoreDiagnosis
+    } else if trimmed.starts_with("[RUNTIME_DIAGNOSIS]") {
+        UiEventCategory::RuntimeDiagnosis
     } else if trimmed.starts_with("[STRUCTURAL_DIAGNOSIS]") {
         UiEventCategory::Diagnosis
     } else if trimmed.starts_with("[UI_REPAIR_PLAN]") {
@@ -467,7 +480,9 @@ fn render(frame: &mut Frame, state: &TuiState) {
     render_input_area(frame, state, chunks[1]);
 }
 
+#[allow(dead_code)]
 pub fn render_output(frame: &mut Frame, state: &TuiState) {
+    crate::tui::render_trace::record("render_output");
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(5)])
@@ -475,7 +490,9 @@ pub fn render_output(frame: &mut Frame, state: &TuiState) {
     render_output_area(frame, state, chunks[0]);
 }
 
+#[allow(dead_code)]
 pub fn render_input(frame: &mut Frame, state: &TuiState) {
+    crate::tui::render_trace::record("render_input");
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(3), Constraint::Length(5)])
@@ -484,6 +501,7 @@ pub fn render_input(frame: &mut Frame, state: &TuiState) {
 }
 
 fn render_output_area(frame: &mut Frame, state: &TuiState, area: ratatui::layout::Rect) {
+    crate::tui::render_trace::record("render_output");
     let lines = state
         .output_lines()
         .into_iter()
@@ -507,6 +525,7 @@ fn render_output_area(frame: &mut Frame, state: &TuiState, area: ratatui::layout
 }
 
 fn render_input_area(frame: &mut Frame, state: &TuiState, area: ratatui::layout::Rect) {
+    crate::tui::render_trace::record("render_input");
     let display = if state.input_buffer.is_empty() {
         "> ".to_string()
     } else {
@@ -590,13 +609,22 @@ rules:
     }
 
     #[test]
+    fn log_adapter_routes_domain() {
+        let event = event_from_log_line("[DOMAIN] UserInterface").expect("event");
+
+        assert_eq!(event.category, UiEventCategory::Domain);
+        assert_eq!(event.message, "UserInterface");
+    }
+
+    #[test]
     fn design_specification_pipeline_routes_to_output_events() {
         let mut state = TuiState::new();
         dispatch_input(&mut state, spec());
         let lines = state.output_lines().join("\n");
 
         assert!(lines.contains("[SPEC_CONTEXT] generated"));
-        assert!(lines.contains("[STRUCTURAL_DIAGNOSIS]"));
+        assert!(lines.contains("[DOMAIN] RuntimeSafety"));
+        assert!(lines.contains("[RUNTIME_DIAGNOSIS]"));
         assert!(lines.contains("[REPAIR_PLAN]"));
         assert!(lines.contains("[IMPLEMENTATION_PLAN]"));
     }

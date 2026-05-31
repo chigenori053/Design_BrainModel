@@ -138,15 +138,23 @@ fn specification_capture_end_boundary_dispatches_design_specification() {
     );
     assert!(stderr.contains("[SPEC_CONTEXT]"), "stderr: {stderr}");
     assert!(
-        stderr.contains("[STRUCTURAL_DIAGNOSIS]\nstatus=started"),
+        stderr.contains("[DOMAIN]\nRuntimeSafety"),
         "stderr: {stderr}"
     );
     assert!(
-        stderr.contains("[STRUCTURAL_DIAGNOSIS]\nstatus=completed"),
+        stderr.contains("[DOMAIN_REASON]\nruntime_safety_keyword_detected"),
         "stderr: {stderr}"
     );
     assert!(
-        stdout.contains("[STRUCTURAL_DIAGNOSIS] violations=0 warnings=0"),
+        stderr.contains("[RUNTIME_DIAGNOSIS]\nstatus=started"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stderr.contains("[RUNTIME_DIAGNOSIS]\nstatus=completed"),
+        "stderr: {stderr}"
+    );
+    assert!(
+        stdout.contains("[RUNTIME_DIAGNOSIS] violations=0 warnings=0"),
         "stdout: {stdout}"
     );
 }
@@ -182,12 +190,12 @@ rules:
     );
     assert!(stderr.contains("[SPEC_CONTEXT]"), "stderr: {stderr}");
     assert!(
-        stderr.contains("[STRUCTURAL_DIAGNOSIS]\nstatus=completed"),
+        stderr.contains("[RUNTIME_DIAGNOSIS]\nstatus=completed"),
         "stderr: {stderr}"
     );
     assert!(
         stdout.contains("[SPEC_CONTEXT] generated")
-            && stdout.contains("[STRUCTURAL_DIAGNOSIS] violations=0 warnings=0"),
+            && stdout.contains("[RUNTIME_DIAGNOSIS] violations=0 warnings=0"),
         "stdout: {stdout}"
     );
 }
@@ -215,10 +223,7 @@ rules:
 
     assert_eq!(code, 0, "stderr: {stderr}");
     assert!(stderr.contains("[SPEC_CONTEXT]"), "stderr: {stderr}");
-    assert!(
-        stderr.contains("[STRUCTURAL_DIAGNOSIS]"),
-        "stderr: {stderr}"
-    );
+    assert!(stderr.contains("[RUNTIME_DIAGNOSIS]"), "stderr: {stderr}");
     assert!(
         stderr.contains("[REPAIR_PLANNING]\nstatus=started"),
         "stderr: {stderr}"

@@ -64,6 +64,41 @@ pub enum DiagnosisDomain {
     UserInterface,
 }
 
+impl DiagnosisDomain {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::CoreArchitecture => "CoreArchitecture",
+            Self::RuntimeSafety => "RuntimeSafety",
+            Self::UserInterface => "UserInterface",
+        }
+    }
+
+    pub fn diagnosis_log_label(self) -> &'static str {
+        match self {
+            Self::CoreArchitecture => "CORE_DIAGNOSIS",
+            Self::RuntimeSafety => "RUNTIME_DIAGNOSIS",
+            Self::UserInterface => "UI_DIAGNOSIS",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainReason {
+    DefaultCoreArchitecture,
+    RuntimeSafetyKeywordDetected,
+    UiKeywordThresholdExceeded,
+}
+
+impl DomainReason {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DefaultCoreArchitecture => "default_core_architecture",
+            Self::RuntimeSafetyKeywordDetected => "runtime_safety_keyword_detected",
+            Self::UiKeywordThresholdExceeded => "ui_keyword_threshold_exceeded",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecificationContext {
     pub system_name: Option<String>,
@@ -121,6 +156,7 @@ impl SpecificationContext {
 pub struct StructuralDiagnosisRequest {
     pub specification: SpecificationContext,
     pub domain: DiagnosisDomain,
+    pub domain_reason: DomainReason,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -229,10 +265,11 @@ pub struct UiStructuralDiagnosisEngine;
 
 impl StructuralDiagnosisRequest {
     pub fn new(specification: SpecificationContext) -> Self {
-        let domain = infer_diagnosis_domain(&specification);
+        let selection = infer_diagnosis_domain(&specification);
         Self {
             specification,
-            domain,
+            domain: selection.domain,
+            domain_reason: selection.reason,
         }
     }
 
@@ -240,25 +277,41 @@ impl StructuralDiagnosisRequest {
         Self {
             specification,
             domain,
+            domain_reason: default_reason_for_domain(domain),
         }
     }
 
     pub fn diagnose(&self) -> StructuralDiagnosisResult {
-        match self.domain {
+        eprintln!(
+            "[DOMAIN]\n{}\n\n[DOMAIN_REASON]\n{}",
+            self.domain.as_str(),
+            self.domain_reason.as_str()
+        );
+
+        let diagnosis_label = self.domain.diagnosis_log_label();
+        eprintln!("[{diagnosis_label}]\nstatus=started");
+
+        let result = match self.domain {
             DiagnosisDomain::UserInterface => {
                 UiStructuralDiagnosisEngine::diagnose(&self.specification)
             }
             DiagnosisDomain::CoreArchitecture | DiagnosisDomain::RuntimeSafety => {
                 run_structural_diagnosis(&self.specification)
             }
-        }
+        };
+
+        eprintln!(
+            "[{diagnosis_label}]\nstatus=completed\nviolations={}\nwarnings={}",
+            result.violations.len(),
+            result.warnings.len()
+        );
+
+        result
     }
 }
 
 impl UiStructuralDiagnosisEngine {
     pub fn diagnose(context: &SpecificationContext) -> StructuralDiagnosisResult {
-        eprintln!("[UI_DIAGNOSIS]\nstatus=started");
-
         let mut violations = Vec::new();
         let mut warnings = Vec::new();
         let architecture = UiArchitectureIndex::new(context);
@@ -373,12 +426,6 @@ impl UiStructuralDiagnosisEngine {
                 message: "workspace occupancy exceeds 70%".into(),
             });
         }
-
-        eprintln!(
-            "[UI_DIAGNOSIS]\nstatus=completed\nviolations={}\nwarnings={}",
-            violations.len(),
-            warnings.len()
-        );
 
         StructuralDiagnosisResult {
             violations,
@@ -527,7 +574,13 @@ impl<'a> UiArchitectureIndex<'a> {
     }
 }
 
-fn infer_diagnosis_domain(context: &SpecificationContext) -> DiagnosisDomain {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DomainSelection {
+    domain: DiagnosisDomain,
+    reason: DomainReason,
+}
+
+fn infer_diagnosis_domain(context: &SpecificationContext) -> DomainSelection {
     const UI_KEYWORDS: [&str; 6] = [
         "Workspace",
         "Dashboard",
@@ -544,11 +597,28 @@ fn infer_diagnosis_domain(context: &SpecificationContext) -> DiagnosisDomain {
         .sum::<usize>();
 
     if hits >= 2 {
-        DiagnosisDomain::UserInterface
+        DomainSelection {
+            domain: DiagnosisDomain::UserInterface,
+            reason: DomainReason::UiKeywordThresholdExceeded,
+        }
     } else if text.contains("runtime") || text.contains("applygate") || text.contains("audit") {
-        DiagnosisDomain::RuntimeSafety
+        DomainSelection {
+            domain: DiagnosisDomain::RuntimeSafety,
+            reason: DomainReason::RuntimeSafetyKeywordDetected,
+        }
     } else {
-        DiagnosisDomain::CoreArchitecture
+        DomainSelection {
+            domain: DiagnosisDomain::CoreArchitecture,
+            reason: DomainReason::DefaultCoreArchitecture,
+        }
+    }
+}
+
+fn default_reason_for_domain(domain: DiagnosisDomain) -> DomainReason {
+    match domain {
+        DiagnosisDomain::CoreArchitecture => DomainReason::DefaultCoreArchitecture,
+        DiagnosisDomain::RuntimeSafety => DomainReason::RuntimeSafetyKeywordDetected,
+        DiagnosisDomain::UserInterface => DomainReason::UiKeywordThresholdExceeded,
     }
 }
 
@@ -1420,6 +1490,65 @@ architecture:
         let request = StructuralDiagnosisRequest::new(context);
 
         assert_eq!(request.domain, DiagnosisDomain::UserInterface);
+    }
+
+    #[test]
+    fn domain_trace_selects_core_architecture_by_default() {
+        let context = SpecificationContext::from_yaml("system_name: CoreSystem\n").expect("parse");
+
+        let request = StructuralDiagnosisRequest::new(context);
+
+        assert_eq!(request.domain, DiagnosisDomain::CoreArchitecture);
+        assert_eq!(request.domain_reason, DomainReason::DefaultCoreArchitecture);
+        assert_eq!(request.domain.as_str(), "CoreArchitecture");
+        assert_eq!(request.domain.diagnosis_log_label(), "CORE_DIAGNOSIS");
+    }
+
+    #[test]
+    fn domain_trace_selects_runtime_safety_for_runtime_keywords() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+system_name: RuntimeControl
+rules:
+  - ApplyGate required
+  - AuditGateway required
+"#,
+        )
+        .expect("parse");
+
+        let request = StructuralDiagnosisRequest::new(context);
+
+        assert_eq!(request.domain, DiagnosisDomain::RuntimeSafety);
+        assert_eq!(
+            request.domain_reason,
+            DomainReason::RuntimeSafetyKeywordDetected
+        );
+        assert_eq!(request.domain.as_str(), "RuntimeSafety");
+        assert_eq!(request.domain.diagnosis_log_label(), "RUNTIME_DIAGNOSIS");
+    }
+
+    #[test]
+    fn domain_trace_selects_user_interface_for_ui_threshold() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+system_name: DBM_TUI
+architecture:
+  DesignWorkspace:
+  PipelineWorkspace:
+  EventTimeline:
+"#,
+        )
+        .expect("parse");
+
+        let request = StructuralDiagnosisRequest::new(context);
+
+        assert_eq!(request.domain, DiagnosisDomain::UserInterface);
+        assert_eq!(
+            request.domain_reason,
+            DomainReason::UiKeywordThresholdExceeded
+        );
+        assert_eq!(request.domain.as_str(), "UserInterface");
+        assert_eq!(request.domain.diagnosis_log_label(), "UI_DIAGNOSIS");
     }
 
     #[test]

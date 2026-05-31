@@ -21,6 +21,7 @@ pub enum PanelCellOwner {
 }
 
 pub fn render(frame: &mut Frame, snapshot: &RenderSnapshot) {
+    crate::tui::render_trace::record("render_root");
     let area = frame.area();
     let layout = crate::tui::rendering::layout_for_area(area, snapshot.diagnostics.is_some());
     let immutable = FrameComposer::compose(snapshot.clone(), layout);
@@ -126,6 +127,7 @@ fn render_header(frame: &mut Frame, immutable: &ImmutableFrame) {
 }
 
 fn render_design_specification_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_design_specification_pane");
     let area = immutable.layout.runtime;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
@@ -156,6 +158,7 @@ fn render_design_specification_pane(frame: &mut Frame, immutable: &ImmutableFram
 }
 
 fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_analysis_result_pane");
     let area = immutable.layout.diff;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
@@ -598,7 +601,29 @@ mod tests {
         assert!(surface.contains("Design Specification"));
         assert!(surface.contains("Analysis Result"));
         assert!(!surface.contains("Task Workspace"));
+        assert!(!surface.contains(" OUTPUT "));
+        assert!(!surface.contains(" INPUT "));
         assert!(!surface.contains("state=mutation in progress"));
+    }
+
+    #[test]
+    fn renderer_routing_uses_phase3_panes() {
+        crate::tui::render_trace::reset();
+        let state = TuiState::new(empty_payload());
+        let backend = TestBackend::new(120, 24);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+
+        full_repaint(&mut terminal, &state);
+
+        let trace = crate::tui::render_trace::snapshot();
+        assert!(trace.contains(&"render_root"), "{trace:?}");
+        assert!(
+            trace.contains(&"render_design_specification_pane"),
+            "{trace:?}"
+        );
+        assert!(trace.contains(&"render_analysis_result_pane"), "{trace:?}");
+        assert!(!trace.contains(&"render_output"), "{trace:?}");
+        assert!(!trace.contains(&"render_input"), "{trace:?}");
     }
 
     #[test]

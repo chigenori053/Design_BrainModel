@@ -59,10 +59,14 @@ pub fn handle_submit(
     _working_dir: PathBuf,
 ) {
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
-    if matches!(
-        classify_specification(input.trim()),
-        SpecificationKind::DesignSpecification
-    ) {
+    state.event_queue.push(UiEvent::Runtime {
+        message: "[CORE_SUBMIT_TRACE]\nentered".to_string(),
+    });
+    let classification = classify_specification(input.trim());
+    state.event_queue.push(UiEvent::Runtime {
+        message: format!("[CORE_SUBMIT_TRACE]\nclassification={classification:?}"),
+    });
+    if matches!(classification, SpecificationKind::DesignSpecification) {
         handle_specification_submit(state, input);
         return;
     }
@@ -122,6 +126,9 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let request = StructuralDiagnosisRequest::new(context);
+    state.event_queue.push(UiEvent::Runtime {
+        message: "[CORE_SUBMIT_TRACE]\ndiagnosis_started".to_string(),
+    });
     let diagnosis = request.diagnose();
     state.event_queue.push(UiEvent::StructuralDiagnosis {
         result: diagnosis.clone(),
@@ -131,10 +138,19 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     state.event_queue.push(UiEvent::RepairPlan {
         plan: repair_plan.clone(),
     });
+    state.event_queue.push(UiEvent::Runtime {
+        message: "[CORE_SUBMIT_TRACE]\nrepair_plan_generated".to_string(),
+    });
 
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
     state.event_queue.push(UiEvent::ImplementationPlan {
         plan: implementation_plan,
+    });
+    state.event_queue.push(UiEvent::Runtime {
+        message: "[CORE_SUBMIT_TRACE]\nimplementation_plan_generated".to_string(),
+    });
+    state.event_queue.push(UiEvent::Runtime {
+        message: "[CORE_SUBMIT_TRACE]\nanalysis_workspace_updated".to_string(),
     });
 }
 
@@ -346,6 +362,30 @@ rules:
         assert!(lines.contains(&"Diagnosis".to_string()));
         assert!(lines.contains(&"Repair Plan".to_string()));
         assert!(lines.contains(&"Implementation Plan".to_string()));
+        assert!(!state.workspace.analysis_result.diagnosis.is_empty());
+        assert!(!state.workspace.analysis_result.repair_plan.is_empty());
+        assert!(
+            !state
+                .workspace
+                .analysis_result
+                .implementation_plan
+                .is_empty()
+        );
+        let rendered = state
+            .chat
+            .events
+            .iter()
+            .map(UiEvent::text)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(
+            rendered.contains("[CORE_SUBMIT_TRACE]\nclassification=DesignSpecification"),
+            "{rendered}"
+        );
+        assert!(
+            rendered.contains("[CORE_SUBMIT_TRACE]\nanalysis_workspace_updated"),
+            "{rendered}"
+        );
         assert!(
             state
                 .flattened_chat_lines()
