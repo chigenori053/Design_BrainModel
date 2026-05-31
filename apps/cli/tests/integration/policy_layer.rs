@@ -35,12 +35,16 @@ fn test_policy_layer_enforcement() {
         "apps/cli/src/core.rs に TEST コメントを追加してください".to_string(),
     ));
     dump_result("policy.case3_plan", &plan);
-    assert!(plan.events.iter().any(|e| matches!(e, design_cli::core::CoreEvent::Pipeline { state } if state == "Proposed")));
+    assert!(plan.events.iter().any(
+        |e| matches!(e, design_cli::core::CoreEvent::Pipeline { state } if state == "Proposed")
+    ));
 
     core.execute(CoreRequest::new("査読者として実行してください".to_string()));
     let preview = core.execute(CoreRequest::new("select 1".to_string()));
     dump_result("policy.case3_preview", &preview);
-    assert!(preview.events.iter().any(|e| matches!(e, design_cli::core::CoreEvent::Pipeline { state } if state == "Previewed")));
+    assert!(preview.events.iter().any(
+        |e| matches!(e, design_cli::core::CoreEvent::Pipeline { state } if state == "Previewed")
+    ));
 
     let validate = core.execute(CoreRequest::new("validate selected plan".to_string()));
     dump_result("policy.case3_validate", &validate);

@@ -22,6 +22,10 @@ use crate::runtime::shell::{
     commit_preview_candidate, empty_runtime_payload, runtime_preview_from_intent,
 };
 use crate::session::AgentSession;
+use crate::specification_bridge::{
+    DesignSpecificationRecognizer, RepairPlan, RepairPlanner, SpecificationContext,
+    SpecificationKind, classify_specification,
+};
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
 use crate::tui::core::to_ui_event;
@@ -139,6 +143,7 @@ where
     let mut spec_capture = SpecificationCaptureSession::new();
     // DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 §2: mutable to receive parsed plan
     let mut pending_plan: Option<InstructionPlan> = None;
+    let mut pending_specification: Option<SpecificationContext> = None;
 
     print_banner(writer)?;
 
@@ -169,17 +174,15 @@ where
             continue;
         }
 
-        let is_start = is_specification_start(trimmed);
-
         // Global case-insensitive /end handling
         let normalized = trimmed.to_ascii_lowercase();
-        if normalized == "/end" {
-            eprintln!(
-                "[SPEC_END_TRACE] raw='{}' trimmed='{}' normalized='{}'",
-                input, trimmed, normalized
-            );
-            eprintln!("[SPEC_END_TRACE] evaluating_end_command");
-            eprintln!("[SPEC_END_TRACE] end_command_matched");
+        eprintln!(
+            "[INPUT_TRACE]\nraw='{}'\ntrimmed='{}'\nnormalized='{}'",
+            input, trimmed, normalized
+        );
+        eprintln!("[SPEC_END_TRACE]\nchecking_end_command");
+        if is_end_command(trimmed) {
+            eprintln!("[SPEC_END_TRACE]\nend_command_matched");
 
             match spec_capture.state {
                 SpecificationCaptureState::Capturing => {
@@ -194,6 +197,12 @@ where
                         captured_lines.len(),
                         full_text.len()
                     );
+                    eprintln!(
+                        "[SPEC_DISPATCH]\nsession={}\npayload_lines={}\npayload_chars={}",
+                        current_session_id,
+                        captured_lines.len(),
+                        full_text.len()
+                    );
 
                     if full_text.trim().is_empty() {
                         writeln!(writer, "[SPEC] rejected: empty specification body")
@@ -203,27 +212,13 @@ where
                             current_session_id
                         );
                     } else {
-                        let plan = InstructionPlan::from_spec(&full_text);
-                        for line in plan.render_lines() {
-                            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
-                        }
-
-                        let valid = plan.title.is_some()
-                            && plan.goal.is_some()
-                            && !plan.deliverables.is_empty();
-                        if valid {
-                            eprintln!(
-                                "[SPEC_COHERENCE]\nsession={}\nstatus=valid",
-                                current_session_id
-                            );
-                        } else {
-                            eprintln!(
-                                "[SPEC_COHERENCE]\nsession={}\nstatus=invalid\nreason=\"missing_required_fields\"",
-                                current_session_id
-                            );
-                        }
-
-                        pending_plan = Some(plan);
+                        dispatch_captured_specification(
+                            &full_text,
+                            &current_session_id,
+                            writer,
+                            &mut pending_plan,
+                            &mut pending_specification,
+                        )?;
                     }
                     eprintln!(
                         "[SPEC_STATE]\nprevious={:?}\nnext=Completed",
@@ -245,33 +240,30 @@ where
             writer.flush().map_err(|err| err.to_string())?;
             continue;
         }
-
-        // FR-4: Session Lock - Do not reset session if already capturing.
-        if is_start && spec_capture.state == SpecificationCaptureState::Capturing {
-            eprintln!(
-                "[SPEC_SESSION]\nsession={}\naction=locked\nstate=Capturing",
-                spec_capture.session_id
-            ); // TR-3
-        } else if is_start {
-            // Normal start from Idle or Completed
-            if spec_capture.state == SpecificationCaptureState::Completed {
-                eprintln!(
-                    "[SPEC_BOUNDARY_TRACE]\nprevious_state={:?}\nreason=\"new_specification_detected\"",
-                    spec_capture.state
-                );
-            }
-            spec_capture.reset();
-            eprintln!(
-                "[SPEC_SESSION]\nsession={}\nstate={:?}\naction=create",
-                spec_capture.session_id, spec_capture.state
-            ); // TR-1
-        }
+        eprintln!("[SPEC_END_TRACE]\nend_command_not_matched");
 
         if spec_capture.state == SpecificationCaptureState::Capturing {
             eprintln!(
                 "[SPEC_STATE_TRACE] before_end_check state={:?}",
                 spec_capture.state
             );
+
+            if normalized.starts_with("/end") {
+                eprintln!(
+                    "[SPEC_CAPTURE_CONSUMED]\ncommand=\"{}\"\nreason=\"invalid_end_command\"",
+                    trimmed
+                );
+                writeln!(writer, "[SPEC] rejected: invalid end command")
+                    .map_err(|err| err.to_string())?;
+                spec_capture.lines.clear();
+                eprintln!(
+                    "[SPEC_STATE]\nprevious={:?}\nnext=Completed",
+                    spec_capture.state
+                );
+                spec_capture.state = SpecificationCaptureState::Completed;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
 
             // TR-5: Contamination detection
             if trimmed.contains("DBM-") && !trimmed.starts_with("DBM-") {
@@ -379,6 +371,57 @@ where
             continue;
         }
 
+        eprintln!("[SPEC_RECOGNITION]\nchecking");
+        if DesignSpecificationRecognizer::is_design_specification_start(trimmed) {
+            let reason =
+                DesignSpecificationRecognizer::recognition_reason(trimmed).unwrap_or("unknown");
+            eprintln!("[SPEC_RECOGNITION]\nkind=DesignSpecification\nreason=\"{reason}\"");
+            if spec_capture.state == SpecificationCaptureState::Completed {
+                eprintln!(
+                    "[SPEC_BOUNDARY_TRACE]\nprevious_state={:?}\nreason=\"new_specification_detected\"",
+                    spec_capture.state
+                );
+            }
+            spec_capture.reset();
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\nstate={:?}\naction=create",
+                spec_capture.session_id, spec_capture.state
+            );
+            eprintln!("[SPEC_END_TRACE] append_path_entered");
+            eprintln!("[SPEC_END_TRACE] append_payload='{}'", trimmed);
+            spec_capture.lines.push(input);
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\naction=append\nbuffer_lines={}",
+                spec_capture.session_id,
+                spec_capture.lines.len()
+            );
+            continue;
+        }
+        eprintln!("[SPEC_RECOGNITION]\nkind=None");
+
+        if is_specification_start(trimmed) {
+            if spec_capture.state == SpecificationCaptureState::Completed {
+                eprintln!(
+                    "[SPEC_BOUNDARY_TRACE]\nprevious_state={:?}\nreason=\"new_specification_detected\"",
+                    spec_capture.state
+                );
+            }
+            spec_capture.reset();
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\nstate={:?}\naction=create",
+                spec_capture.session_id, spec_capture.state
+            ); // TR-1
+            eprintln!("[SPEC_END_TRACE] append_path_entered");
+            eprintln!("[SPEC_END_TRACE] append_payload='{}'", trimmed);
+            spec_capture.lines.push(input);
+            eprintln!(
+                "[SPEC_SESSION]\nsession={}\naction=append\nbuffer_lines={}",
+                spec_capture.session_id,
+                spec_capture.lines.len()
+            ); // TR-2
+            continue;
+        }
+
         eprintln!(
             "[SPEC_STATE_TRACE] before_submit state={:?}",
             spec_capture.state
@@ -405,28 +448,142 @@ where
             spec_capture.lines.len(),
             full_text.len()
         );
-        let plan = InstructionPlan::from_spec(&full_text);
+        eprintln!(
+            "[SPEC_DISPATCH]\nsession={}\npayload_lines={}\npayload_chars={}",
+            current_session_id,
+            spec_capture.lines.len(),
+            full_text.len()
+        );
+        dispatch_captured_specification(
+            &full_text,
+            &current_session_id,
+            writer,
+            &mut pending_plan,
+            &mut pending_specification,
+        )?;
+    }
 
-        // Render extracted fields
-        for line in plan.render_lines() {
-            writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+    Ok(())
+}
+
+fn dispatch_captured_specification<W: Write>(
+    full_text: &str,
+    session_id: &str,
+    writer: &mut W,
+    pending_plan: &mut Option<InstructionPlan>,
+    pending_specification: &mut Option<SpecificationContext>,
+) -> Result<(), String> {
+    match classify_specification(full_text) {
+        SpecificationKind::Instruction => {
+            eprintln!("[SPEC_CLASSIFIER]\nkind=Instruction");
+            let plan = InstructionPlan::from_spec(full_text);
+            for line in plan.render_lines() {
+                writeln!(writer, "{line}").map_err(|err| err.to_string())?;
+            }
+
+            let valid =
+                plan.title.is_some() && plan.goal.is_some() && !plan.deliverables.is_empty();
+            if valid {
+                eprintln!("[SPEC_COHERENCE]\nsession={session_id}\nstatus=valid");
+            } else {
+                eprintln!(
+                    "[SPEC_COHERENCE]\nsession={session_id}\nstatus=invalid\nreason=\"missing_required_fields\""
+                );
+            }
+
+            *pending_plan = Some(plan);
         }
+        SpecificationKind::DesignSpecification => {
+            eprintln!("[SPEC_CLASSIFIER]\nkind=DesignSpecification");
+            let context =
+                SpecificationContext::from_yaml(full_text).map_err(|err| err.to_string())?;
+            eprintln!(
+                "[SPEC_CONTEXT]\ngoals={}\nconstraints={}\ncomponents={}\nrules={}",
+                context.goals.len(),
+                context.constraints.len(),
+                context.architecture.len(),
+                context.rules.len()
+            );
 
-        // FR-6: Coherence Validation
-        let valid = plan.title.is_some() && plan.goal.is_some() && !plan.deliverables.is_empty();
-        if valid {
+            let request =
+                crate::specification_bridge::StructuralDiagnosisRequest::new(context.clone());
+            eprintln!("[STRUCTURAL_DIAGNOSIS]\nstatus=started");
+            let result = request.diagnose();
             eprintln!(
-                "[SPEC_COHERENCE]\nsession={}\nstatus=valid",
-                current_session_id
+                "[STRUCTURAL_DIAGNOSIS]\nstatus=completed\nviolations={}\nwarnings={}",
+                result.violations.len(),
+                result.warnings.len()
             );
-        } else {
+            eprintln!("[REPAIR_PLANNING]\nstatus=started");
+            let repair_plan = RepairPlanner::generate(&result);
+            for suggestion in &repair_plan.suggestions {
+                eprintln!(
+                    "[REPAIR_SUGGESTION]\ntitle=\"{}\"\npriority={}",
+                    suggestion.title, suggestion.priority
+                );
+            }
             eprintln!(
-                "[SPEC_COHERENCE]\nsession={}\nstatus=invalid\nreason=\"missing_required_fields\"",
-                current_session_id
+                "[REPAIR_PLAN]\nsuggestions={}\nsteps={}",
+                repair_plan.suggestions.len(),
+                repair_plan.execution_steps.len()
             );
+            eprintln!("[REPAIR_PLANNING]\nstatus=completed");
+
+            writeln!(writer, "[SPEC_CONTEXT] generated").map_err(|err| err.to_string())?;
+            writeln!(
+                writer,
+                "[STRUCTURAL_DIAGNOSIS] violations={} warnings={}",
+                result.violations.len(),
+                result.warnings.len()
+            )
+            .map_err(|err| err.to_string())?;
+            writeln!(writer, "Violations:").map_err(|err| err.to_string())?;
+            if result.violations.is_empty() {
+                writeln!(writer, "- none").map_err(|err| err.to_string())?;
+            } else {
+                for violation in &result.violations {
+                    writeln!(writer, "- {}: {}", violation.rule, violation.message)
+                        .map_err(|err| err.to_string())?;
+                }
+            }
+            writeln!(writer, "Warnings:").map_err(|err| err.to_string())?;
+            if result.warnings.is_empty() {
+                writeln!(writer, "- none").map_err(|err| err.to_string())?;
+            } else {
+                for warning in &result.warnings {
+                    writeln!(writer, "- {}: {}", warning.rule, warning.message)
+                        .map_err(|err| err.to_string())?;
+                }
+            }
+            render_repair_plan(writer, &repair_plan)?;
+
+            *pending_specification = Some(context);
         }
+    }
 
-        handle_submit(full_text, workspace_root.as_path(), core, &mut ui, writer)?;
+    Ok(())
+}
+
+fn render_repair_plan<W: Write>(writer: &mut W, repair_plan: &RepairPlan) -> Result<(), String> {
+    if repair_plan.suggestions.is_empty() && repair_plan.execution_steps.is_empty() {
+        return Ok(());
+    }
+
+    writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "Repair Suggestions:").map_err(|err| err.to_string())?;
+    for suggestion in &repair_plan.suggestions {
+        writeln!(writer).map_err(|err| err.to_string())?;
+        writeln!(writer, "[{}]", suggestion.priority).map_err(|err| err.to_string())?;
+        writeln!(writer, "{}", suggestion.title).map_err(|err| err.to_string())?;
+        writeln!(writer).map_err(|err| err.to_string())?;
+        writeln!(writer, "Reason:").map_err(|err| err.to_string())?;
+        writeln!(writer, "{}", suggestion.rationale).map_err(|err| err.to_string())?;
+    }
+
+    writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "Steps:").map_err(|err| err.to_string())?;
+    for step in &repair_plan.execution_steps {
+        writeln!(writer, "{}. {}", step.order, step.description).map_err(|err| err.to_string())?;
     }
 
     Ok(())
@@ -896,6 +1053,10 @@ fn is_exit(input: &str) -> bool {
     matches!(input, "/exit" | "/quit" | "exit" | "quit")
 }
 
+fn is_end_command(input: &str) -> bool {
+    input.trim().eq_ignore_ascii_case("/end")
+}
+
 fn is_specification_start(input: &str) -> bool {
     let lower = input.to_lowercase();
     lower.starts_with("dbm-")
@@ -1074,7 +1235,7 @@ mod tests {
         run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
             .expect("repl");
 
-        assert_eq!(core.calls(), 1, "Should dispatch once on EOF");
+        assert_eq!(core.calls(), 0, "Should capture locally on EOF");
         let output_str = String::from_utf8(output).expect("utf8");
         // Note: [SPEC_SESSION] and [SPEC_COHERENCE] go to stderr, but [SPEC_EXTRACT] goes to stdout (writer)
         assert!(
@@ -1815,6 +1976,107 @@ mod tests {
 
     // CATEGORY: REPL_ROUTING
     #[test]
+    fn repl_design_spec_generates_specification_context_and_diagnosis() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\nsystem_name: DBM\ngoals:\nconstraints:\narchitecture:\nrules:\n  - ApplyGate required\n/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "design spec is consumed locally: {output}");
+        assert!(
+            output.contains("[SPEC_CONTEXT] generated"),
+            "context must be generated: {output}"
+        );
+        assert!(
+            output.contains("[STRUCTURAL_DIAGNOSIS] violations=0 warnings=0"),
+            "diagnosis result must be rendered: {output}"
+        );
+        assert!(output.contains("Violations:"), "{output}");
+        assert!(output.contains("Warnings:"), "{output}");
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_design_spec_renders_repair_plan_after_diagnosis() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "\
+/begin spec
+system_name: DBM_REPL_UI
+goals:
+  - Separate input and output
+constraints:
+  - Preserve REPL compatibility
+architecture:
+  Runtime:
+    responsibilities:
+      - runtime bypass AuditCore
+rules:
+  - Runtime must pass through AuditCore
+/end
+";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("Repair Suggestions:"), "{output}");
+        assert!(output.contains("[Critical]"), "{output}");
+        assert!(output.contains("Introduce AuditGateway"), "{output}");
+        assert!(output.contains("Enforce ApplyGate"), "{output}");
+        assert!(output.contains("Steps:"), "{output}");
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_design_specification_keys_auto_enter_capture() {
+        for script in [
+            "system_name: DBM\n/end\n",
+            "goals:\n/end\n",
+            "constraints:\n/end\n",
+            "architecture:\n/end\n",
+            "rules:\n/end\n",
+        ] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let mut input = io::Cursor::new(script);
+            let mut output = Vec::new();
+            let core = CountingCore::new();
+
+            run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+                .expect("repl");
+            let output = String::from_utf8(output).expect("utf8");
+
+            assert_eq!(core.calls(), 0, "{script} routed to core: {output}");
+            assert!(
+                output.contains("[SPEC_CONTEXT] generated"),
+                "{script} must generate spec context: {output}"
+            );
+        }
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_non_yaml_design_specification_like_code_does_not_capture() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let mut input = io::Cursor::new("let system_name = \"dbm\";\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(core.calls(), 1);
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
     fn repl_end_without_capture_is_safely_ignored() {
         let temp = tempfile::tempdir().expect("tempdir");
         let script = "/end\n";
@@ -1848,6 +2110,40 @@ mod tests {
             core.calls(),
             0,
             "Core should not be called since /END is consumed case-insensitively"
+        );
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_end_command_boundary_validation_matches_only_exact_trimmed_token() {
+        assert!(is_end_command("/end"));
+        assert!(is_end_command("/END"));
+        assert!(is_end_command("/end\r\n"));
+        assert!(is_end_command("/end   "));
+        assert!(!is_end_command("/end/end"));
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_invalid_end_command_rejects_without_dispatching_capture() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "/begin spec\ngoal: test\n/end/end\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "invalid /end must stay local: {output}");
+        assert!(
+            output.contains("[SPEC] rejected: invalid end command"),
+            "{output}"
+        );
+        assert!(
+            !output.contains("[PLAN]") && !output.contains("[SPEC_CONTEXT] generated"),
+            "invalid /end must not dispatch captured payload: {output}"
         );
     }
 
