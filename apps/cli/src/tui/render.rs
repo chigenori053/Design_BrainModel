@@ -16,6 +16,7 @@ pub enum PanelCellOwner {
     Header,
     DesignSpecification,
     AnalysisResult,
+    Evaluation,
     Diagnostics,
     Status,
 }
@@ -38,6 +39,7 @@ pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
         layout.header,
         layout.runtime,
         layout.diff,
+        layout.task,
         layout.diagnostics,
         layout.status,
     ];
@@ -63,6 +65,7 @@ pub fn cell_ownership_map(layout: &LayoutMetadata) -> Vec<(u16, u16, PanelCellOw
         PanelCellOwner::DesignSpecification,
     );
     push_owned_cells(&mut cells, layout.diff, PanelCellOwner::AnalysisResult);
+    push_owned_cells(&mut cells, layout.task, PanelCellOwner::Evaluation);
     push_owned_cells(&mut cells, layout.diagnostics, PanelCellOwner::Diagnostics);
     push_owned_cells(&mut cells, layout.status, PanelCellOwner::Status);
     cells
@@ -101,6 +104,7 @@ impl SurfaceProjector {
         render_header(frame, immutable);
         render_design_specification_pane(frame, immutable);
         render_analysis_result_pane(frame, immutable);
+        render_evaluation_pane(frame, immutable);
         render_status_line(frame, immutable);
         render_diagnostics_overlay(frame, immutable);
         if let Some(cursor) = immutable.cursor {
@@ -201,10 +205,40 @@ fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     );
 }
 
+fn render_evaluation_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_evaluation_pane");
+    let area = immutable.layout.task;
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    frame.render_widget(Clear, area);
+    let snapshot = &immutable.snapshot;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Evaluation ")
+        .border_style(active_border(false, false));
+
+    let lines = snapshot
+        .workspace
+        .evaluation
+        .lines()
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
 fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, immutable.layout.status);
     frame.render_widget(
-        Paragraph::new(immutable.snapshot.status.line.clone())
+        Paragraph::new("Design Specification Workbench")
             .style(Style::default().fg(Color::DarkGray)),
         immutable.layout.status,
     );
@@ -356,6 +390,13 @@ mod tests {
             .collect::<String>()
     }
 
+    fn buffer_rect_text(buffer: &Buffer, terminal_width: u16, area: Rect) -> String {
+        (0..area.height)
+            .map(|row| buffer_rect_row(buffer, terminal_width, area, row))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
     #[test]
     fn repeated_full_redraw_is_identical() {
         let state = TuiState::new(empty_payload());
@@ -402,13 +443,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("mutation in progress"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("preview ready"));
+        assert!(surface.contains("Design Specification Workbench"));
         assert!(!surface.contains("mutation in progress"));
     }
 
@@ -420,13 +461,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("runtime stabilized"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("preview ready"));
+        assert!(surface.contains("Design Specification Workbench"));
         assert!(!surface.contains("transaction committed"));
         assert!(!surface.contains("mutation in progress"));
     }
@@ -439,14 +480,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("mutation in progress"));
+        assert!(first.contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("preview ready"));
+        assert!(second.contains("Design Specification Workbench"));
         assert!(!second.contains("mutation in progress"));
-        assert_ne!(first, second);
     }
 
     #[test]
@@ -480,13 +520,13 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
-        assert!(surface.contains("state=mutation in progress"));
+        assert!(surface.contains("Design Specification Workbench"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface2 = buffer_text(terminal.backend().buffer());
 
-        assert!(surface2.contains("state=runtime idle"));
+        assert!(surface2.contains("Design Specification Workbench"));
         assert!(!surface2.contains("state=mutation in progress"));
     }
 
@@ -500,13 +540,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("state=mutation in progress"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("state=runtime idle"));
+        assert!(surface.contains("Design Specification Workbench"));
         assert!(!surface.contains("state=mutation in progress"));
     }
 
@@ -543,14 +583,14 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let first = buffer_text(terminal.backend().buffer());
-        assert!(first.contains("state=mutation in progress"));
+        assert!(first.contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::Idle;
         state.active_target = None;
         redraw_without_terminal_clear(&mut terminal, &state);
         let second = buffer_text(terminal.backend().buffer());
 
-        assert!(second.contains("state=runtime idle"));
+        assert!(second.contains("Design Specification Workbench"));
         assert!(!second.contains("state=mutation in progress"));
         assert!(!second.contains("very_long_previous_runtime_target"));
     }
@@ -565,12 +605,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("state=mutation in progress"));
+        assert!(first.contains("Evaluation"));
 
         state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("state=runtime idle"));
+        assert!(second.contains("Design Specification Workbench"));
         assert!(!second.contains("state=mutation in progress"));
     }
 
@@ -589,7 +629,7 @@ mod tests {
         let third = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
         assert_eq!(second, third);
-        assert!(third.contains("state=runtime idle"));
+        assert!(third.contains("Design Specification Workbench"));
         assert!(!third.contains("state=mutation in progress"));
     }
 
@@ -608,14 +648,76 @@ mod tests {
             .expect("draw");
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("state=runtime idle"));
-        assert!(surface.contains(&snapshot.status.line));
+        assert!(surface.contains("Design Specification Workbench"));
         assert!(surface.contains("Design Specification"));
+        assert!(surface.contains("Evaluation"));
         assert!(surface.contains("Analysis Result"));
         assert!(!surface.contains("Task Workspace"));
         assert!(!surface.contains(" OUTPUT "));
         assert!(!surface.contains(" INPUT "));
         assert!(!surface.contains("state=mutation in progress"));
+    }
+
+    #[test]
+    fn input_evaluation_output_boundary_audit() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.lines = vec![
+            "system_name: DBM_TUI".to_string(),
+            "goals:".to_string(),
+            "  - Visualize active tasks".to_string(),
+            "architecture:".to_string(),
+            "  DesignWorkspace:".to_string(),
+            "  EventTimeline:".to_string(),
+            "rules:".to_string(),
+            "  - Timeline must remain visible".to_string(),
+        ];
+        state.workspace.evaluation.domain = "UserInterface".to_string();
+        state.workspace.evaluation.status = "Completed".to_string();
+        state.workspace.evaluation.progress = 100;
+        state.workspace.evaluation.violations = 1;
+        state.workspace.evaluation.warnings = 0;
+        state.workspace.evaluation.active_task = Some("Generate Timeline Renderer".to_string());
+        state.workspace.analysis_result.diagnosis = vec!["TimelineVisibilityViolation".to_string()];
+        state.workspace.analysis_result.repair_plan = vec!["Create Timeline Workspace".to_string()];
+        state.workspace.analysis_result.implementation_plan =
+            vec!["Add TimelineRenderer".to_string()];
+        state.append_chat(UiEvent::Debug {
+            message: "[TRACE] hidden".to_string(),
+        });
+
+        let width = 120;
+        let height = 30;
+        let layout = crate::tui::rendering::layout_for_area(Rect::new(0, 0, width, height), false);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        full_repaint(&mut terminal, &state);
+
+        let buffer = terminal.backend().buffer();
+        let design = buffer_rect_text(buffer, width, layout.runtime);
+        let evaluation = buffer_rect_text(buffer, width, layout.task);
+        let analysis = buffer_rect_text(buffer, width, layout.diff);
+        let surface = buffer_text(buffer);
+
+        assert!(!design.contains("Diagnosis"));
+        assert!(!analysis.contains("system_name:"));
+        assert!(!evaluation.contains("Create Timeline Workspace"));
+        assert!(!evaluation.contains("Add TimelineRenderer"));
+        assert!(evaluation.contains("Domain:"));
+        assert!(evaluation.contains("UserInterface"));
+        assert!(evaluation.contains("Status:"));
+        assert!(evaluation.contains("Completed"));
+        for token in [
+            "[KEY_TRACE]",
+            "[SUBMIT_TRACE]",
+            "[RUNTIME_ROUTE_TRACE]",
+            "[CORE_SUBMIT_TRACE]",
+            "[WORKSPACE_TRACE]",
+            "[SNAPSHOT_TRACE]",
+            "[RENDER_TRACE]",
+            "[TRACE]",
+        ] {
+            assert!(!surface.contains(token), "{token} leaked to UI");
+        }
     }
 
     #[test]
@@ -634,6 +736,7 @@ mod tests {
             "{trace:?}"
         );
         assert!(trace.contains(&"render_analysis_result_pane"), "{trace:?}");
+        assert!(trace.contains(&"render_evaluation_pane"), "{trace:?}");
         assert!(!trace.contains(&"render_output"), "{trace:?}");
         assert!(!trace.contains(&"render_input"), "{trace:?}");
     }

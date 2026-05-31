@@ -61,14 +61,8 @@ pub fn handle_submit(
     eprintln!("[CORE_PAYLOAD]\n{}", input);
     eprintln!("[CORE_SUBMIT_TRACE] entered");
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
-    state.event_queue.push(UiEvent::Runtime {
-        message: "[CORE_SUBMIT_TRACE]\nentered".to_string(),
-    });
     let classification = classify_specification(input.trim());
     eprintln!("[CORE_SUBMIT_TRACE] classification={:?}", classification);
-    state.event_queue.push(UiEvent::Runtime {
-        message: format!("[CORE_SUBMIT_TRACE]\nclassification={classification:?}"),
-    });
     if matches!(classification, SpecificationKind::DesignSpecification) {
         handle_specification_submit(state, input);
         return;
@@ -129,10 +123,10 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let request = StructuralDiagnosisRequest::new(context);
-    eprintln!("[CORE_SUBMIT_TRACE] diagnosis_started");
-    state.event_queue.push(UiEvent::Runtime {
-        message: "[CORE_SUBMIT_TRACE]\ndiagnosis_started".to_string(),
+    state.event_queue.push(UiEvent::DomainClassification {
+        domain: request.domain.as_str().to_string(),
     });
+    eprintln!("[CORE_SUBMIT_TRACE] diagnosis_started");
     let diagnosis = request.diagnose();
     state.event_queue.push(UiEvent::StructuralDiagnosis {
         result: diagnosis.clone(),
@@ -143,22 +137,13 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     state.event_queue.push(UiEvent::RepairPlan {
         plan: repair_plan.clone(),
     });
-    state.event_queue.push(UiEvent::Runtime {
-        message: "[CORE_SUBMIT_TRACE]\nrepair_plan_generated".to_string(),
-    });
 
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
     eprintln!("[CORE_SUBMIT_TRACE] implementation_plan_generated");
     state.event_queue.push(UiEvent::ImplementationPlan {
         plan: implementation_plan,
     });
-    state.event_queue.push(UiEvent::Runtime {
-        message: "[CORE_SUBMIT_TRACE]\nimplementation_plan_generated".to_string(),
-    });
     eprintln!("[CORE_SUBMIT_TRACE] analysis_workspace_updated");
-    state.event_queue.push(UiEvent::Runtime {
-        message: "[CORE_SUBMIT_TRACE]\nanalysis_workspace_updated".to_string(),
-    });
 }
 
 fn apply_core_response(
@@ -378,6 +363,8 @@ rules:
                 .implementation_plan
                 .is_empty()
         );
+        assert_eq!(state.workspace.evaluation.status, "Completed");
+        assert_eq!(state.workspace.evaluation.progress, 100);
         let rendered = state
             .chat
             .events
@@ -385,14 +372,7 @@ rules:
             .map(UiEvent::text)
             .collect::<Vec<_>>()
             .join("\n");
-        assert!(
-            rendered.contains("[CORE_SUBMIT_TRACE]\nclassification=DesignSpecification"),
-            "{rendered}"
-        );
-        assert!(
-            rendered.contains("[CORE_SUBMIT_TRACE]\nanalysis_workspace_updated"),
-            "{rendered}"
-        );
+        assert!(!rendered.contains("[CORE_SUBMIT_TRACE]"), "{rendered}");
         assert!(
             state
                 .flattened_chat_lines()

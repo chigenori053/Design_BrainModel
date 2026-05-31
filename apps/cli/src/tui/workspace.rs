@@ -1,4 +1,27 @@
-use crate::tui::state::UiEvent;
+use crate::tui::state::{SpecificationEditor, UiEvent};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EvaluationWorkspace {
+    pub domain: String,
+    pub status: String,
+    pub progress: u8,
+    pub violations: usize,
+    pub warnings: usize,
+    pub active_task: Option<String>,
+}
+
+impl Default for EvaluationWorkspace {
+    fn default() -> Self {
+        Self {
+            domain: "(none)".to_string(),
+            status: "Recognition".to_string(),
+            progress: 0,
+            violations: 0,
+            warnings: 0,
+            active_task: None,
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnalysisResultWorkspace {
@@ -9,6 +32,14 @@ pub struct AnalysisResultWorkspace {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct WorkspaceState {
+    pub evaluation: EvaluationWorkspace,
+    pub analysis_result: AnalysisResultWorkspace,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DashboardState {
+    pub specification_editor: SpecificationEditor,
+    pub evaluation: EvaluationWorkspace,
     pub analysis_result: AnalysisResultWorkspace,
 }
 
@@ -17,6 +48,12 @@ pub struct WorkspaceProjector;
 impl WorkspaceProjector {
     pub fn project(workspace: &mut WorkspaceState, event: &UiEvent) {
         match event {
+            UiEvent::DomainClassification { domain } => {
+                workspace.evaluation.domain = domain.clone();
+                workspace.evaluation.status = "Recognition".to_string();
+                workspace.evaluation.progress = 25;
+                workspace.evaluation.active_task = Some("Domain Classification".to_string());
+            }
             UiEvent::StructuralDiagnosis { result } => {
                 workspace.analysis_result.diagnosis = result
                     .violations
@@ -24,6 +61,11 @@ impl WorkspaceProjector {
                     .map(|violation| violation.rule.clone())
                     .chain(result.warnings.iter().map(|warning| warning.rule.clone()))
                     .collect();
+                workspace.evaluation.status = "Diagnosis".to_string();
+                workspace.evaluation.progress = 50;
+                workspace.evaluation.violations = result.violations.len();
+                workspace.evaluation.warnings = result.warnings.len();
+                workspace.evaluation.active_task = Some("Structural Diagnosis".to_string());
                 eprintln!(
                     "[WORKSPACE_TRACE] diagnosis_count={}",
                     workspace.analysis_result.diagnosis.len()
@@ -35,6 +77,12 @@ impl WorkspaceProjector {
                     .iter()
                     .map(|suggestion| suggestion.title.clone())
                     .collect();
+                workspace.evaluation.status = "RepairPlanning".to_string();
+                workspace.evaluation.progress = 75;
+                workspace.evaluation.active_task = plan
+                    .suggestions
+                    .first()
+                    .map(|suggestion| suggestion.title.clone());
                 eprintln!(
                     "[WORKSPACE_TRACE] repair_count={}",
                     workspace.analysis_result.repair_plan.len()
@@ -43,6 +91,10 @@ impl WorkspaceProjector {
             UiEvent::ImplementationPlan { plan } => {
                 workspace.analysis_result.implementation_plan =
                     plan.tasks.iter().map(|task| task.title.clone()).collect();
+                workspace.evaluation.status = "Completed".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task =
+                    plan.tasks.first().map(|task| task.title.clone());
                 eprintln!(
                     "[WORKSPACE_TRACE] implementation_count={}",
                     workspace.analysis_result.implementation_plan.len()
@@ -65,6 +117,32 @@ impl AnalysisResultWorkspace {
         lines.push("Implementation Plan".to_string());
         lines.extend(item_lines(&self.implementation_plan));
         lines
+    }
+}
+
+impl EvaluationWorkspace {
+    pub fn lines(&self) -> Vec<String> {
+        vec![
+            "Domain:".to_string(),
+            self.domain.clone(),
+            String::new(),
+            "Status:".to_string(),
+            self.status.clone(),
+            String::new(),
+            "Progress:".to_string(),
+            format!("{}%", self.progress),
+            String::new(),
+            "Violations:".to_string(),
+            self.violations.to_string(),
+            String::new(),
+            "Warnings:".to_string(),
+            self.warnings.to_string(),
+            String::new(),
+            "Active Task:".to_string(),
+            self.active_task
+                .clone()
+                .unwrap_or_else(|| "(none)".to_string()),
+        ]
     }
 }
 

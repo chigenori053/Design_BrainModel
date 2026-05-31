@@ -77,6 +77,14 @@ pub const BANNED_SURFACE_TOKENS: &[&str] = &[
     "[UI_IMPLEMENTATION_PLAN]",
     "[REPAIR_PLAN]",
     "[IMPLEMENTATION_PLAN]",
+    "[KEY_TRACE]",
+    "[SUBMIT_TRACE]",
+    "[RUNTIME_ROUTE_TRACE]",
+    "[CORE_SUBMIT_TRACE]",
+    "[WORKSPACE_TRACE]",
+    "[SNAPSHOT_TRACE]",
+    "[RENDER_TRACE]",
+    "[TRACE]",
     "runtime.active_preview",
     "RuntimeState",
     "ActivePreview",
@@ -241,6 +249,9 @@ pub enum UiEvent {
     SpecContext {
         context: crate::specification_bridge::SpecificationContext,
     },
+    DomainClassification {
+        domain: String,
+    },
     StructuralDiagnosis {
         result: crate::specification_bridge::StructuralDiagnosisResult,
     },
@@ -301,6 +312,7 @@ impl UiEvent {
             Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
             Self::SpecContext { .. } => "SPEC_CONTEXT",
+            Self::DomainClassification { .. } => "DOMAIN",
             Self::StructuralDiagnosis { .. } => "STRUCTURAL_DIAGNOSIS",
             Self::RepairPlan { .. } => "REPAIR_PLAN",
             Self::ImplementationPlan { .. } => "IMPLEMENTATION_PLAN",
@@ -346,6 +358,7 @@ impl UiEvent {
                 context.architecture.len(),
                 context.rules.len()
             ),
+            Self::DomainClassification { domain } => domain.clone(),
             Self::StructuralDiagnosis { result } => format!(
                 "violations={} warnings={}",
                 result.violations.len(),

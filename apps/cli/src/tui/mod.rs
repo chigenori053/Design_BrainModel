@@ -97,28 +97,12 @@ fn run_event_loop(
                     TuiAction::Quit => break,
                     TuiAction::Submit(input) => {
                         eprintln!("[SUBMIT_TRACE] action_received chars={}", input.len());
-                        state.append_chat(UiEvent::Runtime {
-                            message: "[SUBMIT_TRACE]\nentered".to_string(),
-                        });
                         let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
-                        state.append_chat(UiEvent::Runtime {
-                            message: "[SUBMIT_TRACE]\ndispatch_runtime_command_to_projection"
-                                .to_string(),
-                        });
                         let routed =
                             dispatch_runtime_command_to_projection(state, &working_dir, &input);
-                        state.append_chat(UiEvent::Runtime {
-                            message: format!("[SUBMIT_TRACE]\nrouted={routed}"),
-                        });
                         if !routed {
-                            state.append_chat(UiEvent::Runtime {
-                                message: "[SUBMIT_TRACE]\ncore_handle_submit".to_string(),
-                            });
                             self::core::handle_submit(state, core, input, working_dir);
                         }
-                        state.append_chat(UiEvent::Runtime {
-                            message: "[SUBMIT_TRACE]\ncompleted".to_string(),
-                        });
                     }
                     TuiAction::SaveDesign => {
                         let path = std::env::current_dir()
@@ -154,16 +138,9 @@ fn dispatch_runtime_command_to_projection(
     input: &str,
 ) -> bool {
     eprintln!("[RUNTIME_ROUTE_TRACE] input={}", input);
-    state.append_chat(UiEvent::Runtime {
-        message: format!("[RUNTIME_ROUTE_TRACE]\ninput={input}"),
-    });
     if classify_specification(input) == SpecificationKind::DesignSpecification {
         eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
         eprintln!("[RUNTIME_ROUTE_TRACE] reason=design_specification_guard");
-        state.append_chat(UiEvent::Runtime {
-            message: "[RUNTIME_ROUTE_TRACE]\nmatched=false\nreason=design_specification_guard"
-                .to_string(),
-        });
         return false;
     }
 
@@ -172,16 +149,10 @@ fn dispatch_runtime_command_to_projection(
     else {
         eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
         eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_no_match");
-        state.append_chat(UiEvent::Runtime {
-            message: "[RUNTIME_ROUTE_TRACE]\nmatched=false\nreason=dispatcher_no_match".to_string(),
-        });
         return false;
     };
     eprintln!("[RUNTIME_ROUTE_TRACE] matched=true");
     eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_matched");
-    state.append_chat(UiEvent::Runtime {
-        message: "[RUNTIME_ROUTE_TRACE]\nmatched=true\nreason=dispatcher_matched".to_string(),
-    });
 
     let rejection_message = state.rejection.as_ref().map(|rejection| {
         format!(
@@ -314,6 +285,7 @@ mod tests {
         let root = tempfile::tempdir().expect("tempdir");
         let mut state = TuiState::new(empty_runtime_payload());
         let spec = "system_name: DBM_TUI\ngoals:\n";
+        let initial_event_count = state.chat.events.len();
 
         assert!(!dispatch_runtime_command_to_projection(
             &mut state,
@@ -322,13 +294,11 @@ mod tests {
         ));
 
         let projection = runtime_messages(&state).join("\n");
-        assert!(projection.contains("[RUNTIME_ROUTE_TRACE]\ninput=system_name: DBM_TUI"));
         assert!(
-            projection.contains(
-                "[RUNTIME_ROUTE_TRACE]\nmatched=false\nreason=design_specification_guard"
-            ),
+            !projection.contains("[RUNTIME_ROUTE_TRACE]"),
             "{projection}"
         );
+        assert_eq!(state.chat.events.len(), initial_event_count);
     }
 
     #[test]

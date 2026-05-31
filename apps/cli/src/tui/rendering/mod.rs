@@ -180,20 +180,21 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
         (rows[1], Rect::new(0, 0, 0, 0))
     };
 
-    let top = Layout::default()
+    let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Min(MIN_PANE_WIDTH),
-            Constraint::Min(MIN_PANE_WIDTH),
-        ])
+        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
         .split(middle_rect);
+    let left_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(columns[0]);
 
     LayoutMetadata {
         viewport: area,
         header: rows[0],
-        runtime: top[0],
-        diff: top[1],
-        task: Rect::new(0, 0, 0, 0),
+        runtime: left_rows[0],
+        diff: left_rows[1],
+        task: columns[1],
         input: Rect::new(0, 0, 0, 0),
         diagnostics: diag_rect,
         status: rows[2],
