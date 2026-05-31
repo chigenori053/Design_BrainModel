@@ -8,6 +8,8 @@ use crate::tui::state::{
 };
 use crate::tui::workspace::WorkspaceState;
 
+pub const MIN_PANE_WIDTH: u16 = 40;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderSnapshot {
     pub projection: ProjectionSnapshot,
@@ -180,7 +182,10 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
 
     let top = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .constraints([
+            Constraint::Min(MIN_PANE_WIDTH),
+            Constraint::Min(MIN_PANE_WIDTH),
+        ])
         .split(middle_rect);
 
     LayoutMetadata {
@@ -188,10 +193,10 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
         header: rows[0],
         runtime: top[0],
         diff: top[1],
-        task: rows[2],
-        input: rows[3],
+        task: Rect::new(0, 0, 0, 0),
+        input: Rect::new(0, 0, 0, 0),
         diagnostics: diag_rect,
-        status: rows[4],
+        status: rows[2],
     }
 }
 
@@ -200,9 +205,7 @@ fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Percentage(40),
-            Constraint::Percentage(25),
-            Constraint::Percentage(35),
+            Constraint::Min(1),
             Constraint::Length(1),
         ])
         .split(area)
@@ -230,7 +233,7 @@ pub struct FrameComposer;
 
 impl FrameComposer {
     pub fn compose(snapshot: RenderSnapshot, layout: LayoutMetadata) -> ImmutableFrame {
-        let cursor = cursor_model(&snapshot, layout.input);
+        let cursor = cursor_model(&snapshot, layout.runtime);
         ImmutableFrame {
             snapshot,
             layout,

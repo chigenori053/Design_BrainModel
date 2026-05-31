@@ -65,6 +65,28 @@ pub const BANNED_SURFACE_TOKENS: &[&str] = &[
     "[ROUTE]",
     "[EXECUTE]",
     "[ANALYZE]",
+    "[SPEC_CONTEXT]",
+    "[DOMAIN]",
+    "[STRUCTURAL_DIAGNOSIS]",
+    "[CORE_DIAGNOSIS]",
+    "[RUNTIME_DIAGNOSIS]",
+    "[UI_DIAGNOSIS]",
+    "[REPAIR_PLANNING]",
+    "[UI_REPAIR_PLAN]",
+    "[IMPLEMENTATION_PLANNING]",
+    "[UI_IMPLEMENTATION_PLAN]",
+    "[REPAIR_PLAN]",
+    "[IMPLEMENTATION_PLAN]",
+    "runtime.active_preview",
+    "RuntimeState",
+    "ActivePreview",
+    "PreviewDiff",
+    "Rect {",
+    "tx-users-",
+    "active_preview",
+];
+
+const RUNTIME_REFERENCE_TOKENS: &[&str] = &[
     "runtime.active_preview",
     "RuntimeState",
     "ActivePreview",
@@ -86,9 +108,8 @@ pub fn sanitize_line(line: &str) -> Option<String> {
 }
 
 pub fn contains_runtime_reference(line: &str) -> bool {
-    BANNED_SURFACE_TOKENS
+    RUNTIME_REFERENCE_TOKENS
         .iter()
-        .skip(8) // Skip non-reference tokens
         .any(|token| line.contains(token))
 }
 
@@ -974,9 +995,6 @@ impl TuiState {
                     self.editor_state.editor.clear();
                     self.editor_state.editing = true;
                     self.input.clear();
-                    self.enqueue_event(UiEvent::System {
-                        summary: "[EDITOR_CANCEL]".to_string(),
-                    });
                     return TuiAction::None;
                 }
                 return TuiAction::Quit;
@@ -1256,13 +1274,6 @@ impl TuiState {
                 if trimmed.is_empty() {
                     return TuiAction::None;
                 }
-                self.enqueue_event(UiEvent::System {
-                    summary: format!(
-                        "[EDITOR_SUBMIT]\nlines={}\nchars={}",
-                        self.editor_state.editor.line_count(),
-                        self.editor_state.editor.char_count()
-                    ),
-                });
                 if matches!(trimmed.as_str(), "/exit" | "/quit") {
                     self.editor_state.editor.clear();
                     return TuiAction::Quit;
@@ -1275,7 +1286,6 @@ impl TuiState {
                 }
                 self.record_history(trimmed.clone());
                 self.history_cursor = None;
-                self.editor_state.editor.clear();
                 self.update_runtime_intent_state(&trimmed);
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
@@ -1687,16 +1697,7 @@ mod tests {
 
         assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
         assert_eq!(state.history, vec!["fix parser bug"]);
-        assert!(state.editor_state.editor.lines.is_empty());
-        assert!(!state.event_queue.is_empty());
-
-        state.handle_ui_events();
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .any(|line| line == "[SYSTEM] [EDITOR_SUBMIT]")
-        );
+        assert_eq!(state.editor_state.editor.text(), "fix parser bug");
     }
 
     #[test]
@@ -2096,7 +2097,7 @@ mod tests {
             state
                 .flattened_chat_lines()
                 .iter()
-                .any(|line| line == "[SYSTEM] [EDITOR_CANCEL]")
+                .all(|line| line != "[SYSTEM] [EDITOR_CANCEL]")
         );
     }
 

@@ -6,7 +6,7 @@ use crate::pipeline::PipelineState;
 use crate::runtime::logging::{emit_debug, tui_logging_isolated};
 use crate::runtime::runtime_events::DebugLevel;
 use crate::specification_bridge::{
-    DiagnosisDomain, ImplementationPlanner, RepairPlanner, SpecificationContext, SpecificationKind,
+    ImplementationPlanner, RepairPlanner, SpecificationContext, SpecificationKind,
     StructuralDiagnosisRequest, classify_specification,
 };
 use crate::tui::runtime::RuntimeShellState;
@@ -108,10 +108,6 @@ pub fn handle_submit(
 }
 
 fn handle_specification_submit(state: &mut TuiState, input: String) {
-    state.event_queue.push(UiEvent::Pipeline {
-        state: "[SPEC_CONTEXT] status=started".to_string(),
-    });
-
     let context = match SpecificationContext::from_yaml(&input) {
         Ok(context) => context,
         Err(err) => {
@@ -126,40 +122,16 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     });
 
     let request = StructuralDiagnosisRequest::new(context);
-    let diagnosis_label = if request.domain == DiagnosisDomain::UserInterface {
-        "UI_DIAGNOSIS"
-    } else {
-        "STRUCTURAL_DIAGNOSIS"
-    };
-    state.event_queue.push(UiEvent::Pipeline {
-        state: format!("[{diagnosis_label}] status=started"),
-    });
     let diagnosis = request.diagnose();
     state.event_queue.push(UiEvent::StructuralDiagnosis {
         result: diagnosis.clone(),
     });
 
-    let repair_label = if request.domain == DiagnosisDomain::UserInterface {
-        "UI_REPAIR_PLAN"
-    } else {
-        "REPAIR_PLAN"
-    };
-    state.event_queue.push(UiEvent::Pipeline {
-        state: format!("[{repair_label}] status=started"),
-    });
     let repair_plan = RepairPlanner::generate(&diagnosis);
     state.event_queue.push(UiEvent::RepairPlan {
         plan: repair_plan.clone(),
     });
 
-    let implementation_label = if request.domain == DiagnosisDomain::UserInterface {
-        "UI_IMPLEMENTATION_PLAN"
-    } else {
-        "IMPLEMENTATION_PLAN"
-    };
-    state.event_queue.push(UiEvent::Pipeline {
-        state: format!("[{implementation_label}] status=started"),
-    });
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
     state.event_queue.push(UiEvent::ImplementationPlan {
         plan: implementation_plan,
@@ -370,19 +342,15 @@ rules:
         state.handle_ui_events();
 
         assert_eq!(core.seen_input.lock().expect("seen").as_deref(), None);
+        let lines = state.workspace.analysis_result.lines();
+        assert!(lines.contains(&"Diagnosis".to_string()));
+        assert!(lines.contains(&"Repair Plan".to_string()));
+        assert!(lines.contains(&"Implementation Plan".to_string()));
         assert!(
             state
                 .flattened_chat_lines()
                 .iter()
-                .any(|line| line.starts_with("[SPEC_CONTEXT]"))
-        );
-        assert_eq!(
-            state.workspace.pipeline.diagnosis,
-            crate::tui::workspace::PipelineStatus::Completed
-        );
-        assert_eq!(
-            state.workspace.pipeline.implementation_plan,
-            crate::tui::workspace::PipelineStatus::Completed
+                .all(|line| !line.contains("[SPEC_CONTEXT]"))
         );
     }
 

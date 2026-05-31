@@ -14,10 +14,8 @@ use crate::tui::rendering::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelCellOwner {
     Header,
-    Input,
-    Runtime,
-    Diff,
-    Task,
+    DesignSpecification,
+    AnalysisResult,
     Diagnostics,
     Status,
 }
@@ -37,10 +35,8 @@ pub fn runtime_panel_bounds(layout: &LayoutMetadata) -> Rect {
 pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
     let panels = [
         layout.header,
-        layout.input,
         layout.runtime,
         layout.diff,
-        layout.task,
         layout.diagnostics,
         layout.status,
     ];
@@ -60,10 +56,12 @@ pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
 pub fn cell_ownership_map(layout: &LayoutMetadata) -> Vec<(u16, u16, PanelCellOwner)> {
     let mut cells = Vec::new();
     push_owned_cells(&mut cells, layout.header, PanelCellOwner::Header);
-    push_owned_cells(&mut cells, layout.input, PanelCellOwner::Input);
-    push_owned_cells(&mut cells, layout.runtime, PanelCellOwner::Runtime);
-    push_owned_cells(&mut cells, layout.diff, PanelCellOwner::Diff);
-    push_owned_cells(&mut cells, layout.task, PanelCellOwner::Task);
+    push_owned_cells(
+        &mut cells,
+        layout.runtime,
+        PanelCellOwner::DesignSpecification,
+    );
+    push_owned_cells(&mut cells, layout.diff, PanelCellOwner::AnalysisResult);
     push_owned_cells(&mut cells, layout.diagnostics, PanelCellOwner::Diagnostics);
     push_owned_cells(&mut cells, layout.status, PanelCellOwner::Status);
     cells
@@ -100,10 +98,8 @@ impl SurfaceProjector {
         let immutable = &projection.frame;
         frame.render_widget(Clear, immutable.layout.viewport);
         render_header(frame, immutable);
-        render_specification_workspace(frame, immutable);
-        render_pipeline_workspace(frame, immutable);
-        render_task_workspace(frame, immutable);
-        render_editor(frame, immutable);
+        render_design_specification_pane(frame, immutable);
+        render_analysis_result_pane(frame, immutable);
         render_status_line(frame, immutable);
         render_diagnostics_overlay(frame, immutable);
         if let Some(cursor) = immutable.cursor {
@@ -129,19 +125,49 @@ fn render_header(frame: &mut Frame, immutable: &ImmutableFrame) {
     );
 }
 
-fn render_specification_workspace(frame: &mut Frame, immutable: &ImmutableFrame) {
+fn render_design_specification_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.runtime;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Specification Workspace ")
-        .border_style(active_border(snapshot.focus == Focus::Chat, false));
+        .title(" Design Specification ")
+        .border_style(active_border(snapshot.focus == Focus::Input, false));
+
+    let lines = if snapshot.editor.lines.is_empty() {
+        vec![Line::from("")]
+    } else {
+        snapshot
+            .editor
+            .lines
+            .iter()
+            .cloned()
+            .map(Line::from)
+            .collect::<Vec<_>>()
+    };
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    let area = immutable.layout.diff;
+    frame.render_widget(Clear, area);
+    let snapshot = &immutable.snapshot;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Analysis Result ")
+        .border_style(active_border(snapshot.focus == Focus::Design, false));
 
     let lines = snapshot
         .workspace
-        .specification
+        .analysis_result
         .lines()
         .into_iter()
         .map(Line::from)
@@ -158,85 +184,6 @@ fn render_specification_workspace(frame: &mut Frame, immutable: &ImmutableFrame)
             .wrap(Wrap { trim: false }),
         area,
     );
-}
-
-fn render_pipeline_workspace(frame: &mut Frame, immutable: &ImmutableFrame) {
-    let area = immutable.layout.diff;
-    frame.render_widget(Clear, area);
-    let snapshot = &immutable.snapshot;
-
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Pipeline Workspace ")
-        .border_style(active_border(snapshot.focus == Focus::Design, false));
-
-    let lines = snapshot
-        .workspace
-        .pipeline
-        .lines()
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn render_task_workspace(frame: &mut Frame, immutable: &ImmutableFrame) {
-    let area = immutable.layout.task;
-    frame.render_widget(Clear, area);
-    let snapshot = &immutable.snapshot;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(" Task Workspace ")
-        .border_style(active_border(false, false));
-
-    let lines = snapshot
-        .workspace
-        .tasks
-        .lines()
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
-
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
-        area,
-    );
-}
-
-fn render_editor(frame: &mut Frame, immutable: &ImmutableFrame) {
-    let area = immutable.layout.input;
-    frame.render_widget(Clear, area);
-    let snapshot = &immutable.snapshot;
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .title(format!(
-            " Specification Editor [{}] ",
-            snapshot.input.pipeline_label
-        ))
-        .border_style(active_border(snapshot.focus == Focus::Input, false));
-
-    let lines = if snapshot.editor.lines.is_empty() {
-        vec![Line::from("")]
-    } else {
-        snapshot
-            .editor
-            .lines
-            .iter()
-            .cloned()
-            .map(Line::from)
-            .collect::<Vec<_>>()
-    };
-    let paragraph = Paragraph::new(lines)
-        .block(block)
-        .wrap(Wrap { trim: false });
-    frame.render_widget(paragraph, area);
 }
 
 fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
@@ -419,7 +366,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         full_repaint(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Specification Workspace"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Design Specification"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
@@ -428,8 +375,8 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(!surface.contains("PREVIOUS_FRAME_RESIDUE"));
-        assert!(surface.contains("Specification Workspace"));
-        assert!(surface.contains("Pipeline Workspace"));
+        assert!(surface.contains("Design Specification"));
+        assert!(surface.contains("Analysis Result"));
     }
 
     #[test]
@@ -494,7 +441,7 @@ mod tests {
         let ownership = cell_ownership_map(&layout);
         let runtime_cells = ownership
             .iter()
-            .filter(|(_, _, owner)| *owner == PanelCellOwner::Runtime)
+            .filter(|(_, _, owner)| *owner == PanelCellOwner::DesignSpecification)
             .count();
         let unique_cells = ownership
             .iter()
@@ -648,9 +595,9 @@ mod tests {
 
         assert!(surface.contains("state=runtime idle"));
         assert!(surface.contains(&snapshot.status.line));
-        assert!(surface.contains("Specification Workspace"));
-        assert!(surface.contains("Pipeline Workspace"));
-        assert!(surface.contains("Task Workspace"));
+        assert!(surface.contains("Design Specification"));
+        assert!(surface.contains("Analysis Result"));
+        assert!(!surface.contains("Task Workspace"));
         assert!(!surface.contains("state=mutation in progress"));
     }
 
@@ -658,9 +605,9 @@ mod tests {
     fn runtime_panel_full_redraw() {
         let source = include_str!("render.rs");
         let runtime_fn = source
-            .split("fn render_specification_workspace")
+            .split("fn render_design_specification_pane")
             .nth(1)
-            .and_then(|rest| rest.split("fn render_pipeline_workspace").next())
+            .and_then(|rest| rest.split("fn render_analysis_result_pane").next())
             .expect("runtime function source");
 
         assert!(runtime_fn.contains("frame.render_widget(Clear, area);"));
@@ -677,7 +624,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Pipeline Workspace"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Analysis Result"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
@@ -686,8 +633,8 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(!surface.contains("STALE_DIFF_PANEL_TEXT"));
-        assert!(surface.contains("Pipeline Workspace"));
-        assert!(surface.contains("Task Workspace"));
+        assert!(surface.contains("Analysis Result"));
+        assert!(!surface.contains("Task Workspace"));
     }
 
     #[test]
@@ -705,17 +652,17 @@ mod tests {
         );
         assert_eq!(
             render_source
-                .matches("fn render_specification_workspace")
+                .matches("fn render_design_specification_pane")
                 .count(),
             1
         );
         assert_eq!(
             render_source
-                .matches("fn render_pipeline_workspace")
+                .matches("fn render_analysis_result_pane")
                 .count(),
             1
         );
-        assert_eq!(render_source.matches("fn render_task_workspace").count(), 1);
+        assert_eq!(render_source.matches("fn render_task_workspace").count(), 0);
     }
 
     #[test]
@@ -729,7 +676,7 @@ mod tests {
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
             render_source
-                .matches(".title(\" Specification Workspace \")")
+                .matches(".title(\" Design Specification \")")
                 .count(),
             1
         );
@@ -744,9 +691,9 @@ mod tests {
                 .expect("production render source"),
         );
         let runtime_fn = source
-            .split("fn render_specification_workspace")
+            .split("fn render_design_specification_pane")
             .nth(1)
-            .and_then(|rest| rest.split("fn render_pipeline_workspace").next())
+            .and_then(|rest| rest.split("fn render_analysis_result_pane").next())
             .expect("runtime function source");
 
         assert_eq!(
@@ -757,7 +704,7 @@ mod tests {
         );
         assert_eq!(runtime_fn.matches("frame.render_widget(").count(), 2);
         assert_eq!(runtime_fn.matches("Paragraph::new(lines)").count(), 1);
-        assert_eq!(runtime_fn.matches(".specification").count(), 1);
+        assert_eq!(runtime_fn.matches(".editor").count(), 2);
     }
 
     #[test]
@@ -773,7 +720,7 @@ mod tests {
 
         assert_eq!(
             render_source
-                .matches("fn render_specification_workspace")
+                .matches("fn render_design_specification_pane")
                 .count(),
             1
         );
@@ -793,7 +740,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         full_repaint(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Pipeline Workspace"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Analysis Result"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
