@@ -5,6 +5,10 @@ use crate::nl::normalization::normalize_runtime_input;
 use crate::pipeline::PipelineState;
 use crate::runtime::logging::{emit_debug, tui_logging_isolated};
 use crate::runtime::runtime_events::DebugLevel;
+use crate::specification_bridge::{
+    DiagnosisDomain, ImplementationPlanner, RepairPlanner, SpecificationContext, SpecificationKind,
+    StructuralDiagnosisRequest, classify_specification,
+};
 use crate::tui::runtime::RuntimeShellState;
 
 use super::state::{EventQueue, TuiState, UiEvent};
@@ -55,6 +59,13 @@ pub fn handle_submit(
     _working_dir: PathBuf,
 ) {
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
+    if matches!(
+        classify_specification(input.trim()),
+        SpecificationKind::DesignSpecification
+    ) {
+        handle_specification_submit(state, input);
+        return;
+    }
 
     // §7.1 §10.1: Transition to Thinking state before dispatch.
     // Runtime must never be silent — emit visible thinking event immediately.
@@ -94,6 +105,65 @@ pub fn handle_submit(
     if success && let Some(design) = response.design {
         state.update_design(design);
     }
+}
+
+fn handle_specification_submit(state: &mut TuiState, input: String) {
+    state.event_queue.push(UiEvent::Pipeline {
+        state: "[SPEC_CONTEXT] status=started".to_string(),
+    });
+
+    let context = match SpecificationContext::from_yaml(&input) {
+        Ok(context) => context,
+        Err(err) => {
+            state.event_queue.push(UiEvent::Error {
+                message: format!("specification rejected: {err}"),
+            });
+            return;
+        }
+    };
+    state.event_queue.push(UiEvent::SpecContext {
+        context: context.clone(),
+    });
+
+    let request = StructuralDiagnosisRequest::new(context);
+    let diagnosis_label = if request.domain == DiagnosisDomain::UserInterface {
+        "UI_DIAGNOSIS"
+    } else {
+        "STRUCTURAL_DIAGNOSIS"
+    };
+    state.event_queue.push(UiEvent::Pipeline {
+        state: format!("[{diagnosis_label}] status=started"),
+    });
+    let diagnosis = request.diagnose();
+    state.event_queue.push(UiEvent::StructuralDiagnosis {
+        result: diagnosis.clone(),
+    });
+
+    let repair_label = if request.domain == DiagnosisDomain::UserInterface {
+        "UI_REPAIR_PLAN"
+    } else {
+        "REPAIR_PLAN"
+    };
+    state.event_queue.push(UiEvent::Pipeline {
+        state: format!("[{repair_label}] status=started"),
+    });
+    let repair_plan = RepairPlanner::generate(&diagnosis);
+    state.event_queue.push(UiEvent::RepairPlan {
+        plan: repair_plan.clone(),
+    });
+
+    let implementation_label = if request.domain == DiagnosisDomain::UserInterface {
+        "UI_IMPLEMENTATION_PLAN"
+    } else {
+        "IMPLEMENTATION_PLAN"
+    };
+    state.event_queue.push(UiEvent::Pipeline {
+        state: format!("[{implementation_label}] status=started"),
+    });
+    let implementation_plan = ImplementationPlanner::generate(&repair_plan);
+    state.event_queue.push(UiEvent::ImplementationPlan {
+        plan: implementation_plan,
+    });
 }
 
 fn apply_core_response(
@@ -280,6 +350,39 @@ mod tests {
                 .flattened_chat_lines()
                 .iter()
                 .any(|line| line == "[RESULT] ok")
+        );
+    }
+
+    #[test]
+    fn design_spec_submit_runs_specification_pipeline_without_core_dispatch() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+        let spec = r#"system_name: DBM_REPL_UI
+
+goals:
+  - Separate input and output
+
+rules:
+  - Runtime must pass through AuditCore
+"#;
+
+        handle_submit(&mut state, &core, spec.to_string(), ".".into());
+        state.handle_ui_events();
+
+        assert_eq!(core.seen_input.lock().expect("seen").as_deref(), None);
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line.starts_with("[SPEC_CONTEXT]"))
+        );
+        assert_eq!(
+            state.workspace.pipeline.diagnosis,
+            crate::tui::workspace::PipelineStatus::Completed
+        );
+        assert_eq!(
+            state.workspace.pipeline.implementation_plan,
+            crate::tui::workspace::PipelineStatus::Completed
         );
     }
 

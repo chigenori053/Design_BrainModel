@@ -229,8 +229,23 @@ rules:
         stderr.contains("[REPAIR_PLANNING]\nstatus=completed"),
         "stderr: {stderr}"
     );
+    assert!(
+        stderr.contains("[IMPLEMENTATION_PLANNING]\nstatus=started"),
+        "stderr: {stderr}"
+    );
+    assert!(stderr.contains("[IMPLEMENTATION_TASK]"), "stderr: {stderr}");
+    assert!(stderr.contains("[VALIDATION_PLAN]"), "stderr: {stderr}");
+    assert!(
+        stderr.contains("[IMPLEMENTATION_PLANNING]\nstatus=completed"),
+        "stderr: {stderr}"
+    );
     assert!(stdout.contains("Repair Suggestions:"), "stdout: {stdout}");
     assert!(stdout.contains("Enforce ApplyGate"), "stdout: {stdout}");
+    assert!(stdout.contains("Implementation Plan"), "stdout: {stdout}");
+    assert!(
+        stdout.contains("Route mutation through ApplyGate"),
+        "stdout: {stdout}"
+    );
 }
 
 // CATEGORY: E2E

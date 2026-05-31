@@ -23,8 +23,8 @@ use crate::runtime::shell::{
 };
 use crate::session::AgentSession;
 use crate::specification_bridge::{
-    DesignSpecificationRecognizer, RepairPlan, RepairPlanner, SpecificationContext,
-    SpecificationKind, classify_specification,
+    DesignSpecificationRecognizer, DiagnosisDomain, ImplementationPlan, ImplementationPlanner,
+    RepairPlan, RepairPlanner, SpecificationContext, SpecificationKind, classify_specification,
 };
 use crate::state::State;
 use crate::tui::composer::ComposerViewState;
@@ -507,14 +507,24 @@ fn dispatch_captured_specification<W: Write>(
 
             let request =
                 crate::specification_bridge::StructuralDiagnosisRequest::new(context.clone());
-            eprintln!("[STRUCTURAL_DIAGNOSIS]\nstatus=started");
+            let diagnosis_label = if request.domain == DiagnosisDomain::UserInterface {
+                "UI_DIAGNOSIS"
+            } else {
+                "STRUCTURAL_DIAGNOSIS"
+            };
+            eprintln!("[{diagnosis_label}]\nstatus=started");
             let result = request.diagnose();
             eprintln!(
-                "[STRUCTURAL_DIAGNOSIS]\nstatus=completed\nviolations={}\nwarnings={}",
+                "[{diagnosis_label}]\nstatus=completed\nviolations={}\nwarnings={}",
                 result.violations.len(),
                 result.warnings.len()
             );
-            eprintln!("[REPAIR_PLANNING]\nstatus=started");
+            let repair_label = if request.domain == DiagnosisDomain::UserInterface {
+                "UI_REPAIR_PLAN"
+            } else {
+                "REPAIR_PLANNING"
+            };
+            eprintln!("[{repair_label}]\nstatus=started");
             let repair_plan = RepairPlanner::generate(&result);
             for suggestion in &repair_plan.suggestions {
                 eprintln!(
@@ -523,16 +533,30 @@ fn dispatch_captured_specification<W: Write>(
                 );
             }
             eprintln!(
-                "[REPAIR_PLAN]\nsuggestions={}\nsteps={}",
+                "[{repair_label}]\nsuggestions={}\nsteps={}",
                 repair_plan.suggestions.len(),
                 repair_plan.execution_steps.len()
             );
-            eprintln!("[REPAIR_PLANNING]\nstatus=completed");
+            if request.domain != DiagnosisDomain::UserInterface {
+                eprintln!(
+                    "[REPAIR_PLAN]\nsuggestions={}\nsteps={}",
+                    repair_plan.suggestions.len(),
+                    repair_plan.execution_steps.len()
+                );
+            }
+            eprintln!("[{repair_label}]\nstatus=completed");
+            let implementation_plan = ImplementationPlanner::generate(&repair_plan);
+            let implementation_label = if request.domain == DiagnosisDomain::UserInterface {
+                "UI_IMPLEMENTATION_PLAN"
+            } else {
+                "IMPLEMENTATION_PLAN"
+            };
 
             writeln!(writer, "[SPEC_CONTEXT] generated").map_err(|err| err.to_string())?;
             writeln!(
                 writer,
-                "[STRUCTURAL_DIAGNOSIS] violations={} warnings={}",
+                "[{}] violations={} warnings={}",
+                diagnosis_label,
                 result.violations.len(),
                 result.warnings.len()
             )
@@ -555,7 +579,12 @@ fn dispatch_captured_specification<W: Write>(
                         .map_err(|err| err.to_string())?;
                 }
             }
-            render_repair_plan(writer, &repair_plan)?;
+            render_repair_plan_with_label(writer, &repair_plan, repair_label)?;
+            render_implementation_plan_with_label(
+                writer,
+                &implementation_plan,
+                implementation_label,
+            )?;
 
             *pending_specification = Some(context);
         }
@@ -564,12 +593,17 @@ fn dispatch_captured_specification<W: Write>(
     Ok(())
 }
 
-fn render_repair_plan<W: Write>(writer: &mut W, repair_plan: &RepairPlan) -> Result<(), String> {
+fn render_repair_plan_with_label<W: Write>(
+    writer: &mut W,
+    repair_plan: &RepairPlan,
+    label: &str,
+) -> Result<(), String> {
     if repair_plan.suggestions.is_empty() && repair_plan.execution_steps.is_empty() {
         return Ok(());
     }
 
     writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "[{label}] generated").map_err(|err| err.to_string())?;
     writeln!(writer, "Repair Suggestions:").map_err(|err| err.to_string())?;
     for suggestion in &repair_plan.suggestions {
         writeln!(writer).map_err(|err| err.to_string())?;
@@ -584,6 +618,53 @@ fn render_repair_plan<W: Write>(writer: &mut W, repair_plan: &RepairPlan) -> Res
     writeln!(writer, "Steps:").map_err(|err| err.to_string())?;
     for step in &repair_plan.execution_steps {
         writeln!(writer, "{}. {}", step.order, step.description).map_err(|err| err.to_string())?;
+    }
+
+    Ok(())
+}
+
+fn render_implementation_plan_with_label<W: Write>(
+    writer: &mut W,
+    implementation_plan: &ImplementationPlan,
+    label: &str,
+) -> Result<(), String> {
+    if implementation_plan.tasks.is_empty()
+        && implementation_plan.file_modifications.is_empty()
+        && implementation_plan.validations.is_empty()
+    {
+        return Ok(());
+    }
+
+    writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "[{label}] generated").map_err(|err| err.to_string())?;
+    writeln!(writer, "Implementation Plan").map_err(|err| err.to_string())?;
+    writeln!(writer).map_err(|err| err.to_string())?;
+
+    writeln!(writer, "Tasks:").map_err(|err| err.to_string())?;
+    for task in &implementation_plan.tasks {
+        writeln!(writer, "- {}", task.title).map_err(|err| err.to_string())?;
+    }
+
+    writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "Files:").map_err(|err| err.to_string())?;
+    if implementation_plan.file_modifications.is_empty() {
+        writeln!(writer, "- none").map_err(|err| err.to_string())?;
+    } else {
+        for file_plan in &implementation_plan.file_modifications {
+            writeln!(writer, "- {}: {}", file_plan.target_file, file_plan.action)
+                .map_err(|err| err.to_string())?;
+        }
+    }
+
+    writeln!(writer).map_err(|err| err.to_string())?;
+    writeln!(writer, "Validation:").map_err(|err| err.to_string())?;
+    for validation in &implementation_plan.validations {
+        writeln!(
+            writer,
+            "- {}: {}",
+            validation.validation_type, validation.description
+        )
+        .map_err(|err| err.to_string())?;
     }
 
     Ok(())
@@ -2032,6 +2113,16 @@ rules:
         assert!(output.contains("Introduce AuditGateway"), "{output}");
         assert!(output.contains("Enforce ApplyGate"), "{output}");
         assert!(output.contains("Steps:"), "{output}");
+        assert!(output.contains("Implementation Plan"), "{output}");
+        assert!(
+            output.contains("Create AuditGateway abstraction"),
+            "{output}"
+        );
+        assert!(
+            output.contains("Route mutation through ApplyGate"),
+            "{output}"
+        );
+        assert!(output.contains("Validation:"), "{output}");
     }
 
     // CATEGORY: REPL_ROUTING

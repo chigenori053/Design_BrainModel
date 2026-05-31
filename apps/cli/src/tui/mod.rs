@@ -6,6 +6,7 @@ pub mod confidence_rank;
 pub mod core;
 pub mod cross_domain_governance;
 pub mod edit_block;
+pub mod foundation;
 pub mod git_governance;
 pub mod governance_observability;
 pub mod governed_execution;
@@ -22,6 +23,7 @@ pub mod review_batch;
 pub mod runtime;
 pub mod state;
 pub mod temporal_cognition;
+pub mod workspace;
 pub mod workspace_launcher;
 
 use std::time::Duration;

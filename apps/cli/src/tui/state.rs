@@ -22,12 +22,14 @@ use crate::runtime::runtime_events::DebugEvent;
 use crate::runtime::synthesis::ArchitectureMemory;
 use crate::tui::input::{PersistentInputHistory, complete_command};
 use crate::tui::runtime::RuntimeShellState;
+use crate::tui::workspace::{WorkspaceProjector, WorkspaceState};
 
 use super::model::UiPayload;
 
 pub const MAX_CHAT_LINES: usize = 1000;
 pub const MAX_EVENTS: usize = 2000;
 pub const DESIGN_MAX_LINES: usize = 20;
+pub const MAX_SPEC_LINES: usize = 2000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
@@ -215,6 +217,18 @@ pub enum UiEvent {
     Pipeline {
         state: String,
     },
+    SpecContext {
+        context: crate::specification_bridge::SpecificationContext,
+    },
+    StructuralDiagnosis {
+        result: crate::specification_bridge::StructuralDiagnosisResult,
+    },
+    RepairPlan {
+        plan: crate::specification_bridge::RepairPlan,
+    },
+    ImplementationPlan {
+        plan: crate::specification_bridge::ImplementationPlan,
+    },
     Runtime {
         message: String,
     },
@@ -265,6 +279,10 @@ impl UiEvent {
             Self::DesignUpdate { .. } => "DESIGN",
             Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
+            Self::SpecContext { .. } => "SPEC_CONTEXT",
+            Self::StructuralDiagnosis { .. } => "STRUCTURAL_DIAGNOSIS",
+            Self::RepairPlan { .. } => "REPAIR_PLAN",
+            Self::ImplementationPlan { .. } => "IMPLEMENTATION_PLAN",
             Self::Runtime { .. } => "RUNTIME",
             Self::Apply { .. } => "APPLY",
             Self::Rollback { .. } => "ROLLBACK",
@@ -299,6 +317,29 @@ impl UiEvent {
             Self::DesignUpdate { summary, score } => format!("Score: {score:.2}\n- {summary}"),
             Self::DesignDiff { changes } => changes.join("\n"),
             Self::Pipeline { state } => state.clone(),
+            Self::SpecContext { context } => format!(
+                "system_name={}\ngoals={}\nconstraints={}\ncomponents={}\nrules={}",
+                context.system_name.as_deref().unwrap_or("(none)"),
+                context.goals.len(),
+                context.constraints.len(),
+                context.architecture.len(),
+                context.rules.len()
+            ),
+            Self::StructuralDiagnosis { result } => format!(
+                "violations={} warnings={}",
+                result.violations.len(),
+                result.warnings.len()
+            ),
+            Self::RepairPlan { plan } => format!(
+                "suggestions={} steps={}",
+                plan.suggestions.len(),
+                plan.execution_steps.len()
+            ),
+            Self::ImplementationPlan { plan } => format!(
+                "tasks={} validations={}",
+                plan.tasks.len(),
+                plan.validations.len()
+            ),
             Self::Apply { summary } => summary.clone(),
             Self::Rollback { summary } => summary.clone(),
             Self::System { summary } => summary.clone(),
@@ -498,6 +539,205 @@ impl InputBuffer {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpecificationEditor {
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+}
+
+impl Default for SpecificationEditor {
+    fn default() -> Self {
+        Self {
+            lines: vec![
+                "system_name:".to_string(),
+                String::new(),
+                "goals:".to_string(),
+                String::new(),
+                "constraints:".to_string(),
+                String::new(),
+                "architecture:".to_string(),
+                String::new(),
+                "rules:".to_string(),
+            ],
+            cursor_row: 0,
+            cursor_col: "system_name:".len(),
+        }
+    }
+}
+
+impl SpecificationEditor {
+    pub fn insert_char(&mut self, ch: char) {
+        self.ensure_editable_line();
+        let row = self.cursor_row;
+        let col = self.cursor_col.min(self.lines[row].len());
+        self.lines[row].insert(col, ch);
+        self.cursor_col = col + ch.len_utf8();
+    }
+
+    pub fn insert_newline(&mut self) {
+        if self.lines.len() >= MAX_SPEC_LINES {
+            return;
+        }
+        self.ensure_editable_line();
+        let row = self.cursor_row;
+        let col = self.cursor_col.min(self.lines[row].len());
+        let remainder = self.lines[row].split_off(col);
+        self.lines.insert(row + 1, remainder);
+        self.cursor_row = row + 1;
+        self.cursor_col = 0;
+    }
+
+    pub fn backspace(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.clamp_cursor();
+        if self.cursor_col == 0 {
+            if self.cursor_row == 0 {
+                return;
+            }
+            let current = self.lines.remove(self.cursor_row);
+            self.cursor_row -= 1;
+            self.cursor_col = self.lines[self.cursor_row].len();
+            self.lines[self.cursor_row].push_str(&current);
+            return;
+        }
+        let line = &mut self.lines[self.cursor_row];
+        if let Some((idx, _)) = line[..self.cursor_col].char_indices().next_back() {
+            line.replace_range(idx..self.cursor_col, "");
+            self.cursor_col = idx;
+        }
+    }
+
+    pub fn delete(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.clamp_cursor();
+        let row = self.cursor_row;
+        if self.cursor_col >= self.lines[row].len() {
+            if row + 1 < self.lines.len() {
+                let next = self.lines.remove(row + 1);
+                self.lines[row].push_str(&next);
+            }
+            return;
+        }
+        let next = self.lines[row][self.cursor_col..]
+            .char_indices()
+            .nth(1)
+            .map(|(offset, _)| self.cursor_col + offset)
+            .unwrap_or(self.lines[row].len());
+        self.lines[row].replace_range(self.cursor_col..next, "");
+    }
+
+    pub fn move_left(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.clamp_cursor();
+        if self.cursor_col == 0 {
+            if self.cursor_row > 0 {
+                self.cursor_row -= 1;
+                self.cursor_col = self.lines[self.cursor_row].len();
+            }
+            return;
+        }
+        if let Some((idx, _)) = self.lines[self.cursor_row][..self.cursor_col]
+            .char_indices()
+            .next_back()
+        {
+            self.cursor_col = idx;
+        }
+    }
+
+    pub fn move_right(&mut self) {
+        if self.lines.is_empty() {
+            return;
+        }
+        self.clamp_cursor();
+        let line_len = self.lines[self.cursor_row].len();
+        if self.cursor_col >= line_len {
+            if self.cursor_row + 1 < self.lines.len() {
+                self.cursor_row += 1;
+                self.cursor_col = 0;
+            }
+            return;
+        }
+        self.cursor_col = self.lines[self.cursor_row][self.cursor_col..]
+            .char_indices()
+            .nth(1)
+            .map(|(offset, _)| self.cursor_col + offset)
+            .unwrap_or(line_len);
+    }
+
+    pub fn move_up(&mut self) {
+        if self.cursor_row > 0 {
+            self.cursor_row -= 1;
+            self.clamp_cursor();
+        }
+    }
+
+    pub fn move_down(&mut self) {
+        if self.cursor_row + 1 < self.lines.len() {
+            self.cursor_row += 1;
+            self.clamp_cursor();
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.lines.clear();
+        self.cursor_row = 0;
+        self.cursor_col = 0;
+    }
+
+    pub fn text(&self) -> String {
+        self.lines.join("\n")
+    }
+
+    pub fn line_count(&self) -> usize {
+        self.lines.len().max(1)
+    }
+
+    pub fn char_count(&self) -> usize {
+        self.text().chars().count()
+    }
+
+    fn ensure_editable_line(&mut self) {
+        if self.lines.is_empty() {
+            self.lines.push(String::new());
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+        }
+        self.clamp_cursor();
+    }
+
+    fn clamp_cursor(&mut self) {
+        if self.lines.is_empty() {
+            self.cursor_row = 0;
+            self.cursor_col = 0;
+            return;
+        }
+        self.cursor_row = self.cursor_row.min(self.lines.len() - 1);
+        self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorState {
+    pub editor: SpecificationEditor,
+    pub editing: bool,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        Self {
+            editor: SpecificationEditor::default(),
+            editing: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ChatState {
     pub events: Vec<UiEvent>,
@@ -565,9 +805,11 @@ pub struct TuiState {
     pub chat: ChatState,
     pub design_doc: DesignDocument,
     pub input: InputBuffer,
+    pub editor_state: EditorState,
     pub focus: Focus,
     pub chat_scroll: ChatScrollState,
     pub event_queue: EventQueue,
+    pub workspace: WorkspaceState,
     pub pipeline_state: PipelineState,
     pub session: SessionState,
     pub design_scroll: usize,
@@ -634,9 +876,11 @@ impl TuiState {
             },
             design_doc,
             input: InputBuffer::default(),
+            editor_state: EditorState::default(),
             focus: Focus::Input,
             chat_scroll: ChatScrollState::default(),
             event_queue: EventQueue::default(),
+            workspace: WorkspaceState::default(),
             pipeline_state: PipelineState::default(),
             session: SessionState::default(),
             design_scroll: 0,
@@ -726,8 +970,13 @@ impl TuiState {
                 return TuiAction::Quit;
             }
             KeyCode::Esc => {
-                if self.focus == Focus::Input && !self.input.text.is_empty() {
+                if self.focus == Focus::Input {
+                    self.editor_state.editor.clear();
+                    self.editor_state.editing = true;
                     self.input.clear();
+                    self.enqueue_event(UiEvent::System {
+                        summary: "[EDITOR_CANCEL]".to_string(),
+                    });
                     return TuiAction::None;
                 }
                 return TuiAction::Quit;
@@ -735,6 +984,7 @@ impl TuiState {
             KeyCode::Tab => {
                 let prev_focus = self.focus;
                 if self.focus == Focus::Input
+                    && !self.editor_state.editing
                     && let Some(completed) = complete_command(&self.input.text)
                 {
                     self.input.set_text(completed);
@@ -783,6 +1033,7 @@ impl TuiState {
         // Phase 4.5: proposal capture and history tracking removed — state lives
         // in Core.  Only UI-side effects (diffs, filter) are applied here.
         self.apply_event_to_session(&event);
+        WorkspaceProjector::project(&mut self.workspace, &event);
         self.sync_projection_authority();
         self.chat.append_chat(event);
         self.chat_scroll.apply_append();
@@ -999,74 +1250,87 @@ impl TuiState {
 
     fn handle_input_key(&mut self, key: KeyEvent) -> TuiAction {
         match key.code {
+            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                let submitted = self.editor_state.editor.text();
+                let trimmed = submitted.trim().to_string();
+                if trimmed.is_empty() {
+                    return TuiAction::None;
+                }
+                self.enqueue_event(UiEvent::System {
+                    summary: format!(
+                        "[EDITOR_SUBMIT]\nlines={}\nchars={}",
+                        self.editor_state.editor.line_count(),
+                        self.editor_state.editor.char_count()
+                    ),
+                });
+                if matches!(trimmed.as_str(), "/exit" | "/quit") {
+                    self.editor_state.editor.clear();
+                    return TuiAction::Quit;
+                }
+                if trimmed == "/save design" {
+                    self.history.push(trimmed);
+                    self.history_cursor = None;
+                    self.editor_state.editor.clear();
+                    return TuiAction::SaveDesign;
+                }
+                self.record_history(trimmed.clone());
+                self.history_cursor = None;
+                self.editor_state.editor.clear();
+                self.update_runtime_intent_state(&trimmed);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
+                }
+                TuiAction::Submit(submitted)
+            }
             KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.input.insert_newline();
+                self.editor_state.editor.insert_newline();
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation = Some("insert_newline()".to_string());
+                }
                 TuiAction::None
             }
             KeyCode::Enter => {
-                let submitted = self.input.text.trim().to_string();
-                if submitted.is_empty() {
-                    return TuiAction::None;
-                }
-                if matches!(submitted.as_str(), "/exit" | "/quit") {
-                    self.input.clear();
-                    return TuiAction::Quit;
-                }
-                if submitted == "/save design" {
-                    self.history.push(submitted);
-                    self.history_cursor = None;
-                    self.input.clear();
-                    return TuiAction::SaveDesign;
-                }
-                self.record_history(submitted.clone());
-                self.history_cursor = None;
-                self.input.clear();
-                self.update_runtime_intent_state(&submitted);
+                self.editor_state.editor.insert_newline();
                 if self.diagnostic_mode {
-                    self.diagnostics.last_mutation = Some(format!("submit('{}')", submitted));
+                    self.diagnostics.last_mutation = Some("insert_newline()".to_string());
                 }
-                self.enqueue_event(UiEvent::Next {
-                    actions: vec![submitted.clone()],
-                });
-                TuiAction::Submit(submitted)
+                TuiAction::None
             }
             KeyCode::Backspace => {
-                self.input.backspace();
+                self.editor_state.editor.backspace();
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation = Some("backspace()".to_string());
                 }
                 TuiAction::None
             }
             KeyCode::Delete => {
-                self.input.delete();
+                self.editor_state.editor.delete();
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation = Some("delete()".to_string());
                 }
                 TuiAction::None
             }
             KeyCode::Left => {
-                self.input.move_left();
+                self.editor_state.editor.move_left();
                 TuiAction::None
             }
             KeyCode::Right => {
-                self.input.move_right();
+                self.editor_state.editor.move_right();
                 TuiAction::None
             }
             KeyCode::Up => {
-                self.history_previous();
+                self.editor_state.editor.move_up();
                 TuiAction::None
             }
             KeyCode::Down => {
-                self.history_next();
+                self.editor_state.editor.move_down();
                 TuiAction::None
             }
             KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
-                if self.input.line_count() < 3 || ch != '\n' {
-                    self.input.insert_char(ch);
-                    if self.diagnostic_mode {
-                        self.diagnostics.last_mutation =
-                            Some(format!("insert_char('{}')", ch.escape_debug()));
-                    }
+                self.editor_state.editor.insert_char(ch);
+                if self.diagnostic_mode {
+                    self.diagnostics.last_mutation =
+                        Some(format!("insert_char('{}')", ch.escape_debug()));
                 }
                 TuiAction::None
             }
@@ -1145,32 +1409,6 @@ impl TuiState {
             _ => {}
         }
         TuiAction::None
-    }
-
-    fn history_previous(&mut self) {
-        if self.history.is_empty() {
-            return;
-        }
-        let idx = self
-            .history_cursor
-            .map(|idx| idx.saturating_sub(1))
-            .unwrap_or_else(|| self.history.len().saturating_sub(1));
-        self.history_cursor = Some(idx);
-        self.input.set_text(self.history[idx].clone());
-    }
-
-    fn history_next(&mut self) {
-        let Some(idx) = self.history_cursor else {
-            return;
-        };
-        if idx + 1 >= self.history.len() {
-            self.history_cursor = None;
-            self.input.clear();
-        } else {
-            let next = idx + 1;
-            self.history_cursor = Some(next);
-            self.input.set_text(self.history[next].clone());
-        }
     }
 
     fn record_history(&mut self, submitted: String) {
@@ -1437,17 +1675,19 @@ mod tests {
     }
 
     #[test]
-    fn input_submit_queues_next_event_and_history() {
+    fn editor_ctrl_d_submits_and_records_history() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         for ch in "fix parser bug".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action = state.handle_key_event(key(KeyCode::Enter));
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
 
         assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
         assert_eq!(state.history, vec!["fix parser bug"]);
-        assert!(state.input.text.is_empty());
+        assert!(state.editor_state.editor.lines.is_empty());
         assert!(!state.event_queue.is_empty());
 
         state.handle_ui_events();
@@ -1455,13 +1695,14 @@ mod tests {
             state
                 .flattened_chat_lines()
                 .iter()
-                .any(|line| line == "[INTENT] fix parser bug")
+                .any(|line| line == "[SYSTEM] [EDITOR_SUBMIT]")
         );
     }
 
     #[test]
-    fn input_tab_completes_runtime_command_when_prefix_exists() {
+    fn editor_tab_changes_focus_without_command_completion() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         for ch in "git s".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
@@ -1469,8 +1710,8 @@ mod tests {
         let action = state.handle_key_event(key(KeyCode::Tab));
 
         assert_eq!(action, TuiAction::None);
-        assert_eq!(state.input.text, "git status");
-        assert_eq!(state.focus, Focus::Input);
+        assert_eq!(state.editor_state.editor.text(), "git s");
+        assert_eq!(state.focus, Focus::Chat);
     }
 
     #[test]
@@ -1479,11 +1720,13 @@ mod tests {
         let path = temp.path().join(".dbm/cli_history");
         let mut state = TuiState::new(empty_payload());
         state.enable_persistent_history(path.clone());
+        state.editor_state.editor.clear();
         for ch in "preview parser.rs".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action = state.handle_key_event(key(KeyCode::Enter));
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
 
         assert_eq!(action, TuiAction::Submit("preview parser.rs".to_string()));
         assert_eq!(
@@ -1495,11 +1738,13 @@ mod tests {
     #[test]
     fn save_design_command_is_ui_action() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         for ch in "/save design".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action = state.handle_key_event(key(KeyCode::Enter));
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
 
         assert_eq!(action, TuiAction::SaveDesign);
         assert_eq!(state.history, vec!["/save design"]);
@@ -1749,11 +1994,13 @@ mod tests {
     #[test]
     fn runtime_status_tracks_target_language_and_state() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         for ch in "parser.rs を preview".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action = state.handle_key_event(key(KeyCode::Enter));
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
 
         assert_eq!(
             action,
@@ -1783,13 +2030,89 @@ mod tests {
     #[test]
     fn shift_enter_allows_up_to_three_input_lines() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         state.handle_key_event(key(KeyCode::Char('a')));
         for _ in 0..4 {
             state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
             state.handle_key_event(key(KeyCode::Char('b')));
         }
 
-        assert_eq!(state.input.line_count(), 3);
+        assert_eq!(state.editor_state.editor.line_count(), 5);
+    }
+
+    #[test]
+    fn editor_arrow_keys_move_cursor_across_lines() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "abc".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+        state.handle_key_event(key(KeyCode::Enter));
+        for ch in "de".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        state.handle_key_event(key(KeyCode::Up));
+        assert_eq!(state.editor_state.editor.cursor_row, 0);
+        assert_eq!(state.editor_state.editor.cursor_col, 2);
+
+        state.handle_key_event(key(KeyCode::Down));
+        assert_eq!(state.editor_state.editor.cursor_row, 1);
+        assert_eq!(state.editor_state.editor.cursor_col, 2);
+
+        state.handle_key_event(key(KeyCode::Left));
+        assert_eq!(state.editor_state.editor.cursor_col, 1);
+        state.handle_key_event(key(KeyCode::Right));
+        assert_eq!(state.editor_state.editor.cursor_col, 2);
+    }
+
+    #[test]
+    fn editor_backspace_at_line_start_joins_previous_line() {
+        let mut editor = SpecificationEditor {
+            lines: vec!["abc".to_string(), "def".to_string()],
+            cursor_row: 1,
+            cursor_col: 0,
+        };
+
+        editor.backspace();
+
+        assert_eq!(editor.lines, vec!["abcdef".to_string()]);
+        assert_eq!(editor.cursor_row, 0);
+        assert_eq!(editor.cursor_col, 3);
+    }
+
+    #[test]
+    fn editor_escape_clears_buffer_and_logs_cancel() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        state.handle_key_event(key(KeyCode::Char('x')));
+
+        let action = state.handle_key_event(key(KeyCode::Esc));
+
+        assert_eq!(action, TuiAction::None);
+        assert!(state.editor_state.editor.lines.is_empty());
+        state.handle_ui_events();
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line == "[SYSTEM] [EDITOR_CANCEL]")
+        );
+    }
+
+    #[test]
+    fn editor_accepts_large_specification_until_max_lines() {
+        let mut editor = SpecificationEditor {
+            lines: vec![String::new()],
+            cursor_row: 0,
+            cursor_col: 0,
+        };
+
+        for _ in 1..(MAX_SPEC_LINES + 10) {
+            editor.insert_newline();
+        }
+
+        assert_eq!(editor.lines.len(), MAX_SPEC_LINES);
     }
 
     #[test]
@@ -1902,8 +2225,9 @@ mod tests {
     }
 
     #[test]
-    fn queued_event_does_not_interfere_with_input_buffer() {
+    fn queued_event_does_not_interfere_with_editor_buffer() {
         let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
         for ch in "typing".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
@@ -1913,7 +2237,7 @@ mod tests {
         });
         state.handle_ui_events();
 
-        assert_eq!(state.input.text, "typing");
+        assert_eq!(state.editor_state.editor.text(), "typing");
         assert!(
             state
                 .flattened_chat_lines()

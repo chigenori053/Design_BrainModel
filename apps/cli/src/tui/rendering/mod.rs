@@ -6,6 +6,7 @@ use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{
     Focus, RuntimeNarrativeEvent, TuiState, contains_runtime_reference, sanitize_line,
 };
+use crate::tui::workspace::WorkspaceState;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RenderSnapshot {
@@ -13,6 +14,8 @@ pub struct RenderSnapshot {
     pub runtime: RuntimeProjection,
     pub status: StatusModel,
     pub input: InputModel,
+    pub editor: EditorModel,
+    pub workspace: WorkspaceState,
     pub focus: Focus,
     pub identity: RuntimeIdentity,
     pub is_expanded: bool,
@@ -141,6 +144,14 @@ pub struct InputModel {
     pub cursor: usize,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct EditorModel {
+    pub lines: Vec<String>,
+    pub cursor_row: usize,
+    pub cursor_col: usize,
+    pub editing: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LayoutMetadata {
     pub viewport: Rect,
@@ -148,6 +159,7 @@ pub struct LayoutMetadata {
     pub input: Rect,
     pub runtime: Rect,
     pub diff: Rect,
+    pub task: Rect,
     pub diagnostics: Rect,
     pub status: Rect,
 }
@@ -160,25 +172,26 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
         let cols = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(40), Constraint::Length(diag_width)])
-            .split(rows[2]);
+            .split(rows[1]);
         (cols[0], cols[1])
     } else {
-        (rows[2], Rect::new(0, 0, 0, 0))
+        (rows[1], Rect::new(0, 0, 0, 0))
     };
 
-    let middle = Layout::default()
+    let top = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(38), Constraint::Percentage(62)])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(middle_rect);
 
     LayoutMetadata {
         viewport: area,
         header: rows[0],
-        input: rows[1],
-        runtime: middle[0],
-        diff: middle[1],
+        runtime: top[0],
+        diff: top[1],
+        task: rows[2],
+        input: rows[3],
         diagnostics: diag_rect,
-        status: rows[3],
+        status: rows[4],
     }
 }
 
@@ -187,8 +200,9 @@ fn layout_rows(area: Rect) -> std::rc::Rc<[Rect]> {
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1),
-            Constraint::Length(5),
-            Constraint::Min(8),
+            Constraint::Percentage(40),
+            Constraint::Percentage(25),
+            Constraint::Percentage(35),
             Constraint::Length(1),
         ])
         .split(area)
@@ -279,6 +293,13 @@ impl From<&TuiState> for RenderSnapshot {
                 text: sanitize_line(&state.input.text).unwrap_or_default(),
                 cursor: state.input.cursor.min(state.input.text.len()),
             },
+            editor: EditorModel {
+                lines: state.editor_state.editor.lines.clone(),
+                cursor_row: state.editor_state.editor.cursor_row,
+                cursor_col: state.editor_state.editor.cursor_col,
+                editing: state.editor_state.editing,
+            },
+            workspace: state.workspace.clone(),
             focus: state.focus,
             identity: RuntimeIdentity::default(),
             is_expanded: state.narrative_expanded,
@@ -686,27 +707,14 @@ fn cursor_model(snapshot: &RenderSnapshot, input_area: Rect) -> Option<CursorMod
     let inner_y = input_area.y.saturating_add(1);
     let inner_width = input_area.width.saturating_sub(2);
     let inner_height = input_area.height.saturating_sub(2);
-    let (row, col) = input_cursor_position(&snapshot.input.text, snapshot.input.cursor);
-    let x = inner_x.saturating_add(2).saturating_add(col as u16);
+    let row = snapshot.editor.cursor_row;
+    let col = snapshot.editor.cursor_col;
+    let x = inner_x.saturating_add(col as u16);
     let y = inner_y.saturating_add(row as u16);
     if col as u16 >= inner_width || row as u16 >= inner_height {
         return None;
     }
     Some(CursorModel { x, y })
-}
-
-fn input_cursor_position(text: &str, cursor: usize) -> (usize, usize) {
-    let mut row = 0;
-    let mut col = 0;
-    for ch in text[..cursor.min(text.len())].chars() {
-        if ch == '\n' {
-            row += 1;
-            col = 0;
-        } else {
-            col += 1;
-        }
-    }
-    (row, col)
 }
 
 fn sanitize_lines(lines: Vec<String>) -> Vec<String> {

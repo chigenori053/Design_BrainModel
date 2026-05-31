@@ -21,6 +21,10 @@ struct Cli {
     #[arg(long, global = true)]
     repl: bool,
 
+    /// Start the Phase1 DBM TUI foundation.
+    #[arg(long, global = true)]
+    tui: bool,
+
     #[arg(long, global = true)]
     diagnostic_input: bool,
 
@@ -170,6 +174,13 @@ fn main() {
         }
     };
     let Some(command) = cli.command.as_ref() else {
+        if cli.tui {
+            if let Err(err) = design_cli::tui::foundation::run_phase1_tui() {
+                eprintln!("{err}");
+                std::process::exit(1);
+            }
+            return;
+        }
         if cli.repl {
             run_runtime_repl();
             return;
@@ -180,6 +191,14 @@ fn main() {
 
     if cli.repl {
         run_runtime_repl();
+        return;
+    }
+
+    if cli.tui {
+        if let Err(err) = design_cli::tui::foundation::run_phase1_tui() {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
         return;
     }
 
@@ -450,6 +469,7 @@ Advanced:
   help           Print this message or the help of the given subcommand(s)
 
 Options:
+  --tui         Start the Phase1 DBM TUI foundation
   -h, --help     Print help
   -V, --version  Print version
 
@@ -457,6 +477,7 @@ Examples:
   design_cli analyze .
   design_cli coding . --check
   design_cli structure view .
+  design_cli --tui
   design_cli repl
 "#
     );

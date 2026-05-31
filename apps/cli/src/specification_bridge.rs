@@ -57,6 +57,13 @@ pub fn classify_specification(text: &str) -> SpecificationKind {
     SpecificationKind::Instruction
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DiagnosisDomain {
+    CoreArchitecture,
+    RuntimeSafety,
+    UserInterface,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpecificationContext {
     pub system_name: Option<String>,
@@ -113,6 +120,7 @@ impl SpecificationContext {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StructuralDiagnosisRequest {
     pub specification: SpecificationContext,
+    pub domain: DiagnosisDomain,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -178,15 +186,204 @@ pub struct RepairPlan {
     pub execution_steps: Vec<RepairStep>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImplementationPriority {
+    Critical,
+    High,
+    Normal,
+    Low,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementationTask {
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub target_component: String,
+    pub priority: ImplementationPriority,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FileModificationPlan {
+    pub target_file: String,
+    pub action: String,
+    pub rationale: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ValidationPlan {
+    pub validation_type: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImplementationPlan {
+    pub tasks: Vec<ImplementationTask>,
+    pub file_modifications: Vec<FileModificationPlan>,
+    pub validations: Vec<ValidationPlan>,
+}
+
 pub struct RepairPlanner;
+pub struct ImplementationPlanner;
+pub struct UiStructuralDiagnosisEngine;
 
 impl StructuralDiagnosisRequest {
     pub fn new(specification: SpecificationContext) -> Self {
-        Self { specification }
+        let domain = infer_diagnosis_domain(&specification);
+        Self {
+            specification,
+            domain,
+        }
+    }
+
+    pub fn with_domain(specification: SpecificationContext, domain: DiagnosisDomain) -> Self {
+        Self {
+            specification,
+            domain,
+        }
     }
 
     pub fn diagnose(&self) -> StructuralDiagnosisResult {
-        run_structural_diagnosis(&self.specification)
+        match self.domain {
+            DiagnosisDomain::UserInterface => {
+                UiStructuralDiagnosisEngine::diagnose(&self.specification)
+            }
+            DiagnosisDomain::CoreArchitecture | DiagnosisDomain::RuntimeSafety => {
+                run_structural_diagnosis(&self.specification)
+            }
+        }
+    }
+}
+
+impl UiStructuralDiagnosisEngine {
+    pub fn diagnose(context: &SpecificationContext) -> StructuralDiagnosisResult {
+        eprintln!("[UI_DIAGNOSIS]\nstatus=started");
+
+        let mut violations = Vec::new();
+        let mut warnings = Vec::new();
+        let architecture = UiArchitectureIndex::new(context);
+
+        let required_workspaces = [
+            "DesignWorkspace",
+            "ActiveTaskWorkspace",
+            "PipelineWorkspace",
+        ];
+        let missing_workspaces = required_workspaces
+            .iter()
+            .filter(|workspace| !architecture.has_component(workspace))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing_workspaces.is_empty() {
+            violations.push(Violation {
+                rule: "WorkspaceVisibilityViolation".into(),
+                message: format!(
+                    "missing visible workspace(s): {}",
+                    missing_workspaces.join(", ")
+                ),
+            });
+        }
+
+        let pipeline_stages = [
+            "Recognition",
+            "Diagnosis",
+            "RepairPlan",
+            "ImplementationPlan",
+        ];
+        let missing_pipeline_stages = pipeline_stages
+            .iter()
+            .filter(|stage| !architecture.has_responsibility(stage))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing_pipeline_stages.is_empty() {
+            violations.push(Violation {
+                rule: "PipelineVisibilityViolation".into(),
+                message: format!(
+                    "missing pipeline visualization responsibility: {}",
+                    missing_pipeline_stages.join(", ")
+                ),
+            });
+        }
+
+        let task_visibility = [
+            "Repair Suggestions",
+            "Implementation Tasks",
+            "Validation Tasks",
+        ];
+        let missing_task_visibility = task_visibility
+            .iter()
+            .filter(|item| !architecture.has_responsibility(item))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing_task_visibility.is_empty() {
+            violations.push(Violation {
+                rule: "TaskVisibilityViolation".into(),
+                message: format!(
+                    "missing task visualization responsibility: {}",
+                    missing_task_visibility.join(", ")
+                ),
+            });
+        }
+
+        let timeline_events = ["Runtime Events", "Diagnosis Events", "Planning Events"];
+        let missing_timeline_events = timeline_events
+            .iter()
+            .filter(|event| !architecture.has_responsibility(event))
+            .copied()
+            .collect::<Vec<_>>();
+        if !missing_timeline_events.is_empty() {
+            violations.push(Violation {
+                rule: "TimelineVisibilityViolation".into(),
+                message: format!(
+                    "missing timeline responsibility: {}",
+                    missing_timeline_events.join(", ")
+                ),
+            });
+        }
+
+        if !architecture.has_component("SpecificationEditor") {
+            violations.push(Violation {
+                rule: "InputAccessibilityViolation".into(),
+                message: "SpecificationEditor is not defined".into(),
+            });
+        }
+
+        if architecture.workspace_count > 8 {
+            warnings.push(Warning {
+                rule: "ExcessiveCognitiveLoad".into(),
+                message: format!(
+                    "workspace_count={} exceeds the recommended limit of 8",
+                    architecture.workspace_count
+                ),
+            });
+        }
+
+        if let Some(duplicate) = architecture.duplicate_responsibility() {
+            violations.push(Violation {
+                rule: "InformationDuplicationViolation".into(),
+                message: format!(
+                    "responsibility '{}' is duplicated across workspaces",
+                    duplicate
+                ),
+            });
+        }
+
+        if architecture.has_excessive_workspace_ratio() {
+            violations.push(Violation {
+                rule: "LayoutBalanceViolation".into(),
+                message: "workspace occupancy exceeds 70%".into(),
+            });
+        }
+
+        eprintln!(
+            "[UI_DIAGNOSIS]\nstatus=completed\nviolations={}\nwarnings={}",
+            violations.len(),
+            warnings.len()
+        );
+
+        StructuralDiagnosisResult {
+            violations,
+            warnings,
+        }
     }
 }
 
@@ -259,6 +456,145 @@ pub fn run_structural_diagnosis(specification: &SpecificationContext) -> Structu
     }
 }
 
+struct UiArchitectureIndex<'a> {
+    components: &'a [ComponentSpec],
+    normalized_text: String,
+    workspace_count: usize,
+}
+
+impl<'a> UiArchitectureIndex<'a> {
+    fn new(context: &'a SpecificationContext) -> Self {
+        let normalized_text = specification_search_text(context);
+        let workspace_count = context
+            .architecture
+            .iter()
+            .filter(|component| component.name.to_ascii_lowercase().contains("workspace"))
+            .count();
+
+        Self {
+            components: &context.architecture,
+            normalized_text,
+            workspace_count,
+        }
+    }
+
+    fn has_component(&self, name: &str) -> bool {
+        let expected = normalize_ui_token(name);
+        self.components
+            .iter()
+            .any(|component| normalize_ui_token(&component.name) == expected)
+    }
+
+    fn has_responsibility(&self, responsibility: &str) -> bool {
+        let expected = normalize_ui_token(responsibility);
+        self.components.iter().any(|component| {
+            component
+                .responsibilities
+                .iter()
+                .any(|candidate| normalize_ui_token(candidate).contains(&expected))
+        })
+    }
+
+    fn duplicate_responsibility(&self) -> Option<String> {
+        let mut seen = Vec::<String>::new();
+        for component in self
+            .components
+            .iter()
+            .filter(|component| component.name.to_ascii_lowercase().contains("workspace"))
+        {
+            for responsibility in &component.responsibilities {
+                let normalized = normalize_ui_token(responsibility);
+                if normalized.is_empty() {
+                    continue;
+                }
+                if seen.iter().any(|existing| existing == &normalized) {
+                    return Some(responsibility.clone());
+                }
+                seen.push(normalized);
+            }
+        }
+        None
+    }
+
+    fn has_excessive_workspace_ratio(&self) -> bool {
+        self.normalized_text.contains("workspaceoccupancy>70")
+            || self.normalized_text.contains("workspaceratio>70")
+            || extract_percentages(&self.normalized_text)
+                .into_iter()
+                .any(|percentage| percentage > 70)
+                && (self.normalized_text.contains("occupancy")
+                    || self.normalized_text.contains("ratio"))
+    }
+}
+
+fn infer_diagnosis_domain(context: &SpecificationContext) -> DiagnosisDomain {
+    const UI_KEYWORDS: [&str; 6] = [
+        "Workspace",
+        "Dashboard",
+        "Timeline",
+        "Editor",
+        "Visualization",
+        "Layout",
+    ];
+
+    let text = specification_search_text(context);
+    let hits = UI_KEYWORDS
+        .iter()
+        .map(|keyword| text.matches(&normalize_ui_token(keyword)).count())
+        .sum::<usize>();
+
+    if hits >= 2 {
+        DiagnosisDomain::UserInterface
+    } else if text.contains("runtime") || text.contains("applygate") || text.contains("audit") {
+        DiagnosisDomain::RuntimeSafety
+    } else {
+        DiagnosisDomain::CoreArchitecture
+    }
+}
+
+fn specification_search_text(context: &SpecificationContext) -> String {
+    let mut values = Vec::new();
+    if let Some(system_name) = &context.system_name {
+        values.push(system_name.as_str());
+    }
+    values.extend(context.goals.iter().map(String::as_str));
+    values.extend(context.constraints.iter().map(String::as_str));
+    values.extend(context.rules.iter().map(String::as_str));
+    for component in &context.architecture {
+        values.push(component.name.as_str());
+        values.extend(component.responsibilities.iter().map(String::as_str));
+    }
+    normalize_ui_token(&values.join("\n"))
+}
+
+fn normalize_ui_token(value: &str) -> String {
+    value
+        .chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || *ch == '>' || *ch == '%')
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn extract_percentages(text: &str) -> Vec<u32> {
+    let mut percentages = Vec::new();
+    let bytes = text.as_bytes();
+    for index in 0..bytes.len() {
+        if bytes[index] != b'%' {
+            continue;
+        }
+        let mut start = index;
+        while start > 0 && bytes[start - 1].is_ascii_digit() {
+            start -= 1;
+        }
+        if start < index
+            && let Ok(value) = text[start..index].parse::<u32>()
+        {
+            percentages.push(value);
+        }
+    }
+    percentages
+}
+
 impl RepairPlanner {
     pub fn generate(diagnosis: &StructuralDiagnosisResult) -> RepairPlan {
         let mut suggestions = Vec::new();
@@ -278,7 +614,7 @@ impl RepairPlanner {
             }
         }
 
-        let execution_steps = step_descriptions
+        let execution_steps: Vec<RepairStep> = step_descriptions
             .into_iter()
             .enumerate()
             .map(|(index, description)| RepairStep {
@@ -287,9 +623,314 @@ impl RepairPlanner {
             })
             .collect();
 
+        if suggestions
+            .iter()
+            .any(|suggestion| suggestion.id.starts_with("ui-"))
+        {
+            eprintln!(
+                "[UI_REPAIR_PLAN]\nsuggestions={}\nsteps={}",
+                suggestions.len(),
+                execution_steps.len()
+            );
+        }
+
         RepairPlan {
             suggestions,
             execution_steps,
+        }
+    }
+}
+
+impl ImplementationPlanner {
+    pub fn generate(repair_plan: &RepairPlan) -> ImplementationPlan {
+        eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=started");
+
+        if repair_plan.suggestions.is_empty() {
+            eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=completed");
+            return ImplementationPlan {
+                tasks: Vec::new(),
+                file_modifications: Vec::new(),
+                validations: Vec::new(),
+            };
+        }
+
+        let mut tasks = Vec::new();
+        let mut file_modifications = Vec::new();
+        let mut validations = Vec::new();
+
+        for suggestion in &repair_plan.suggestions {
+            if let Some(mapping) = ImplementationMapping::from_suggestion(suggestion) {
+                push_unique_task(
+                    &mut tasks,
+                    ImplementationTask {
+                        id: mapping.id.to_string(),
+                        title: mapping.task_title.to_string(),
+                        description: mapping.task_description.to_string(),
+                        target_component: mapping.target_component.to_string(),
+                        priority: implementation_priority(suggestion.priority),
+                    },
+                );
+                eprintln!("[IMPLEMENTATION_TASK]\ntitle=\"{}\"", mapping.task_title);
+
+                if let Some(file_plan) = mapping.file_modification {
+                    push_unique_file_plan(
+                        &mut file_modifications,
+                        FileModificationPlan {
+                            target_file: file_plan.target_file.to_string(),
+                            action: file_plan.action.to_string(),
+                            rationale: file_plan.rationale.to_string(),
+                        },
+                    );
+                    eprintln!(
+                        "[FILE_MODIFICATION_PLAN]\nfile=\"{}\"",
+                        file_plan.target_file
+                    );
+                }
+
+                for validation in mapping.validations {
+                    push_unique_validation(
+                        &mut validations,
+                        ValidationPlan {
+                            validation_type: validation.validation_type.to_string(),
+                            description: validation.description.to_string(),
+                        },
+                    );
+                    eprintln!("[VALIDATION_PLAN]\ntype=\"{}\"", validation.validation_type);
+                }
+            }
+        }
+
+        for validation in mandatory_validations() {
+            push_unique_validation(
+                &mut validations,
+                ValidationPlan {
+                    validation_type: validation.validation_type.to_string(),
+                    description: validation.description.to_string(),
+                },
+            );
+            eprintln!("[VALIDATION_PLAN]\ntype=\"{}\"", validation.validation_type);
+        }
+
+        eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=completed");
+        if repair_plan
+            .suggestions
+            .iter()
+            .any(|suggestion| suggestion.id.starts_with("ui-"))
+        {
+            eprintln!(
+                "[UI_IMPLEMENTATION_PLAN]\ntasks={}\nfiles={}\nvalidations={}",
+                tasks.len(),
+                file_modifications.len(),
+                validations.len()
+            );
+        }
+
+        ImplementationPlan {
+            tasks,
+            file_modifications,
+            validations,
+        }
+    }
+}
+
+struct ImplementationMapping {
+    id: &'static str,
+    task_title: &'static str,
+    task_description: &'static str,
+    target_component: &'static str,
+    file_modification: Option<FilePlanMapping>,
+    validations: &'static [ValidationMapping],
+}
+
+#[derive(Clone, Copy)]
+struct FilePlanMapping {
+    target_file: &'static str,
+    action: &'static str,
+    rationale: &'static str,
+}
+
+#[derive(Clone, Copy)]
+struct ValidationMapping {
+    validation_type: &'static str,
+    description: &'static str,
+}
+
+impl ImplementationMapping {
+    fn from_suggestion(suggestion: &RepairSuggestion) -> Option<Self> {
+        match suggestion.title.as_str() {
+            "Introduce missing workspace" => Some(Self {
+                id: "add-workspace-task",
+                task_title: "Add WorkspaceState",
+                task_description: "Plan missing workspace state and projection support for the UI architecture.",
+                target_component: "workspace",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "workspace.rs",
+                    action: "Add missing workspace state",
+                    rationale: "Required workspaces must be represented before rendering can expose them.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Workspace visibility re-run",
+                }],
+            }),
+            "Create Pipeline Workspace" => Some(Self {
+                id: "add-pipeline-workspace-task",
+                task_title: "Add PipelineWorkspaceState",
+                task_description: "Plan state, renderer, and projection routing for Recognition, Diagnosis, RepairPlan, and ImplementationPlan visibility.",
+                target_component: "PipelineWorkspace",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "state.rs",
+                    action: "Add PipelineWorkspaceState",
+                    rationale: "Pipeline visibility needs a dedicated state surface.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Pipeline visibility re-run",
+                }],
+            }),
+            "Create Task Workspace" => Some(Self {
+                id: "add-task-workspace-task",
+                task_title: "Add TaskWorkspaceState",
+                task_description: "Plan task state and renderer coverage for repair suggestions, implementation tasks, and validation tasks.",
+                target_component: "ActiveTaskWorkspace",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "workspace.rs",
+                    action: "Add task workspace projection",
+                    rationale: "Task visibility requires a workspace-level projection target.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Task visibility re-run",
+                }],
+            }),
+            "Create Event Timeline" => Some(Self {
+                id: "add-timeline-task",
+                task_title: "Add TimelineRenderer",
+                task_description: "Plan timeline rendering for runtime, diagnosis, and planning events.",
+                target_component: "EventTimeline",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "render.rs",
+                    action: "Add TimelineRenderer",
+                    rationale: "Event visibility needs an explicit timeline renderer.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Timeline visibility re-run",
+                }],
+            }),
+            "Add Specification Editor" => Some(Self {
+                id: "add-specification-editor-task",
+                task_title: "Add SpecificationEditor",
+                task_description: "Plan an accessible editor surface for entering and revising UI specifications.",
+                target_component: "SpecificationEditor",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "rendering/mod.rs",
+                    action: "Add specification editor projection",
+                    rationale: "UI diagnosis must expose the input surface it depends on.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Input accessibility re-run",
+                }],
+            }),
+            "Merge related workspaces" => Some(Self {
+                id: "rebalance-workspace-task",
+                task_title: "Add WorkspaceMergePlan",
+                task_description: "Plan consolidation of related workspaces to reduce cognitive load.",
+                target_component: "workspace layout",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "workspace.rs",
+                    action: "Merge related workspace definitions",
+                    rationale: "Too many workspaces increase navigation and scanning cost.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Cognitive load re-run",
+                }],
+            }),
+            "Consolidate duplicate visualization" => Some(Self {
+                id: "consolidate-visualization-task",
+                task_title: "Add VisualizationOwnershipRoute",
+                task_description: "Plan a single ownership route for duplicated information visualization.",
+                target_component: "ProjectionRoute",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "rendering/mod.rs",
+                    action: "Add visualization ownership route",
+                    rationale: "Duplicate information should be consolidated into one rendering owner.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Information duplication re-run",
+                }],
+            }),
+            "Rebalance workspace ratio" => Some(Self {
+                id: "add-layout-rebalance-task",
+                task_title: "Add LayoutBalanceRule",
+                task_description: "Plan layout constraints that keep workspace occupancy within the dashboard balance threshold.",
+                target_component: "DashboardLayout",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "render.rs",
+                    action: "Rebalance workspace ratio",
+                    rationale: "Dashboard layout must reserve space for context, tasks, and timeline surfaces.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "UIStructuralReDiagnosis",
+                    description: "Layout balance re-run",
+                }],
+            }),
+            "Introduce AuditGateway" => Some(Self {
+                id: "impl-audit-gateway",
+                task_title: "Create AuditGateway abstraction",
+                task_description: "Plan an audit boundary that routes runtime access through AuditCore without mutating source code in this phase.",
+                target_component: "AuditCore",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "audit_gateway.rs",
+                    action: "Introduce AuditGateway abstraction",
+                    rationale: "Make audit routing explicit before any implementation change is generated.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "RuntimeValidation",
+                    description: "Audit routing verification",
+                }],
+            }),
+            "Enforce ApplyGate" => Some(Self {
+                id: "impl-applygate",
+                task_title: "Route mutation through ApplyGate",
+                task_description: "Plan mutation routing through ApplyGate while keeping this phase limited to implementation planning.",
+                target_component: "runtime layer",
+                file_modification: Some(FilePlanMapping {
+                    target_file: "runtime layer",
+                    action: "Route execution through ApplyGate",
+                    rationale: "Prevent direct mutation paths from bypassing the apply boundary.",
+                }),
+                validations: &[ValidationMapping {
+                    validation_type: "IntegrationTest",
+                    description: "ApplyGate integration test",
+                }],
+            }),
+            "Separate responsibilities" => Some(Self {
+                id: "impl-layer-boundary",
+                task_title: "Introduce boundary interface",
+                task_description: "Plan a boundary interface that separates layer responsibilities.",
+                target_component: "layer boundary",
+                file_modification: None,
+                validations: &[ValidationMapping {
+                    validation_type: "StructuralReDiagnosis",
+                    description: "Dependency analysis",
+                }],
+            }),
+            "Break dependency cycle" => Some(Self {
+                id: "impl-break-cycle",
+                task_title: "Extract shared interface",
+                task_description: "Plan extraction of a shared interface to remove the dependency cycle.",
+                target_component: "dependency graph",
+                file_modification: None,
+                validations: &[ValidationMapping {
+                    validation_type: "StructuralReDiagnosis",
+                    description: "Cycle detection re-run",
+                }],
+            }),
+            _ => None,
         }
     }
 }
@@ -323,6 +964,102 @@ impl RepairMapping {
                     "Locate bypass path",
                     "Introduce AuditGateway",
                     "Redirect execution",
+                ],
+            }
+        } else if compact.contains("workspacevisibilityviolation") {
+            Self {
+                id: "ui-workspace-repair",
+                title: "Introduce missing workspace",
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+                steps: &[
+                    "Identify missing workspace",
+                    "Introduce missing workspace",
+                    "Add workspace projection route",
+                ],
+            }
+        } else if compact.contains("pipelinevisibilityviolation") {
+            Self {
+                id: "ui-pipeline-repair",
+                title: "Create Pipeline Workspace",
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+                steps: &[
+                    "Create Pipeline Workspace",
+                    "Add PipelineRenderer",
+                    "Add ProjectionRoute",
+                ],
+            }
+        } else if compact.contains("taskvisibilityviolation") {
+            Self {
+                id: "ui-task-repair",
+                title: "Create Task Workspace",
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+                steps: &[
+                    "Create Task Workspace",
+                    "Add task renderer",
+                    "Add validation task projection",
+                ],
+            }
+        } else if compact.contains("timelinevisibilityviolation") {
+            Self {
+                id: "ui-timeline-repair",
+                title: "Create Event Timeline",
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+                steps: &[
+                    "Create Event Timeline",
+                    "Add TimelineRenderer",
+                    "Project runtime, diagnosis, and planning events",
+                ],
+            }
+        } else if compact.contains("inputaccessibilityviolation") {
+            Self {
+                id: "ui-input-repair",
+                title: "Add Specification Editor",
+                impact: RepairImpact::Medium,
+                priority: RepairPriority::Critical,
+                steps: &[
+                    "Add Specification Editor",
+                    "Connect editor input to specification context",
+                    "Expose validation feedback",
+                ],
+            }
+        } else if compact.contains("excessivecognitiveload") {
+            Self {
+                id: "ui-cognitive-load-repair",
+                title: "Merge related workspaces",
+                impact: RepairImpact::Medium,
+                priority: RepairPriority::Recommended,
+                steps: &[
+                    "Group related workspaces",
+                    "Merge related workspaces",
+                    "Re-run UI diagnosis",
+                ],
+            }
+        } else if compact.contains("informationduplicationviolation") {
+            Self {
+                id: "ui-duplication-repair",
+                title: "Consolidate duplicate visualization",
+                impact: RepairImpact::Medium,
+                priority: RepairPriority::Recommended,
+                steps: &[
+                    "Identify duplicate visualization owner",
+                    "Consolidate duplicate visualization",
+                    "Update projection route",
+                ],
+            }
+        } else if compact.contains("layoutbalanceviolation") {
+            Self {
+                id: "ui-layout-repair",
+                title: "Rebalance workspace ratio",
+                impact: RepairImpact::Medium,
+                priority: RepairPriority::Recommended,
+                steps: &[
+                    "Measure workspace ratio",
+                    "Rebalance workspace ratio",
+                    "Validate dashboard layout",
                 ],
             }
         } else if normalized.contains("applygate")
@@ -393,6 +1130,50 @@ fn extend_unique_steps(target: &mut Vec<String>, steps: &[&str]) {
         if !target.iter().any(|existing| existing == step) {
             target.push((*step).to_string());
         }
+    }
+}
+
+fn implementation_priority(priority: RepairPriority) -> ImplementationPriority {
+    match priority {
+        RepairPriority::Critical => ImplementationPriority::Critical,
+        RepairPriority::Recommended => ImplementationPriority::Normal,
+        RepairPriority::Optional => ImplementationPriority::Low,
+    }
+}
+
+fn mandatory_validations() -> &'static [ValidationMapping] {
+    &[
+        ValidationMapping {
+            validation_type: "UnitTest",
+            description: "Implementation task generation unit test",
+        },
+        ValidationMapping {
+            validation_type: "IntegrationTest",
+            description: "ImplementationPlan REPL integration test",
+        },
+    ]
+}
+
+fn push_unique_task(target: &mut Vec<ImplementationTask>, task: ImplementationTask) {
+    if !target.iter().any(|existing| existing.id == task.id) {
+        target.push(task);
+    }
+}
+
+fn push_unique_file_plan(target: &mut Vec<FileModificationPlan>, plan: FileModificationPlan) {
+    if !target
+        .iter()
+        .any(|existing| existing.target_file == plan.target_file && existing.action == plan.action)
+    {
+        target.push(plan);
+    }
+}
+
+fn push_unique_validation(target: &mut Vec<ValidationPlan>, plan: ValidationPlan) {
+    if !target.iter().any(|existing| {
+        existing.validation_type == plan.validation_type && existing.description == plan.description
+    }) {
+        target.push(plan);
     }
 }
 
@@ -625,6 +1406,197 @@ rules:
     }
 
     #[test]
+    fn ui_specification_auto_selects_user_interface_domain() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+system_name: DBM_TUI_PHASE3
+architecture:
+  DesignWorkspace:
+  ActiveTaskWorkspace:
+"#,
+        )
+        .expect("parse");
+
+        let request = StructuralDiagnosisRequest::new(context);
+
+        assert_eq!(request.domain, DiagnosisDomain::UserInterface);
+    }
+
+    #[test]
+    fn ui_workspace_missing_diagnosis() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+architecture:
+  PipelineWorkspace:
+"#,
+        )
+        .expect("parse");
+
+        let diagnosis =
+            StructuralDiagnosisRequest::with_domain(context, DiagnosisDomain::UserInterface)
+                .diagnose();
+
+        assert!(diagnosis.violations.iter().any(|violation| {
+            violation.rule == "WorkspaceVisibilityViolation"
+                && violation.message.contains("DesignWorkspace")
+                && violation.message.contains("ActiveTaskWorkspace")
+        }));
+    }
+
+    #[test]
+    fn ui_missing_timeline_diagnosis() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+architecture:
+  DesignWorkspace:
+"#,
+        )
+        .expect("parse");
+
+        let diagnosis =
+            StructuralDiagnosisRequest::with_domain(context, DiagnosisDomain::UserInterface)
+                .diagnose();
+
+        assert!(
+            diagnosis
+                .violations
+                .iter()
+                .any(|violation| violation.rule == "TimelineVisibilityViolation")
+        );
+    }
+
+    #[test]
+    fn ui_cognitive_load_warning() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+architecture:
+  Workspace1:
+  Workspace2:
+  Workspace3:
+  Workspace4:
+  Workspace5:
+  Workspace6:
+  Workspace7:
+  Workspace8:
+  Workspace9:
+  Workspace10:
+"#,
+        )
+        .expect("parse");
+
+        let diagnosis =
+            StructuralDiagnosisRequest::with_domain(context, DiagnosisDomain::UserInterface)
+                .diagnose();
+
+        assert!(
+            diagnosis
+                .warnings
+                .iter()
+                .any(|warning| warning.rule == "ExcessiveCognitiveLoad")
+        );
+    }
+
+    #[test]
+    fn ui_repair_plan_generated() {
+        let diagnosis = StructuralDiagnosisResult {
+            violations: vec![Violation {
+                rule: "PipelineVisibilityViolation".into(),
+                message: "missing pipeline visualization responsibility".into(),
+            }],
+            warnings: vec![],
+        };
+
+        let plan = RepairPlanner::generate(&diagnosis);
+
+        assert!(
+            plan.suggestions
+                .iter()
+                .any(|suggestion| suggestion.title == "Create Pipeline Workspace")
+        );
+    }
+
+    #[test]
+    fn ui_implementation_plan_generated() {
+        let repair_plan = RepairPlan {
+            suggestions: vec![RepairSuggestion {
+                id: "ui-pipeline-repair".into(),
+                title: "Create Pipeline Workspace".into(),
+                rationale: "missing pipeline visualization responsibility".into(),
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+            }],
+            execution_steps: vec![],
+        };
+
+        let plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert!(
+            plan.tasks
+                .iter()
+                .any(|task| task.title == "Add PipelineWorkspaceState")
+        );
+        assert!(
+            plan.file_modifications
+                .iter()
+                .any(|file_plan| file_plan.target_file == "state.rs")
+        );
+    }
+
+    #[test]
+    fn ui_e2e_pipeline_generates_repair_and_implementation() {
+        let context = SpecificationContext::from_yaml(
+            r#"
+system_name: DBM_TUI_PHASE3
+architecture:
+  DesignWorkspace:
+  ActiveTaskWorkspace:
+"#,
+        )
+        .expect("parse");
+
+        let diagnosis = StructuralDiagnosisRequest::new(context).diagnose();
+        let repair_plan = RepairPlanner::generate(&diagnosis);
+        let implementation_plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert!(
+            diagnosis
+                .violations
+                .iter()
+                .any(|violation| violation.rule == "PipelineVisibilityViolation")
+        );
+        assert!(
+            diagnosis
+                .violations
+                .iter()
+                .any(|violation| violation.rule == "TimelineVisibilityViolation")
+        );
+        assert!(
+            repair_plan
+                .suggestions
+                .iter()
+                .any(|suggestion| suggestion.title == "Create Pipeline Workspace")
+        );
+        assert!(
+            repair_plan
+                .suggestions
+                .iter()
+                .any(|suggestion| suggestion.title == "Create Event Timeline")
+        );
+        assert!(
+            implementation_plan
+                .tasks
+                .iter()
+                .any(|task| task.title == "Add PipelineWorkspaceState")
+        );
+        assert!(
+            implementation_plan
+                .tasks
+                .iter()
+                .any(|task| task.title == "Add TimelineRenderer")
+        );
+    }
+
+    #[test]
     fn repair_suggestion_generation_audit_bypass() {
         let diagnosis = StructuralDiagnosisResult {
             violations: vec![Violation {
@@ -725,5 +1697,117 @@ rules:
 
         assert_eq!(plan.suggestions.len(), 1);
         assert_eq!(plan.suggestions[0].priority, RepairPriority::Optional);
+    }
+
+    #[test]
+    fn implementation_plan_generation_applygate() {
+        let repair_plan = RepairPlan {
+            suggestions: vec![RepairSuggestion {
+                id: "applygate-missing".into(),
+                title: "Enforce ApplyGate".into(),
+                rationale: "Direct mutation path detected".into(),
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+            }],
+            execution_steps: vec![],
+        };
+
+        let plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert!(
+            plan.tasks
+                .iter()
+                .any(|task| task.title == "Route mutation through ApplyGate")
+        );
+        assert!(
+            plan.validations
+                .iter()
+                .any(|validation| validation.validation_type == "IntegrationTest")
+        );
+    }
+
+    #[test]
+    fn implementation_plan_generation_audit_gateway() {
+        let repair_plan = RepairPlan {
+            suggestions: vec![RepairSuggestion {
+                id: "audit-bypass".into(),
+                title: "Introduce AuditGateway".into(),
+                rationale: "Execution path bypasses AuditCore".into(),
+                impact: RepairImpact::High,
+                priority: RepairPriority::Critical,
+            }],
+            execution_steps: vec![],
+        };
+
+        let plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert!(
+            plan.tasks
+                .iter()
+                .any(|task| task.title == "Create AuditGateway abstraction")
+        );
+        assert!(
+            plan.file_modifications
+                .iter()
+                .any(|file_plan| file_plan.target_file == "audit_gateway.rs")
+        );
+    }
+
+    #[test]
+    fn implementation_plan_multi_suggestion_is_unified() {
+        let repair_plan = RepairPlan {
+            suggestions: vec![
+                RepairSuggestion {
+                    id: "audit-bypass".into(),
+                    title: "Introduce AuditGateway".into(),
+                    rationale: "Execution path bypasses AuditCore".into(),
+                    impact: RepairImpact::High,
+                    priority: RepairPriority::Critical,
+                },
+                RepairSuggestion {
+                    id: "applygate-missing".into(),
+                    title: "Enforce ApplyGate".into(),
+                    rationale: "Direct mutation path detected".into(),
+                    impact: RepairImpact::High,
+                    priority: RepairPriority::Critical,
+                },
+            ],
+            execution_steps: vec![],
+        };
+
+        let plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert_eq!(plan.tasks.len(), 2);
+        assert!(
+            plan.file_modifications
+                .iter()
+                .any(|file_plan| file_plan.target_file == "audit_gateway.rs")
+        );
+        assert!(
+            plan.file_modifications
+                .iter()
+                .any(|file_plan| file_plan.target_file == "runtime layer")
+        );
+        assert_eq!(
+            plan.validations
+                .iter()
+                .filter(|validation| validation.validation_type == "UnitTest")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn implementation_plan_empty_repair_plan_is_empty() {
+        let repair_plan = RepairPlan {
+            suggestions: vec![],
+            execution_steps: vec![],
+        };
+
+        let plan = ImplementationPlanner::generate(&repair_plan);
+
+        assert!(plan.tasks.is_empty());
+        assert!(plan.file_modifications.is_empty());
+        assert!(plan.validations.is_empty());
     }
 }
