@@ -1,4 +1,6 @@
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::mpsc::Sender;
 
 pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge};
 use crate::nl::normalization::normalize_runtime_input;
@@ -11,6 +13,7 @@ use crate::specification_bridge::{
 };
 use crate::tui::runtime::RuntimeShellState;
 
+use super::runtime_worker::{RuntimeStatus, RuntimeWorkerEvent, spawn_runtime_worker};
 use super::state::{EventQueue, TuiState, UiEvent};
 
 pub fn resolve_projection_target(state: &TuiState) -> Option<String> {
@@ -94,6 +97,75 @@ pub fn handle_submit(
     let success = response.status != crate::core::ExecutionStatus::Failed;
 
     // Phase 4.5: sync core_snapshot first so downstream render reads correct state.
+    if let Some(snapshot) = response.core_state {
+        state.core_snapshot = snapshot.clone();
+        state.pipeline_state = snapshot.status.clone();
+    }
+
+    apply_core_response(
+        &mut state.event_queue,
+        &mut state.pipeline_state,
+        response.events,
+    );
+
+    if success && let Some(design) = response.design {
+        state.update_design(design);
+    }
+}
+
+pub fn handle_submit_async(
+    state: &mut TuiState,
+    core: Arc<RuntimeCoreBridge>,
+    input: String,
+    _working_dir: PathBuf,
+    worker_tx: Sender<RuntimeWorkerEvent>,
+) {
+    crate::tui::render_trace::record("[HANDLE_SUBMIT_ASYNC_ENTER]");
+    crate::tui::render_trace::record("[RUNTIME_DISPATCH] start");
+    let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
+    let classification = classify_specification(input.trim());
+    crate::tui::render_trace::record(Box::leak(
+        format!("[PLANNER_START] classification={:?}", classification).into_boxed_str(),
+    ));
+    if matches!(classification, SpecificationKind::DesignSpecification) {
+        handle_specification_submit(state, input);
+        return;
+    }
+
+    state.runtime_state = RuntimeShellState::Thinking;
+    state.enqueue_event(UiEvent::Thinking {
+        summary: "processing intent / 意図を処理中".to_string(),
+    });
+
+    let runtime_input = normalize_runtime_input(&input)
+        .map(|normalized| normalized.command.to_runtime_input())
+        .unwrap_or(input);
+    let request = CoreRequest::new(runtime_input);
+    crate::tui::render_trace::record("[ASYNC_PREPARE_WORKER]");
+    let task = spawn_runtime_worker(core, request, worker_tx);
+    state.enqueue_event(UiEvent::Thinking {
+        summary: format!("task {} queued", task.id.0),
+    });
+    crate::tui::render_trace::record(Box::leak(
+        format!(
+            "[QUEUE_PUSH] runtime_task status={:?}",
+            RuntimeStatus::Queued
+        )
+        .into_boxed_str(),
+    ));
+}
+
+pub fn apply_runtime_response(state: &mut TuiState, mut response: crate::core::CoreResponse) {
+    state.enqueue_event(UiEvent::Runtime {
+        message: "runtime projecting result".to_string(),
+    });
+    if response.events.is_empty() {
+        response.events.push(CoreEvent::Error {
+            message: "No runtime narrative generated".to_string(),
+        });
+    }
+    let success = response.status != crate::core::ExecutionStatus::Failed;
+
     if let Some(snapshot) = response.core_state {
         state.core_snapshot = snapshot.clone();
         state.pipeline_state = snapshot.status.clone();

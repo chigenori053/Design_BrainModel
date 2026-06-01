@@ -1103,6 +1103,17 @@ impl TuiState {
     /// `active_transaction`; render code must not read cached panel state.
     fn apply_event_to_session(&mut self, event: &UiEvent) {
         match event {
+            UiEvent::Thinking { summary }
+                if summary.contains("processing intent") || summary.contains("queued") =>
+            {
+                self.runtime_state = RuntimeShellState::Thinking;
+            }
+            UiEvent::Planning { summary } if summary.contains("planning runtime execution") => {
+                self.runtime_state = RuntimeShellState::Plan;
+            }
+            UiEvent::Execution { step } if step.contains("executing runtime core") => {
+                self.runtime_state = RuntimeShellState::Apply;
+            }
             UiEvent::Preview { diff } => {
                 self.runtime_state = RuntimeShellState::PreviewReady;
                 let target = self
@@ -1149,6 +1160,14 @@ impl TuiState {
             }
             UiEvent::Debug { message } => {
                 self.retain_debug_event("core", message);
+            }
+            UiEvent::Runtime { message } if message.contains("projecting runtime result") => {
+                self.runtime_state = RuntimeShellState::Validate;
+            }
+            UiEvent::System { summary } if summary.contains("completed") => {
+                if self.active_transaction.is_none() {
+                    self.runtime_state = RuntimeShellState::Idle;
+                }
             }
             UiEvent::Pipeline { state } => {
                 let next_state = runtime_state_from_pipeline_label(state);
@@ -1397,6 +1416,9 @@ impl TuiState {
         if self.diagnostic_mode {
             self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
         }
+        crate::tui::render_trace::record(Box::leak(
+            format!("[SUBMIT_ACTION_CREATED] input_len={}", submitted.len()).into_boxed_str(),
+        ));
         TuiAction::Submit(submitted)
     }
 

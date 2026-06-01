@@ -22,11 +22,14 @@ pub mod renderer;
 pub mod rendering;
 pub mod review_batch;
 pub mod runtime;
+pub mod runtime_worker;
 pub mod state;
 pub mod temporal_cognition;
 pub mod workspace;
 pub mod workspace_launcher;
 
+use std::sync::Arc;
+use std::sync::mpsc::Receiver;
 use std::time::Duration;
 
 use crossterm::event::{self, Event};
@@ -37,6 +40,7 @@ use self::core::RuntimeCoreBridge;
 use self::model::UiPayload;
 use self::renderer::{RenderScheduler, TerminalRenderer};
 use self::rendering::RenderSnapshot;
+use self::runtime_worker::{RuntimeStatus, RuntimeWorkerEvent};
 use self::state::{TuiAction, TuiState, UiEvent};
 use crate::specification_bridge::{SpecificationKind, classify_specification};
 
@@ -52,8 +56,8 @@ pub fn run_tui(payload: UiPayload, diagnostic: bool) -> Result<(), String> {
     if let Ok(root) = std::env::current_dir() {
         state.enable_persistent_history(root.join(".dbm/cli_history"));
     }
-    let core = RuntimeCoreBridge::with_defaults();
-    let result = run_event_loop(&mut renderer, &mut state, &core);
+    let core = Arc::new(RuntimeCoreBridge::with_defaults());
+    let result = run_event_loop(&mut renderer, &mut state, core);
     renderer.shutdown();
     result
 }
@@ -61,9 +65,10 @@ pub fn run_tui(payload: UiPayload, diagnostic: bool) -> Result<(), String> {
 fn run_event_loop(
     renderer: &mut TerminalRenderer,
     state: &mut TuiState,
-    core: &RuntimeCoreBridge,
+    core: Arc<RuntimeCoreBridge>,
 ) -> Result<(), String> {
     let mut scheduler = RenderScheduler::default();
+    let (worker_tx, worker_rx) = std::sync::mpsc::channel();
     scheduler.request_full_repaint();
     if let Some(request_id) = scheduler.take_pending() {
         let snapshot = RenderSnapshot::from(&*state);
@@ -72,6 +77,7 @@ fn run_event_loop(
     }
 
     loop {
+        drain_runtime_worker_events(state, &worker_rx, &mut scheduler);
         flush_ui_events_before_render(state, &mut scheduler);
 
         if event::poll(FRAME_TIME).map_err(|e| e.to_string())? {
@@ -90,12 +96,20 @@ fn run_event_loop(
                 match state.handle_key_event(key) {
                     TuiAction::Quit => break,
                     TuiAction::Submit(input) => {
+                        crate::tui::render_trace::record("[EVENT_LOOP_RECEIVED_SUBMIT]");
                         crate::tui::render_trace::record("submit_action_received");
                         let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
                         let routed =
                             dispatch_runtime_command_to_projection(state, &working_dir, &input);
                         if !routed {
-                            self::core::handle_submit(state, core, input, working_dir);
+                            crate::tui::render_trace::record("[SUBMIT_DISPATCH]");
+                            self::core::handle_submit_async(
+                                state,
+                                Arc::clone(&core),
+                                input,
+                                working_dir,
+                                worker_tx.clone(),
+                            );
                         }
                     }
                     TuiAction::SaveDesign => {
@@ -118,6 +132,9 @@ fn run_event_loop(
             scheduler.notify_state_change();
         }
 
+        drain_runtime_worker_events(state, &worker_rx, &mut scheduler);
+        flush_ui_events_before_render(state, &mut scheduler);
+
         if let Some(request_id) = scheduler.take_pending() {
             let snapshot = RenderSnapshot::from(&*state);
             renderer.full_repaint(request_id, &snapshot)?;
@@ -125,6 +142,61 @@ fn run_event_loop(
         }
     }
     Ok(())
+}
+
+fn drain_runtime_worker_events(
+    state: &mut TuiState,
+    worker_rx: &Receiver<RuntimeWorkerEvent>,
+    scheduler: &mut RenderScheduler,
+) {
+    while let Ok(event) = worker_rx.try_recv() {
+        match event {
+            RuntimeWorkerEvent::Progress { task_id, status } => {
+                project_runtime_status(state, task_id.0, status);
+            }
+            RuntimeWorkerEvent::Result(result) => {
+                crate::tui::render_trace::record("[WORKER_RESULT]");
+                project_runtime_status(state, result.task_id.0, RuntimeStatus::Projecting);
+                self::core::apply_runtime_response(state, result.response);
+                match result.status {
+                    RuntimeStatus::Completed => state.enqueue_event(UiEvent::System {
+                        summary: format!("task {} completed", result.task_id.0),
+                    }),
+                    RuntimeStatus::Failed => state.enqueue_event(UiEvent::Error {
+                        message: format!("task {} failed", result.task_id.0),
+                    }),
+                    _ => {}
+                }
+            }
+        }
+        scheduler.notify_state_change();
+    }
+}
+
+fn project_runtime_status(state: &mut TuiState, task_id: u64, status: RuntimeStatus) {
+    match status {
+        RuntimeStatus::Queued => state.enqueue_event(UiEvent::Thinking {
+            summary: format!("task {task_id} queued"),
+        }),
+        RuntimeStatus::Planning => state.enqueue_event(UiEvent::Planning {
+            summary: format!("task {task_id} planning runtime execution"),
+        }),
+        RuntimeStatus::Executing => state.enqueue_event(UiEvent::Execution {
+            step: format!("task {task_id} executing runtime core"),
+        }),
+        RuntimeStatus::Projecting => state.enqueue_event(UiEvent::Runtime {
+            message: format!("task {task_id} projecting runtime result"),
+        }),
+        RuntimeStatus::Completed => state.enqueue_event(UiEvent::System {
+            summary: format!("task {task_id} completed"),
+        }),
+        RuntimeStatus::Failed => state.enqueue_event(UiEvent::Error {
+            message: format!("task {task_id} failed"),
+        }),
+        RuntimeStatus::Cancelled => state.enqueue_event(UiEvent::System {
+            summary: format!("task {task_id} cancelled"),
+        }),
+    }
 }
 
 fn flush_ui_events_before_render(state: &mut TuiState, scheduler: &mut RenderScheduler) {
@@ -325,6 +397,55 @@ mod tests {
             vec!["ApplyGate boundary unspecified".to_string()]
         );
         assert_eq!(snapshot.workspace.evaluation.status, "Diagnosis");
+        assert!(scheduler.take_pending().is_some());
+    }
+
+    #[test]
+    fn worker_events_project_progress_and_result_in_fifo_order() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = TuiState::new(empty_runtime_payload());
+        let mut scheduler = RenderScheduler::default();
+        let task_id = crate::tui::runtime_worker::RuntimeTaskId(7);
+
+        tx.send(RuntimeWorkerEvent::Progress {
+            task_id,
+            status: RuntimeStatus::Planning,
+        })
+        .expect("planning");
+        tx.send(RuntimeWorkerEvent::Progress {
+            task_id,
+            status: RuntimeStatus::Executing,
+        })
+        .expect("executing");
+        tx.send(RuntimeWorkerEvent::Result(
+            crate::tui::runtime_worker::RuntimeResult {
+                task_id,
+                status: RuntimeStatus::Completed,
+                output: "done".to_string(),
+                response: crate::core::CoreResponse {
+                    events: vec![crate::core::CoreEvent::Result {
+                        message: "done".to_string(),
+                    }],
+                    status: crate::core::ExecutionStatus::Executed,
+                    design: None,
+                    core_state: None,
+                },
+            },
+        ))
+        .expect("result");
+
+        drain_runtime_worker_events(&mut state, &rx, &mut scheduler);
+        flush_ui_events_before_render(&mut state, &mut scheduler);
+
+        let projection = runtime_messages(&state).join("\n");
+        let planning = projection.find("task 7 planning").expect(&projection);
+        let executing = projection.find("task 7 executing").expect(&projection);
+        let projecting = projection.find("task 7 projecting").expect(&projection);
+        let completed = projection.find("task 7 completed").expect(&projection);
+
+        assert!(planning < executing, "{projection}");
+        assert!(executing < projecting, "{projection}");
+        assert!(projecting < completed, "{projection}");
         assert!(scheduler.take_pending().is_some());
     }
 
