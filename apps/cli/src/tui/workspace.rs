@@ -66,10 +66,7 @@ impl WorkspaceProjector {
                 workspace.evaluation.violations = result.violations.len();
                 workspace.evaluation.warnings = result.warnings.len();
                 workspace.evaluation.active_task = Some("Structural Diagnosis".to_string());
-                eprintln!(
-                    "[WORKSPACE_TRACE] diagnosis_count={}",
-                    workspace.analysis_result.diagnosis.len()
-                );
+                crate::tui::render_trace::record("workspace_diagnosis_projected");
             }
             UiEvent::RepairPlan { plan } => {
                 workspace.analysis_result.repair_plan = plan
@@ -83,10 +80,7 @@ impl WorkspaceProjector {
                     .suggestions
                     .first()
                     .map(|suggestion| suggestion.title.clone());
-                eprintln!(
-                    "[WORKSPACE_TRACE] repair_count={}",
-                    workspace.analysis_result.repair_plan.len()
-                );
+                crate::tui::render_trace::record("workspace_repair_plan_projected");
             }
             UiEvent::ImplementationPlan { plan } => {
                 workspace.analysis_result.implementation_plan =
@@ -95,10 +89,7 @@ impl WorkspaceProjector {
                 workspace.evaluation.progress = 100;
                 workspace.evaluation.active_task =
                     plan.tasks.first().map(|task| task.title.clone());
-                eprintln!(
-                    "[WORKSPACE_TRACE] implementation_count={}",
-                    workspace.analysis_result.implementation_plan.len()
-                );
+                crate::tui::render_trace::record("workspace_implementation_plan_projected");
             }
             _ => {}
         }

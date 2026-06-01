@@ -166,18 +166,6 @@ fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     let area = immutable.layout.diff;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
-    eprintln!(
-        "[RENDER_TRACE] diagnosis_count={}",
-        snapshot.workspace.analysis_result.diagnosis.len()
-    );
-    eprintln!(
-        "[RENDER_TRACE] repair_count={}",
-        snapshot.workspace.analysis_result.repair_plan.len()
-    );
-    eprintln!(
-        "[RENDER_TRACE] implementation_count={}",
-        snapshot.workspace.analysis_result.implementation_plan.len()
-    );
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -238,7 +226,7 @@ fn render_evaluation_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
 fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, immutable.layout.status);
     frame.render_widget(
-        Paragraph::new("Design Specification Workbench")
+        Paragraph::new("Design Specification Workbench | ⌘↩ Submit  Esc Clear  ⌘Q Exit")
             .style(Style::default().fg(Color::DarkGray)),
         immutable.layout.status,
     );
@@ -649,6 +637,9 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("⌘↩ Submit"));
+        assert!(surface.contains("Esc Clear"));
+        assert!(surface.contains("⌘Q Exit"));
         assert!(surface.contains("Design Specification"));
         assert!(surface.contains("Evaluation"));
         assert!(surface.contains("Analysis Result"));
@@ -718,6 +709,100 @@ mod tests {
         ] {
             assert!(!surface.contains(token), "{token} leaked to UI");
         }
+    }
+
+    fn trace_audit_state() -> TuiState {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.lines = vec![
+            "system_name: DBM_TUI".to_string(),
+            "goals:".to_string(),
+            "  - Visualize active tasks".to_string(),
+            "constraints:".to_string(),
+            "architecture:".to_string(),
+            "  DesignWorkspace:".to_string(),
+            "rules:".to_string(),
+            "  - Timeline must remain visible".to_string(),
+        ];
+        state.workspace.evaluation.domain = "UserInterface".to_string();
+        state.workspace.evaluation.status = "Completed".to_string();
+        state.workspace.evaluation.progress = 100;
+        state.workspace.analysis_result.diagnosis = vec!["TimelineVisibilityViolation".to_string()];
+        state.workspace.analysis_result.repair_plan = vec!["Create Timeline Workspace".to_string()];
+        state.workspace.analysis_result.implementation_plan =
+            vec!["Add TimelineRenderer".to_string()];
+        for token in [
+            "[KEY_TRACE]",
+            "[SUBMIT_TRACE]",
+            "[RUNTIME_ROUTE_TRACE]",
+            "[CORE_SUBMIT_TRACE]",
+            "[WORKSPACE_TRACE]",
+            "[RENDER_TRACE]",
+            "[SNAPSHOT_TRACE]",
+            "[TRACE]",
+        ] {
+            state.append_chat(UiEvent::Debug {
+                message: token.to_string(),
+            });
+        }
+        state
+    }
+
+    fn rendered_trace_audit_surface() -> (Buffer, crate::tui::rendering::LayoutMetadata, u16) {
+        let state = trace_audit_state();
+        let width = 120;
+        let height = 30;
+        let layout = crate::tui::rendering::layout_for_area(Rect::new(0, 0, width, height), false);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        full_repaint(&mut terminal, &state);
+        (terminal.backend().buffer().clone(), layout, width)
+    }
+
+    #[test]
+    fn ui_surface_must_not_contain_trace_tokens() {
+        let (buffer, _, _) = rendered_trace_audit_surface();
+        let surface = buffer_text(&buffer);
+
+        for token in [
+            "[KEY_TRACE]",
+            "[SUBMIT_TRACE]",
+            "[RUNTIME_ROUTE_TRACE]",
+            "[CORE_SUBMIT_TRACE]",
+            "[WORKSPACE_TRACE]",
+            "[RENDER_TRACE]",
+            "[SNAPSHOT_TRACE]",
+            "[TRACE]",
+        ] {
+            assert!(!surface.contains(token), "{token} leaked to UI surface");
+        }
+    }
+
+    #[test]
+    fn design_specification_pane_must_not_show_trace() {
+        let (buffer, layout, width) = rendered_trace_audit_surface();
+        let design = buffer_rect_text(&buffer, width, layout.runtime);
+
+        assert!(!design.contains('['), "{design}");
+    }
+
+    #[test]
+    fn analysis_result_must_not_show_trace() {
+        let (buffer, layout, width) = rendered_trace_audit_surface();
+        let analysis = buffer_rect_text(&buffer, width, layout.diff);
+
+        assert!(!analysis.contains("[TRACE]"), "{analysis}");
+        assert!(!analysis.contains("[RENDER_TRACE]"), "{analysis}");
+        assert!(!analysis.contains("[WORKSPACE_TRACE]"), "{analysis}");
+    }
+
+    #[test]
+    fn evaluation_must_not_show_trace() {
+        let (buffer, layout, width) = rendered_trace_audit_surface();
+        let evaluation = buffer_rect_text(&buffer, width, layout.task);
+
+        assert!(!evaluation.contains("[TRACE]"), "{evaluation}");
+        assert!(!evaluation.contains("[CORE_SUBMIT_TRACE]"), "{evaluation}");
+        assert!(!evaluation.contains("[SUBMIT_TRACE]"), "{evaluation}");
     }
 
     #[test]

@@ -1000,7 +1000,7 @@ impl TuiState {
         }
         self.increment_state_generation();
         match key.code {
-            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('q') if key.modifiers.contains(KeyModifiers::SUPER) => {
                 return TuiAction::Quit;
             }
             KeyCode::Esc => {
@@ -1281,38 +1281,7 @@ impl TuiState {
 
     fn handle_input_key(&mut self, key: KeyEvent) -> TuiAction {
         match key.code {
-            KeyCode::Char('d') if key.modifiers.contains(KeyModifiers::CONTROL) => {
-                let submitted = self.editor_state.editor.text();
-                let trimmed = submitted.trim().to_string();
-                if trimmed.is_empty() {
-                    return TuiAction::None;
-                }
-                if matches!(trimmed.as_str(), "/exit" | "/quit") {
-                    self.editor_state.editor.clear();
-                    return TuiAction::Quit;
-                }
-                if trimmed == "/save design" {
-                    self.history.push(trimmed);
-                    self.history_cursor = None;
-                    self.editor_state.editor.clear();
-                    return TuiAction::SaveDesign;
-                }
-                self.record_history(trimmed.clone());
-                self.history_cursor = None;
-                self.update_runtime_intent_state(&trimmed);
-                if self.diagnostic_mode {
-                    self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
-                }
-                eprintln!("[EDITOR_PAYLOAD]\n{}", submitted);
-                TuiAction::Submit(submitted)
-            }
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
-                self.editor_state.editor.insert_newline();
-                if self.diagnostic_mode {
-                    self.diagnostics.last_mutation = Some("insert_newline()".to_string());
-                }
-                TuiAction::None
-            }
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SUPER) => self.submit_editor(),
             KeyCode::Enter => {
                 self.editor_state.editor.insert_newline();
                 if self.diagnostic_mode {
@@ -1350,7 +1319,10 @@ impl TuiState {
                 self.editor_state.editor.move_down();
                 TuiAction::None
             }
-            KeyCode::Char(ch) if !key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char(ch)
+                if !key.modifiers.contains(KeyModifiers::CONTROL)
+                    && !key.modifiers.contains(KeyModifiers::SUPER) =>
+            {
                 self.editor_state.editor.insert_char(ch);
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation =
@@ -1360,6 +1332,31 @@ impl TuiState {
             }
             _ => TuiAction::None,
         }
+    }
+
+    fn submit_editor(&mut self) -> TuiAction {
+        let submitted = self.editor_state.editor.text();
+        let trimmed = submitted.trim().to_string();
+        if trimmed.is_empty() {
+            return TuiAction::None;
+        }
+        if matches!(trimmed.as_str(), "/exit" | "/quit") {
+            self.editor_state.editor.clear();
+            return TuiAction::Quit;
+        }
+        if trimmed == "/save design" {
+            self.history.push(trimmed);
+            self.history_cursor = None;
+            self.editor_state.editor.clear();
+            return TuiAction::SaveDesign;
+        }
+        self.record_history(trimmed.clone());
+        self.history_cursor = None;
+        self.update_runtime_intent_state(&trimmed);
+        if self.diagnostic_mode {
+            self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
+        }
+        TuiAction::Submit(submitted)
     }
 
     fn handle_chat_key(&mut self, key: KeyEvent) -> TuiAction {
@@ -1699,15 +1696,14 @@ mod tests {
     }
 
     #[test]
-    fn editor_ctrl_d_submits_and_records_history() {
+    fn editor_command_enter_submits_and_records_history() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
         for ch in "fix parser bug".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action =
-            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
 
         assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
         assert_eq!(state.history, vec!["fix parser bug"]);
@@ -1715,7 +1711,7 @@ mod tests {
     }
 
     #[test]
-    fn editor_ctrl_d_preserves_multiline_submitted_payload() {
+    fn editor_command_enter_preserves_multiline_submitted_payload() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
         let payload =
@@ -1728,8 +1724,7 @@ mod tests {
             }
         }
 
-        let action =
-            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
 
         assert_eq!(action, TuiAction::Submit(payload.to_string()));
         assert_ne!(
@@ -1766,8 +1761,7 @@ mod tests {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action =
-            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
 
         assert_eq!(action, TuiAction::Submit("preview parser.rs".to_string()));
         assert_eq!(
@@ -1784,8 +1778,7 @@ mod tests {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action =
-            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
 
         assert_eq!(action, TuiAction::SaveDesign);
         assert_eq!(state.history, vec!["/save design"]);
@@ -2040,8 +2033,7 @@ mod tests {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
 
-        let action =
-            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
 
         assert_eq!(
             action,
@@ -2069,16 +2061,50 @@ mod tests {
     }
 
     #[test]
-    fn shift_enter_allows_up_to_three_input_lines() {
+    fn enter_inserts_newlines_in_editor() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
         state.handle_key_event(key(KeyCode::Char('a')));
         for _ in 0..4 {
-            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
+            state.handle_key_event(key(KeyCode::Enter));
             state.handle_key_event(key(KeyCode::Char('b')));
         }
 
         assert_eq!(state.editor_state.editor.line_count(), 5);
+    }
+
+    #[test]
+    fn ctrl_d_no_longer_submits_editor() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "fix parser bug".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+
+        assert_eq!(action, TuiAction::None);
+        assert!(state.history.is_empty());
+    }
+
+    #[test]
+    fn command_q_quits_tui() {
+        let mut state = TuiState::new(empty_payload());
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::SUPER));
+
+        assert_eq!(action, TuiAction::Quit);
+    }
+
+    #[test]
+    fn ctrl_q_no_longer_quits_tui() {
+        let mut state = TuiState::new(empty_payload());
+
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('q'), KeyModifiers::CONTROL));
+
+        assert_eq!(action, TuiAction::None);
     }
 
     #[test]

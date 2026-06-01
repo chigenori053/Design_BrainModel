@@ -282,14 +282,11 @@ impl StructuralDiagnosisRequest {
     }
 
     pub fn diagnose(&self) -> StructuralDiagnosisResult {
-        eprintln!(
-            "[DOMAIN]\n{}\n\n[DOMAIN_REASON]\n{}",
-            self.domain.as_str(),
-            self.domain_reason.as_str()
-        );
+        crate::tui::render_trace::record("specification_domain_classified");
 
         let diagnosis_label = self.domain.diagnosis_log_label();
-        eprintln!("[{diagnosis_label}]\nstatus=started");
+        let _ = diagnosis_label;
+        crate::tui::render_trace::record("specification_diagnosis_started");
 
         let result = match self.domain {
             DiagnosisDomain::UserInterface => {
@@ -300,11 +297,7 @@ impl StructuralDiagnosisRequest {
             }
         };
 
-        eprintln!(
-            "[{diagnosis_label}]\nstatus=completed\nviolations={}\nwarnings={}",
-            result.violations.len(),
-            result.warnings.len()
-        );
+        crate::tui::render_trace::record("specification_diagnosis_completed");
 
         result
     }
@@ -460,6 +453,11 @@ pub fn run_structural_diagnosis(specification: &SpecificationContext) -> Structu
         violations.push(Violation {
             rule: "ApplyGate required".into(),
             message: "rules must declare ApplyGate".into(),
+        });
+    } else if specification.architecture.is_empty() {
+        violations.push(Violation {
+            rule: "ApplyGate boundary unspecified".into(),
+            message: "rules declare ApplyGate but architecture does not expose its boundary".into(),
         });
     }
     if rules_text.contains("cyclic dependencies allowed") {
@@ -697,11 +695,7 @@ impl RepairPlanner {
             .iter()
             .any(|suggestion| suggestion.id.starts_with("ui-"))
         {
-            eprintln!(
-                "[UI_REPAIR_PLAN]\nsuggestions={}\nsteps={}",
-                suggestions.len(),
-                execution_steps.len()
-            );
+            crate::tui::render_trace::record("ui_repair_plan_generated");
         }
 
         RepairPlan {
@@ -713,10 +707,10 @@ impl RepairPlanner {
 
 impl ImplementationPlanner {
     pub fn generate(repair_plan: &RepairPlan) -> ImplementationPlan {
-        eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=started");
+        crate::tui::render_trace::record("implementation_planning_started");
 
         if repair_plan.suggestions.is_empty() {
-            eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=completed");
+            crate::tui::render_trace::record("implementation_planning_completed");
             return ImplementationPlan {
                 tasks: Vec::new(),
                 file_modifications: Vec::new(),
@@ -740,7 +734,7 @@ impl ImplementationPlanner {
                         priority: implementation_priority(suggestion.priority),
                     },
                 );
-                eprintln!("[IMPLEMENTATION_TASK]\ntitle=\"{}\"", mapping.task_title);
+                crate::tui::render_trace::record("implementation_task_generated");
 
                 if let Some(file_plan) = mapping.file_modification {
                     push_unique_file_plan(
@@ -751,10 +745,7 @@ impl ImplementationPlanner {
                             rationale: file_plan.rationale.to_string(),
                         },
                     );
-                    eprintln!(
-                        "[FILE_MODIFICATION_PLAN]\nfile=\"{}\"",
-                        file_plan.target_file
-                    );
+                    crate::tui::render_trace::record("file_modification_plan_generated");
                 }
 
                 for validation in mapping.validations {
@@ -765,7 +756,7 @@ impl ImplementationPlanner {
                             description: validation.description.to_string(),
                         },
                     );
-                    eprintln!("[VALIDATION_PLAN]\ntype=\"{}\"", validation.validation_type);
+                    crate::tui::render_trace::record("validation_plan_generated");
                 }
             }
         }
@@ -778,21 +769,16 @@ impl ImplementationPlanner {
                     description: validation.description.to_string(),
                 },
             );
-            eprintln!("[VALIDATION_PLAN]\ntype=\"{}\"", validation.validation_type);
+            crate::tui::render_trace::record("validation_plan_generated");
         }
 
-        eprintln!("[IMPLEMENTATION_PLANNING]\nstatus=completed");
+        crate::tui::render_trace::record("implementation_planning_completed");
         if repair_plan
             .suggestions
             .iter()
             .any(|suggestion| suggestion.id.starts_with("ui-"))
         {
-            eprintln!(
-                "[UI_IMPLEMENTATION_PLAN]\ntasks={}\nfiles={}\nvalidations={}",
-                tasks.len(),
-                file_modifications.len(),
-                validations.len()
-            );
+            crate::tui::render_trace::record("ui_implementation_plan_generated");
         }
 
         ImplementationPlan {

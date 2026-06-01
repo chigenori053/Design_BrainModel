@@ -58,11 +58,10 @@ pub fn handle_submit(
     input: String,
     _working_dir: PathBuf,
 ) {
-    eprintln!("[CORE_PAYLOAD]\n{}", input);
-    eprintln!("[CORE_SUBMIT_TRACE] entered");
+    crate::tui::render_trace::record("core_submit_entered");
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
     let classification = classify_specification(input.trim());
-    eprintln!("[CORE_SUBMIT_TRACE] classification={:?}", classification);
+    crate::tui::render_trace::record("core_submit_classified");
     if matches!(classification, SpecificationKind::DesignSpecification) {
         handle_specification_submit(state, input);
         return;
@@ -126,24 +125,24 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     state.event_queue.push(UiEvent::DomainClassification {
         domain: request.domain.as_str().to_string(),
     });
-    eprintln!("[CORE_SUBMIT_TRACE] diagnosis_started");
+    crate::tui::render_trace::record("core_submit_diagnosis_started");
     let diagnosis = request.diagnose();
     state.event_queue.push(UiEvent::StructuralDiagnosis {
         result: diagnosis.clone(),
     });
 
     let repair_plan = RepairPlanner::generate(&diagnosis);
-    eprintln!("[CORE_SUBMIT_TRACE] repair_plan_generated");
+    crate::tui::render_trace::record("core_submit_repair_plan_generated");
     state.event_queue.push(UiEvent::RepairPlan {
         plan: repair_plan.clone(),
     });
 
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
-    eprintln!("[CORE_SUBMIT_TRACE] implementation_plan_generated");
+    crate::tui::render_trace::record("core_submit_implementation_plan_generated");
     state.event_queue.push(UiEvent::ImplementationPlan {
         plan: implementation_plan,
     });
-    eprintln!("[CORE_SUBMIT_TRACE] analysis_workspace_updated");
+    crate::tui::render_trace::record("core_submit_analysis_workspace_updated");
 }
 
 fn apply_core_response(
@@ -185,7 +184,8 @@ mod tests {
     };
     use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
     use crate::tui::rendering::RenderSnapshot;
-    use crate::tui::state::{Diff, RuntimeTransaction};
+    use crate::tui::state::{Diff, RuntimeTransaction, TuiAction};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
     #[derive(Default)]
     struct FakeCore {
@@ -378,6 +378,40 @@ rules:
                 .flattened_chat_lines()
                 .iter()
                 .all(|line| !line.contains("[SPEC_CONTEXT]"))
+        );
+    }
+
+    #[test]
+    fn command_enter_submit_updates_evaluation_and_analysis_workspaces() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+        let spec = "system_name: DBM_TUI_Test\n\nrules:\n  - Runtime must pass through ApplyGate";
+        state.editor_state.editor.clear();
+        for ch in spec.chars() {
+            if ch == '\n' {
+                state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+            } else {
+                state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+            }
+        }
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
+        let TuiAction::Submit(submitted) = action else {
+            panic!("expected submit, got {action:?}");
+        };
+        handle_submit(&mut state, &core, submitted, ".".into());
+        state.handle_ui_events();
+
+        assert_ne!(state.workspace.evaluation.domain, "(none)");
+        assert_ne!(state.workspace.evaluation.status, "Recognition");
+        assert!(!state.workspace.analysis_result.diagnosis.is_empty());
+        assert!(!state.workspace.analysis_result.repair_plan.is_empty());
+        assert!(
+            !state
+                .workspace
+                .analysis_result
+                .implementation_plan
+                .is_empty()
         );
     }
 

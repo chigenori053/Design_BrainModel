@@ -86,17 +86,14 @@ fn run_event_loop(
             }
 
             if let Event::Key(key) = evt {
-                eprintln!(
-                    "[KEY_TRACE] code={:?} modifiers={:?}",
-                    key.code, key.modifiers
-                );
+                crate::tui::render_trace::record("key_event_received");
                 if key.kind != event::KeyEventKind::Press {
                     continue;
                 }
                 match state.handle_key_event(key) {
                     TuiAction::Quit => break,
                     TuiAction::Submit(input) => {
-                        eprintln!("[SUBMIT_TRACE] action_received chars={}", input.len());
+                        crate::tui::render_trace::record("submit_action_received");
                         let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
                         let routed =
                             dispatch_runtime_command_to_projection(state, &working_dir, &input);
@@ -137,22 +134,19 @@ fn dispatch_runtime_command_to_projection(
     working_dir: &std::path::Path,
     input: &str,
 ) -> bool {
-    eprintln!("[RUNTIME_ROUTE_TRACE] input={}", input);
+    crate::tui::render_trace::record("runtime_route_entered");
     if classify_specification(input) == SpecificationKind::DesignSpecification {
-        eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
-        eprintln!("[RUNTIME_ROUTE_TRACE] reason=design_specification_guard");
+        crate::tui::render_trace::record("runtime_route_design_specification_guard");
         return false;
     }
 
     let Some(events) =
         crate::runtime::shell::RuntimeCommandDispatcher::dispatch(state, working_dir, input)
     else {
-        eprintln!("[RUNTIME_ROUTE_TRACE] matched=false");
-        eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_no_match");
+        crate::tui::render_trace::record("runtime_route_dispatcher_no_match");
         return false;
     };
-    eprintln!("[RUNTIME_ROUTE_TRACE] matched=true");
-    eprintln!("[RUNTIME_ROUTE_TRACE] reason=dispatcher_matched");
+    crate::tui::render_trace::record("runtime_route_dispatcher_matched");
 
     let rejection_message = state.rejection.as_ref().map(|rejection| {
         format!(
