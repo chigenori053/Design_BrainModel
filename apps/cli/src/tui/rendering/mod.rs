@@ -110,6 +110,7 @@ impl From<WorkspaceProjectionModel> for WorkspaceProjection {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DiagnosticModel {
     pub last_event: String,
+    pub last_key_event: String,
     pub last_focus: String,
     pub last_mutation: String,
     pub raw_mode: bool,
@@ -251,6 +252,11 @@ impl From<&TuiState> for RenderSnapshot {
                 last_event: state
                     .diagnostics
                     .last_event
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
+                last_key_event: state
+                    .diagnostics
+                    .last_key_event
                     .clone()
                     .unwrap_or_else(|| "(none)".to_string()),
                 last_focus: state

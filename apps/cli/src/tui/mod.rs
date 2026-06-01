@@ -72,10 +72,7 @@ fn run_event_loop(
     }
 
     loop {
-        if !state.event_queue.is_empty() {
-            scheduler.notify_state_change();
-        }
-        state.handle_ui_events();
+        flush_ui_events_before_render(state, &mut scheduler);
 
         if event::poll(FRAME_TIME).map_err(|e| e.to_string())? {
             let evt = event::read().map_err(|e| e.to_string())?;
@@ -117,6 +114,7 @@ fn run_event_loop(
                     TuiAction::None => {}
                 }
             }
+            flush_ui_events_before_render(state, &mut scheduler);
             scheduler.notify_state_change();
         }
 
@@ -127,6 +125,14 @@ fn run_event_loop(
         }
     }
     Ok(())
+}
+
+fn flush_ui_events_before_render(state: &mut TuiState, scheduler: &mut RenderScheduler) {
+    if state.event_queue.is_empty() {
+        return;
+    }
+    scheduler.notify_state_change();
+    state.handle_ui_events();
 }
 
 fn dispatch_runtime_command_to_projection(
@@ -232,6 +238,7 @@ fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeN
 mod tests {
     use super::*;
     use crate::runtime::shell::empty_runtime_payload;
+    use crate::specification_bridge::{StructuralDiagnosisResult, Violation};
     use crate::tui::runtime::RuntimeShellState;
 
     fn runtime_messages(state: &TuiState) -> Vec<String> {
@@ -293,6 +300,32 @@ mod tests {
             "{projection}"
         );
         assert_eq!(state.chat.events.len(), initial_event_count);
+    }
+
+    #[test]
+    fn flush_ui_events_projects_workspace_before_render() {
+        let mut state = TuiState::new(empty_runtime_payload());
+        let mut scheduler = RenderScheduler::default();
+        state.enqueue_event(UiEvent::StructuralDiagnosis {
+            result: StructuralDiagnosisResult {
+                violations: vec![Violation {
+                    rule: "ApplyGate boundary unspecified".to_string(),
+                    message: "architecture must expose ApplyGate boundary".to_string(),
+                }],
+                warnings: Vec::new(),
+            },
+        });
+
+        flush_ui_events_before_render(&mut state, &mut scheduler);
+        let snapshot = RenderSnapshot::from(&state);
+
+        assert!(state.event_queue.is_empty());
+        assert_eq!(
+            snapshot.workspace.analysis_result.diagnosis,
+            vec!["ApplyGate boundary unspecified".to_string()]
+        );
+        assert_eq!(snapshot.workspace.evaluation.status, "Diagnosis");
+        assert!(scheduler.take_pending().is_some());
     }
 
     #[test]

@@ -2,7 +2,10 @@ use std::io::{self, Stdout};
 
 use crossterm::{
     cursor::{Hide, MoveTo, Show},
-    event::{DisableMouseCapture, EnableMouseCapture},
+    event::{
+        DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags,
+        PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    },
     execute,
     terminal::{
         Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen, disable_raw_mode,
@@ -153,6 +156,10 @@ impl TerminalRenderer {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
+            ),
             Hide,
             Clear(ClearType::All),
             MoveTo(0, 0)
@@ -214,6 +221,7 @@ impl TerminalRenderer {
         execute!(
             self.terminal.backend_mut(),
             Show,
+            PopKeyboardEnhancementFlags,
             Clear(ClearType::All),
             MoveTo(0, 0),
             LeaveAlternateScreen,
@@ -294,6 +302,32 @@ mod tests {
 
         assert!(full_repaint_source.contains("render_trace::record(\"full_repaint\")"));
         assert!(full_repaint_source.contains("render::render(frame, snapshot)"));
+    }
+
+    #[test]
+    fn terminal_enter_pushes_keyboard_enhancement_flags() {
+        let source = include_str!("mod.rs");
+        let enter_source = source
+            .split("pub fn enter")
+            .nth(1)
+            .and_then(|rest| rest.split("pub fn full_repaint").next())
+            .expect("enter source");
+
+        assert!(enter_source.contains("PushKeyboardEnhancementFlags"));
+        assert!(enter_source.contains("KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES"));
+        assert!(enter_source.contains("KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES"));
+    }
+
+    #[test]
+    fn terminal_restore_pops_keyboard_enhancement_flags() {
+        let source = include_str!("mod.rs");
+        let restore_source = source
+            .split("fn restore")
+            .nth(1)
+            .and_then(|rest| rest.split("impl Drop").next())
+            .expect("restore source");
+
+        assert!(restore_source.contains("PopKeyboardEnhancementFlags"));
     }
 
     #[test]

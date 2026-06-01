@@ -226,8 +226,10 @@ fn render_evaluation_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
 fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, immutable.layout.status);
     frame.render_widget(
-        Paragraph::new("Design Specification Workbench | ⌘↩ Submit  Esc Clear  ⌘Q Exit")
-            .style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new(
+            "Design Specification Workbench | Ctrl+D / Ctrl+↩ / ⌘↩ Submit  Esc Clear  ⌘Q Exit",
+        )
+        .style(Style::default().fg(Color::DarkGray)),
         immutable.layout.status,
     );
 }
@@ -256,6 +258,7 @@ fn render_diagnostics_overlay(frame: &mut Frame, immutable: &ImmutableFrame) {
 
     let text = vec![
         Line::from(format!(" [EVENT] {}", diagnostics.last_event)),
+        Line::from(format!(" [KEY]   {}", diagnostics.last_key_event)),
         Line::from(format!(" [FOCUS] {}", diagnostics.last_focus)),
         Line::from(format!(" [INPUT] {}", diagnostics.last_mutation)),
         Line::from(format!(" [SUBSTRATE] raw_mode={}", diagnostics.raw_mode)),
@@ -637,6 +640,8 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Ctrl+D"));
+        assert!(surface.contains("Ctrl+↩"));
         assert!(surface.contains("⌘↩ Submit"));
         assert!(surface.contains("Esc Clear"));
         assert!(surface.contains("⌘Q Exit"));

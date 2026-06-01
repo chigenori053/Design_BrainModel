@@ -814,6 +814,7 @@ pub struct RejectionInfo {
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct TuiDiagnostics {
     pub last_event: Option<String>,
+    pub last_key_event: Option<String>,
     pub last_focus_transition: Option<String>,
     pub last_mutation: Option<String>,
     pub raw_mode_active: bool,
@@ -1048,11 +1049,22 @@ impl TuiState {
     }
 
     pub fn enqueue_event(&mut self, event: UiEvent) {
+        crate::tui::render_trace::record(Box::leak(
+            format!(
+                "[QUEUE_PUSH] event={:?} queue_len={}",
+                event,
+                self.event_queue.len() + 1
+            )
+            .into_boxed_str(),
+        ));
         self.event_queue.push(event);
     }
 
     pub fn handle_ui_events(&mut self) {
         if !self.event_queue.is_empty() {
+            crate::tui::render_trace::record(Box::leak(
+                format!("[UI_EVENTS] queue_len={}", self.event_queue.len()).into_boxed_str(),
+            ));
             self.increment_state_generation();
         }
         while let Some(event) = self.event_queue.pop() {
@@ -1061,6 +1073,9 @@ impl TuiState {
     }
 
     pub fn append_chat(&mut self, event: UiEvent) {
+        crate::tui::render_trace::record(Box::leak(
+            format!("[PROJECTION_UPDATE] state_gen={}", self.state_generation_id).into_boxed_str(),
+        ));
         // Phase 4.5: proposal capture and history tracking removed — state lives
         // in Core.  Only UI-side effects (diffs, filter) are applied here.
         self.apply_event_to_session(&event);
@@ -1068,6 +1083,7 @@ impl TuiState {
         self.sync_projection_authority();
         self.chat.append_chat(event);
         self.chat_scroll.apply_append();
+        crate::tui::render_trace::record("[RENDER] snapshot_ready");
     }
 
     pub fn update_design(&mut self, mut new_doc: DesignDocument) {
@@ -1280,8 +1296,20 @@ impl TuiState {
     }
 
     fn handle_input_key(&mut self, key: KeyEvent) -> TuiAction {
+        crate::tui::render_trace::record_key_event(key.code, key.modifiers);
+        if self.diagnostic_mode {
+            self.diagnostics.last_key_event = Some(format!(
+                "KEY={:?} MOD={:?} BITS={:#0x}",
+                key.code,
+                key.modifiers,
+                key.modifiers.bits()
+            ));
+        }
+        if Self::is_submit_key(&key) {
+            return self.submit_editor();
+        }
+
         match key.code {
-            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SUPER) => self.submit_editor(),
             KeyCode::Enter => {
                 self.editor_state.editor.insert_newline();
                 if self.diagnostic_mode {
@@ -1334,8 +1362,21 @@ impl TuiState {
         }
     }
 
+    fn is_submit_key(key: &KeyEvent) -> bool {
+        let command_enter =
+            key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SUPER);
+        let ctrl_enter =
+            key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL);
+        let ctrl_d = matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
+            && key.modifiers.contains(KeyModifiers::CONTROL);
+        command_enter || ctrl_enter || ctrl_d
+    }
+
     fn submit_editor(&mut self) -> TuiAction {
         let submitted = self.editor_state.editor.text();
+        crate::tui::render_trace::record(Box::leak(
+            format!("[SUBMIT] input_len={}", submitted.len()).into_boxed_str(),
+        ));
         let trimmed = submitted.trim().to_string();
         if trimmed.is_empty() {
             return TuiAction::None;
@@ -1613,6 +1654,7 @@ mod tests {
 
     use super::*;
     use crate::tui::model::{ScorePartsViewModel, TraceStatsViewModel, TraceViewModel, UiPayload};
+    use crate::tui::render_trace;
 
     fn empty_payload() -> UiPayload {
         UiPayload {
@@ -2074,7 +2116,7 @@ mod tests {
     }
 
     #[test]
-    fn ctrl_d_no_longer_submits_editor() {
+    fn ctrl_d_submits_editor_as_fallback() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
         for ch in "fix parser bug".chars() {
@@ -2084,8 +2126,68 @@ mod tests {
         let action =
             state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
 
-        assert_eq!(action, TuiAction::None);
-        assert!(state.history.is_empty());
+        assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
+        assert_eq!(state.history, vec!["fix parser bug"]);
+    }
+
+    #[test]
+    fn ctrl_enter_submits_editor_as_fallback() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "fix parser bug".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+
+        assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
+        assert_eq!(state.history, vec!["fix parser bug"]);
+    }
+
+    #[test]
+    fn submit_enter_accepts_additional_modifiers() {
+        let mut command_state = TuiState::new(empty_payload());
+        command_state.editor_state.editor.clear();
+        for ch in "command submit".chars() {
+            command_state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+        let command_action = command_state.handle_key_event(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::SUPER | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(
+            command_action,
+            TuiAction::Submit("command submit".to_string())
+        );
+
+        let mut ctrl_state = TuiState::new(empty_payload());
+        ctrl_state.editor_state.editor.clear();
+        for ch in "control submit".chars() {
+            ctrl_state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+        let ctrl_action = ctrl_state.handle_key_event(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+        ));
+        assert_eq!(ctrl_action, TuiAction::Submit("control submit".to_string()));
+    }
+
+    #[test]
+    fn input_key_events_are_recorded_to_trace_buffer() {
+        render_trace::reset();
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+
+        state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::CONTROL));
+        state.handle_key_event(KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL));
+
+        let events = render_trace::key_event_snapshot();
+        assert!(events.iter().any(|event| {
+            event.contains("KEY=Enter") && event.contains("MOD=") && event.contains("CONTROL")
+        }));
+        assert!(events.iter().any(|event| {
+            event.contains("KEY=Char('d')") && event.contains("MOD=") && event.contains("CONTROL")
+        }));
     }
 
     #[test]

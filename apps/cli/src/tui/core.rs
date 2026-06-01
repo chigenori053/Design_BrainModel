@@ -58,10 +58,12 @@ pub fn handle_submit(
     input: String,
     _working_dir: PathBuf,
 ) {
-    crate::tui::render_trace::record("core_submit_entered");
+    crate::tui::render_trace::record("[RUNTIME_DISPATCH] start");
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
     let classification = classify_specification(input.trim());
-    crate::tui::render_trace::record("core_submit_classified");
+    crate::tui::render_trace::record(Box::leak(
+        format!("[PLANNER_START] classification={:?}", classification).into_boxed_str(),
+    ));
     if matches!(classification, SpecificationKind::DesignSpecification) {
         handle_specification_submit(state, input);
         return;
@@ -70,7 +72,7 @@ pub fn handle_submit(
     // §7.1 §10.1: Transition to Thinking state before dispatch.
     // Runtime must never be silent — emit visible thinking event immediately.
     state.runtime_state = RuntimeShellState::Thinking;
-    state.event_queue.push(UiEvent::Thinking {
+    state.enqueue_event(UiEvent::Thinking {
         summary: "processing intent / 意図を処理中".to_string(),
     });
 
@@ -79,6 +81,7 @@ pub fn handle_submit(
         .map(|normalized| normalized.command.to_runtime_input())
         .unwrap_or(input);
     let request = CoreRequest::new(runtime_input);
+    crate::tui::render_trace::record("[EXECUTOR_START]");
     let mut response = core.execute(request);
 
     // §13.1: Empty event protection — execution must always produce visible narrative.
@@ -111,37 +114,62 @@ fn handle_specification_submit(state: &mut TuiState, input: String) {
     let context = match SpecificationContext::from_yaml(&input) {
         Ok(context) => context,
         Err(err) => {
-            state.event_queue.push(UiEvent::Error {
+            let event = UiEvent::Error {
                 message: format!("specification rejected: {err}"),
-            });
+            };
+            crate::tui::render_trace::record(Box::leak(
+                format!("[QUEUE_PUSH] spec_error={:?}", event).into_boxed_str(),
+            ));
+            state.event_queue.push(event);
             return;
         }
     };
-    state.event_queue.push(UiEvent::SpecContext {
+    let event = UiEvent::SpecContext {
         context: context.clone(),
-    });
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[QUEUE_PUSH] spec_context={:?}", event).into_boxed_str(),
+    ));
+    state.event_queue.push(event);
 
     let request = StructuralDiagnosisRequest::new(context);
-    state.event_queue.push(UiEvent::DomainClassification {
+    let event = UiEvent::DomainClassification {
         domain: request.domain.as_str().to_string(),
-    });
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[QUEUE_PUSH] domain={:?}", event).into_boxed_str(),
+    ));
+    state.event_queue.push(event);
+
     crate::tui::render_trace::record("core_submit_diagnosis_started");
     let diagnosis = request.diagnose();
-    state.event_queue.push(UiEvent::StructuralDiagnosis {
+    let event = UiEvent::StructuralDiagnosis {
         result: diagnosis.clone(),
-    });
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[QUEUE_PUSH] diagnosis={:?}", event).into_boxed_str(),
+    ));
+    state.event_queue.push(event);
 
     let repair_plan = RepairPlanner::generate(&diagnosis);
     crate::tui::render_trace::record("core_submit_repair_plan_generated");
-    state.event_queue.push(UiEvent::RepairPlan {
+    let event = UiEvent::RepairPlan {
         plan: repair_plan.clone(),
-    });
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[QUEUE_PUSH] repair_plan={:?}", event).into_boxed_str(),
+    ));
+    state.event_queue.push(event);
 
     let implementation_plan = ImplementationPlanner::generate(&repair_plan);
     crate::tui::render_trace::record("core_submit_implementation_plan_generated");
-    state.event_queue.push(UiEvent::ImplementationPlan {
+    let event = UiEvent::ImplementationPlan {
         plan: implementation_plan,
-    });
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[QUEUE_PUSH] impl_plan={:?}", event).into_boxed_str(),
+    ));
+    state.event_queue.push(event);
     crate::tui::render_trace::record("core_submit_analysis_workspace_updated");
 }
 
@@ -159,7 +187,11 @@ fn apply_core_response(
         if !tui_logging_isolated() {
             let _event = emit_debug("UI", "Rendering event", DebugLevel::Trace);
         }
-        queue.push(to_ui_event(event));
+        let ui_event = to_ui_event(event);
+        crate::tui::render_trace::record(Box::leak(
+            format!("[QUEUE_PUSH] core_event={:?}", ui_event).into_boxed_str(),
+        ));
+        queue.push(ui_event);
     }
 }
 
