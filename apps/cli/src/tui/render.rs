@@ -167,15 +167,24 @@ fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
 
+    let mut rendered_lines = snapshot.workspace.analysis_result.lines();
+    let runtime_activity = snapshot.runtime.runtime_panel_lines(snapshot.is_expanded);
+    let title = if runtime_activity.is_empty() {
+        " Analysis Result "
+    } else {
+        " Analysis Result / Runtime Activity "
+    };
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Analysis Result ")
+        .title(title)
         .border_style(active_border(snapshot.focus == Focus::Design, false));
 
-    let lines = snapshot
-        .workspace
-        .analysis_result
-        .lines()
+    if !runtime_activity.is_empty() {
+        rendered_lines.push(String::new());
+        rendered_lines.push("Runtime Activity".to_string());
+        rendered_lines.extend(runtime_activity);
+    }
+    let lines = rendered_lines
         .into_iter()
         .map(Line::from)
         .collect::<Vec<_>>();
@@ -652,6 +661,40 @@ mod tests {
         assert!(!surface.contains(" OUTPUT "));
         assert!(!surface.contains(" INPUT "));
         assert!(!surface.contains("state=mutation in progress"));
+    }
+
+    #[test]
+    fn runtime_activity_is_rendered_from_snapshot_narrative_lines() {
+        let mut state = TuiState::new(empty_payload());
+        state.append_chat(UiEvent::Thinking {
+            summary: "Request accepted".to_string(),
+        });
+        state.append_chat(UiEvent::Planning {
+            summary: "Generating execution plan".to_string(),
+        });
+        state.append_chat(UiEvent::Execution {
+            step: "Running analyzer".to_string(),
+        });
+        state.append_chat(UiEvent::Result {
+            message: "Result produced".to_string(),
+        });
+
+        let backend = TestBackend::new(120, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        full_repaint(&mut terminal, &state);
+        let surface = buffer_text(terminal.backend().buffer());
+
+        assert!(surface.contains("Runtime Activity"), "{surface}");
+        assert!(surface.contains("[Thinking] Request accepted"), "{surface}");
+        assert!(
+            surface.contains("[Planning] Generating execution plan"),
+            "{surface}"
+        );
+        assert!(
+            surface.contains("[Executing] Running analyzer"),
+            "{surface}"
+        );
+        assert!(surface.contains("[Completed] Result produced"), "{surface}");
     }
 
     #[test]

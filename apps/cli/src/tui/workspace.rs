@@ -28,6 +28,8 @@ pub struct AnalysisResultWorkspace {
     pub diagnosis: Vec<String>,
     pub repair_plan: Vec<String>,
     pub implementation_plan: Vec<String>,
+    pub error_message: Option<String>,
+    pub execution_trace: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -91,6 +93,78 @@ impl WorkspaceProjector {
                     plan.tasks.first().map(|task| task.title.clone());
                 crate::tui::render_trace::record("workspace_implementation_plan_projected");
             }
+            UiEvent::Thinking { summary } => {
+                workspace.evaluation.status = "Thinking".to_string();
+                workspace.evaluation.progress = workspace.evaluation.progress.max(10);
+                workspace.evaluation.active_task = runtime_task_id(summary);
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(summary.clone());
+            }
+            UiEvent::Planning { summary } => {
+                workspace.evaluation.status = "Planning".to_string();
+                workspace.evaluation.progress = workspace.evaluation.progress.max(25);
+                workspace.evaluation.active_task =
+                    runtime_task_id(summary).or_else(|| workspace.evaluation.active_task.clone());
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(summary.clone());
+            }
+            UiEvent::Pipeline { state } => {
+                workspace.evaluation.status = "Planning".to_string();
+                workspace.evaluation.progress = workspace.evaluation.progress.max(35);
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(state.clone());
+            }
+            UiEvent::Execution { step } => {
+                workspace.evaluation.status = "Executing".to_string();
+                workspace.evaluation.progress = workspace.evaluation.progress.max(60);
+                workspace.evaluation.active_task =
+                    runtime_task_id(step).or_else(|| workspace.evaluation.active_task.clone());
+                workspace.analysis_result.execution_trace.push(step.clone());
+            }
+            UiEvent::Runtime { message } => {
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(message.clone());
+                if let Some(task_id) = runtime_task_id(message) {
+                    workspace.evaluation.active_task = Some(task_id);
+                }
+            }
+            UiEvent::Result { message } => {
+                workspace.evaluation.status = "Completed".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task = None;
+                workspace.analysis_result.error_message = None;
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(message.clone());
+                project_runtime_result(&mut workspace.analysis_result, message);
+            }
+            UiEvent::System { summary } if is_terminal_runtime_summary(summary) => {
+                workspace.evaluation.status = "Completed".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task = None;
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(summary.clone());
+            }
+            UiEvent::Error { message } => {
+                workspace.evaluation.status = "Failed".to_string();
+                workspace.evaluation.active_task = None;
+                workspace.analysis_result.error_message = Some(message.clone());
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(message.clone());
+            }
             _ => {}
         }
     }
@@ -107,6 +181,16 @@ impl AnalysisResultWorkspace {
         lines.push(String::new());
         lines.push("Implementation Plan".to_string());
         lines.extend(item_lines(&self.implementation_plan));
+        if let Some(message) = &self.error_message {
+            lines.push(String::new());
+            lines.push("Error Message".to_string());
+            lines.push(format!("- {message}"));
+        }
+        if !self.execution_trace.is_empty() {
+            lines.push(String::new());
+            lines.push("Execution Trace".to_string());
+            lines.extend(item_lines(&self.execution_trace));
+        }
         lines
     }
 }
@@ -143,6 +227,97 @@ fn item_lines(items: &[String]) -> Vec<String> {
     } else {
         items.iter().map(|item| format!("- {item}")).collect()
     }
+}
+
+fn runtime_task_id(text: &str) -> Option<String> {
+    let task = text.split_whitespace().collect::<Vec<_>>();
+    task.windows(2).find_map(|window| {
+        if window[0] == "task" {
+            let id = window[1].trim_matches(|ch: char| !ch.is_ascii_alphanumeric());
+            if !id.is_empty() {
+                return Some(format!("task-{id}"));
+            }
+        }
+        None
+    })
+}
+
+fn is_terminal_runtime_summary(summary: &str) -> bool {
+    let lower = summary.to_ascii_lowercase();
+    lower.contains("completed") || lower.contains("cancelled")
+}
+
+fn project_runtime_result(workspace: &mut AnalysisResultWorkspace, message: &str) {
+    let sections = parse_runtime_result_sections(message);
+    if let Some(diagnosis) = sections.diagnosis {
+        workspace.diagnosis = diagnosis;
+    } else if workspace.diagnosis.is_empty() {
+        workspace.diagnosis = vec![message.to_string()];
+    }
+    if let Some(repair_plan) = sections.repair_plan {
+        workspace.repair_plan = repair_plan;
+    }
+    if let Some(implementation_plan) = sections.implementation_plan {
+        workspace.implementation_plan = implementation_plan;
+    }
+}
+
+#[derive(Default)]
+struct RuntimeResultSections {
+    diagnosis: Option<Vec<String>>,
+    repair_plan: Option<Vec<String>>,
+    implementation_plan: Option<Vec<String>>,
+}
+
+fn parse_runtime_result_sections(message: &str) -> RuntimeResultSections {
+    #[derive(Clone, Copy)]
+    enum Section {
+        Diagnosis,
+        RepairPlan,
+        ImplementationPlan,
+    }
+
+    let mut sections = RuntimeResultSections::default();
+    let mut current: Option<Section> = None;
+
+    for raw in message.lines() {
+        let line = raw
+            .trim()
+            .trim_start_matches('#')
+            .trim()
+            .trim_end_matches(':')
+            .trim();
+        let normalized = line.to_ascii_lowercase().replace(['-', '_'], " ");
+        current = match normalized.as_str() {
+            "diagnosis" => Some(Section::Diagnosis),
+            "repair plan" => Some(Section::RepairPlan),
+            "implementation plan" => Some(Section::ImplementationPlan),
+            _ => current,
+        };
+        if matches!(
+            normalized.as_str(),
+            "diagnosis" | "repair plan" | "implementation plan"
+        ) {
+            continue;
+        }
+        if line.is_empty() {
+            continue;
+        }
+        let item = line.trim_start_matches(['-', '*']).trim().to_string();
+        match current {
+            Some(Section::Diagnosis) => sections.diagnosis.get_or_insert_with(Vec::new).push(item),
+            Some(Section::RepairPlan) => {
+                sections.repair_plan.get_or_insert_with(Vec::new).push(item)
+            }
+            Some(Section::ImplementationPlan) => sections
+                .implementation_plan
+                .get_or_insert_with(Vec::new)
+                .push(item),
+            None => {}
+        }
+    }
+
+    sections
 }
 
 #[cfg(test)]
@@ -271,5 +446,83 @@ mod tests {
         );
         assert!(!workspace.analysis_result.repair_plan.is_empty());
         assert!(!workspace.analysis_result.implementation_plan.is_empty());
+    }
+
+    #[test]
+    fn runtime_events_project_status_active_task_and_result() {
+        let mut workspace = WorkspaceState::default();
+
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Thinking {
+                summary: "task 42 queued".to_string(),
+            },
+        );
+        assert_eq!(workspace.evaluation.status, "Thinking");
+        assert_eq!(workspace.evaluation.active_task.as_deref(), Some("task-42"));
+
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Planning {
+                summary: "task 42 planning runtime execution".to_string(),
+            },
+        );
+        assert_eq!(workspace.evaluation.status, "Planning");
+        assert_eq!(workspace.evaluation.active_task.as_deref(), Some("task-42"));
+
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Execution {
+                step: "task 42 executing runtime core".to_string(),
+            },
+        );
+        assert_eq!(workspace.evaluation.status, "Executing");
+        assert_eq!(workspace.evaluation.active_task.as_deref(), Some("task-42"));
+
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Result {
+                message: "Diagnosis\n- RuntimeProjectionMissing\n\nRepair Plan\n- Project runtime events\n\nImplementation Plan\n- Render Runtime Activity".to_string(),
+            },
+        );
+        assert_eq!(workspace.evaluation.status, "Completed");
+        assert_eq!(workspace.evaluation.active_task, None);
+        assert_eq!(
+            workspace.analysis_result.diagnosis,
+            vec!["RuntimeProjectionMissing".to_string()]
+        );
+        assert_eq!(
+            workspace.analysis_result.repair_plan,
+            vec!["Project runtime events".to_string()]
+        );
+        assert_eq!(
+            workspace.analysis_result.implementation_plan,
+            vec!["Render Runtime Activity".to_string()]
+        );
+    }
+
+    #[test]
+    fn runtime_error_projects_failed_and_clears_active_task() {
+        let mut workspace = WorkspaceState::default();
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Thinking {
+                summary: "task 7 queued".to_string(),
+            },
+        );
+
+        WorkspaceProjector::project(
+            &mut workspace,
+            &UiEvent::Error {
+                message: "task 7 failed".to_string(),
+            },
+        );
+
+        assert_eq!(workspace.evaluation.status, "Failed");
+        assert_eq!(workspace.evaluation.active_task, None);
+        assert_eq!(
+            workspace.analysis_result.error_message.as_deref(),
+            Some("task 7 failed")
+        );
     }
 }

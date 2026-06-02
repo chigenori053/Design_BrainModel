@@ -631,6 +631,12 @@ impl SpecificationEditor {
             if self.cursor_row == 0 {
                 return;
             }
+            // YAML構造保護: 前の行がYAMLキー行（末尾 ':'）の場合、
+            // 行結合を禁止してYAMLドキュメント構造を保持する。
+            let prev_line = &self.lines[self.cursor_row - 1];
+            if prev_line.trim_end().ends_with(':') {
+                return;
+            }
             let current = self.lines.remove(self.cursor_row);
             self.cursor_row -= 1;
             self.cursor_col = self.lines[self.cursor_row].len();
@@ -755,6 +761,32 @@ impl SpecificationEditor {
         self.cursor_row = self.cursor_row.min(self.lines.len() - 1);
         self.cursor_col = self.cursor_col.min(self.lines[self.cursor_row].len());
     }
+}
+
+/// YAML構造を保証するための防御的改行復元。
+///
+/// `SpecificationEditor` の `text()` が返す文字列に対して、
+/// YAMLキーバウンダリ（`key:`パターン）の直前に改行がない場合に
+/// 改行を挿入する。backspace() のガードをすり抜けた場合の安全網。
+fn ensure_yaml_line_breaks(input: &str) -> String {
+    if input.contains('\n') {
+        return input.to_string();
+    }
+    // 改行が一切ない場合のみ復元を試みる
+    let yaml_keys = ["system_name:", "goals:", "constraints:", "architecture:", "rules:"];
+    let mut result = input.to_string();
+    // 後方のキーから処理して挿入位置がずれないようにする
+    for key in yaml_keys.iter().rev() {
+        if let Some(pos) = result.find(key) {
+            if pos > 0 {
+                let before = result.as_bytes().get(pos - 1).copied();
+                if before != Some(b'\n') {
+                    result.insert(pos, '\n');
+                }
+            }
+        }
+    }
+    result
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1392,9 +1424,11 @@ impl TuiState {
     }
 
     fn submit_editor(&mut self) -> TuiAction {
-        let submitted = self.editor_state.editor.text();
+        let raw_submitted = self.editor_state.editor.text();
+        // Fix-1: 防御的YAML改行復元 — lines配列が単一行に統合された場合の安全網
+        let submitted = ensure_yaml_line_breaks(&raw_submitted);
         crate::tui::render_trace::record(Box::leak(
-            format!("[SUBMIT] input_len={}", submitted.len()).into_boxed_str(),
+            format!("[SUBMIT] input_len={} raw_len={}", submitted.len(), raw_submitted.len()).into_boxed_str(),
         ));
         let trimmed = submitted.trim().to_string();
         if trimmed.is_empty() {
@@ -1414,7 +1448,12 @@ impl TuiState {
         self.history_cursor = None;
         self.update_runtime_intent_state(&trimmed);
         if self.diagnostic_mode {
-            self.diagnostics.last_mutation = Some(format!("submit('{}')", trimmed));
+            // Fix-2: Diagnostics表示で行数情報を追加
+            self.diagnostics.last_mutation = Some(format!(
+                "submit('{}') lines={}",
+                trimmed.lines().next().unwrap_or(""),
+                trimmed.lines().count()
+            ));
         }
         crate::tui::render_trace::record(Box::leak(
             format!("[SUBMIT_ACTION_CREATED] input_len={}", submitted.len()).into_boxed_str(),
@@ -2598,4 +2637,91 @@ mod tests {
             assert_eq!(state.runtime_state, before, "{pipeline_state}");
         }
     }
+
+    // ---- Fix-3: backspace() YAML構造保護テスト ----
+
+    #[test]
+    fn backspace_preserves_yaml_key_boundary() {
+        let mut editor = SpecificationEditor::default();
+        // default lines: ["system_name:", "", "goals:", "", ...]
+        // cursor を空行 (row=1) の先頭に移動
+        editor.cursor_row = 1;
+        editor.cursor_col = 0;
+
+        // Backspace: row=1 の空行を "system_name:" に結合しようとするが、
+        // "system_name:" は末尾 ':' なので結合が阻止されるべき
+        editor.backspace();
+
+        assert_eq!(editor.lines[0], "system_name:");
+        assert!(editor.lines.len() >= 9, "行数が減少してはいけない");
+    }
+
+    #[test]
+    fn backspace_allows_merge_for_non_yaml_key_lines() {
+        let mut editor = SpecificationEditor {
+            lines: vec![
+                "hello world".to_string(),
+                " continued".to_string(),
+            ],
+            cursor_row: 1,
+            cursor_col: 0,
+        };
+
+        editor.backspace();
+
+        assert_eq!(editor.lines.len(), 1);
+        assert_eq!(editor.lines[0], "hello world continued");
+    }
+
+    #[test]
+    fn backspace_on_yaml_key_with_trailing_spaces_still_protected() {
+        let mut editor = SpecificationEditor {
+            lines: vec![
+                "goals:  ".to_string(),
+                "  - first_goal".to_string(),
+            ],
+            cursor_row: 1,
+            cursor_col: 0,
+        };
+
+        editor.backspace();
+
+        // "goals:  " は trim_end() すると "goals:" で ':' 終端なので保護される
+        assert_eq!(editor.lines.len(), 2);
+        assert_eq!(editor.lines[0], "goals:  ");
+        assert_eq!(editor.lines[1], "  - first_goal");
+    }
+
+    // ---- Fix-1: ensure_yaml_line_breaks テスト ----
+
+    #[test]
+    fn ensure_yaml_line_breaks_restores_missing_newlines() {
+        let input = "system_name: testtestgoals:  - verify_runtimeconstraints:  - no_side_effects";
+        let restored = ensure_yaml_line_breaks(input);
+
+        assert!(restored.contains('\n'), "改行が復元されるべき");
+        assert!(restored.contains("system_name: testtest\ngoals:"));
+        assert!(restored.contains("goals:  - verify_runtime\nconstraints:"));
+    }
+
+    #[test]
+    fn ensure_yaml_line_breaks_preserves_existing_newlines() {
+        let input = "system_name: testtest\n\ngoals:\n  - verify_runtime\n";
+        let result = ensure_yaml_line_breaks(input);
+
+        assert_eq!(result, input, "改行が既にある場合はそのまま返すべき");
+    }
+
+    #[test]
+    fn ensure_yaml_line_breaks_handles_empty_input() {
+        assert_eq!(ensure_yaml_line_breaks(""), "");
+    }
+
+    #[test]
+    fn ensure_yaml_line_breaks_handles_non_yaml_single_line() {
+        let input = "fix parser bug";
+        let result = ensure_yaml_line_breaks(input);
+        assert_eq!(result, input, "YAML以外の入力は変更しない");
+    }
 }
+

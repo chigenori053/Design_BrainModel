@@ -174,6 +174,17 @@ fn drain_runtime_worker_events(
 }
 
 fn project_runtime_status(state: &mut TuiState, task_id: u64, status: RuntimeStatus) {
+    state.runtime_state = match status {
+        RuntimeStatus::Queued => crate::tui::runtime::RuntimeShellState::Thinking,
+        RuntimeStatus::Planning => crate::tui::runtime::RuntimeShellState::Plan,
+        RuntimeStatus::Executing | RuntimeStatus::Projecting => {
+            crate::tui::runtime::RuntimeShellState::Apply
+        }
+        RuntimeStatus::Completed | RuntimeStatus::Cancelled => {
+            crate::tui::runtime::RuntimeShellState::Idle
+        }
+        RuntimeStatus::Failed => crate::tui::runtime::RuntimeShellState::Failed,
+    };
     match status {
         RuntimeStatus::Queued => state.enqueue_event(UiEvent::Thinking {
             summary: format!("task {task_id} queued"),

@@ -4,7 +4,7 @@ use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::core::resolve_projection_target;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{
-    Focus, RuntimeNarrativeEvent, TuiState, contains_runtime_reference, sanitize_line,
+    Focus, RuntimeNarrativeEvent, TuiState, UiEvent, contains_runtime_reference, sanitize_line,
 };
 use crate::tui::workspace::WorkspaceState;
 
@@ -340,6 +340,9 @@ impl RuntimeProjection {
         };
         projection.narrative_lines =
             RuntimeNarrativeReducer::render(runtime_semantic_events_from_projection(&projection));
+        projection
+            .narrative_lines
+            .extend(runtime_activity_lines_from_events(state));
         projection
     }
 
@@ -732,6 +735,32 @@ fn sanitize_lines(lines: Vec<String>) -> Vec<String> {
         .into_iter()
         .filter_map(|line| sanitize_line(&line))
         .collect()
+}
+
+fn runtime_activity_lines_from_events(state: &TuiState) -> Vec<String> {
+    state
+        .chat
+        .events
+        .iter()
+        .filter_map(runtime_activity_line)
+        .collect()
+}
+
+fn runtime_activity_line(event: &UiEvent) -> Option<String> {
+    let line = match event {
+        UiEvent::Thinking { summary } => format!("[Thinking] {summary}"),
+        UiEvent::Planning { summary } => format!("[Planning] {summary}"),
+        UiEvent::Pipeline { state } => format!("[Planning] {state}"),
+        UiEvent::Execution { step } => format!("[Executing] {step}"),
+        UiEvent::Runtime { message } => format!("[Executing] {message}"),
+        UiEvent::Result { message } => format!("[Completed] {message}"),
+        UiEvent::System { summary } if summary.to_ascii_lowercase().contains("completed") => {
+            format!("[Completed] {summary}")
+        }
+        UiEvent::Error { message } => format!("[Failed] {message}"),
+        _ => return None,
+    };
+    sanitize_line(&line)
 }
 
 fn normalize_narrative_event(event: RuntimeNarrativeEvent) -> RuntimeNarrativeEvent {
