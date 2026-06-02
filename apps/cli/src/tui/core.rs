@@ -183,6 +183,12 @@ pub fn apply_runtime_response(state: &mut TuiState, mut response: crate::core::C
 }
 
 fn handle_specification_submit(state: &mut TuiState, input: String) {
+    crate::tui::render_trace::record_payload_dump(
+        "RAW_PAYLOAD_BEGIN",
+        "RAW_PAYLOAD_END",
+        "PAYLOAD",
+        &input,
+    );
     let context = match SpecificationContext::from_yaml(&input) {
         Ok(context) => context,
         Err(err) => {
@@ -483,6 +489,24 @@ rules:
                 .iter()
                 .all(|line| !line.contains("[SPEC_CONTEXT]"))
         );
+    }
+
+    #[test]
+    fn specification_submit_records_parser_input_dump() {
+        crate::tui::render_trace::reset();
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+        let spec = "system_name: DBM\n\ngoals:\n  - stabilize parser";
+
+        handle_submit(&mut state, &core, spec.to_string(), ".".into());
+
+        let trace = crate::tui::render_trace::snapshot();
+        assert!(trace.contains(&"RAW_PAYLOAD_BEGIN"));
+        assert!(trace.contains(&"RAW_PAYLOAD_END"));
+        assert!(trace.contains(&"PAYLOAD_LINE_1 system_name: DBM"));
+        assert!(trace.contains(&"PAYLOAD_LINE_2"));
+        assert!(trace.contains(&"PAYLOAD_LINE_3 goals:"));
+        assert!(trace.contains(&"PAYLOAD_LINE_4   - stabilize parser"));
     }
 
     #[test]

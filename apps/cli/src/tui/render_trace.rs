@@ -17,6 +17,30 @@ pub fn record(event: &'static str) {
     trace_events().lock().expect("render trace").push(event);
 }
 
+pub fn record_payload_dump(
+    begin: &'static str,
+    end: &'static str,
+    line_prefix: &str,
+    payload: &str,
+) {
+    record(begin);
+    for line in payload.lines() {
+        record(Box::leak(line.to_string().into_boxed_str()));
+    }
+    record(end);
+    for (idx, line) in payload.lines().enumerate() {
+        let event = if line.is_empty() {
+            format!("{line_prefix}_LINE_{}", idx + 1)
+        } else {
+            format!("{line_prefix}_LINE_{} {line}", idx + 1)
+        };
+        record(Box::leak(event.into_boxed_str()));
+    }
+    if payload.is_empty() {
+        record(Box::leak(format!("{line_prefix}_LINE_1").into_boxed_str()));
+    }
+}
+
 pub fn record_key_event(code: KeyCode, modifiers: KeyModifiers) {
     key_event_trace()
         .lock()

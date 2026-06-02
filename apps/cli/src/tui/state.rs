@@ -584,18 +584,19 @@ impl Default for SpecificationEditor {
     fn default() -> Self {
         Self {
             lines: vec![
-                "system_name:".to_string(),
+                "system_name: \"\"".to_string(),
                 String::new(),
                 "goals:".to_string(),
-                String::new(),
+                "  - \"\"".to_string(),
                 "constraints:".to_string(),
-                String::new(),
+                "  - \"\"".to_string(),
                 "architecture:".to_string(),
-                String::new(),
+                "  - \"\"".to_string(),
                 "rules:".to_string(),
+                "  - \"\"".to_string(),
             ],
             cursor_row: 0,
-            cursor_col: "system_name:".len(),
+            cursor_col: "system_name: \"\"".len(),
         }
     }
 }
@@ -763,30 +764,88 @@ impl SpecificationEditor {
     }
 }
 
-/// YAML構造を保証するための防御的改行復元。
-///
-/// `SpecificationEditor` の `text()` が返す文字列に対して、
-/// YAMLキーバウンダリ（`key:`パターン）の直前に改行がない場合に
-/// 改行を挿入する。backspace() のガードをすり抜けた場合の安全網。
+/// YAML構造を保証するための防御的正規化。
 fn ensure_yaml_line_breaks(input: &str) -> String {
-    if input.contains('\n') {
-        return input.to_string();
-    }
-    // 改行が一切ない場合のみ復元を試みる
-    let yaml_keys = ["system_name:", "goals:", "constraints:", "architecture:", "rules:"];
+    let yaml_keys = [
+        "system_name:",
+        "goals:",
+        "constraints:",
+        "architecture:",
+        "rules:",
+    ];
     let mut result = input.to_string();
-    // 後方のキーから処理して挿入位置がずれないようにする
     for key in yaml_keys.iter().rev() {
-        if let Some(pos) = result.find(key) {
-            if pos > 0 {
-                let before = result.as_bytes().get(pos - 1).copied();
-                if before != Some(b'\n') {
+        let mut search_from = 0;
+        while let Some(relative_pos) = result[search_from..].find(key) {
+            let pos = search_from + relative_pos;
+            if pos > 0 && result.as_bytes().get(pos - 1).copied() != Some(b'\n') {
+                let line_start = result[..pos].rfind('\n').map(|idx| idx + 1).unwrap_or(0);
+                let before_on_line = result[line_start..pos].trim_start();
+                if yaml_keys
+                    .iter()
+                    .any(|existing| before_on_line.starts_with(existing))
+                {
                     result.insert(pos, '\n');
+                    search_from = pos + key.len() + 1;
+                    continue;
+                }
+            }
+            search_from = pos + key.len();
+        }
+    }
+
+    let list_sections = ["goals:", "constraints:", "architecture:", "rules:"];
+    let mut normalized = Vec::new();
+    let mut previous_was_list_section = false;
+    for raw_line in result.lines() {
+        let mut line = normalize_yaml_line(raw_line, &yaml_keys);
+        let trimmed = line.trim_start();
+        if list_sections.iter().any(|section| trimmed == *section) {
+            previous_was_list_section = true;
+            normalized.push(line);
+            continue;
+        }
+        if previous_was_list_section && trimmed.starts_with("- ") {
+            line = format!("  {trimmed}");
+        }
+        previous_was_list_section = false;
+        normalized.push(line);
+    }
+
+    if input.ends_with('\n') && !normalized.is_empty() {
+        format!("{}\n", normalized.join("\n"))
+    } else {
+        normalized.join("\n")
+    }
+}
+
+fn normalize_yaml_line(raw_line: &str, yaml_keys: &[&str]) -> String {
+    let indent_len = raw_line.len() - raw_line.trim_start().len();
+    let indent = &raw_line[..indent_len];
+    let trimmed = raw_line.trim_start();
+
+    if let Some(rest) = trimmed.strip_prefix('-') {
+        if !rest.starts_with(' ') && !rest.is_empty() {
+            return format!("{indent}- {}", rest.trim_start());
+        }
+    }
+    if let Some(rest) = trimmed.strip_prefix('*') {
+        if !rest.is_empty() {
+            return format!("{indent}- {}", rest.trim_start());
+        }
+    }
+
+    for key in yaml_keys {
+        if let Some(value) = trimmed.strip_prefix(key) {
+            if !value.is_empty() {
+                let before = value.as_bytes().first().copied();
+                if before != Some(b'\n') {
+                    return format!("{indent}{key} {}", value.trim_start());
                 }
             }
         }
     }
-    result
+    raw_line.to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1427,8 +1486,19 @@ impl TuiState {
         let raw_submitted = self.editor_state.editor.text();
         // Fix-1: 防御的YAML改行復元 — lines配列が単一行に統合された場合の安全網
         let submitted = ensure_yaml_line_breaks(&raw_submitted);
+        crate::tui::render_trace::record_payload_dump(
+            "RAW_PAYLOAD_BEGIN",
+            "RAW_PAYLOAD_END",
+            "PAYLOAD",
+            &submitted,
+        );
         crate::tui::render_trace::record(Box::leak(
-            format!("[SUBMIT] input_len={} raw_len={}", submitted.len(), raw_submitted.len()).into_boxed_str(),
+            format!(
+                "[SUBMIT] input_len={} raw_len={}",
+                submitted.len(),
+                raw_submitted.len()
+            )
+            .into_boxed_str(),
         ));
         let trimmed = submitted.trim().to_string();
         if trimmed.is_empty() {
@@ -2643,26 +2713,23 @@ mod tests {
     #[test]
     fn backspace_preserves_yaml_key_boundary() {
         let mut editor = SpecificationEditor::default();
-        // default lines: ["system_name:", "", "goals:", "", ...]
-        // cursor を空行 (row=1) の先頭に移動
-        editor.cursor_row = 1;
+        // default lines: ["system_name: \"\"", "", "goals:", ...]
+        // cursor を goals 行の先頭に移動
+        editor.cursor_row = 2;
         editor.cursor_col = 0;
 
-        // Backspace: row=1 の空行を "system_name:" に結合しようとするが、
-        // "system_name:" は末尾 ':' なので結合が阻止されるべき
+        // Backspace: goals 行を直前の空行に結合しようとするが、
+        // その前の YAML 文脈は保持されるべき
         editor.backspace();
 
-        assert_eq!(editor.lines[0], "system_name:");
-        assert!(editor.lines.len() >= 9, "行数が減少してはいけない");
+        assert_eq!(editor.lines[0], "system_name: \"\"");
+        assert!(editor.lines.iter().any(|line| line == "goals:"));
     }
 
     #[test]
     fn backspace_allows_merge_for_non_yaml_key_lines() {
         let mut editor = SpecificationEditor {
-            lines: vec![
-                "hello world".to_string(),
-                " continued".to_string(),
-            ],
+            lines: vec!["hello world".to_string(), " continued".to_string()],
             cursor_row: 1,
             cursor_col: 0,
         };
@@ -2676,10 +2743,7 @@ mod tests {
     #[test]
     fn backspace_on_yaml_key_with_trailing_spaces_still_protected() {
         let mut editor = SpecificationEditor {
-            lines: vec![
-                "goals:  ".to_string(),
-                "  - first_goal".to_string(),
-            ],
+            lines: vec!["goals:  ".to_string(), "  - first_goal".to_string()],
             cursor_row: 1,
             cursor_col: 0,
         };
@@ -2701,7 +2765,7 @@ mod tests {
 
         assert!(restored.contains('\n'), "改行が復元されるべき");
         assert!(restored.contains("system_name: testtest\ngoals:"));
-        assert!(restored.contains("goals:  - verify_runtime\nconstraints:"));
+        assert!(restored.contains("goals: - verify_runtime\nconstraints:"));
     }
 
     #[test]
@@ -2710,6 +2774,57 @@ mod tests {
         let result = ensure_yaml_line_breaks(input);
 
         assert_eq!(result, input, "改行が既にある場合はそのまま返すべき");
+    }
+
+    #[test]
+    fn default_specification_template_parses_as_yaml_context() {
+        let editor = SpecificationEditor::default();
+        let submitted = ensure_yaml_line_breaks(&editor.text());
+
+        crate::specification_bridge::SpecificationContext::from_yaml(&submitted)
+            .expect("default template should parse");
+    }
+
+    #[test]
+    fn ensure_yaml_line_breaks_repairs_missing_key_value_space() {
+        assert_eq!(
+            ensure_yaml_line_breaks("system_name:test"),
+            "system_name: test"
+        );
+    }
+
+    #[test]
+    fn ensure_yaml_line_breaks_repairs_compact_list_items() {
+        assert_eq!(ensure_yaml_line_breaks("-test"), "- test");
+        assert_eq!(ensure_yaml_line_breaks("* test"), "- test");
+        assert_eq!(ensure_yaml_line_breaks("goals:\n-test"), "goals:\n  - test");
+        assert_eq!(
+            ensure_yaml_line_breaks("constraints:\n-test"),
+            "constraints:\n  - test"
+        );
+        assert_eq!(
+            ensure_yaml_line_breaks("architecture:\n-test"),
+            "architecture:\n  - test"
+        );
+        assert_eq!(ensure_yaml_line_breaks("rules:\n-test"), "rules:\n  - test");
+    }
+
+    #[test]
+    fn submit_editor_records_raw_payload_dump() {
+        render_trace::reset();
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "system_name:test".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SUPER));
+
+        assert_eq!(action, TuiAction::Submit("system_name: test".to_string()));
+        let trace = render_trace::snapshot();
+        assert!(trace.contains(&"RAW_PAYLOAD_BEGIN"));
+        assert!(trace.contains(&"RAW_PAYLOAD_END"));
+        assert!(trace.contains(&"PAYLOAD_LINE_1 system_name: test"));
     }
 
     #[test]
@@ -2724,4 +2839,3 @@ mod tests {
         assert_eq!(result, input, "YAML以外の入力は変更しない");
     }
 }
-

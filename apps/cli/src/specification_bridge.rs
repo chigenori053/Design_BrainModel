@@ -133,6 +133,12 @@ impl std::error::Error for SpecificationError {}
 
 impl SpecificationContext {
     pub fn from_yaml(text: &str) -> Result<Self, SpecificationError> {
+        crate::tui::render_trace::record_payload_dump(
+            "NORMALIZED_PAYLOAD_BEGIN",
+            "NORMALIZED_PAYLOAD_END",
+            "NORMALIZED_PAYLOAD",
+            text,
+        );
         let root = serde_yaml::from_str::<Value>(text)
             .map_err(|err| SpecificationError::InvalidYaml(err.to_string()))?;
         let map = root
@@ -1309,8 +1315,16 @@ fn component_list(value: Option<&Value>) -> Result<Vec<ComponentSpec>, Specifica
 }
 
 fn component_from_value(value: &Value) -> Result<ComponentSpec, SpecificationError> {
+    if let Some(name) = value.as_str() {
+        return Ok(ComponentSpec {
+            name: name.to_string(),
+            responsibilities: Vec::new(),
+        });
+    }
     let map = value.as_mapping().ok_or_else(|| {
-        SpecificationError::InvalidStructure("architecture items must be mappings".into())
+        SpecificationError::InvalidStructure(
+            "architecture items must be mappings or strings".into(),
+        )
     })?;
     let name = map
         .get(Value::String("name".into()))
@@ -1434,6 +1448,30 @@ rules:
     }
 
     #[test]
+    fn context_from_yaml_records_normalized_payload_boundary() {
+        crate::tui::render_trace::reset();
+        let text = "system_name: DBM\n";
+
+        SpecificationContext::from_yaml(text).expect("parse");
+
+        let trace = crate::tui::render_trace::snapshot();
+        assert!(trace.contains(&"NORMALIZED_PAYLOAD_BEGIN"));
+        assert!(trace.contains(&"NORMALIZED_PAYLOAD_END"));
+        assert!(trace.contains(&"NORMALIZED_PAYLOAD_LINE_1 system_name: DBM"));
+    }
+
+    #[test]
+    fn context_accepts_lightweight_architecture_string_items() {
+        let context = SpecificationContext::from_yaml(
+            "system_name: DBM\narchitecture:\n  - RuntimeProjection\n",
+        )
+        .expect("parse");
+
+        assert_eq!(context.architecture.len(), 1);
+        assert_eq!(context.architecture[0].name, "RuntimeProjection");
+    }
+
+    #[test]
     fn context_missing_fields_parse_success() {
         let context = SpecificationContext::from_yaml("system_name: DBM\n").expect("parse");
         assert_eq!(context.system_name.as_deref(), Some("DBM"));
@@ -1452,7 +1490,7 @@ rules:
     #[test]
     fn structural_diagnosis_request_generation_success() {
         let context = SpecificationContext::from_yaml(
-            "system_name: DBM\narchitecture:\nrules:\n  - ApplyGate required\n",
+            "system_name: DBM\narchitecture:\n  - ApplyGate\nrules:\n  - ApplyGate required\n",
         )
         .expect("parse");
         let request = StructuralDiagnosisRequest::new(context);
