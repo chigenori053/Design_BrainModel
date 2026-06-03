@@ -292,6 +292,19 @@ impl From<&TuiState> for RenderSnapshot {
         projection.projection_hash = ProjectionHash {
             semantic_hash: projection_semantic_hash(&projection),
         };
+        crate::tui::render_trace::record(Box::leak(
+            format!(
+                "[SNAPSHOT]\nstatus={}\nactive_task={}",
+                state.workspace.evaluation.status,
+                state
+                    .workspace
+                    .evaluation
+                    .active_task
+                    .as_deref()
+                    .unwrap_or("None")
+            )
+            .into_boxed_str(),
+        ));
         Self {
             projection,
             status: StatusModel {

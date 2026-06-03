@@ -156,6 +156,15 @@ fn drain_runtime_worker_events(
             }
             RuntimeWorkerEvent::Result(result) => {
                 crate::tui::render_trace::record("[WORKER_RESULT]");
+                if result.status == RuntimeStatus::Completed {
+                    crate::tui::render_trace::record(Box::leak(
+                        format!(
+                            "[COMPLETED_EVENT]\nrequest_id={}\nstatus=Completed",
+                            result.task_id.0
+                        )
+                        .into_boxed_str(),
+                    ));
+                }
                 project_runtime_status(state, result.task_id.0, RuntimeStatus::Projecting);
                 self::core::apply_runtime_response(state, result.response);
                 match result.status {
@@ -458,6 +467,71 @@ mod tests {
         assert!(executing < projecting, "{projection}");
         assert!(projecting < completed, "{projection}");
         assert!(scheduler.take_pending().is_some());
+    }
+
+    #[test]
+    fn completed_worker_result_clears_active_task_before_snapshot() {
+        crate::tui::render_trace::reset();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut state = TuiState::new(empty_runtime_payload());
+        let mut scheduler = RenderScheduler::default();
+        let task_id = crate::tui::runtime_worker::RuntimeTaskId(9);
+        flush_ui_events_before_render(&mut state, &mut scheduler);
+        crate::tui::render_trace::reset();
+        state.workspace.evaluation.status = "Completed".to_string();
+        state.workspace.evaluation.active_task =
+            Some("Route mutation through ApplyGate".to_string());
+
+        tx.send(RuntimeWorkerEvent::Result(
+            crate::tui::runtime_worker::RuntimeResult {
+                task_id,
+                status: RuntimeStatus::Completed,
+                output: "done".to_string(),
+                response: crate::core::CoreResponse {
+                    events: vec![crate::core::CoreEvent::Result {
+                        message: "done".to_string(),
+                    }],
+                    status: crate::core::ExecutionStatus::Executed,
+                    design: None,
+                    core_state: None,
+                },
+            },
+        ))
+        .expect("result");
+
+        drain_runtime_worker_events(&mut state, &rx, &mut scheduler);
+        flush_ui_events_before_render(&mut state, &mut scheduler);
+        let snapshot = RenderSnapshot::from(&state);
+        let activity = snapshot.runtime.runtime_panel_lines(false).join("\n");
+        let trace = crate::tui::render_trace::snapshot().join("\n");
+
+        assert_eq!(snapshot.workspace.evaluation.status, "Completed");
+        assert_eq!(snapshot.workspace.evaluation.active_task, None);
+        assert!(activity.contains("[Completed] done"), "{activity}");
+        assert!(
+            activity.contains("[Completed] task 9 completed"),
+            "{activity}"
+        );
+        assert!(
+            trace.contains("[COMPLETED_EVENT]\nrequest_id=9\nstatus=Completed"),
+            "{trace}"
+        );
+        assert!(
+            trace.contains("[QUEUE_PUSH]\nevent=System\nsummary=task 9 completed"),
+            "{trace}"
+        );
+        assert!(
+            trace.contains("[QUEUE_PROCESS]\nevent=System\nsummary=task 9 completed"),
+            "{trace}"
+        );
+        assert!(
+            trace.contains("[ACTIVE_TASK_CLEAR]\nbefore=task-9\nafter=None"),
+            "{trace}"
+        );
+        assert!(
+            trace.contains("[SNAPSHOT]\nstatus=Completed\nactive_task=None"),
+            "{trace}"
+        );
     }
 
     #[test]

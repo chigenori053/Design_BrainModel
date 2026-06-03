@@ -1140,6 +1140,11 @@ impl TuiState {
     }
 
     pub fn enqueue_event(&mut self, event: UiEvent) {
+        if let UiEvent::System { summary } = &event {
+            crate::tui::render_trace::record(Box::leak(
+                format!("[QUEUE_PUSH]\nevent=System\nsummary={summary}").into_boxed_str(),
+            ));
+        }
         crate::tui::render_trace::record(Box::leak(
             format!(
                 "[QUEUE_PUSH] event={:?} queue_len={}",
@@ -1159,6 +1164,11 @@ impl TuiState {
             self.increment_state_generation();
         }
         while let Some(event) = self.event_queue.pop() {
+            if let UiEvent::System { summary } = &event {
+                crate::tui::render_trace::record(Box::leak(
+                    format!("[QUEUE_PROCESS]\nevent=System\nsummary={summary}").into_boxed_str(),
+                ));
+            }
             self.append_chat(event);
         }
     }

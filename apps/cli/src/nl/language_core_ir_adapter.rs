@@ -348,7 +348,7 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
     emit_long_input_traces(primary_intent, safety_constraints, &clauses);
 
     match primary_intent {
-        PrimaryIntent::AnalyzeProject => return LanguageCoreIntent::ProjectStructureAnalyze,
+        PrimaryIntent::AnalyzeProject => {}
         PrimaryIntent::GenerateChangePlan => {
             return LanguageCoreIntent::GenerateChangePlan {
                 target: Option::None,
@@ -362,6 +362,19 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
         PrimaryIntent::ValidatePlan
         | PrimaryIntent::ReviewValidatedPlan
         | PrimaryIntent::Unknown => {}
+    }
+
+    if is_code_scoped_analyze_request(&lower) {
+        if let Some(file) = extract_target_file(input) {
+            return LanguageCoreIntent::FileAnalyze { file };
+        }
+        if let Some(symbol) = extract_rust_symbol(input) {
+            return LanguageCoreIntent::SymbolAnalyze { symbol };
+        }
+    }
+
+    if primary_intent == PrimaryIntent::AnalyzeProject {
+        return LanguageCoreIntent::ProjectStructureAnalyze;
     }
 
     // 修正プラン要求は「構造解析結果」など Analyze 語を含みうるため、
@@ -488,6 +501,12 @@ pub fn classify_language_core_intent(input: &str) -> LanguageCoreIntent {
 
     // analyze キーワードのみ（上記に合致しなかった場合は汎用プロジェクト解析）
     if has_analyze_keyword(&lower) {
+        if let Some(file) = extract_target_file(input) {
+            return LanguageCoreIntent::FileAnalyze { file };
+        }
+        if let Some(symbol) = extract_rust_symbol(input) {
+            return LanguageCoreIntent::SymbolAnalyze { symbol };
+        }
         return LanguageCoreIntent::ProjectStructureAnalyze;
     }
 
@@ -1083,6 +1102,56 @@ fn is_project_structure_analyze(lower: &str) -> bool {
     has_jp || has_en || (has_project_kw && has_analyze)
 }
 
+fn is_code_scoped_analyze_request(lower: &str) -> bool {
+    has_analyze_keyword(lower)
+        && (is_file_analyze(lower)
+            || is_symbol_analyze(lower)
+            || is_control_flow_analyze(lower)
+            || is_dependency_analyze(lower))
+}
+
+fn is_file_analyze(lower: &str) -> bool {
+    [
+        "analyze file",
+        "analyse file",
+        "inspect file",
+        "audit file",
+        "ファイルを解析",
+        "ファイルを分析",
+        "ファイルを確認",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+fn is_symbol_analyze(lower: &str) -> bool {
+    [
+        "analyze symbol",
+        "analyse symbol",
+        "inspect symbol",
+        "audit symbol",
+        "symbol analysis",
+        "シンボルを解析",
+        "シンボルを分析",
+        "シンボルを確認",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
+fn is_control_flow_analyze(lower: &str) -> bool {
+    [
+        "control flow",
+        "control-flow",
+        "cfg",
+        "制御フロー",
+        "制御構造",
+        "分岐",
+    ]
+    .iter()
+    .any(|p| lower.contains(p))
+}
+
 fn is_dependency_analyze(lower: &str) -> bool {
     let jp = [
         "依存関係を解析",
@@ -1194,18 +1263,43 @@ fn is_modify_file_intent(lower: &str, original: &str) -> bool {
 fn extract_target_file(input: &str) -> Option<String> {
     for sep in &[" に", "に", " を", "を"] {
         if let Some(pos) = input.find(sep) {
-            let candidate = input[..pos].trim();
+            let candidate = clean_path_token(input[..pos].trim());
             if looks_like_file_path(candidate) {
                 return Some(candidate.to_string());
             }
         }
     }
     for token in input.split_whitespace() {
-        if looks_like_file_path(token) {
-            return Some(token.to_string());
+        let candidate = clean_path_token(token);
+        if looks_like_file_path(candidate) {
+            return Some(candidate.to_string());
         }
     }
     None
+}
+
+fn clean_path_token(token: &str) -> &str {
+    token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\''
+                | '`'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | ','
+                | '.'
+                | ':'
+                | ';'
+                | '。'
+                | '、'
+        )
+    })
 }
 
 fn looks_like_file_path(s: &str) -> bool {
@@ -1236,6 +1330,76 @@ fn looks_like_file_path(s: &str) -> bool {
     );
     let has_slash = s.contains('/');
     known_ext || (has_slash && s.contains('.'))
+}
+
+fn extract_rust_symbol(input: &str) -> Option<String> {
+    let mut previous_was_symbol_marker = false;
+    for raw in input.split_whitespace() {
+        let token = clean_symbol_token(raw);
+        let lower = token.to_lowercase();
+        if matches!(lower.as_str(), "symbol" | "symbols" | "シンボル") {
+            previous_was_symbol_marker = true;
+            continue;
+        }
+        if previous_was_symbol_marker && is_rust_symbol_name(token) {
+            return Some(token.to_string());
+        }
+        if is_rust_symbol_name(token) && !is_analysis_verb(&lower) {
+            return Some(token.to_string());
+        }
+        previous_was_symbol_marker = false;
+    }
+    None
+}
+
+fn clean_symbol_token(token: &str) -> &str {
+    token.trim_matches(|c: char| {
+        matches!(
+            c,
+            '"' | '\''
+                | '`'
+                | '('
+                | ')'
+                | '['
+                | ']'
+                | '{'
+                | '}'
+                | '<'
+                | '>'
+                | ','
+                | '.'
+                | ':'
+                | ';'
+                | '。'
+                | '、'
+        )
+    })
+}
+
+fn is_rust_symbol_name(token: &str) -> bool {
+    if token.is_empty() || looks_like_file_path(token) {
+        return false;
+    }
+    let mut chars = token.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    let has_valid_chars = token
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':');
+    if !has_valid_chars {
+        return false;
+    }
+    first.is_ascii_uppercase()
+        || token.contains("::")
+        || (token.contains('_') && token.chars().any(|c| c.is_ascii_alphabetic()))
+}
+
+fn is_analysis_verb(lower: &str) -> bool {
+    matches!(
+        lower,
+        "analyze" | "analyse" | "inspect" | "audit" | "around" | "near"
+    )
 }
 
 /// 変更動詞から操作種別を推論する。
@@ -1446,6 +1610,75 @@ mod tests {
         assert_eq!(ir.action, IrAction::AnalyzeProject);
         assert_eq!(ir.target, IrTarget::WorkspaceRoot);
         assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+    }
+
+    #[test]
+    fn analyze_file_request_routes_to_file_scoped_code_analysis() {
+        let input = "Analyze file apps/cli/src/ir.rs";
+        let intent = classify_language_core_intent(input);
+        assert_eq!(
+            intent,
+            LanguageCoreIntent::FileAnalyze {
+                file: "apps/cli/src/ir.rs".to_string()
+            }
+        );
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::AnalyzeFile);
+        assert_eq!(ir.target, IrTarget::File("apps/cli/src/ir.rs".to_string()));
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+        assert!(ir.action.is_analyze());
+    }
+
+    #[test]
+    fn analyze_symbol_request_routes_to_symbol_scoped_code_analysis() {
+        let input = "Analyze symbol DuplicateClass";
+        let intent = classify_language_core_intent(input);
+        assert_eq!(
+            intent,
+            LanguageCoreIntent::SymbolAnalyze {
+                symbol: "DuplicateClass".to_string()
+            }
+        );
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::AnalyzeSymbol);
+        assert_eq!(ir.target, IrTarget::Symbol("DuplicateClass".to_string()));
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+        assert!(ir.action.is_analyze());
+    }
+
+    #[test]
+    fn analyze_control_flow_with_file_path_routes_to_file_scoped_code_analysis() {
+        let input =
+            "Analyze control flow in apps/cli/src/ir.rs around DuplicateClass and MemoryInserted";
+        let intent = classify_language_core_intent(input);
+        assert_eq!(
+            intent,
+            LanguageCoreIntent::FileAnalyze {
+                file: "apps/cli/src/ir.rs".to_string()
+            }
+        );
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::AnalyzeFile);
+        assert_eq!(ir.target, IrTarget::File("apps/cli/src/ir.rs".to_string()));
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+        assert_ne!(ir.action, IrAction::AnalyzeProject);
+    }
+
+    #[test]
+    fn analyze_dependency_graph_with_file_path_routes_to_file_scoped_code_analysis() {
+        let input = "Analyze dependency graph in apps/cli/src/ir.rs";
+        let intent = classify_language_core_intent(input);
+        assert_eq!(
+            intent,
+            LanguageCoreIntent::FileAnalyze {
+                file: "apps/cli/src/ir.rs".to_string()
+            }
+        );
+        let ir = language_core_to_ir(intent, input);
+        assert_eq!(ir.action, IrAction::AnalyzeFile);
+        assert_eq!(ir.target, IrTarget::File("apps/cli/src/ir.rs".to_string()));
+        assert_eq!(ir.mode, ExecutionMode::ReadOnly);
+        assert_ne!(ir.action, IrAction::AnalyzeProject);
     }
 
     #[test]

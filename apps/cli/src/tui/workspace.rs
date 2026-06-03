@@ -139,6 +139,7 @@ impl WorkspaceProjector {
             UiEvent::Result { message } => {
                 workspace.evaluation.status = "Completed".to_string();
                 workspace.evaluation.progress = 100;
+                record_active_task_clear(workspace.evaluation.active_task.as_deref());
                 workspace.evaluation.active_task = None;
                 workspace.analysis_result.error_message = None;
                 workspace
@@ -150,6 +151,7 @@ impl WorkspaceProjector {
             UiEvent::System { summary } if is_terminal_runtime_summary(summary) => {
                 workspace.evaluation.status = "Completed".to_string();
                 workspace.evaluation.progress = 100;
+                record_active_task_clear(workspace.evaluation.active_task.as_deref());
                 workspace.evaluation.active_task = None;
                 workspace
                     .analysis_result
@@ -158,6 +160,7 @@ impl WorkspaceProjector {
             }
             UiEvent::Error { message } => {
                 workspace.evaluation.status = "Failed".to_string();
+                record_active_task_clear(workspace.evaluation.active_task.as_deref());
                 workspace.evaluation.active_task = None;
                 workspace.analysis_result.error_message = Some(message.clone());
                 workspace
@@ -245,6 +248,16 @@ fn runtime_task_id(text: &str) -> Option<String> {
 fn is_terminal_runtime_summary(summary: &str) -> bool {
     let lower = summary.to_ascii_lowercase();
     lower.contains("completed") || lower.contains("cancelled")
+}
+
+fn record_active_task_clear(before: Option<&str>) {
+    crate::tui::render_trace::record(Box::leak(
+        format!(
+            "[ACTIVE_TASK_CLEAR]\nbefore={}\nafter=None",
+            before.unwrap_or("(none)")
+        )
+        .into_boxed_str(),
+    ));
 }
 
 fn project_runtime_result(workspace: &mut AnalysisResultWorkspace, message: &str) {
