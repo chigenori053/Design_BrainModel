@@ -1,8 +1,9 @@
 use std::path::PathBuf;
 
+use design_cli::core::RuntimeCoreBridge;
 use design_cli::nl::session::ConversationState;
 use design_cli::planner::PlannerMode;
-use design_cli::repl::{dispatch_repl_input, reset_review_session};
+use design_cli::repl::{dispatch_repl_input, dispatch_repl_input_with_core, reset_review_session};
 use design_cli::session::AgentSession;
 use design_cli::state::State;
 use design_cli::tui::composer::{ComposerFocus, ComposerUiMode, ComposerViewState};
@@ -72,4 +73,35 @@ fn discard_then_next_structure_is_accepted() {
     assert!(view.review.is_none());
     assert_eq!(session.state, State::Completed);
     assert!(output.contains("[direct-dispatch] structure view ."));
+}
+
+#[test]
+fn shared_runtime_preserves_followup_context_across_repl_dispatches() {
+    let core = RuntimeCoreBridge::with_defaults();
+    let mut session = AgentSession::new();
+    let mut writer = Vec::new();
+
+    let first = dispatch_repl_input_with_core(
+        "canonical memory integration",
+        &mut session,
+        &core,
+        &mut writer,
+    )
+    .expect("first dispatch");
+    assert!(!first);
+
+    let second = dispatch_repl_input_with_core(
+        "canonical memory integration",
+        &mut session,
+        &core,
+        &mut writer,
+    )
+    .expect("second dispatch");
+    assert!(!second);
+
+    let diagnostics = core.diagnostics_snapshot();
+    assert!(diagnostics.previous_context_used);
+    assert_eq!(diagnostics.followup_status, "reused");
+    assert!(diagnostics.replay_record_count >= 2);
+    assert!(diagnostics.canonical_event_count > 0);
 }

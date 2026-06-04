@@ -1,6 +1,4 @@
-use core_types::{
-    CanonicalReuseResolver, FollowupResolution, ReuseScope, resolve_followup_context,
-};
+use core_types::{CanonicalReuseEvent, CanonicalReuseResolver, FollowupResolution, ReuseScope};
 
 use crate::{RuntimeEvent, RuntimeEventBus, intent_refiner::ChatContext};
 
@@ -20,16 +18,32 @@ impl FollowupResolver {
         scope: ReuseScope,
         events: &mut RuntimeEventBus,
     ) -> FollowupResolution {
-        events.publish(RuntimeEvent::ReuseObserved);
-        let resolution =
-            resolve_followup_context(&mut self.resolver, input, &context.history, scope);
-        if resolution.reused {
-            events.publish(RuntimeEvent::AliasRegistered);
-            events.publish(RuntimeEvent::ContinuationResolved);
-        } else {
-            events.publish(RuntimeEvent::CanonicalCreated);
+        let resolution = core_types::resolve_followup_context_with_events(
+            &mut self.resolver,
+            input,
+            &context.history,
+            scope,
+        );
+        for event in &resolution.events {
+            events.publish(runtime_event_for_canonical_event(event));
         }
-        events.publish(RuntimeEvent::ReuseResolved);
+        if resolution.decision == core_types::ReuseDecision::Reuse
+            && !resolution
+                .events
+                .contains(&CanonicalReuseEvent::ContinuationResolved)
+        {
+            events.publish(RuntimeEvent::ContinuationResolved);
+        }
+        let resolution = FollowupResolution {
+            reused: resolution.decision == core_types::ReuseDecision::Reuse,
+            confidence: match resolution.match_kind {
+                core_types::CanonicalMatchKind::ExactSource => 1.0,
+                core_types::CanonicalMatchKind::Semantic => 0.86,
+                core_types::CanonicalMatchKind::TrajectoryContinuation => 0.78,
+                core_types::CanonicalMatchKind::Novel => 0.0,
+            },
+            canonical_ref: resolution.canonical_ref,
+        };
         resolution
     }
 
@@ -39,6 +53,22 @@ impl FollowupResolver {
 
     pub fn resolver_mut(&mut self) -> &mut CanonicalReuseResolver {
         &mut self.resolver
+    }
+}
+
+fn runtime_event_for_canonical_event(event: &CanonicalReuseEvent) -> RuntimeEvent {
+    match event {
+        CanonicalReuseEvent::ReuseObserved => RuntimeEvent::ReuseObserved,
+        CanonicalReuseEvent::ReuseResolved => RuntimeEvent::ReuseResolved,
+        CanonicalReuseEvent::CanonicalCreated => RuntimeEvent::CanonicalCreated,
+        CanonicalReuseEvent::AliasRegistered => RuntimeEvent::AliasRegistered,
+        CanonicalReuseEvent::DuplicateMerged => RuntimeEvent::DuplicateMerged,
+        CanonicalReuseEvent::ContinuationResolved => RuntimeEvent::ContinuationResolved,
+        CanonicalReuseEvent::ExactDuplicateMerged => RuntimeEvent::ExactDuplicateMerged,
+        CanonicalReuseEvent::SemanticAliasRegistered => RuntimeEvent::SemanticAliasRegistered,
+        CanonicalReuseEvent::CanonicalMemorySelected => RuntimeEvent::CanonicalMemorySelected,
+        CanonicalReuseEvent::CanonicalMemoryReused => RuntimeEvent::CanonicalMemoryReused,
+        CanonicalReuseEvent::CanonicalClusterExpanded => RuntimeEvent::CanonicalClusterExpanded,
     }
 }
 

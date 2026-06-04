@@ -878,6 +878,16 @@ pub fn dispatch_repl_input<W: Write>(
     _mode: &mut crate::planner::PlannerMode,
     writer: &mut W,
 ) -> Result<bool, String> {
+    let core = RuntimeCoreBridge::with_defaults();
+    dispatch_repl_input_with_core(input, session, &core, writer)
+}
+
+pub fn dispatch_repl_input_with_core<W: Write>(
+    input: &str,
+    session: &mut AgentSession,
+    core: &dyn CoreExecutor,
+    writer: &mut W,
+) -> Result<bool, String> {
     let trimmed = input.trim();
     if is_exit(trimmed) {
         return Ok(true);
@@ -887,7 +897,6 @@ pub fn dispatch_repl_input<W: Write>(
         .workspace_root
         .clone()
         .unwrap_or_else(|| PathBuf::from("."));
-    let core = RuntimeCoreBridge::with_defaults();
     let mut ui = ReplUiState::default();
     if trimmed == "/save design" {
         save_design(
@@ -931,7 +940,7 @@ pub fn dispatch_repl_input<W: Write>(
     handle_submit(
         trimmed.to_string(),
         workspace_root.as_path(),
-        &core,
+        core,
         &mut ui,
         writer,
     )?;

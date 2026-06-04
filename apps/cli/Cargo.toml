@@ -38,6 +38,7 @@ code_language_core = { workspace = true }
 unified_design_ir = { workspace = true }
 runtime_vm = { workspace = true }
 runtime_core = { workspace = true }
+core_types = { workspace = true }
 viewer_core = { workspace = true }
 memory_engine = { workspace = true }
 semantic_dhm = { workspace = true }

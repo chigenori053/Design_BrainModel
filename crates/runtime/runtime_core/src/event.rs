@@ -69,6 +69,11 @@ pub enum RuntimeEvent {
     AliasRegistered,
     DuplicateMerged,
     ContinuationResolved,
+    ExactDuplicateMerged,
+    SemanticAliasRegistered,
+    CanonicalMemorySelected,
+    CanonicalMemoryReused,
+    CanonicalClusterExpanded,
 }
 
 #[derive(Debug, Clone, Default)]

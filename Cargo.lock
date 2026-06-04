@@ -1372,6 +1372,7 @@ dependencies = [
  "bridge",
  "clap",
  "code_language_core",
+ "core_types",
  "crossterm",
  "ctrlc",
  "design_reasoning",

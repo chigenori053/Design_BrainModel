@@ -909,6 +909,14 @@ pub struct TuiDiagnostics {
     pub last_focus_transition: Option<String>,
     pub last_mutation: Option<String>,
     pub raw_mode_active: bool,
+    pub runtime_state: Option<String>,
+    pub active_task: Option<String>,
+    pub proposal_count: usize,
+    pub followup_status: Option<String>,
+    pub previous_context_used: bool,
+    pub memory_status: Option<String>,
+    pub replay_status: Option<String>,
+    pub canonical_reuse_status: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1097,9 +1105,6 @@ impl TuiState {
             }
             KeyCode::Esc => {
                 if self.focus == Focus::Input {
-                    self.editor_state.editor.clear();
-                    self.editor_state.editing = true;
-                    self.input.clear();
                     return TuiAction::None;
                 }
                 return TuiAction::Quit;
@@ -2257,6 +2262,40 @@ mod tests {
     }
 
     #[test]
+    fn shifted_printable_characters_insert_as_terminal_generated_text() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+
+        for ch in ['a', 'A', '!', '{', '}'] {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        assert_eq!(state.editor_state.editor.text(), "aA!{}");
+    }
+
+    #[test]
+    fn diagnostics_records_shift_modified_physical_key_events() {
+        let mut state = TuiState::new(empty_payload());
+        state.diagnostic_mode = true;
+        state.editor_state.editor.clear();
+
+        state.handle_key_event(KeyEvent::new(KeyCode::Char('1'), KeyModifiers::SHIFT));
+
+        assert_eq!(state.editor_state.editor.text(), "1");
+        assert!(
+            state
+                .diagnostics
+                .last_key_event
+                .as_deref()
+                .is_some_and(|event| event.contains("KEY=Char('1')") && event.contains("SHIFT"))
+        );
+        assert_eq!(
+            state.diagnostics.last_mutation.as_deref(),
+            Some("insert_char('1')")
+        );
+    }
+
+    #[test]
     fn ctrl_d_submits_editor_as_fallback() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
@@ -2392,22 +2431,65 @@ mod tests {
     }
 
     #[test]
-    fn editor_escape_clears_buffer_and_logs_cancel() {
+    fn esc_does_not_clear_editor_contents() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
-        state.handle_key_event(key(KeyCode::Char('x')));
+        for ch in "hello".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
 
         let action = state.handle_key_event(key(KeyCode::Esc));
 
         assert_eq!(action, TuiAction::None);
-        assert!(state.editor_state.editor.lines.is_empty());
-        state.handle_ui_events();
-        assert!(
-            state
-                .flattened_chat_lines()
-                .iter()
-                .all(|line| line != "[SYSTEM] [EDITOR_CANCEL]")
+        assert_eq!(state.editor_state.editor.lines, vec!["hello".to_string()]);
+    }
+
+    #[test]
+    fn esc_returns_none_in_input_focus() {
+        let mut state = TuiState::new(empty_payload());
+        assert_eq!(state.focus, Focus::Input);
+
+        let action = state.handle_key_event(key(KeyCode::Esc));
+
+        assert_eq!(action, TuiAction::None);
+    }
+
+    #[test]
+    fn shift_enter_compatibility_does_not_destroy_editor() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "design spec".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        // Ghostty / Crossterm で Shift+Enter が Esc として観測されるケース
+        let esc_event = KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE);
+        let action = state.handle_key_event(esc_event);
+
+        assert_eq!(action, TuiAction::None);
+        assert_eq!(
+            state.editor_state.editor.lines,
+            vec!["design spec".to_string()]
         );
+    }
+
+    #[test]
+    fn design_specification_survives_escape_event() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        let spec = "system_name: \"DBM\"\ngoals:\n  - Analyze architecture";
+        for ch in spec.chars() {
+            if ch == '\n' {
+                state.handle_key_event(key(KeyCode::Enter));
+            } else {
+                state.handle_key_event(key(KeyCode::Char(ch)));
+            }
+        }
+        let lines_before = state.editor_state.editor.lines.clone();
+
+        state.handle_key_event(key(KeyCode::Esc));
+
+        assert_eq!(state.editor_state.editor.lines, lines_before);
     }
 
     #[test]

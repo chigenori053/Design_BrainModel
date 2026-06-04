@@ -45,6 +45,6 @@ fn slash_rules_and_memory_are_enabled() {
 #[test]
 fn natural_language_analyze_routes_to_analyze_plan() {
     let output = dispatch("このプロジェクトを解析して");
-    assert!(output.contains("[planner:"));
-    assert!(output.contains("[test] planner-only mode"));
+    assert!(output.contains("AnalyzeProject") || output.contains("ProjectStructureAnalysisResult"));
+    assert!(!output.contains("[test] planner-only mode"));
 }

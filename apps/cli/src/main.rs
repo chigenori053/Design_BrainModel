@@ -185,7 +185,10 @@ fn main() {
             run_runtime_repl();
             return;
         }
-        print_product_help();
+        if let Err(err) = run_tui_entrypoint(cli.diagnostic_input) {
+            eprintln!("{err}");
+            std::process::exit(1);
+        }
         return;
     };
 
@@ -1371,6 +1374,24 @@ mod tests {
         assert!(source.contains("fn run_tui_entrypoint"));
         assert!(source.contains("start_runtime_tui(diagnostic)"));
         assert!(!source.contains("foundation::run_phase1_tui()"));
+    }
+
+    #[test]
+    fn test_no_args_launches_product_tui() {
+        let source = include_str!("main.rs")
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production source");
+        let branch_start = source
+            .split("let Some(command) = cli.command.as_ref() else")
+            .nth(1)
+            .expect("no command branch");
+        let no_command_branch = branch_start
+            .split("if cli.repl {")
+            .next()
+            .expect("bounded no command branch");
+        assert!(no_command_branch.contains("run_tui_entrypoint(cli.diagnostic_input)"));
+        assert!(!no_command_branch.contains("print_product_help();"));
     }
 
     #[test]

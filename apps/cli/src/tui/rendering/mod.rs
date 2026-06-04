@@ -114,6 +114,14 @@ pub struct DiagnosticModel {
     pub last_focus: String,
     pub last_mutation: String,
     pub raw_mode: bool,
+    pub runtime_state: String,
+    pub active_task: String,
+    pub proposal_count: usize,
+    pub followup_status: String,
+    pub previous_context_used: bool,
+    pub memory_status: String,
+    pub replay_status: String,
+    pub canonical_reuse_status: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -270,6 +278,38 @@ impl From<&TuiState> for RenderSnapshot {
                     .clone()
                     .unwrap_or_else(|| "(none)".to_string()),
                 raw_mode: state.diagnostics.raw_mode_active,
+                runtime_state: state
+                    .diagnostics
+                    .runtime_state
+                    .clone()
+                    .unwrap_or_else(|| "(runtime idle)".to_string()),
+                active_task: state
+                    .diagnostics
+                    .active_task
+                    .clone()
+                    .unwrap_or_else(|| "(none)".to_string()),
+                proposal_count: state.diagnostics.proposal_count,
+                followup_status: state
+                    .diagnostics
+                    .followup_status
+                    .clone()
+                    .unwrap_or_else(|| "created".to_string()),
+                previous_context_used: state.diagnostics.previous_context_used,
+                memory_status: state
+                    .diagnostics
+                    .memory_status
+                    .clone()
+                    .unwrap_or_else(|| "idle".to_string()),
+                replay_status: state
+                    .diagnostics
+                    .replay_status
+                    .clone()
+                    .unwrap_or_else(|| "idle".to_string()),
+                canonical_reuse_status: state
+                    .diagnostics
+                    .canonical_reuse_status
+                    .clone()
+                    .unwrap_or_else(|| "created".to_string()),
             })
         } else {
             None

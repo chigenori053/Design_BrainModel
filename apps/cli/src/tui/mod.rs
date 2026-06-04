@@ -77,6 +77,7 @@ fn run_event_loop(
     }
 
     loop {
+        update_runtime_diagnostics(state, &core);
         drain_runtime_worker_events(state, &worker_rx, &mut scheduler);
         flush_ui_events_before_render(state, &mut scheduler);
 
@@ -142,6 +143,30 @@ fn run_event_loop(
         }
     }
     Ok(())
+}
+
+fn update_runtime_diagnostics(state: &mut TuiState, core: &RuntimeCoreBridge) {
+    if !state.diagnostic_mode {
+        return;
+    }
+    let snapshot = core.diagnostics_snapshot();
+    state.diagnostics.runtime_state = Some(format!(
+        "runtime#{} requests={}",
+        snapshot.runtime_instance_id, snapshot.total_requests
+    ));
+    state.diagnostics.active_task = snapshot.active_task;
+    state.diagnostics.proposal_count = snapshot.proposal_count;
+    state.diagnostics.followup_status = Some(snapshot.followup_status);
+    state.diagnostics.previous_context_used = snapshot.previous_context_used;
+    state.diagnostics.memory_status = Some(snapshot.memory_status);
+    state.diagnostics.replay_status = Some(format!(
+        "{} records={}",
+        snapshot.replay_status, snapshot.replay_record_count
+    ));
+    state.diagnostics.canonical_reuse_status = Some(format!(
+        "{} events={}",
+        snapshot.canonical_reuse_status, snapshot.canonical_event_count
+    ));
 }
 
 fn drain_runtime_worker_events(

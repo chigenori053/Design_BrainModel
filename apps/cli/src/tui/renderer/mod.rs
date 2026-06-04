@@ -149,6 +149,10 @@ pub struct TerminalRenderer {
 }
 
 impl TerminalRenderer {
+    fn keyboard_enhancement_flags() -> KeyboardEnhancementFlags {
+        KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+    }
+
     pub fn enter() -> Result<Self, String> {
         enable_raw_mode().map_err(|err| err.to_string())?;
         let mut stdout = io::stdout();
@@ -156,10 +160,7 @@ impl TerminalRenderer {
             stdout,
             EnterAlternateScreen,
             EnableMouseCapture,
-            PushKeyboardEnhancementFlags(
-                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
-                    | KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES
-            ),
+            PushKeyboardEnhancementFlags(Self::keyboard_enhancement_flags()),
             Hide,
             Clear(ClearType::All),
             MoveTo(0, 0)
@@ -305,7 +306,7 @@ mod tests {
     }
 
     #[test]
-    fn terminal_enter_pushes_keyboard_enhancement_flags() {
+    fn terminal_enter_pushes_keyboard_enhancement_flags_without_forcing_printable_keys() {
         let source = include_str!("mod.rs");
         let enter_source = source
             .split("pub fn enter")
@@ -314,8 +315,16 @@ mod tests {
             .expect("enter source");
 
         assert!(enter_source.contains("PushKeyboardEnhancementFlags"));
-        assert!(enter_source.contains("KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES"));
-        assert!(enter_source.contains("KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES"));
+        assert!(source.contains("KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES"));
+        assert!(!enter_source.contains("REPORT_ALL_KEYS_AS_ESCAPE_CODES"));
+        assert!(
+            TerminalRenderer::keyboard_enhancement_flags()
+                .contains(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+        assert!(
+            !TerminalRenderer::keyboard_enhancement_flags()
+                .contains(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES)
+        );
     }
 
     #[test]

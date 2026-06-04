@@ -6,7 +6,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use design_search_engine::stable_v03::DeterministicBeamSearchEngine;
 use memory_engine::InMemoryEngine;
-use runtime_core::{CoreRuntime, RuntimeExecutionResult};
+use runtime_core::{
+    CoreRuntime, FollowupResolver, RuntimeEvent, RuntimeEventBus, RuntimeExecutionResult,
+};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use strategy_engine::{
@@ -50,6 +52,7 @@ use crate::state_graph::StateGraph;
 
 static REQUEST_COUNTER: AtomicU64 = AtomicU64::new(1);
 static SAFE_APPLY_TRANSACTION_COUNTER: AtomicU64 = AtomicU64::new(1);
+static RUNTIME_INSTANCE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn next_request_id() -> u64 {
     REQUEST_COUNTER.fetch_add(1, Ordering::Relaxed)
@@ -712,6 +715,32 @@ pub trait CoreExecutor {
     fn execute(&self, request: CoreRequest) -> CoreResponse;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeDiagnosticsSnapshot {
+    pub runtime_instance_id: u64,
+    pub active_task: Option<String>,
+    pub total_requests: u64,
+    pub proposal_count: usize,
+    pub followup_status: String,
+    pub previous_context_used: bool,
+    pub memory_status: String,
+    pub replay_status: String,
+    pub canonical_reuse_status: String,
+    pub replay_record_count: usize,
+    pub canonical_event_count: usize,
+}
+
+#[derive(Debug, Clone)]
+struct ProductRuntimeState {
+    runtime_instance_id: u64,
+    active_task: Option<String>,
+    total_requests: u64,
+    last_followup_reused: bool,
+    last_previous_context_used: bool,
+    last_canonical_status: String,
+    canonical_event_count: usize,
+}
+
 pub struct RuntimeCoreBridge {
     runtime: CoreRuntime,
     strategy: StrategyEngine,
@@ -723,6 +752,10 @@ pub struct RuntimeCoreBridge {
     state_graph: Mutex<StateGraph>,
     limits: Limits,
     registry: CommandRegistry,
+    followup_resolver: Mutex<FollowupResolver>,
+    runtime_events: Mutex<RuntimeEventBus>,
+    replay_records: Mutex<Vec<core_types::ReplayRecord>>,
+    product_state: Mutex<ProductRuntimeState>,
 }
 
 impl RuntimeCoreBridge {
@@ -733,6 +766,7 @@ impl RuntimeCoreBridge {
     pub fn new_with_limits(runtime: CoreRuntime, strategy: StrategyEngine, limits: Limits) -> Self {
         let mut registry = CommandRegistry::new();
         register_defaults(&mut registry);
+        let runtime_instance_id = RUNTIME_INSTANCE_COUNTER.fetch_add(1, Ordering::Relaxed);
         Self {
             runtime,
             strategy,
@@ -742,6 +776,20 @@ impl RuntimeCoreBridge {
             state_graph: Mutex::new(StateGraph::with_limits(limits)),
             limits,
             registry,
+            followup_resolver: Mutex::new(FollowupResolver::new(
+                core_types::CanonicalReuseResolver::new(),
+            )),
+            runtime_events: Mutex::new(RuntimeEventBus::default()),
+            replay_records: Mutex::new(Vec::new()),
+            product_state: Mutex::new(ProductRuntimeState {
+                runtime_instance_id,
+                active_task: None,
+                total_requests: 0,
+                last_followup_reused: false,
+                last_previous_context_used: false,
+                last_canonical_status: "created".to_string(),
+                canonical_event_count: 0,
+            }),
         }
     }
 
@@ -753,6 +801,128 @@ impl RuntimeCoreBridge {
             ),
             StrategyEngine::default(),
         )
+    }
+
+    pub fn diagnostics_snapshot(&self) -> RuntimeDiagnosticsSnapshot {
+        let state = self.history.lock().expect("history lock").current().clone();
+        let product = self
+            .product_state
+            .lock()
+            .expect("product state lock")
+            .clone();
+        let replay_record_count = self
+            .replay_records
+            .lock()
+            .expect("replay records lock")
+            .len();
+        RuntimeDiagnosticsSnapshot {
+            runtime_instance_id: product.runtime_instance_id,
+            active_task: product.active_task,
+            total_requests: product.total_requests,
+            proposal_count: state.proposals.len(),
+            followup_status: if product.last_followup_reused {
+                "reused".to_string()
+            } else {
+                "created".to_string()
+            },
+            previous_context_used: product.last_previous_context_used,
+            memory_status: if product.canonical_event_count > 0 {
+                "canonical-active".to_string()
+            } else {
+                "idle".to_string()
+            },
+            replay_status: if replay_record_count > 0 {
+                "lineage-active".to_string()
+            } else {
+                "idle".to_string()
+            },
+            canonical_reuse_status: product.last_canonical_status,
+            replay_record_count,
+            canonical_event_count: product.canonical_event_count,
+        }
+    }
+
+    fn resolve_canonical_followup(
+        &self,
+        input: &str,
+        state: &CoreState,
+        previous_context_used: bool,
+    ) {
+        let chat_context = runtime_core::ChatContext {
+            history: canonical_history_from_state(state),
+            last_slots: None,
+        };
+        let mut event_bus = self.runtime_events.lock().expect("runtime event bus lock");
+        let resolution = self
+            .followup_resolver
+            .lock()
+            .expect("followup resolver lock")
+            .resolve(
+                input,
+                &chat_context,
+                core_types::ReuseScope::Global,
+                &mut event_bus,
+            );
+        let events = event_bus.drain();
+        let canonical_status = canonical_status_from_events(&events, resolution.reused);
+        {
+            let mut replay_records = self.replay_records.lock().expect("replay records lock");
+            let parent_canonical_id = replay_records
+                .last()
+                .map(|record| record.canonical_id.clone());
+            replay_records.push(core_types::ReplayRecord {
+                canonical_id: resolution.canonical_ref.canonical_id.clone(),
+                trajectory_fingerprint: resolution.canonical_ref.trajectory_fingerprint.clone(),
+                parent_canonical_id,
+            });
+        }
+        let mut product = self.product_state.lock().expect("product state lock");
+        product.last_followup_reused = resolution.reused;
+        product.last_previous_context_used =
+            previous_context_used || resolution.reused || !chat_context.history.is_empty();
+        product.last_canonical_status = canonical_status;
+        product.canonical_event_count = product.canonical_event_count.saturating_add(events.len());
+    }
+}
+
+fn canonical_history_from_state(state: &CoreState) -> Vec<String> {
+    let mut history = Vec::new();
+    if state.previous_analysis_context.is_some()
+        || state.session_context.previous_analysis_context.is_some()
+    {
+        history.push("previous analysis context".to_string());
+    }
+    if state.session_context.previous_plan_context.is_some() {
+        history.push("previous plan context".to_string());
+    }
+    if state.session_context.selected_candidate.is_some() {
+        history.push("selected candidate context".to_string());
+    }
+    if state.session_context.validated_plan.is_some() {
+        history.push("validated plan context".to_string());
+    }
+    history.extend(
+        state
+            .proposals
+            .iter()
+            .map(|candidate| format!("proposal {} {}", candidate.id, candidate.summary)),
+    );
+    history
+}
+
+fn canonical_status_from_events(events: &[RuntimeEvent], reused: bool) -> String {
+    if events.contains(&RuntimeEvent::CanonicalMemoryReused) {
+        "canonical-memory-reused".to_string()
+    } else if events.contains(&RuntimeEvent::DuplicateMerged) {
+        "duplicate-merged".to_string()
+    } else if events.contains(&RuntimeEvent::AliasRegistered) {
+        "alias-registered".to_string()
+    } else if events.contains(&RuntimeEvent::CanonicalCreated) {
+        "canonical-created".to_string()
+    } else if reused {
+        "reused".to_string()
+    } else {
+        "created".to_string()
     }
 }
 
@@ -771,6 +941,11 @@ impl CoreExecutor for RuntimeCoreBridge {
     fn execute(&self, request: CoreRequest) -> CoreResponse {
         let id = request.id;
         let raw_input = request.raw.clone();
+        {
+            let mut product = self.product_state.lock().expect("product state lock");
+            product.total_requests = product.total_requests.saturating_add(1);
+            product.active_task = Some(raw_input.trim().to_string());
+        }
 
         // §5.1 分類 (classification) - raw_input に対して1回のみ行う
         let has_context = {
@@ -798,6 +973,7 @@ impl CoreExecutor for RuntimeCoreBridge {
             history.current().clone()
         };
         current_state.session_context.trace_load();
+        self.resolve_canonical_followup(&raw_input, &current_state, has_context);
         let context = ExecutionContext {
             working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
             pipeline_state: current_state.status.clone(),

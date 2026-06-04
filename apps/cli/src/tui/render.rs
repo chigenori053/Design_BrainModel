@@ -266,6 +266,16 @@ fn render_diagnostics_overlay(frame: &mut Frame, immutable: &ImmutableFrame) {
     }
 
     let text = vec![
+        Line::from(format!(" [RUNTIME] {}", diagnostics.runtime_state)),
+        Line::from(format!(" [TASK]    {}", diagnostics.active_task)),
+        Line::from(format!(
+            " [FOLLOW]  status={} previous_context_used={}",
+            diagnostics.followup_status, diagnostics.previous_context_used
+        )),
+        Line::from(format!(" [PROPOSE] count={}", diagnostics.proposal_count)),
+        Line::from(format!(" [MEMORY]  {}", diagnostics.memory_status)),
+        Line::from(format!(" [REPLAY]  {}", diagnostics.replay_status)),
+        Line::from(format!(" [CANON]   {}", diagnostics.canonical_reuse_status)),
         Line::from(format!(" [EVENT] {}", diagnostics.last_event)),
         Line::from(format!(" [KEY]   {}", diagnostics.last_key_event)),
         Line::from(format!(" [FOCUS] {}", diagnostics.last_focus)),

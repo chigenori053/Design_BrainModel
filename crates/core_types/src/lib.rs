@@ -726,16 +726,7 @@ pub fn resolve_followup_context(
     history: &[String],
     scope: ReuseScope,
 ) -> FollowupResolution {
-    let input = input.into();
-    let mut semantic_terms = concept_terms(&input);
-    semantic_terms.extend(history.iter().flat_map(|item| concept_terms(item)));
-    let resolution = resolver.resolve(CanonicalReuseInput {
-        domain: ReuseDomain::FollowupContext,
-        source: input,
-        semantic_terms,
-        trajectory_terms: history.to_vec(),
-        scope,
-    });
+    let resolution = resolve_followup_context_with_events(resolver, input, history, scope);
     FollowupResolution {
         reused: resolution.decision == ReuseDecision::Reuse,
         confidence: match resolution.match_kind {
@@ -746,6 +737,24 @@ pub fn resolve_followup_context(
         },
         canonical_ref: resolution.canonical_ref,
     }
+}
+
+pub fn resolve_followup_context_with_events(
+    resolver: &mut CanonicalReuseResolver,
+    input: impl Into<String>,
+    history: &[String],
+    scope: ReuseScope,
+) -> CanonicalResolution {
+    let input = input.into();
+    let mut semantic_terms = concept_terms(&input);
+    semantic_terms.extend(history.iter().flat_map(|item| concept_terms(item)));
+    resolver.resolve(CanonicalReuseInput {
+        domain: ReuseDomain::FollowupContext,
+        source: input,
+        semantic_terms,
+        trajectory_terms: history.to_vec(),
+        scope,
+    })
 }
 
 pub fn normalize_text(value: &str) -> String {
