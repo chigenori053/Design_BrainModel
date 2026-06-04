@@ -395,3 +395,524 @@ mod tests {
         assert!(diff.changed_intent);
     }
 }
+use std::collections::{BTreeMap, BTreeSet};
+
+pub type CanonicalId = String;
+pub type AliasId = String;
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct Fingerprint(pub String);
+
+impl Fingerprint {
+    pub fn from_parts(parts: &[impl AsRef<str>]) -> Self {
+        let mut hash = FNV_OFFSET_BASIS;
+        for part in parts {
+            hash = fnv1a_update(hash, part.as_ref().as_bytes());
+            hash = fnv1a_update(hash, &[0xff]);
+        }
+        Self(format!("{hash:016x}"))
+    }
+}
+
+const FNV_OFFSET_BASIS: u64 = 0xcbf29ce484222325;
+const FNV_PRIME: u64 = 0x100000001b3;
+
+fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
+    for byte in bytes {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+    hash
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReuseDomain {
+    FollowupContext,
+    HolographicMemory,
+    StateGraph,
+    Replay,
+    WorldModel,
+    Plan,
+    Validation,
+    Preview,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReuseScope {
+    Global,
+    Session(String),
+    Domain(ReuseDomain),
+    Local(String),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ReuseLifecycle {
+    Active,
+    Merged,
+    Superseded,
+    Archived,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalReuseRef {
+    pub canonical_id: CanonicalId,
+    pub domain: ReuseDomain,
+    pub alias_ids: Vec<AliasId>,
+    pub source_fingerprint: Fingerprint,
+    pub semantic_fingerprint: Fingerprint,
+    pub trajectory_fingerprint: Fingerprint,
+    pub scope: ReuseScope,
+    pub lifecycle: ReuseLifecycle,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalReuseInput {
+    pub domain: ReuseDomain,
+    pub source: String,
+    pub semantic_terms: Vec<String>,
+    pub trajectory_terms: Vec<String>,
+    pub scope: ReuseScope,
+}
+
+impl CanonicalReuseInput {
+    pub fn new(domain: ReuseDomain, source: impl Into<String>) -> Self {
+        Self {
+            domain,
+            source: source.into(),
+            semantic_terms: Vec::new(),
+            trajectory_terms: Vec::new(),
+            scope: ReuseScope::Domain(domain),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReuseDecision {
+    Reuse,
+    Create,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CanonicalMatchKind {
+    ExactSource,
+    Semantic,
+    TrajectoryContinuation,
+    Novel,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CanonicalReuseEvent {
+    ReuseObserved,
+    ReuseResolved,
+    CanonicalCreated,
+    AliasRegistered,
+    DuplicateMerged,
+    ContinuationResolved,
+    ExactDuplicateMerged,
+    SemanticAliasRegistered,
+    CanonicalMemorySelected,
+    CanonicalMemoryReused,
+    CanonicalClusterExpanded,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CanonicalResolution {
+    pub decision: ReuseDecision,
+    pub canonical_ref: CanonicalReuseRef,
+    pub match_kind: CanonicalMatchKind,
+    pub events: Vec<CanonicalReuseEvent>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct CanonicalReuseResolver {
+    refs: BTreeMap<CanonicalId, CanonicalReuseRef>,
+    source_index: BTreeMap<(ReuseDomain, ReuseScope, Fingerprint), CanonicalId>,
+    semantic_index: BTreeMap<(ReuseDomain, ReuseScope, Fingerprint), CanonicalId>,
+    trajectory_index: BTreeMap<(ReuseDomain, ReuseScope, Fingerprint), CanonicalId>,
+    aliases: BTreeMap<AliasId, CanonicalId>,
+    next_id: u64,
+}
+
+impl CanonicalReuseResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn resolve(&mut self, input: CanonicalReuseInput) -> CanonicalResolution {
+        let normalized_source = normalize_text(&input.source);
+        let source_fingerprint = Fingerprint::from_parts(&[
+            domain_key(input.domain).to_string(),
+            scope_key(&input.scope),
+            normalized_source,
+        ]);
+        let semantic_fingerprint = semantic_fingerprint(input.domain, &input.scope, &input);
+        let trajectory_fingerprint = trajectory_fingerprint(input.domain, &input.scope, &input);
+
+        if let Some(canonical_id) = self.source_index.get(&(
+            input.domain,
+            input.scope.clone(),
+            source_fingerprint.clone(),
+        )) {
+            return self.reuse_existing(
+                canonical_id.clone(),
+                source_fingerprint,
+                semantic_fingerprint,
+                trajectory_fingerprint,
+                CanonicalMatchKind::ExactSource,
+            );
+        }
+
+        if let Some(canonical_id) = self.semantic_index.get(&(
+            input.domain,
+            input.scope.clone(),
+            semantic_fingerprint.clone(),
+        )) {
+            return self.reuse_existing(
+                canonical_id.clone(),
+                source_fingerprint,
+                semantic_fingerprint,
+                trajectory_fingerprint,
+                CanonicalMatchKind::Semantic,
+            );
+        }
+
+        if let Some(canonical_id) = self.trajectory_index.get(&(
+            input.domain,
+            input.scope.clone(),
+            trajectory_fingerprint.clone(),
+        )) {
+            return self.reuse_existing(
+                canonical_id.clone(),
+                source_fingerprint,
+                semantic_fingerprint,
+                trajectory_fingerprint,
+                CanonicalMatchKind::TrajectoryContinuation,
+            );
+        }
+
+        self.create_new(
+            input.domain,
+            input.scope,
+            source_fingerprint,
+            semantic_fingerprint,
+            trajectory_fingerprint,
+        )
+    }
+
+    pub fn get(&self, canonical_id: &str) -> Option<&CanonicalReuseRef> {
+        self.refs.get(canonical_id)
+    }
+
+    pub fn canonical_for_alias(&self, alias_id: &str) -> Option<&CanonicalId> {
+        self.aliases.get(alias_id)
+    }
+
+    fn create_new(
+        &mut self,
+        domain: ReuseDomain,
+        scope: ReuseScope,
+        source_fingerprint: Fingerprint,
+        semantic_fingerprint: Fingerprint,
+        trajectory_fingerprint: Fingerprint,
+    ) -> CanonicalResolution {
+        self.next_id = self.next_id.saturating_add(1);
+        let canonical_id = format!("canonical:{:016x}", self.next_id);
+        let canonical_ref = CanonicalReuseRef {
+            canonical_id: canonical_id.clone(),
+            domain,
+            alias_ids: Vec::new(),
+            source_fingerprint: source_fingerprint.clone(),
+            semantic_fingerprint: semantic_fingerprint.clone(),
+            trajectory_fingerprint: trajectory_fingerprint.clone(),
+            scope: scope.clone(),
+            lifecycle: ReuseLifecycle::Active,
+        };
+        self.refs
+            .insert(canonical_id.clone(), canonical_ref.clone());
+        self.source_index.insert(
+            (domain, scope.clone(), source_fingerprint),
+            canonical_id.clone(),
+        );
+        self.semantic_index.insert(
+            (domain, scope.clone(), semantic_fingerprint),
+            canonical_id.clone(),
+        );
+        self.trajectory_index
+            .insert((domain, scope, trajectory_fingerprint), canonical_id);
+        CanonicalResolution {
+            decision: ReuseDecision::Create,
+            canonical_ref,
+            match_kind: CanonicalMatchKind::Novel,
+            events: vec![
+                CanonicalReuseEvent::ReuseObserved,
+                CanonicalReuseEvent::CanonicalCreated,
+                CanonicalReuseEvent::ReuseResolved,
+            ],
+        }
+    }
+
+    fn reuse_existing(
+        &mut self,
+        canonical_id: CanonicalId,
+        source_fingerprint: Fingerprint,
+        semantic_fingerprint: Fingerprint,
+        trajectory_fingerprint: Fingerprint,
+        match_kind: CanonicalMatchKind,
+    ) -> CanonicalResolution {
+        let alias_id = format!(
+            "alias:{}:{}:{}",
+            source_fingerprint.0, semantic_fingerprint.0, trajectory_fingerprint.0
+        );
+        let canonical_ref = self
+            .refs
+            .get_mut(&canonical_id)
+            .expect("indexed ref exists");
+        if !canonical_ref.alias_ids.contains(&alias_id) {
+            canonical_ref.alias_ids.push(alias_id.clone());
+        }
+        self.aliases.insert(alias_id, canonical_id);
+
+        let mut events = vec![
+            CanonicalReuseEvent::ReuseObserved,
+            CanonicalReuseEvent::AliasRegistered,
+        ];
+        match match_kind {
+            CanonicalMatchKind::ExactSource => {
+                events.extend([
+                    CanonicalReuseEvent::DuplicateMerged,
+                    CanonicalReuseEvent::ExactDuplicateMerged,
+                    CanonicalReuseEvent::CanonicalMemoryReused,
+                ]);
+            }
+            CanonicalMatchKind::Semantic => {
+                events.extend([
+                    CanonicalReuseEvent::SemanticAliasRegistered,
+                    CanonicalReuseEvent::CanonicalClusterExpanded,
+                ]);
+            }
+            CanonicalMatchKind::TrajectoryContinuation => {
+                events.push(CanonicalReuseEvent::ContinuationResolved);
+            }
+            CanonicalMatchKind::Novel => {}
+        }
+        events.push(CanonicalReuseEvent::ReuseResolved);
+
+        CanonicalResolution {
+            decision: ReuseDecision::Reuse,
+            canonical_ref: canonical_ref.clone(),
+            match_kind,
+            events,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowupResolution {
+    pub reused: bool,
+    pub canonical_ref: CanonicalReuseRef,
+    pub confidence: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayRecord {
+    pub canonical_id: CanonicalId,
+    pub trajectory_fingerprint: Fingerprint,
+    pub parent_canonical_id: Option<CanonicalId>,
+}
+
+pub fn resolve_followup_context(
+    resolver: &mut CanonicalReuseResolver,
+    input: impl Into<String>,
+    history: &[String],
+    scope: ReuseScope,
+) -> FollowupResolution {
+    let input = input.into();
+    let mut semantic_terms = concept_terms(&input);
+    semantic_terms.extend(history.iter().flat_map(|item| concept_terms(item)));
+    let resolution = resolver.resolve(CanonicalReuseInput {
+        domain: ReuseDomain::FollowupContext,
+        source: input,
+        semantic_terms,
+        trajectory_terms: history.to_vec(),
+        scope,
+    });
+    FollowupResolution {
+        reused: resolution.decision == ReuseDecision::Reuse,
+        confidence: match resolution.match_kind {
+            CanonicalMatchKind::ExactSource => 1.0,
+            CanonicalMatchKind::Semantic => 0.86,
+            CanonicalMatchKind::TrajectoryContinuation => 0.78,
+            CanonicalMatchKind::Novel => 0.0,
+        },
+        canonical_ref: resolution.canonical_ref,
+    }
+}
+
+pub fn normalize_text(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+pub fn concept_terms(value: &str) -> Vec<String> {
+    let mut seen = BTreeSet::new();
+    normalize_text(value)
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|term| term.len() > 2)
+        .filter_map(|term| {
+            if seen.insert(term.to_string()) {
+                Some(term.to_string())
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn semantic_fingerprint(
+    domain: ReuseDomain,
+    scope: &ReuseScope,
+    input: &CanonicalReuseInput,
+) -> Fingerprint {
+    let mut terms = if input.semantic_terms.is_empty() {
+        concept_terms(&input.source)
+    } else {
+        input
+            .semantic_terms
+            .iter()
+            .map(|term| normalize_text(term))
+            .collect()
+    };
+    terms.sort();
+    terms.dedup();
+    Fingerprint::from_parts(&[
+        domain_key(domain).to_string(),
+        scope_key(scope),
+        terms.join("|"),
+    ])
+}
+
+fn trajectory_fingerprint(
+    domain: ReuseDomain,
+    scope: &ReuseScope,
+    input: &CanonicalReuseInput,
+) -> Fingerprint {
+    let trajectory = if input.trajectory_terms.is_empty() {
+        normalize_text(&input.source)
+    } else {
+        input
+            .trajectory_terms
+            .iter()
+            .map(|term| normalize_text(term))
+            .collect::<Vec<_>>()
+            .join("->")
+    };
+    Fingerprint::from_parts(&[domain_key(domain).to_string(), scope_key(scope), trajectory])
+}
+
+fn domain_key(domain: ReuseDomain) -> &'static str {
+    match domain {
+        ReuseDomain::FollowupContext => "followup_context",
+        ReuseDomain::HolographicMemory => "holographic_memory",
+        ReuseDomain::StateGraph => "state_graph",
+        ReuseDomain::Replay => "replay",
+        ReuseDomain::WorldModel => "world_model",
+        ReuseDomain::Plan => "plan",
+        ReuseDomain::Validation => "validation",
+        ReuseDomain::Preview => "preview",
+    }
+}
+
+fn scope_key(scope: &ReuseScope) -> String {
+    match scope {
+        ReuseScope::Global => "global".to_string(),
+        ReuseScope::Session(session) => format!("session:{session}"),
+        ReuseScope::Domain(domain) => format!("domain:{}", domain_key(*domain)),
+        ReuseScope::Local(local) => format!("local:{local}"),
+    }
+}
+
+#[cfg(test)]
+mod canonical_reuse_tests {
+    use super::{
+        CanonicalMatchKind, CanonicalReuseInput, CanonicalReuseResolver, ReuseDecision,
+        ReuseDomain, ReuseScope, resolve_followup_context,
+    };
+
+    #[test]
+    fn exact_duplicate_reuses_existing_canonical_identity() {
+        let mut resolver = CanonicalReuseResolver::new();
+        let first = resolver.resolve(CanonicalReuseInput::new(
+            ReuseDomain::HolographicMemory,
+            "Save canonical memory",
+        ));
+        let second = resolver.resolve(CanonicalReuseInput::new(
+            ReuseDomain::HolographicMemory,
+            "  save   canonical MEMORY ",
+        ));
+
+        assert_eq!(first.decision, ReuseDecision::Create);
+        assert_eq!(second.decision, ReuseDecision::Reuse);
+        assert_eq!(second.match_kind, CanonicalMatchKind::ExactSource);
+        assert_eq!(
+            first.canonical_ref.canonical_id,
+            second.canonical_ref.canonical_id
+        );
+        assert_eq!(second.canonical_ref.alias_ids.len(), 1);
+    }
+
+    #[test]
+    fn semantic_duplicate_registers_alias_without_new_identity() {
+        let mut resolver = CanonicalReuseResolver::new();
+        let first = resolver.resolve(CanonicalReuseInput {
+            domain: ReuseDomain::WorldModel,
+            source: "entity user service".to_string(),
+            semantic_terms: vec!["user".to_string(), "service".to_string()],
+            trajectory_terms: Vec::new(),
+            scope: ReuseScope::Global,
+        });
+        let second = resolver.resolve(CanonicalReuseInput {
+            domain: ReuseDomain::WorldModel,
+            source: "service for users".to_string(),
+            semantic_terms: vec!["service".to_string(), "user".to_string()],
+            trajectory_terms: Vec::new(),
+            scope: ReuseScope::Global,
+        });
+
+        assert_eq!(first.decision, ReuseDecision::Create);
+        assert_eq!(second.decision, ReuseDecision::Reuse);
+        assert_eq!(second.match_kind, CanonicalMatchKind::Semantic);
+        assert_eq!(
+            first.canonical_ref.canonical_id,
+            second.canonical_ref.canonical_id
+        );
+    }
+
+    #[test]
+    fn followup_resolution_reports_reuse_and_confidence() {
+        let mut resolver = CanonicalReuseResolver::new();
+        let history = vec!["build canonical reuse".to_string()];
+        let first = resolve_followup_context(
+            &mut resolver,
+            "continue memory integration",
+            &history,
+            ReuseScope::Session("s1".to_string()),
+        );
+        let second = resolve_followup_context(
+            &mut resolver,
+            "continue memory integration",
+            &history,
+            ReuseScope::Session("s1".to_string()),
+        );
+
+        assert!(!first.reused);
+        assert!(second.reused);
+        assert_eq!(
+            first.canonical_ref.canonical_id,
+            second.canonical_ref.canonical_id
+        );
+        assert_eq!(second.confidence, 1.0);
+    }
+}

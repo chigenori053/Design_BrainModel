@@ -1,3 +1,4 @@
+pub mod canonical_memory;
 pub mod exploration;
 pub mod graph;
 pub mod interference_memory;
@@ -120,3 +121,6 @@ mod proptest_props {
         }
     }
 }
+pub use canonical_memory::{
+    CanonicalMemoryInsertResult, CanonicalMemoryStore, CanonicalNodeInsertionResult,
+};

@@ -5,6 +5,7 @@ edition = "2024"
 
 [dependencies]
 architecture_ir = { workspace = true }
+core_types = { workspace = true }
 design_domain = { workspace = true }
 memory_space_core = { workspace = true }
 world_model_core = { workspace = true }

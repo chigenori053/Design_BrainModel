@@ -1,3 +1,4 @@
+use core_types::{CanonicalReuseResolver, ReuseScope};
 use design_domain::Constraint;
 use world_model::semantic_causal_runtime::{
     CausalEdge, CausalGraph, CausalState, EntityState, EnvironmentSync, IdentityPersistence,
@@ -11,11 +12,13 @@ fn sample_world() -> WorldState {
                 entity_id: "runtime".into(),
                 semantic_role: "executor".into(),
                 current_state: "ready".into(),
+                canonical_ref: None,
             },
             EntityState {
                 entity_id: "database".into(),
                 semantic_role: "executor".into(),
                 current_state: "ready".into(),
+                canonical_ref: None,
             },
         ],
         vec![Constraint {
@@ -53,6 +56,30 @@ fn phase_g_same_causal_state_produces_same_future_prediction() {
     assert_eq!(
         left.projected_world_state.entities[0].current_state,
         "validated"
+    );
+}
+
+#[test]
+fn world_model_entities_share_canonical_identity_for_same_meaning() {
+    let mut resolver = CanonicalReuseResolver::new();
+    let left = EntityState {
+        entity_id: "runtime-a".into(),
+        semantic_role: "executor".into(),
+        current_state: "ready".into(),
+        canonical_ref: None,
+    }
+    .resolve_canonical_identity(&mut resolver, ReuseScope::Global);
+    let right = EntityState {
+        entity_id: "runtime-b".into(),
+        semantic_role: "executor".into(),
+        current_state: "ready".into(),
+        canonical_ref: None,
+    }
+    .resolve_canonical_identity(&mut resolver, ReuseScope::Global);
+
+    assert_eq!(
+        left.canonical_ref.unwrap().canonical_id,
+        right.canonical_ref.unwrap().canonical_id
     );
 }
 

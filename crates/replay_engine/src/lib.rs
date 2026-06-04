@@ -5,6 +5,30 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use strategy_engine::Limits;
 
+pub use core_types::ReplayRecord;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct CanonicalCognitiveReplay {
+    records: Vec<ReplayRecord>,
+}
+
+impl CanonicalCognitiveReplay {
+    pub fn push(&mut self, record: ReplayRecord) {
+        self.records.push(record);
+    }
+
+    pub fn records(&self) -> &[ReplayRecord] {
+        &self.records
+    }
+
+    pub fn resolve_by_canonical_id(&self, canonical_id: &str) -> Option<&ReplayRecord> {
+        self.records
+            .iter()
+            .rev()
+            .find(|record| record.canonical_id == canonical_id)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ScenarioInput {
     pub name: String,

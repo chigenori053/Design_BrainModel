@@ -1,4 +1,5 @@
 pub mod agent;
+pub mod canonical_followup;
 pub mod context;
 pub mod event;
 pub mod explanation;
@@ -9,6 +10,7 @@ pub mod stable_v03;
 
 pub use agent::{AgentInput, AgentOutput, RuntimeAgent};
 pub use ai_context::AIContext;
+pub use canonical_followup::FollowupResolver;
 pub use context::{Phase9RuntimeContext, RequestId, RuntimeStage, SearchMetrics, SearchSummary};
 pub use event::{RuntimeEvent, RuntimeEventBus};
 pub use explanation::{

@@ -13,6 +13,7 @@ architecture_evaluator_core = { workspace = true }
 bridge = { workspace = true }
 code_language_core = { workspace = true }
 constraint_engine = { workspace = true }
+core_types = { workspace = true }
 design_search_engine = { workspace = true }
 implementation_core = { workspace = true }
 integration_layer = { workspace = true }

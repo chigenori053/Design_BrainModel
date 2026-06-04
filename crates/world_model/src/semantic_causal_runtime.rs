@@ -1,5 +1,8 @@
 use std::collections::{BTreeMap, HashMap};
 
+use core_types::{
+    CanonicalReuseInput, CanonicalReuseRef, CanonicalReuseResolver, ReuseDomain, ReuseScope,
+};
 use design_domain::Constraint;
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -45,6 +48,28 @@ pub struct EntityState {
     pub entity_id: String,
     pub semantic_role: String,
     pub current_state: String,
+    pub canonical_ref: Option<CanonicalReuseRef>,
+}
+
+impl EntityState {
+    pub fn resolve_canonical_identity(
+        mut self,
+        resolver: &mut CanonicalReuseResolver,
+        scope: ReuseScope,
+    ) -> Self {
+        let resolution = resolver.resolve(CanonicalReuseInput {
+            domain: ReuseDomain::WorldModel,
+            source: format!(
+                "{}:{}:{}",
+                self.entity_id, self.semantic_role, self.current_state
+            ),
+            semantic_terms: vec![self.semantic_role.clone(), self.current_state.clone()],
+            trajectory_terms: vec![self.entity_id.clone(), self.current_state.clone()],
+            scope,
+        });
+        self.canonical_ref = Some(resolution.canonical_ref);
+        self
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]

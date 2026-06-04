@@ -62,6 +62,13 @@ pub enum RuntimeEvent {
     PolicyUpdated,
     CandidatePruned,
     CandidateRanked,
+    // DBM canonical reuse governance events
+    ReuseObserved,
+    ReuseResolved,
+    CanonicalCreated,
+    AliasRegistered,
+    DuplicateMerged,
+    ContinuationResolved,
 }
 
 #[derive(Debug, Clone, Default)]

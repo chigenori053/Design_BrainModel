@@ -4266,6 +4266,7 @@ name = "replay_engine"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "core_types",
  "serde",
  "serde_json",
  "strategy_engine",
@@ -4335,6 +4336,7 @@ dependencies = [
  "bridge",
  "code_language_core",
  "constraint_engine",
+ "core_types",
  "design_search_engine",
  "implementation_core",
  "integration_layer",
@@ -6458,6 +6460,7 @@ name = "world_model"
 version = "0.1.0"
 dependencies = [
  "architecture_ir",
+ "core_types",
  "design_domain",
  "memory_space_core",
  "world_model_core",
