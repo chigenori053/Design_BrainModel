@@ -164,6 +164,14 @@ fn language_parse(input: &str) -> LanguageOutput {
             value: "./project".to_string(),
         });
     }
+    if lower.contains("analyze")
+        && let Some(target) = extract_analyze_target(input)
+    {
+        concepts.push(Concept {
+            key: "target".to_string(),
+            value: target,
+        });
+    }
 
     let mut intent_nodes = Vec::new();
     if input.contains("解析") || lower.contains("analyze") {
@@ -215,6 +223,19 @@ fn language_parse(input: &str) -> LanguageOutput {
         intent_nodes,
         relations: Vec::new(),
     }
+}
+
+fn extract_analyze_target(input: &str) -> Option<String> {
+    let mut tokens = input.split_whitespace();
+    while let Some(token) = tokens.next() {
+        if token.eq_ignore_ascii_case("analyze") || token == "解析" {
+            let target = tokens.next()?.trim();
+            if !target.is_empty() && !target.starts_with('-') {
+                return Some(target.to_string());
+            }
+        }
+    }
+    None
 }
 
 fn resolve_intent(
@@ -825,7 +846,13 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
         json: parsed.json,
         design_json: parsed.design_json,
     };
-    let output = project::execute(&path, options)?;
+    let output =
+        if !options.json && !options.design_json && !options.report && !options.design && !detailed
+        {
+            project::execute_structure_analysis(&path)?
+        } else {
+            project::execute(&path, options)?
+        };
     if json || design_json {
         println!("{output}");
         return Ok(());

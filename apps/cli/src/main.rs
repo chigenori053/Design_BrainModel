@@ -532,6 +532,16 @@ fn try_run_integration_command_flow(raw_args: &[OsString]) -> Option<i32> {
         return None;
     }
 
+    if let Some(target) = extract_analyze_target(&input) {
+        match run_analyze_engine_command(&target) {
+            Ok(()) => return Some(0),
+            Err(message) => {
+                eprintln!("{message}");
+                return Some(1);
+            }
+        }
+    }
+
     if resolves_to_current_project(&input) {
         println!(
             "{}",
@@ -545,10 +555,31 @@ fn try_run_integration_command_flow(raw_args: &[OsString]) -> Option<i32> {
 }
 
 fn looks_like_analyze_input(input: &str) -> bool {
-    input.contains("/analyze")
-        || input.contains("analyze")
+    let lower = input.to_ascii_lowercase();
+    lower.contains("/analyze")
+        || lower.contains("analyze")
         || input.contains("解析")
         || input.contains("分析")
+}
+
+fn extract_analyze_target(input: &str) -> Option<String> {
+    let mut tokens = input.split_whitespace();
+    while let Some(token) = tokens.next() {
+        let normalized = token.trim_start_matches('/');
+        if normalized.eq_ignore_ascii_case("analyze") || normalized == "解析" {
+            let target = tokens.next()?.trim();
+            if !target.is_empty() && !target.starts_with('-') {
+                return Some(target.to_string());
+            }
+        }
+    }
+    None
+}
+
+fn run_analyze_engine_command(target: &str) -> Result<(), String> {
+    let output = design_cli::commands::analyze::project::execute_structure_analysis(target)?;
+    println!("{output}");
+    Ok(())
 }
 
 fn resolves_to_current_project(input: &str) -> bool {

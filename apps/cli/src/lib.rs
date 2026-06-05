@@ -1,3 +1,4 @@
+pub mod analyze_engine;
 pub mod app;
 pub mod app_commands_interface;
 pub mod autonomous_execute;

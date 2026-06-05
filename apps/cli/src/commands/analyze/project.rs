@@ -1,6 +1,7 @@
 use agent_core::IntentProfile;
 use serde::Serialize;
 
+use crate::analyze_engine::{self, AnalyzeCommand};
 use crate::command::{CommandError, Output, SubCommandHandler};
 use crate::dbm::analyzer::{self, Complexity, ProjectAnalysisResult};
 use crate::design_output::{DesignExtractor, MarkdownDesignExtractor};
@@ -187,6 +188,13 @@ pub fn execute(path: &str, mut options: AnalyzeOptions) -> Result<String, String
     options.path = path.to_string();
     let result = analyze_with_options(&options)?;
     Ok(render_output(&result, &options))
+}
+
+pub fn execute_structure_analysis(path: &str) -> Result<String, String> {
+    let output = analyze_engine::execute(AnalyzeCommand {
+        path: std::path::PathBuf::from(path),
+    })?;
+    Ok(analyze_engine::render_analyze_result(&output.result))
 }
 
 pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
