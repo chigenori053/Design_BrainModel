@@ -533,7 +533,7 @@ fn try_run_integration_command_flow(raw_args: &[OsString]) -> Option<i32> {
     }
 
     if let Some(target) = extract_analyze_target(&input) {
-        match run_analyze_engine_command(&target) {
+        match run_analyze_engine_command(&target, analyze_detailed_requested(&input)) {
             Ok(()) => return Some(0),
             Err(message) => {
                 eprintln!("{message}");
@@ -576,8 +576,18 @@ fn extract_analyze_target(input: &str) -> Option<String> {
     None
 }
 
-fn run_analyze_engine_command(target: &str) -> Result<(), String> {
-    let output = design_cli::commands::analyze::project::execute_structure_analysis(target)?;
+fn analyze_detailed_requested(input: &str) -> bool {
+    input
+        .split_whitespace()
+        .any(|token| token.eq_ignore_ascii_case("--detailed"))
+}
+
+fn run_analyze_engine_command(target: &str, detailed: bool) -> Result<(), String> {
+    let output = if detailed {
+        design_cli::commands::analyze::project::execute_structure_analysis_detailed(target)?
+    } else {
+        design_cli::commands::analyze::project::execute_structure_analysis(target)?
+    };
     println!("{output}");
     Ok(())
 }

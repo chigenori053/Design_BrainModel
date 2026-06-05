@@ -397,6 +397,114 @@ pub struct ConvergenceReport {
     pub mutation_impact_models: Vec<MutationImpactModel>,
 }
 
+pub struct DiagnosticReportEngine;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DiagnosticSeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureHealthBreakdown {
+    pub dependency_score: f32,
+    pub responsibility_score: f32,
+    pub architecture_score: f32,
+    pub drift_score: f32,
+    pub final_score: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HealthPenalty {
+    pub label: String,
+    pub value: f32,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HealthFormulaReport {
+    pub breakdown: ArchitectureHealthBreakdown,
+    pub penalties: Vec<HealthPenalty>,
+    pub formula: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct GodObjectReport {
+    pub component: String,
+    pub function_count: usize,
+    pub dependency_count: usize,
+    pub score: f32,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MassiveModuleReport {
+    pub component: String,
+    pub function_count: usize,
+    pub dependency_count: usize,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LayerViolationReport {
+    pub source: String,
+    pub target: String,
+    pub rule: String,
+    pub severity: DiagnosticSeverity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BoundaryViolationReport {
+    pub source: String,
+    pub target: String,
+    pub file: Option<PathBuf>,
+    pub line: Option<usize>,
+    pub reason: String,
+    pub severity: DiagnosticSeverity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DependencyHotspotReport {
+    pub component: String,
+    pub incoming_edges: usize,
+    pub outgoing_edges: usize,
+    pub calls: usize,
+    pub rank_score: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RefactoringProposalReport {
+    pub rank: usize,
+    pub title: String,
+    pub impact: f32,
+    pub confidence: f32,
+    pub reason: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConvergenceExplanation {
+    pub question: String,
+    pub health_trend: f32,
+    pub violation_trend: i32,
+    pub dependency_density_trend: f32,
+    pub reasons: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DetailedDiagnosticReport {
+    pub health_breakdown: ArchitectureHealthBreakdown,
+    pub health_formula: HealthFormulaReport,
+    pub god_objects: Vec<GodObjectReport>,
+    pub massive_modules: Vec<MassiveModuleReport>,
+    pub layer_violations: Vec<LayerViolationReport>,
+    pub boundary_violations: Vec<BoundaryViolationReport>,
+    pub dependency_hotspots: Vec<DependencyHotspotReport>,
+    pub refactoring_proposals: Vec<RefactoringProposalReport>,
+    pub convergence_explanation: ConvergenceExplanation,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnalyzeEngineOutput {
     pub root: PathBuf,
@@ -410,6 +518,7 @@ pub struct AnalyzeEngineOutput {
     pub architecture_analysis: ArchitectureAnalysis,
     pub design_drift: DesignDrift,
     pub convergence_report: ConvergenceReport,
+    pub detailed_report: DetailedDiagnosticReport,
     pub result: AnalyzeResult,
 }
 
@@ -427,6 +536,7 @@ pub struct SemanticMemoryEntry {
     pub architecture_analysis: ArchitectureAnalysis,
     pub design_drift: DesignDrift,
     pub convergence_report: ConvergenceReport,
+    pub detailed_report: DetailedDiagnosticReport,
 }
 
 pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
@@ -453,6 +563,13 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &architecture_analysis,
         &design_drift,
     );
+    let detailed_report = DiagnosticReportEngine::build(
+        &dependency_analysis,
+        &responsibility_analysis,
+        &architecture_analysis,
+        &design_drift,
+        &convergence_report,
+    );
     let result = build_analyze_result(
         &root,
         &ast_modules,
@@ -473,6 +590,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &architecture_analysis,
         &design_drift,
         &convergence_report,
+        &detailed_report,
     )?;
     Ok(AnalyzeEngineOutput {
         root,
@@ -486,6 +604,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         architecture_analysis,
         design_drift,
         convergence_report,
+        detailed_report,
         result,
     })
 }
@@ -544,6 +663,144 @@ pub fn render_analyze_result(result: &AnalyzeResult) -> String {
     out.push_str(&format!("{:+.1}\n\n", result.predicted_health_delta));
     out.push_str("Confidence\n");
     out.push_str(&format!("{:.2}\n", result.convergence_confidence));
+    out
+}
+
+pub fn render_detailed_analyze_result(output: &AnalyzeEngineOutput) -> String {
+    let mut out = render_analyze_result(&output.result);
+    let report = &output.detailed_report;
+
+    out.push_str("\n\n=== Health Breakdown ===\n\n");
+    out.push_str(&format!(
+        "Dependency Score\n{:.1}\n\nResponsibility Score\n{:.1}\n\nArchitecture Score\n{:.1}\n\nDrift Score\n{:.1}\n\nFinal Score\n{:.1}\n\n",
+        report.health_breakdown.dependency_score,
+        report.health_breakdown.responsibility_score,
+        report.health_breakdown.architecture_score,
+        report.health_breakdown.drift_score,
+        report.health_breakdown.final_score,
+    ));
+    out.push_str("Penalty\n");
+    for penalty in &report.health_formula.penalties {
+        out.push_str(&format!(
+            "{}\n{:.1}\n{}\n\n",
+            penalty.label, penalty.value, penalty.reason
+        ));
+    }
+
+    out.push_str("=== God Objects ===\n\n");
+    if report.god_objects.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for (index, item) in report.god_objects.iter().enumerate() {
+            out.push_str(&format!(
+                "{}.\n{}\n\nFunctions\n{}\n\nDependencies\n{}\n\nScore\n{:.2}\n\nReasons\n{}\n\n",
+                index + 1,
+                item.component,
+                item.function_count,
+                item.dependency_count,
+                item.score,
+                item.reasons
+                    .iter()
+                    .map(|reason| format!("- {reason}"))
+                    .collect::<Vec<_>>()
+                    .join("\n")
+            ));
+        }
+    }
+
+    out.push_str("=== Massive Modules ===\n\n");
+    if report.massive_modules.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for item in &report.massive_modules {
+            out.push_str(&format!(
+                "{}\nFunctions: {}\nDependencies: {}\n{}\n\n",
+                item.component,
+                item.function_count,
+                item.dependency_count,
+                item.reasons.join("\n")
+            ));
+        }
+    }
+
+    out.push_str("=== Layer Violations ===\n\n");
+    if report.layer_violations.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for item in &report.layer_violations {
+            out.push_str(&format!(
+                "{}\n ↓\n{}\nRule\n{}\nSeverity\n{:?}\n\n",
+                item.source, item.target, item.rule, item.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Boundary Violations ===\n\n");
+    if report.boundary_violations.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for item in &report.boundary_violations {
+            out.push_str(&format!(
+                "{}\n ↓ internal access\n{}\nFile\n{}\nLine\n{}\nReason\n{}\nSeverity\n{:?}\n\n",
+                item.source,
+                item.target,
+                item.file
+                    .as_ref()
+                    .map(|path| path.display().to_string())
+                    .unwrap_or_else(|| "(unknown)".to_string()),
+                item.line
+                    .map(|line| line.to_string())
+                    .unwrap_or_else(|| "(unknown)".to_string()),
+                item.reason,
+                item.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Dependency Hotspots ===\n\n");
+    if report.dependency_hotspots.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for (index, item) in report.dependency_hotspots.iter().enumerate() {
+            out.push_str(&format!(
+                "{}.\n{}\nIncoming\n{}\nOutgoing\n{}\nCalls\n{}\n\n",
+                index + 1,
+                item.component,
+                item.incoming_edges,
+                item.outgoing_edges,
+                item.calls
+            ));
+        }
+    }
+
+    out.push_str("=== Refactoring Proposals ===\n\n");
+    if report.refactoring_proposals.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for item in &report.refactoring_proposals {
+            out.push_str(&format!(
+                "{}.\n{}\nImpact\n{:+.1}\nConfidence\n{:.2}\nReason\n{}\n\n",
+                item.rank, item.title, item.impact, item.confidence, item.reason
+            ));
+        }
+    }
+
+    out.push_str("=== Convergence Explanation ===\n\n");
+    out.push_str(&format!(
+        "{}\n\nHealth Trend\n{:+.1}\n\nViolation Trend\n{}\n\nDependency Density\n{:+.2}\n\nReasons\n{}\n",
+        report.convergence_explanation.question,
+        report.convergence_explanation.health_trend,
+        report.convergence_explanation.violation_trend,
+        report.convergence_explanation.dependency_density_trend,
+        report
+            .convergence_explanation
+            .reasons
+            .iter()
+            .map(|reason| format!("- {reason}"))
+            .collect::<Vec<_>>()
+            .join("\n")
+    ));
+
     out
 }
 
@@ -1095,6 +1352,293 @@ fn analyze_convergence(
         architecture_simulations,
         design_alignment,
         mutation_impact_models,
+    }
+}
+
+impl DiagnosticReportEngine {
+    pub fn build(
+        dependency: &DependencyAnalysis,
+        responsibility: &ResponsibilityAnalysis,
+        architecture: &ArchitectureAnalysis,
+        design_drift: &DesignDrift,
+        convergence: &ConvergenceReport,
+    ) -> DetailedDiagnosticReport {
+        let health_breakdown =
+            build_health_breakdown(dependency, responsibility, architecture, design_drift);
+        let health_formula =
+            build_health_formula(&health_breakdown, dependency, responsibility, architecture);
+        let god_objects = build_god_object_reports(responsibility);
+        let massive_modules = build_massive_module_reports(responsibility);
+        let layer_violations = architecture
+            .layer_violations
+            .iter()
+            .map(|violation| LayerViolationReport {
+                source: violation.source.clone(),
+                target: violation.target.clone(),
+                rule: format!(
+                    "{:?} must not directly depend on {:?}",
+                    violation.source_layer, violation.target_layer
+                ),
+                severity: severity_for_layer_violation(violation),
+            })
+            .collect();
+        let boundary_violations = architecture
+            .boundary_violations
+            .iter()
+            .map(|violation| BoundaryViolationReport {
+                source: violation.source.clone(),
+                target: violation.target.clone(),
+                file: None,
+                line: None,
+                reason: violation.reason.clone(),
+                severity: DiagnosticSeverity::High,
+            })
+            .collect();
+        let dependency_hotspots = dependency
+            .hotspots
+            .iter()
+            .map(|hotspot| DependencyHotspotReport {
+                component: hotspot.component.clone(),
+                incoming_edges: hotspot.incoming_edges,
+                outgoing_edges: hotspot.outgoing_edges,
+                calls: hotspot.calls,
+                rank_score: hotspot.incoming_edges + hotspot.outgoing_edges + hotspot.calls,
+            })
+            .collect();
+        let refactoring_proposals = convergence
+            .refactoring_proposals
+            .iter()
+            .take(10)
+            .enumerate()
+            .map(|(index, proposal)| {
+                let impact = convergence
+                    .impact_analysis
+                    .iter()
+                    .find(|impact| impact.proposal_title == proposal.proposal.title)
+                    .map(|impact| impact.health_improvement)
+                    .unwrap_or(0.0);
+                RefactoringProposalReport {
+                    rank: index + 1,
+                    title: proposal.proposal.title.clone(),
+                    impact,
+                    confidence: proposal.proposal.confidence,
+                    reason: proposal.proposal.reason.clone(),
+                }
+            })
+            .collect();
+        let convergence_explanation =
+            build_convergence_explanation(dependency, architecture, convergence);
+
+        DetailedDiagnosticReport {
+            health_breakdown,
+            health_formula,
+            god_objects,
+            massive_modules,
+            layer_violations,
+            boundary_violations,
+            dependency_hotspots,
+            refactoring_proposals,
+            convergence_explanation,
+        }
+    }
+}
+
+fn build_health_breakdown(
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    architecture: &ArchitectureAnalysis,
+    design_drift: &DesignDrift,
+) -> ArchitectureHealthBreakdown {
+    let dependency_score = (100.0
+        - dependency.circular_dependencies.len() as f32 * 8.0
+        - dependency.dependency_density * 6.0)
+        .clamp(0.0, 100.0);
+    let responsibility_score = (100.0
+        - responsibility.god_objects.len() as f32 * 9.0
+        - responsibility.massive_modules.len() as f32 * 4.0)
+        .clamp(0.0, 100.0);
+    let architecture_score = (100.0
+        - architecture.layer_violations.len() as f32 * 10.0
+        - architecture.boundary_violations.len() as f32 * 8.0)
+        .clamp(0.0, 100.0);
+    let drift_score = if design_drift.missing_design_reference {
+        60.0
+    } else {
+        (100.0 - design_drift.intent_drifts.len() as f32 * 12.0).clamp(0.0, 100.0)
+    };
+    ArchitectureHealthBreakdown {
+        dependency_score,
+        responsibility_score,
+        architecture_score,
+        drift_score,
+        final_score: architecture.health.score,
+    }
+}
+
+fn build_health_formula(
+    breakdown: &ArchitectureHealthBreakdown,
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    architecture: &ArchitectureAnalysis,
+) -> HealthFormulaReport {
+    let penalties = vec![
+        HealthPenalty {
+            label: "Circular Dependencies".to_string(),
+            value: -(dependency.circular_dependencies.len() as f32 * 8.0),
+            reason: "dependency cycles reduce structural stability".to_string(),
+        },
+        HealthPenalty {
+            label: "Dependency Density".to_string(),
+            value: -(dependency.dependency_density * 6.0),
+            reason: "dense dependencies increase blast radius".to_string(),
+        },
+        HealthPenalty {
+            label: "God Objects".to_string(),
+            value: -(responsibility.god_objects.len() as f32 * 9.0),
+            reason: "large multi-responsibility components reduce responsibility quality"
+                .to_string(),
+        },
+        HealthPenalty {
+            label: "Massive Modules".to_string(),
+            value: -(responsibility.massive_modules.len() as f32 * 4.0),
+            reason: "large modules are harder to converge safely".to_string(),
+        },
+        HealthPenalty {
+            label: "Layer Violations".to_string(),
+            value: -(architecture.layer_violations.len() as f32 * 10.0),
+            reason: "layer bypasses break architecture boundaries".to_string(),
+        },
+        HealthPenalty {
+            label: "Boundary Violations".to_string(),
+            value: -(architecture.boundary_violations.len() as f32 * 8.0),
+            reason: "cross-boundary concentration indicates module boundary erosion".to_string(),
+        },
+        HealthPenalty {
+            label: "Design Drift".to_string(),
+            value: breakdown.drift_score - 100.0,
+            reason: "intent drift lowers alignment between implementation and design memory"
+                .to_string(),
+        },
+    ];
+    HealthFormulaReport {
+        breakdown: breakdown.clone(),
+        penalties,
+        formula:
+            "final_score = architecture health after dependency, responsibility, layer, boundary, density, and drift penalties"
+                .to_string(),
+    }
+}
+
+fn build_god_object_reports(responsibility: &ResponsibilityAnalysis) -> Vec<GodObjectReport> {
+    responsibility
+        .god_objects
+        .iter()
+        .map(|god| {
+            let massive = responsibility
+                .massive_modules
+                .iter()
+                .find(|module| module.component == god.component);
+            let function_count = massive.map(|module| module.function_count).unwrap_or(0);
+            let dependency_count = massive.map(|module| module.dependency_count).unwrap_or(0);
+            let mut reasons = Vec::new();
+            if function_count > 100 {
+                reasons.push("excessive function count".to_string());
+            }
+            if dependency_count > 40 {
+                reasons.push("high dependency density".to_string());
+            }
+            if god.score > 1.0 {
+                reasons.push("multiple responsibilities".to_string());
+            }
+            if reasons.is_empty() {
+                reasons.push("incoming edge concentration".to_string());
+            }
+            GodObjectReport {
+                component: god.component.clone(),
+                function_count,
+                dependency_count,
+                score: god.score,
+                reasons,
+            }
+        })
+        .collect()
+}
+
+fn build_massive_module_reports(
+    responsibility: &ResponsibilityAnalysis,
+) -> Vec<MassiveModuleReport> {
+    responsibility
+        .massive_modules
+        .iter()
+        .map(|module| {
+            let mut reasons = Vec::new();
+            if module.function_count > 80 {
+                reasons.push("function count exceeds massive module threshold".to_string());
+            }
+            if module.dependency_count > 40 {
+                reasons.push("dependency count exceeds module boundary threshold".to_string());
+            }
+            MassiveModuleReport {
+                component: module.component.clone(),
+                function_count: module.function_count,
+                dependency_count: module.dependency_count,
+                reasons,
+            }
+        })
+        .collect()
+}
+
+fn severity_for_layer_violation(violation: &LayerViolation) -> DiagnosticSeverity {
+    match (&violation.source_layer, &violation.target_layer) {
+        (SemanticCategory::UI, SemanticCategory::Storage)
+        | (SemanticCategory::Controller, SemanticCategory::Storage) => DiagnosticSeverity::High,
+        (SemanticCategory::Storage, SemanticCategory::UI) => DiagnosticSeverity::Critical,
+        _ => DiagnosticSeverity::Medium,
+    }
+}
+
+fn build_convergence_explanation(
+    dependency: &DependencyAnalysis,
+    architecture: &ArchitectureAnalysis,
+    convergence: &ConvergenceReport,
+) -> ConvergenceExplanation {
+    let top_impact = convergence.impact_analysis.first();
+    let violation_count =
+        architecture.layer_violations.len() + architecture.boundary_violations.len();
+    let violation_trend = top_impact
+        .map(|impact| -((impact.violation_reduction * violation_count as f32).round() as i32))
+        .unwrap_or(0);
+    let dependency_density_trend = top_impact
+        .map(|impact| -impact.dependency_reduction * dependency.dependency_density)
+        .unwrap_or(0.0);
+    let mut reasons = Vec::new();
+    if convergence.predicted_health_delta > 0.0 {
+        reasons.push(format!(
+            "top proposal predicts health improvement of {:.1}",
+            convergence.predicted_health_delta
+        ));
+    }
+    if violation_trend < 0 {
+        reasons.push(format!(
+            "expected violation count decreases by {}",
+            violation_trend.abs()
+        ));
+    }
+    if dependency_density_trend < 0.0 {
+        reasons.push(format!(
+            "dependency density trend improves by {:.2}",
+            dependency_density_trend.abs()
+        ));
+    }
+    if reasons.is_empty() {
+        reasons.push("no high-confidence convergence movement detected".to_string());
+    }
+    ConvergenceExplanation {
+        question: format!("Why {:?}?", convergence.direction),
+        health_trend: convergence.predicted_health_delta,
+        violation_trend,
+        dependency_density_trend,
+        reasons,
     }
 }
 
@@ -1752,6 +2296,7 @@ fn persist_to_holographic_memory(
     architecture_analysis: &ArchitectureAnalysis,
     design_drift: &DesignDrift,
     convergence_report: &ConvergenceReport,
+    detailed_report: &DetailedDiagnosticReport,
 ) -> Result<(), String> {
     let entry = SemanticMemoryEntry {
         id: semantic_memory_id(result),
@@ -1766,6 +2311,7 @@ fn persist_to_holographic_memory(
         architecture_analysis: architecture_analysis.clone(),
         design_drift: design_drift.clone(),
         convergence_report: convergence_report.clone(),
+        detailed_report: detailed_report.clone(),
     };
     let dir = root.join(".dbm/analyze");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -1836,6 +2382,32 @@ fn persist_to_holographic_memory(
         dir.join("convergence_score.json"),
         serde_json::to_string_pretty(&convergence_report.convergence_score)
             .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("detailed_report.json"),
+        serde_json::to_string_pretty(detailed_report).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("health_breakdown.json"),
+        serde_json::to_string_pretty(&detailed_report.health_breakdown)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("hotspots.json"),
+        serde_json::to_string_pretty(&detailed_report.dependency_hotspots)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("violations.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "layer_violations": detailed_report.layer_violations.clone(),
+            "boundary_violations": detailed_report.boundary_violations.clone(),
+        }))
+        .map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())?;
     let mut file = fs::OpenOptions::new()
@@ -2366,6 +2938,188 @@ mod tests {
         let alignment = match_design_alignment(&drift);
         assert_eq!(alignment.status, DesignAlignmentStatus::PartiallyAligned);
         assert_eq!(alignment.score, 65.0);
+    }
+
+    #[test]
+    fn diagnostic_report_explains_health_targets_and_proposals() {
+        let dependency = DependencyAnalysis {
+            circular_dependencies: vec![CircularDependency {
+                cycle_nodes: vec!["apps::cli::coding".to_string(), "runtime_core".to_string()],
+            }],
+            hidden_dependencies: vec![],
+            dependency_density: 2.0,
+            hotspots: vec![DependencyHotspot {
+                component: "apps::cli::coding".to_string(),
+                incoming_edges: 421,
+                outgoing_edges: 76,
+                calls: 184,
+            }],
+        };
+        let responsibility = ResponsibilityAnalysis {
+            god_objects: vec![GodObject {
+                component: "apps::cli::coding".to_string(),
+                score: 1.84,
+            }],
+            massive_modules: vec![MassiveModule {
+                component: "apps::cli::coding".to_string(),
+                function_count: 184,
+                dependency_count: 61,
+            }],
+            responsibility_leakage: vec![],
+        };
+        let architecture = ArchitectureAnalysis {
+            rules: default_architecture_rules(),
+            layer_violations: vec![LayerViolation {
+                source: "ui".to_string(),
+                target: "storage".to_string(),
+                source_layer: SemanticCategory::UI,
+                target_layer: SemanticCategory::Storage,
+            }],
+            boundary_violations: vec![BoundaryViolation {
+                source: "apps::cli".to_string(),
+                target: "crates::runtime_core".to_string(),
+                reason: "internal access crosses module boundary".to_string(),
+            }],
+            health: ArchitectureHealth {
+                score: 7.5,
+                status: ArchitectureStatus::Critical,
+            },
+        };
+        let design_drift = DesignDrift {
+            design_source: Some(PathBuf::from("design.md")),
+            intent_drifts: vec![IntentDrift {
+                component: "memory".to_string(),
+                expected: "Memory Layer".to_string(),
+                actual: "Execution Logic".to_string(),
+            }],
+            missing_design_reference: false,
+        };
+        let convergence = ConvergenceReport {
+            architecture_health: 7.5,
+            convergence_score: ConvergenceScore {
+                score: 78.5,
+                state: ConvergenceState::Unstable,
+            },
+            direction: Direction::Improving,
+            top_proposal: Some(ConvergenceProposal {
+                title: "Split apps::cli::coding".to_string(),
+                reason: "God Object".to_string(),
+                impact_score: 10.2,
+                confidence: 0.96,
+            }),
+            predicted_health_delta: 10.2,
+            confidence: 0.96,
+            refactoring_proposals: vec![RefactoringProposal {
+                proposal: ConvergenceProposal {
+                    title: "Split apps::cli::coding".to_string(),
+                    reason: "God Object".to_string(),
+                    impact_score: 10.2,
+                    confidence: 0.96,
+                },
+                mutation_plan: MutationPlan {
+                    kind: "split_module".to_string(),
+                    target: "apps::cli::coding".to_string(),
+                    actions: vec!["extract focused runtime boundary".to_string()],
+                },
+            }],
+            impact_analysis: vec![ImpactAnalysis {
+                proposal_title: "Split apps::cli::coding".to_string(),
+                dependency_reduction: 0.12,
+                violation_reduction: 0.50,
+                health_improvement: 10.2,
+                risk: 0.13,
+                predicted_health: 17.7,
+                design_drift_impact: -2.1,
+            }],
+            architecture_simulations: vec![],
+            design_alignment: DesignAlignment {
+                status: DesignAlignmentStatus::PartiallyAligned,
+                score: 60.0,
+                evidence: vec![],
+            },
+            mutation_impact_models: vec![],
+        };
+
+        let report = DiagnosticReportEngine::build(
+            &dependency,
+            &responsibility,
+            &architecture,
+            &design_drift,
+            &convergence,
+        );
+
+        assert_eq!(report.health_breakdown.final_score, 7.5);
+        assert_eq!(report.god_objects[0].component, "apps::cli::coding");
+        assert_eq!(report.god_objects[0].function_count, 184);
+        assert!(
+            report.god_objects[0]
+                .reasons
+                .contains(&"excessive function count".to_string())
+        );
+        assert_eq!(report.dependency_hotspots[0].incoming_edges, 421);
+        assert_eq!(report.refactoring_proposals[0].rank, 1);
+        assert_eq!(report.refactoring_proposals[0].impact, 10.2);
+        assert!(matches!(
+            report.layer_violations[0].severity,
+            DiagnosticSeverity::High
+        ));
+        assert!(!report.convergence_explanation.reasons.is_empty());
+
+        let output = AnalyzeEngineOutput {
+            root: PathBuf::from("."),
+            repository: RepositorySnapshot {
+                root: PathBuf::from("."),
+                rust_files: vec![],
+                directories: vec![],
+                cargo_tomls: vec![],
+                workspace_members: vec![],
+            },
+            files: vec![],
+            ast_modules: vec![],
+            graph: StructureGraph {
+                nodes: vec![],
+                edges: vec![],
+            },
+            semantic_structure: SemanticStructure { components: vec![] },
+            dependency_analysis: dependency,
+            responsibility_analysis: responsibility,
+            architecture_analysis: architecture,
+            design_drift,
+            convergence_report: convergence,
+            detailed_report: report,
+            result: AnalyzeResult {
+                project_name: "Design_BrainModel".to_string(),
+                modules: 1,
+                structs: 0,
+                enums: 0,
+                traits: 0,
+                functions: 184,
+                module_count: 1,
+                struct_count: 0,
+                enum_count: 0,
+                trait_count: 0,
+                function_count: 184,
+                top_components: vec!["apps::cli::coding".to_string()],
+                top_modules: vec!["apps::cli::coding".to_string()],
+                dependencies: vec![],
+                circular_dependencies: 1,
+                layer_violations: 1,
+                boundary_violations: 1,
+                god_objects: 1,
+                architecture_health: 7.5,
+                status: ArchitectureStatus::Critical,
+                convergence_score: 78.5,
+                direction: Direction::Improving,
+                top_proposal: Some("Split apps::cli::coding".to_string()),
+                predicted_health_delta: 10.2,
+                convergence_confidence: 0.96,
+            },
+        };
+        let rendered = render_detailed_analyze_result(&output);
+        assert!(rendered.contains("=== Health Breakdown ==="));
+        assert!(rendered.contains("=== God Objects ==="));
+        assert!(rendered.contains("=== Refactoring Proposals ==="));
+        assert!(rendered.contains("Split apps::cli::coding"));
     }
 
     fn test_ast_module(

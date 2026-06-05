@@ -197,6 +197,13 @@ pub fn execute_structure_analysis(path: &str) -> Result<String, String> {
     Ok(analyze_engine::render_analyze_result(&output.result))
 }
 
+pub fn execute_structure_analysis_detailed(path: &str) -> Result<String, String> {
+    let output = analyze_engine::execute(AnalyzeCommand {
+        path: std::path::PathBuf::from(path),
+    })?;
+    Ok(analyze_engine::render_detailed_analyze_result(&output))
+}
+
 pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
     if options.design_json {
         let snapshot = build_design_snapshot(&result.path, &result.analysis);

@@ -846,13 +846,15 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
         json: parsed.json,
         design_json: parsed.design_json,
     };
-    let output =
-        if !options.json && !options.design_json && !options.report && !options.design && !detailed
-        {
-            project::execute_structure_analysis(&path)?
+    let output = if !options.json && !options.design_json && !options.report && !options.design {
+        if detailed {
+            project::execute_structure_analysis_detailed(&path)?
         } else {
-            project::execute(&path, options)?
-        };
+            project::execute_structure_analysis(&path)?
+        }
+    } else {
+        project::execute(&path, options)?
+    };
     if json || design_json {
         println!("{output}");
         return Ok(());
