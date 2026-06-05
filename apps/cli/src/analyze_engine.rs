@@ -16,19 +16,50 @@ pub struct AnalyzeCommand {
 pub struct RepositoryScanner;
 
 impl RepositoryScanner {
-    pub fn scan(&self, root: &Path) -> Result<Vec<PathBuf>, String> {
+    pub fn scan(&self, root: &Path) -> Result<RepositorySnapshot, String> {
         let root = resolve_repository_path(root);
         let roots = scan_roots(&root);
         let mut files = Vec::new();
+        let mut directories = Vec::new();
+        let mut cargo_tomls = Vec::new();
         for scan_root in roots {
             if scan_root.exists() {
-                collect_rust_files(&scan_root, &mut files)?;
+                collect_repository_entries(
+                    &scan_root,
+                    &mut files,
+                    &mut directories,
+                    &mut cargo_tomls,
+                )?;
             }
+        }
+        let root_cargo = root.join("Cargo.toml");
+        if root_cargo.exists() {
+            cargo_tomls.push(root_cargo);
         }
         files.sort();
         files.dedup();
-        Ok(files)
+        directories.sort();
+        directories.dedup();
+        cargo_tomls.sort();
+        cargo_tomls.dedup();
+        let workspace_members = parse_workspace_members(&root.join("Cargo.toml"))?;
+        Ok(RepositorySnapshot {
+            root,
+            directories,
+            rust_files: files,
+            cargo_tomls,
+            workspace_members,
+        })
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepositorySnapshot {
+    pub root: PathBuf,
+    pub directories: Vec<PathBuf>,
+    pub rust_files: Vec<PathBuf>,
+    pub cargo_tomls: Vec<PathBuf>,
+    pub workspace_members: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -42,12 +73,19 @@ pub struct AstModule {
     pub functions: Vec<String>,
     pub uses: Vec<String>,
     pub impls: Vec<TraitImplementation>,
+    pub calls: Vec<FunctionCall>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TraitImplementation {
     pub trait_name: String,
     pub for_type: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FunctionCall {
+    pub caller: String,
+    pub callee: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -86,26 +124,62 @@ pub enum StructureEdgeKind {
     DependsOn,
     Implements,
     Uses,
+    Calls,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzeResult {
     pub project_name: String,
+    pub modules: usize,
+    pub structs: usize,
+    pub enums: usize,
+    pub traits: usize,
+    pub functions: usize,
     pub module_count: usize,
     pub struct_count: usize,
     pub enum_count: usize,
     pub trait_count: usize,
     pub function_count: usize,
+    pub top_components: Vec<String>,
     pub top_modules: Vec<String>,
     pub dependencies: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticStructure {
+    pub components: Vec<SemanticComponent>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SemanticComponent {
+    pub name: String,
+    pub category: SemanticCategory,
+    pub responsibility: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SemanticCategory {
+    Controller,
+    Service,
+    Repository,
+    Engine,
+    Memory,
+    Policy,
+    Runtime,
+    UI,
+    Storage,
+    Module,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AnalyzeEngineOutput {
     pub root: PathBuf,
+    pub repository: RepositorySnapshot,
     pub files: Vec<PathBuf>,
     pub ast_modules: Vec<AstModule>,
     pub graph: StructureGraph,
+    pub semantic_structure: SemanticStructure,
     pub result: AnalyzeResult,
 }
 
@@ -115,22 +189,28 @@ pub struct SemanticMemoryEntry {
     pub kind: String,
     pub project_name: String,
     pub summary: AnalyzeResult,
+    pub repository_snapshot: RepositorySnapshot,
     pub structure_graph: StructureGraph,
+    pub semantic_structure: SemanticStructure,
 }
 
 pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
     let root = resolve_repository_path(&command.path);
     let scanner = RepositoryScanner;
-    let files = scanner.scan(&root)?;
+    let repository = scanner.scan(&root)?;
+    let files = repository.rust_files.clone();
     let ast_modules = extract_rust_ast_modules(&root, &files)?;
     let graph = build_structure_graph(&ast_modules);
+    let semantic_structure = analyze_semantic_structure(&graph, &ast_modules);
     let result = build_analyze_result(&root, &ast_modules, &graph);
-    persist_to_holographic_memory(&root, &result, &graph)?;
+    persist_to_holographic_memory(&root, &result, &repository, &graph, &semantic_structure)?;
     Ok(AnalyzeEngineOutput {
         root,
+        repository,
         files,
         ast_modules,
         graph,
+        semantic_structure,
         result,
     })
 }
@@ -183,6 +263,7 @@ fn extract_rust_ast_modules(root: &Path, files: &[PathBuf]) -> Result<Vec<AstMod
             functions: visitor.functions,
             uses: visitor.uses,
             impls: visitor.impls,
+            calls: visitor.calls,
         });
     }
     Ok(modules)
@@ -197,6 +278,8 @@ struct RustAstVisitor {
     functions: Vec<String>,
     uses: Vec<String>,
     impls: Vec<TraitImplementation>,
+    calls: Vec<FunctionCall>,
+    current_function: Option<String>,
 }
 
 impl<'ast> Visit<'ast> for RustAstVisitor {
@@ -221,8 +304,10 @@ impl<'ast> Visit<'ast> for RustAstVisitor {
     }
 
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
+        let previous = self.current_function.replace(node.sig.ident.to_string());
         self.functions.push(node.sig.ident.to_string());
         syn::visit::visit_item_fn(self, node);
+        self.current_function = previous;
     }
 
     fn visit_item_use(&mut self, node: &'ast syn::ItemUse) {
@@ -242,6 +327,26 @@ impl<'ast> Visit<'ast> for RustAstVisitor {
             });
         }
         syn::visit::visit_item_impl(self, node);
+    }
+
+    fn visit_expr_call(&mut self, node: &'ast syn::ExprCall) {
+        if let Some(caller) = &self.current_function {
+            self.calls.push(FunctionCall {
+                caller: caller.clone(),
+                callee: expr_to_call_name(&node.func),
+            });
+        }
+        syn::visit::visit_expr_call(self, node);
+    }
+
+    fn visit_expr_method_call(&mut self, node: &'ast syn::ExprMethodCall) {
+        if let Some(caller) = &self.current_function {
+            self.calls.push(FunctionCall {
+                caller: caller.clone(),
+                callee: node.method.to_string(),
+            });
+        }
+        syn::visit::visit_expr_method_call(self, node);
     }
 }
 
@@ -346,6 +451,23 @@ fn build_structure_graph(ast_modules: &[AstModule]) -> StructureGraph {
             );
             edges.insert((module_id.clone(), dep_id, "uses".to_string()));
         }
+        for call in &module.calls {
+            let caller_id = format!("fn:{}::{}", module.module_path, call.caller);
+            let callee_id = format!("call:{}", call.callee);
+            insert_node(
+                &mut nodes,
+                caller_id.clone(),
+                call.caller.clone(),
+                StructureNodeKind::Function,
+            );
+            insert_node(
+                &mut nodes,
+                callee_id.clone(),
+                call.callee.clone(),
+                StructureNodeKind::Function,
+            );
+            edges.insert((caller_id, callee_id, "calls".to_string()));
+        }
         for implementation in &module.impls {
             let type_id = format!("struct:{}::{}", module.module_path, implementation.for_type);
             let trait_id = format!("trait:{}", implementation.trait_name);
@@ -376,11 +498,37 @@ fn build_structure_graph(ast_modules: &[AstModule]) -> StructureGraph {
                     "contains" => StructureEdgeKind::Contains,
                     "implements" => StructureEdgeKind::Implements,
                     "uses" => StructureEdgeKind::Uses,
+                    "calls" => StructureEdgeKind::Calls,
                     _ => StructureEdgeKind::DependsOn,
                 },
             })
             .collect(),
     }
+}
+
+fn analyze_semantic_structure(graph: &StructureGraph, modules: &[AstModule]) -> SemanticStructure {
+    let module_lookup = modules
+        .iter()
+        .map(|module| (module.module_path.as_str(), module))
+        .collect::<BTreeMap<_, _>>();
+    let mut components = graph
+        .nodes
+        .iter()
+        .filter(|node| node.kind == StructureNodeKind::Module)
+        .map(|node| {
+            let module = module_lookup.get(node.label.as_str()).copied();
+            let evidence = semantic_evidence(&node.label, node, module);
+            SemanticComponent {
+                name: node.label.clone(),
+                category: classify_semantic_category(&node.label, node, module),
+                responsibility: infer_responsibility(&node.label, node, module),
+                evidence,
+            }
+        })
+        .collect::<Vec<_>>();
+    components.sort_by(|left, right| left.name.cmp(&right.name));
+    components.dedup_by(|left, right| left.name == right.name);
+    SemanticStructure { components }
 }
 
 fn build_analyze_result(
@@ -419,6 +567,15 @@ fn build_analyze_result(
             .and_then(|name| name.to_str())
             .unwrap_or("Design_BrainModel")
             .to_string(),
+        modules: graph
+            .nodes
+            .iter()
+            .filter(|node| node.kind == StructureNodeKind::Module)
+            .count(),
+        structs: modules.iter().map(|module| module.structs.len()).sum(),
+        enums: modules.iter().map(|module| module.enums.len()).sum(),
+        traits: modules.iter().map(|module| module.traits.len()).sum(),
+        functions: modules.iter().map(|module| module.functions.len()).sum(),
         module_count: graph
             .nodes
             .iter()
@@ -428,6 +585,11 @@ fn build_analyze_result(
         enum_count: modules.iter().map(|module| module.enums.len()).sum(),
         trait_count: modules.iter().map(|module| module.traits.len()).sum(),
         function_count: modules.iter().map(|module| module.functions.len()).sum(),
+        top_components: top_modules
+            .iter()
+            .take(5)
+            .map(|(name, _)| name.clone())
+            .collect(),
         top_modules: top_modules
             .into_iter()
             .take(5)
@@ -440,17 +602,26 @@ fn build_analyze_result(
 fn persist_to_holographic_memory(
     root: &Path,
     result: &AnalyzeResult,
+    repository: &RepositorySnapshot,
     graph: &StructureGraph,
+    semantic_structure: &SemanticStructure,
 ) -> Result<(), String> {
     let entry = SemanticMemoryEntry {
         id: semantic_memory_id(result),
         kind: "structure_analysis".to_string(),
         project_name: result.project_name.clone(),
         summary: result.clone(),
+        repository_snapshot: repository.clone(),
         structure_graph: graph.clone(),
+        semantic_structure: semantic_structure.clone(),
     };
     let dir = root.join(".dbm/analyze");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("repository_snapshot.json"),
+        serde_json::to_string_pretty(repository).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
     fs::write(
         dir.join("structure_graph.json"),
         serde_json::to_string_pretty(graph).map_err(|err| err.to_string())?,
@@ -459,6 +630,11 @@ fn persist_to_holographic_memory(
     fs::write(
         dir.join("analyze_result.json"),
         serde_json::to_string_pretty(result).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("semantic_structure.json"),
+        serde_json::to_string_pretty(semantic_structure).map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())?;
     let mut file = fs::OpenOptions::new()
@@ -474,7 +650,13 @@ fn persist_to_holographic_memory(
     .map_err(|err| err.to_string())
 }
 
-fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
+fn collect_repository_entries(
+    dir: &Path,
+    files: &mut Vec<PathBuf>,
+    directories: &mut Vec<PathBuf>,
+    cargo_tomls: &mut Vec<PathBuf>,
+) -> Result<(), String> {
+    directories.push(dir.to_path_buf());
     let mut entries = fs::read_dir(dir)
         .map_err(|err| format!("cannot read {}: {err}", dir.display()))?
         .filter_map(Result::ok)
@@ -488,7 +670,9 @@ fn collect_rust_files(dir: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
             continue;
         }
         if path.is_dir() {
-            collect_rust_files(&path, files)?;
+            collect_repository_entries(&path, files, directories, cargo_tomls)?;
+        } else if name == "Cargo.toml" {
+            cargo_tomls.push(path);
         } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
             files.push(path);
         }
@@ -507,7 +691,10 @@ fn scan_roots(root: &Path) -> Vec<PathBuf> {
 }
 
 fn is_excluded_dir_name(name: &str) -> bool {
-    matches!(name, "target" | ".git" | "node_modules" | "dist" | "build")
+    matches!(
+        name,
+        "target" | ".git" | "node_modules" | "dist" | "build" | ".dbm"
+    )
 }
 
 fn resolve_repository_path(path: &Path) -> PathBuf {
@@ -583,6 +770,137 @@ fn type_to_string(ty: &syn::Type) -> String {
     }
 }
 
+fn expr_to_call_name(expr: &syn::Expr) -> String {
+    match expr {
+        syn::Expr::Path(path) => path_to_string(&path.path),
+        _ => "call".to_string(),
+    }
+}
+
+fn parse_workspace_members(cargo_toml: &Path) -> Result<Vec<String>, String> {
+    if !cargo_toml.exists() {
+        return Ok(Vec::new());
+    }
+    let content = fs::read_to_string(cargo_toml)
+        .map_err(|err| format!("failed to read {}: {err}", cargo_toml.display()))?;
+    let mut members = Vec::new();
+    let mut in_workspace = false;
+    let mut in_members = false;
+    for raw in content.lines() {
+        let line = raw.trim();
+        if line.starts_with('[') {
+            in_workspace = line == "[workspace]";
+            in_members = false;
+            continue;
+        }
+        if !in_workspace {
+            continue;
+        }
+        if line.starts_with("members") {
+            in_members = true;
+        }
+        if in_members {
+            for value in quoted_values(line) {
+                members.push(value);
+            }
+            if line.contains(']') {
+                in_members = false;
+            }
+        }
+    }
+    members.sort();
+    members.dedup();
+    Ok(members)
+}
+
+fn quoted_values(line: &str) -> Vec<String> {
+    let mut values = Vec::new();
+    let mut rest = line;
+    while let Some(start) = rest.find('"') {
+        rest = &rest[start + 1..];
+        let Some(end) = rest.find('"') else {
+            break;
+        };
+        values.push(rest[..end].to_string());
+        rest = &rest[end + 1..];
+    }
+    values
+}
+
+fn classify_semantic_category(
+    name: &str,
+    node: &StructureNode,
+    module: Option<&AstModule>,
+) -> SemanticCategory {
+    let value = format!(
+        "{} {}",
+        name.to_ascii_lowercase(),
+        module
+            .map(|module| module.file_path.display().to_string())
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    );
+    if value.contains("controller") || value.contains("command") || value.contains("handler") {
+        SemanticCategory::Controller
+    } else if value.contains("service") {
+        SemanticCategory::Service
+    } else if value.contains("repository") || value.contains("repo") {
+        SemanticCategory::Repository
+    } else if value.contains("engine") || value.contains("analyze") || value.contains("parser") {
+        SemanticCategory::Engine
+    } else if value.contains("memory") || value.contains("holographic") {
+        SemanticCategory::Memory
+    } else if value.contains("policy") || value.contains("guard") {
+        SemanticCategory::Policy
+    } else if value.contains("runtime") || value.contains("executor") {
+        SemanticCategory::Runtime
+    } else if value.contains("ui") || value.contains("tui") || value.contains("renderer") {
+        SemanticCategory::UI
+    } else if value.contains("storage") || value.contains("store") || value.contains("persist") {
+        SemanticCategory::Storage
+    } else if node.kind == StructureNodeKind::Module {
+        SemanticCategory::Module
+    } else {
+        SemanticCategory::Engine
+    }
+}
+
+fn infer_responsibility(name: &str, node: &StructureNode, module: Option<&AstModule>) -> String {
+    match classify_semantic_category(name, node, module) {
+        SemanticCategory::Controller => "Command and request routing".to_string(),
+        SemanticCategory::Service => "Application service orchestration".to_string(),
+        SemanticCategory::Repository => "Repository access boundary".to_string(),
+        SemanticCategory::Engine => {
+            if name.to_ascii_lowercase().contains("analyze") {
+                "Structure Analysis".to_string()
+            } else {
+                "Core engine computation".to_string()
+            }
+        }
+        SemanticCategory::Memory => "Persistent structure memory".to_string(),
+        SemanticCategory::Policy => "Execution policy and safety decisions".to_string(),
+        SemanticCategory::Runtime => "Runtime execution and lifecycle".to_string(),
+        SemanticCategory::UI => "User interface rendering and interaction".to_string(),
+        SemanticCategory::Storage => "Persistence and storage management".to_string(),
+        SemanticCategory::Module => "Structural module boundary".to_string(),
+    }
+}
+
+fn semantic_evidence(name: &str, node: &StructureNode, module: Option<&AstModule>) -> Vec<String> {
+    let mut evidence = vec![format!("name:{name}")];
+    if let Some(module) = module {
+        evidence.push(format!("path:{}", module.file_path.display()));
+        if !module.uses.is_empty() {
+            evidence.push(format!("uses:{}", module.uses.len()));
+        }
+        if !module.functions.is_empty() {
+            evidence.push(format!("functions:{}", module.functions.len()));
+        }
+    }
+    evidence.push(format!("node_kind:{:?}", node.kind));
+    evidence
+}
+
 fn semantic_memory_id(result: &AnalyzeResult) -> String {
     let mut hasher = Sha256::new();
     hasher.update(result.project_name.as_bytes());
@@ -610,9 +928,10 @@ mod tests {
         )
         .unwrap();
 
-        let files = RepositoryScanner.scan(dir.path()).unwrap();
-        assert_eq!(files.len(), 1);
-        assert!(files[0].ends_with("crates/a/src/lib.rs"));
+        let snapshot = RepositoryScanner.scan(dir.path()).unwrap();
+        assert_eq!(snapshot.rust_files.len(), 1);
+        assert!(snapshot.rust_files[0].ends_with("crates/a/src/lib.rs"));
+        assert!(snapshot.cargo_tomls.is_empty());
     }
 
     #[test]
@@ -633,5 +952,76 @@ mod tests {
         assert_eq!(ast[0].functions, vec!["f"]);
         assert_eq!(ast[0].uses, vec!["crate::runtime::RuntimeCore"]);
         assert_eq!(ast[0].impls[0].trait_name, "T");
+    }
+
+    #[test]
+    fn semantic_analysis_classifies_engine_and_memory_components() {
+        let graph = StructureGraph {
+            nodes: vec![
+                StructureNode {
+                    id: "module:AnalyzeEngine".to_string(),
+                    label: "AnalyzeEngine".to_string(),
+                    kind: StructureNodeKind::Module,
+                },
+                StructureNode {
+                    id: "module:HolographicMemory".to_string(),
+                    label: "HolographicMemory".to_string(),
+                    kind: StructureNodeKind::Module,
+                },
+            ],
+            edges: vec![],
+        };
+
+        let semantic = analyze_semantic_structure(&graph, &[]);
+        assert!(semantic.components.iter().any(|component| {
+            component.name == "AnalyzeEngine"
+                && component.category == SemanticCategory::Engine
+                && component.responsibility == "Structure Analysis"
+        }));
+        assert!(semantic.components.iter().any(|component| {
+            component.name == "HolographicMemory" && component.category == SemanticCategory::Memory
+        }));
+    }
+
+    #[test]
+    fn workspace_members_are_observed_from_cargo_toml() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(
+            dir.path().join("Cargo.toml"),
+            "[workspace]\nmembers = [\"apps/cli\", \"crates/core\"]\n",
+        )
+        .unwrap();
+
+        let snapshot = RepositoryScanner.scan(dir.path()).unwrap();
+        assert_eq!(
+            snapshot.workspace_members,
+            vec!["apps/cli".to_string(), "crates/core".to_string()]
+        );
+    }
+
+    #[test]
+    fn structure_graph_includes_call_edges() {
+        let ast = vec![AstModule {
+            file_path: PathBuf::from("src/lib.rs"),
+            module_path: "root".to_string(),
+            modules: vec![],
+            structs: vec![],
+            enums: vec![],
+            traits: vec![],
+            functions: vec!["caller".to_string()],
+            uses: vec![],
+            impls: vec![],
+            calls: vec![FunctionCall {
+                caller: "caller".to_string(),
+                callee: "callee".to_string(),
+            }],
+        }];
+
+        let graph = build_structure_graph(&ast);
+        assert!(graph.edges.iter().any(|edge| {
+            edge.from == "fn:root::caller"
+                && edge.to == "call:callee"
+                && edge.kind == StructureEdgeKind::Calls
+        }));
     }
 }
