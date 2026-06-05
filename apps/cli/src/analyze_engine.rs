@@ -149,6 +149,11 @@ pub struct AnalyzeResult {
     pub god_objects: usize,
     pub architecture_health: f32,
     pub status: ArchitectureStatus,
+    pub convergence_score: f32,
+    pub direction: Direction,
+    pub top_proposal: Option<String>,
+    pub predicted_health_delta: f32,
+    pub convergence_confidence: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -292,6 +297,105 @@ pub struct DesignDrift {
 }
 
 pub struct DependencyAnalyzer;
+pub struct RefactoringPlanner;
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MutationPlan {
+    pub kind: String,
+    pub target: String,
+    pub actions: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConvergenceProposal {
+    pub title: String,
+    pub reason: String,
+    pub impact_score: f32,
+    pub confidence: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct RefactoringProposal {
+    pub proposal: ConvergenceProposal,
+    pub mutation_plan: MutationPlan,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ImpactAnalysis {
+    pub proposal_title: String,
+    pub dependency_reduction: f32,
+    pub violation_reduction: f32,
+    pub health_improvement: f32,
+    pub risk: f32,
+    pub predicted_health: f32,
+    pub design_drift_impact: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureSimulation {
+    pub proposal_title: String,
+    pub current_health: f32,
+    pub predicted_health: f32,
+    pub health_delta: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DesignAlignmentStatus {
+    Aligned,
+    PartiallyAligned,
+    Misaligned,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DesignAlignment {
+    pub status: DesignAlignmentStatus,
+    pub score: f32,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ConvergenceState {
+    Converging,
+    Unstable,
+    Diverging,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConvergenceScore {
+    pub score: f32,
+    pub state: ConvergenceState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Direction {
+    Improving,
+    Stable,
+    Degrading,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MutationImpactModel {
+    pub proposal_title: String,
+    pub architecture_risk: f32,
+    pub dependency_impact: f32,
+    pub design_drift_impact: f32,
+    pub predicted_health_delta: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ConvergenceReport {
+    pub architecture_health: f32,
+    pub convergence_score: ConvergenceScore,
+    pub direction: Direction,
+    pub top_proposal: Option<ConvergenceProposal>,
+    pub predicted_health_delta: f32,
+    pub confidence: f32,
+    pub refactoring_proposals: Vec<RefactoringProposal>,
+    pub impact_analysis: Vec<ImpactAnalysis>,
+    pub architecture_simulations: Vec<ArchitectureSimulation>,
+    pub design_alignment: DesignAlignment,
+    pub mutation_impact_models: Vec<MutationImpactModel>,
+}
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AnalyzeEngineOutput {
@@ -305,6 +409,7 @@ pub struct AnalyzeEngineOutput {
     pub responsibility_analysis: ResponsibilityAnalysis,
     pub architecture_analysis: ArchitectureAnalysis,
     pub design_drift: DesignDrift,
+    pub convergence_report: ConvergenceReport,
     pub result: AnalyzeResult,
 }
 
@@ -321,6 +426,7 @@ pub struct SemanticMemoryEntry {
     pub responsibility_analysis: ResponsibilityAnalysis,
     pub architecture_analysis: ArchitectureAnalysis,
     pub design_drift: DesignDrift,
+    pub convergence_report: ConvergenceReport,
 }
 
 pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
@@ -341,6 +447,12 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &responsibility_analysis,
     );
     let design_drift = analyze_design_drift(&root, &semantic_structure);
+    let convergence_report = analyze_convergence(
+        &dependency_analysis,
+        &responsibility_analysis,
+        &architecture_analysis,
+        &design_drift,
+    );
     let result = build_analyze_result(
         &root,
         &ast_modules,
@@ -348,6 +460,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &dependency_analysis,
         &responsibility_analysis,
         &architecture_analysis,
+        &convergence_report,
     );
     persist_to_holographic_memory(
         &root,
@@ -359,6 +472,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &responsibility_analysis,
         &architecture_analysis,
         &design_drift,
+        &convergence_report,
     )?;
     Ok(AnalyzeEngineOutput {
         root,
@@ -371,6 +485,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         responsibility_analysis,
         architecture_analysis,
         design_drift,
+        convergence_report,
         result,
     })
 }
@@ -411,6 +526,24 @@ pub fn render_analyze_result(result: &AnalyzeResult) -> String {
             out.push('\n');
         }
     }
+    out.push_str("\n=== Convergence Analysis ===\n\n");
+    out.push_str("Architecture Health\n");
+    out.push_str(&format!("{:.1}\n\n", result.architecture_health));
+    out.push_str("Convergence Score\n");
+    out.push_str(&format!("{:.1}\n\n", result.convergence_score));
+    out.push_str("Direction\n");
+    out.push_str(&format!("{:?}\n\n", result.direction));
+    out.push_str("Top Proposal\n");
+    out.push_str(
+        result
+            .top_proposal
+            .as_deref()
+            .unwrap_or("No convergence proposal"),
+    );
+    out.push_str("\n\nPredicted Health\n");
+    out.push_str(&format!("{:+.1}\n\n", result.predicted_health_delta));
+    out.push_str("Confidence\n");
+    out.push_str(&format!("{:.2}\n", result.convergence_confidence));
     out
 }
 
@@ -909,6 +1042,341 @@ fn analyze_design_drift(root: &Path, semantic: &SemanticStructure) -> DesignDrif
     }
 }
 
+fn analyze_convergence(
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    architecture: &ArchitectureAnalysis,
+    design_drift: &DesignDrift,
+) -> ConvergenceReport {
+    let refactoring_proposals = RefactoringPlanner::plan(dependency, responsibility, architecture);
+    let design_alignment = match_design_alignment(design_drift);
+    let impact_analysis = analyze_impacts(
+        &refactoring_proposals,
+        architecture.health.score,
+        dependency,
+        responsibility,
+        architecture,
+        design_drift,
+    );
+    let architecture_simulations = simulate_architecture(
+        &refactoring_proposals,
+        architecture.health.score,
+        &impact_analysis,
+    );
+    let mutation_impact_models = model_mutation_impacts(&impact_analysis);
+    let top_proposal = refactoring_proposals
+        .first()
+        .map(|proposal| proposal.proposal.clone());
+    let predicted_health_delta = architecture_simulations
+        .first()
+        .map(|simulation| simulation.health_delta)
+        .unwrap_or(0.0);
+    let confidence = top_proposal
+        .as_ref()
+        .map(|proposal| proposal.confidence)
+        .unwrap_or(0.70);
+    let convergence_score = compute_convergence_score(
+        architecture.health.score,
+        dependency,
+        responsibility,
+        &design_alignment,
+    );
+    let direction = infer_direction(predicted_health_delta, convergence_score.score);
+
+    ConvergenceReport {
+        architecture_health: architecture.health.score,
+        convergence_score,
+        direction,
+        top_proposal,
+        predicted_health_delta,
+        confidence,
+        refactoring_proposals,
+        impact_analysis,
+        architecture_simulations,
+        design_alignment,
+        mutation_impact_models,
+    }
+}
+
+impl RefactoringPlanner {
+    pub fn plan(
+        dependency: &DependencyAnalysis,
+        responsibility: &ResponsibilityAnalysis,
+        architecture: &ArchitectureAnalysis,
+    ) -> Vec<RefactoringProposal> {
+        let mut proposals = Vec::new();
+        for god_object in &responsibility.god_objects {
+            proposals.push(RefactoringProposal {
+                proposal: ConvergenceProposal {
+                    title: format!("Split {}", god_object.component),
+                    reason: format!("god object score {:.2}", god_object.score),
+                    impact_score: (0.70 + god_object.score / 5.0).min(0.98),
+                    confidence: (0.82 + god_object.score / 20.0).min(0.96),
+                },
+                mutation_plan: MutationPlan {
+                    kind: "ModuleSplit".to_string(),
+                    target: god_object.component.clone(),
+                    actions: vec![
+                        format!("Extract {}Execution", pascal_tail(&god_object.component)),
+                        format!("Extract {}Policy", pascal_tail(&god_object.component)),
+                        format!("Extract {}Memory", pascal_tail(&god_object.component)),
+                    ],
+                },
+            });
+        }
+        for cycle in &dependency.circular_dependencies {
+            proposals.push(RefactoringProposal {
+                proposal: ConvergenceProposal {
+                    title: format!("Break dependency cycle {}", cycle.cycle_nodes.join(" -> ")),
+                    reason: "circular dependency detected".to_string(),
+                    impact_score: 0.86,
+                    confidence: 0.88,
+                },
+                mutation_plan: MutationPlan {
+                    kind: "DependencyInversion".to_string(),
+                    target: cycle.cycle_nodes.join(" -> "),
+                    actions: vec![
+                        "Introduce boundary trait".to_string(),
+                        "Invert dependency".to_string(),
+                    ],
+                },
+            });
+        }
+        for violation in &architecture.layer_violations {
+            proposals.push(RefactoringProposal {
+                proposal: ConvergenceProposal {
+                    title: format!(
+                        "Insert boundary between {} and {}",
+                        violation.source, violation.target
+                    ),
+                    reason: format!(
+                        "{:?} directly reaches {:?}",
+                        violation.source_layer, violation.target_layer
+                    ),
+                    impact_score: 0.74,
+                    confidence: 0.84,
+                },
+                mutation_plan: MutationPlan {
+                    kind: "BoundaryAdapter".to_string(),
+                    target: format!("{} -> {}", violation.source, violation.target),
+                    actions: vec![
+                        "Introduce interface boundary".to_string(),
+                        "Route dependency through service layer".to_string(),
+                    ],
+                },
+            });
+        }
+        proposals.sort_by(|left, right| {
+            right
+                .proposal
+                .impact_score
+                .total_cmp(&left.proposal.impact_score)
+                .then(left.proposal.title.cmp(&right.proposal.title))
+        });
+        proposals.truncate(20);
+        proposals
+    }
+}
+
+fn analyze_impacts(
+    proposals: &[RefactoringProposal],
+    current_health: f32,
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    architecture: &ArchitectureAnalysis,
+    design_drift: &DesignDrift,
+) -> Vec<ImpactAnalysis> {
+    proposals
+        .iter()
+        .map(|proposal| {
+            let dependency_reduction = match proposal.mutation_plan.kind.as_str() {
+                "DependencyInversion" => 0.35,
+                "BoundaryAdapter" => 0.20,
+                "ModuleSplit" => 0.12,
+                _ => 0.08,
+            };
+            let violation_reduction = if proposal.mutation_plan.kind == "BoundaryAdapter" {
+                0.40
+            } else if proposal.mutation_plan.kind == "DependencyInversion" {
+                0.25
+            } else {
+                0.10
+            };
+            let health_improvement =
+                predicted_health_improvement(proposal, dependency, responsibility, architecture);
+            let risk = mutation_risk(proposal, design_drift);
+            ImpactAnalysis {
+                proposal_title: proposal.proposal.title.clone(),
+                dependency_reduction,
+                violation_reduction,
+                health_improvement,
+                risk,
+                predicted_health: (current_health + health_improvement).clamp(0.0, 100.0),
+                design_drift_impact: design_drift_impact(proposal, design_drift),
+            }
+        })
+        .collect()
+}
+
+fn simulate_architecture(
+    proposals: &[RefactoringProposal],
+    current_health: f32,
+    impacts: &[ImpactAnalysis],
+) -> Vec<ArchitectureSimulation> {
+    proposals
+        .iter()
+        .zip(impacts.iter())
+        .map(|(proposal, impact)| ArchitectureSimulation {
+            proposal_title: proposal.proposal.title.clone(),
+            current_health,
+            predicted_health: impact.predicted_health,
+            health_delta: impact.predicted_health - current_health,
+        })
+        .collect()
+}
+
+fn match_design_alignment(design_drift: &DesignDrift) -> DesignAlignment {
+    if design_drift.missing_design_reference {
+        return DesignAlignment {
+            status: DesignAlignmentStatus::PartiallyAligned,
+            score: 65.0,
+            evidence: vec!["design.md not found".to_string()],
+        };
+    }
+    let drift_count = design_drift.intent_drifts.len();
+    let score = (100.0 - drift_count as f32 * 12.0).clamp(0.0, 100.0);
+    let status = if score >= 85.0 {
+        DesignAlignmentStatus::Aligned
+    } else if score >= 55.0 {
+        DesignAlignmentStatus::PartiallyAligned
+    } else {
+        DesignAlignmentStatus::Misaligned
+    };
+    DesignAlignment {
+        status,
+        score,
+        evidence: if drift_count == 0 {
+            vec!["no intent drift detected".to_string()]
+        } else {
+            design_drift
+                .intent_drifts
+                .iter()
+                .map(|drift| {
+                    format!(
+                        "{}: {} -> {}",
+                        drift.component, drift.expected, drift.actual
+                    )
+                })
+                .collect()
+        },
+    }
+}
+
+fn model_mutation_impacts(impacts: &[ImpactAnalysis]) -> Vec<MutationImpactModel> {
+    impacts
+        .iter()
+        .map(|impact| MutationImpactModel {
+            proposal_title: impact.proposal_title.clone(),
+            architecture_risk: impact.risk,
+            dependency_impact: impact.dependency_reduction,
+            design_drift_impact: impact.design_drift_impact,
+            predicted_health_delta: impact.health_improvement,
+        })
+        .collect()
+}
+
+fn compute_convergence_score(
+    architecture_health: f32,
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    design_alignment: &DesignAlignment,
+) -> ConvergenceScore {
+    let dependency_stability = (100.0
+        - dependency.circular_dependencies.len() as f32 * 8.0
+        - dependency.dependency_density * 6.0)
+        .clamp(0.0, 100.0);
+    let responsibility_quality = (100.0
+        - responsibility.god_objects.len() as f32 * 9.0
+        - responsibility.massive_modules.len() as f32 * 4.0)
+        .clamp(0.0, 100.0);
+    let score = (architecture_health * 0.35
+        + dependency_stability * 0.25
+        + responsibility_quality * 0.25
+        + design_alignment.score * 0.15)
+        .clamp(0.0, 100.0);
+    let state = if score >= 80.0 {
+        ConvergenceState::Converging
+    } else if score >= 50.0 {
+        ConvergenceState::Unstable
+    } else {
+        ConvergenceState::Diverging
+    };
+    ConvergenceScore { score, state }
+}
+
+fn infer_direction(predicted_health_delta: f32, convergence_score: f32) -> Direction {
+    if predicted_health_delta > 2.0 {
+        Direction::Improving
+    } else if predicted_health_delta < -1.0 || convergence_score < 25.0 {
+        Direction::Degrading
+    } else {
+        Direction::Stable
+    }
+}
+
+fn predicted_health_improvement(
+    proposal: &RefactoringProposal,
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    architecture: &ArchitectureAnalysis,
+) -> f32 {
+    let base = match proposal.mutation_plan.kind.as_str() {
+        "ModuleSplit" => 7.0 + responsibility.god_objects.len() as f32 * 0.4,
+        "DependencyInversion" => 6.0 + dependency.circular_dependencies.len() as f32 * 0.8,
+        "BoundaryAdapter" => 4.5 + architecture.layer_violations.len() as f32 * 0.5,
+        _ => 2.0,
+    };
+    base.min(18.0)
+}
+
+fn mutation_risk(proposal: &RefactoringProposal, design_drift: &DesignDrift) -> f32 {
+    let base = match proposal.mutation_plan.kind.as_str() {
+        "ModuleSplit" => 0.28,
+        "DependencyInversion" => 0.22,
+        "BoundaryAdapter" => 0.16,
+        _ => 0.20,
+    };
+    (base + design_drift.intent_drifts.len() as f32 * 0.03).min(0.95)
+}
+
+fn design_drift_impact(proposal: &RefactoringProposal, design_drift: &DesignDrift) -> f32 {
+    if design_drift.missing_design_reference {
+        return -1.0;
+    }
+    if proposal.mutation_plan.kind == "BoundaryAdapter" {
+        1.5
+    } else {
+        -(design_drift.intent_drifts.len() as f32 * 0.2)
+    }
+}
+
+fn pascal_tail(value: &str) -> String {
+    value
+        .split("::")
+        .last()
+        .unwrap_or(value)
+        .split('_')
+        .filter(|part| !part.is_empty())
+        .map(|part| {
+            let mut chars = part.chars();
+            match chars.next() {
+                Some(first) => format!("{}{}", first.to_ascii_uppercase(), chars.as_str()),
+                None => String::new(),
+            }
+        })
+        .collect::<String>()
+}
+
 fn module_dependency_edges(modules: &[AstModule]) -> BTreeMap<String, BTreeSet<String>> {
     let mut edges = BTreeMap::<String, BTreeSet<String>>::new();
     for module in modules {
@@ -1194,6 +1662,7 @@ fn build_analyze_result(
     dependency: &DependencyAnalysis,
     responsibility: &ResponsibilityAnalysis,
     architecture: &ArchitectureAnalysis,
+    convergence: &ConvergenceReport,
 ) -> AnalyzeResult {
     let mut top_counts = BTreeMap::<String, usize>::new();
     for module in modules {
@@ -1261,6 +1730,14 @@ fn build_analyze_result(
         god_objects: responsibility.god_objects.len(),
         architecture_health: architecture.health.score,
         status: architecture.health.status,
+        convergence_score: convergence.convergence_score.score,
+        direction: convergence.direction,
+        top_proposal: convergence
+            .top_proposal
+            .as_ref()
+            .map(|proposal| proposal.title.clone()),
+        predicted_health_delta: convergence.predicted_health_delta,
+        convergence_confidence: convergence.confidence,
     }
 }
 
@@ -1274,6 +1751,7 @@ fn persist_to_holographic_memory(
     responsibility_analysis: &ResponsibilityAnalysis,
     architecture_analysis: &ArchitectureAnalysis,
     design_drift: &DesignDrift,
+    convergence_report: &ConvergenceReport,
 ) -> Result<(), String> {
     let entry = SemanticMemoryEntry {
         id: semantic_memory_id(result),
@@ -1287,6 +1765,7 @@ fn persist_to_holographic_memory(
         responsibility_analysis: responsibility_analysis.clone(),
         architecture_analysis: architecture_analysis.clone(),
         design_drift: design_drift.clone(),
+        convergence_report: convergence_report.clone(),
     };
     let dir = root.join(".dbm/analyze");
     fs::create_dir_all(&dir).map_err(|err| err.to_string())?;
@@ -1333,6 +1812,29 @@ fn persist_to_holographic_memory(
     fs::write(
         dir.join("health_report.json"),
         serde_json::to_string_pretty(&architecture_analysis.health)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("convergence_report.json"),
+        serde_json::to_string_pretty(convergence_report).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("refactoring_proposals.json"),
+        serde_json::to_string_pretty(&convergence_report.refactoring_proposals)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("impact_analysis.json"),
+        serde_json::to_string_pretty(&convergence_report.impact_analysis)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("convergence_score.json"),
+        serde_json::to_string_pretty(&convergence_report.convergence_score)
             .map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())?;
@@ -1805,6 +2307,65 @@ mod tests {
                 | ArchitectureStatus::Warning
                 | ArchitectureStatus::Critical
         ));
+    }
+
+    #[test]
+    fn convergence_engine_generates_split_proposal_and_impact_prediction() {
+        let dependency = DependencyAnalysis {
+            circular_dependencies: vec![],
+            hidden_dependencies: vec![],
+            dependency_density: 1.0,
+            hotspots: vec![],
+        };
+        let responsibility = ResponsibilityAnalysis {
+            god_objects: vec![GodObject {
+                component: "RuntimeCore".to_string(),
+                score: 1.32,
+            }],
+            massive_modules: vec![],
+            responsibility_leakage: vec![],
+        };
+        let architecture = ArchitectureAnalysis {
+            rules: default_architecture_rules(),
+            layer_violations: vec![],
+            boundary_violations: vec![],
+            health: ArchitectureHealth {
+                score: 72.3,
+                status: ArchitectureStatus::Warning,
+            },
+        };
+        let design_drift = DesignDrift {
+            design_source: Some(PathBuf::from("design.md")),
+            intent_drifts: vec![],
+            missing_design_reference: false,
+        };
+
+        let report =
+            analyze_convergence(&dependency, &responsibility, &architecture, &design_drift);
+        let top = report.top_proposal.as_ref().expect("top proposal");
+        assert_eq!(top.title, "Split RuntimeCore");
+        assert!(report.predicted_health_delta > 0.0);
+        assert!(report.confidence >= 0.80);
+        assert!(matches!(
+            report.direction,
+            Direction::Improving | Direction::Stable
+        ));
+        assert!(!report.impact_analysis.is_empty());
+        assert!(!report.architecture_simulations.is_empty());
+        assert!(!report.mutation_impact_models.is_empty());
+    }
+
+    #[test]
+    fn design_matcher_scores_missing_design_as_partial_alignment() {
+        let drift = DesignDrift {
+            design_source: None,
+            intent_drifts: vec![],
+            missing_design_reference: true,
+        };
+
+        let alignment = match_design_alignment(&drift);
+        assert_eq!(alignment.status, DesignAlignmentStatus::PartiallyAligned);
+        assert_eq!(alignment.score, 65.0);
     }
 
     fn test_ast_module(
