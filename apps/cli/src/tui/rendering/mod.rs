@@ -2,6 +2,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
 use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::core::resolve_projection_target;
+use crate::tui::design_convergence::DesignConvergenceState;
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::state::{
     Focus, RuntimeNarrativeEvent, TuiState, UiEvent, contains_runtime_reference, sanitize_line,
@@ -18,6 +19,7 @@ pub struct RenderSnapshot {
     pub input: InputModel,
     pub editor: EditorModel,
     pub workspace: WorkspaceState,
+    pub convergence: DesignConvergenceState,
     pub focus: Focus,
     pub identity: RuntimeIdentity,
     pub is_expanded: bool,
@@ -191,20 +193,24 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
 
     let columns = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(70), Constraint::Percentage(30)])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(middle_rect);
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
         .split(columns[0]);
+    let right_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .split(columns[1]);
 
     LayoutMetadata {
         viewport: area,
         header: rows[0],
         runtime: left_rows[0],
-        diff: left_rows[1],
-        task: columns[1],
-        input: Rect::new(0, 0, 0, 0),
+        input: left_rows[1],
+        diff: right_rows[0],
+        task: right_rows[1],
         diagnostics: diag_rect,
         status: rows[2],
     }
@@ -363,6 +369,7 @@ impl From<&TuiState> for RenderSnapshot {
                 editing: state.editor_state.editing,
             },
             workspace: state.workspace.clone(),
+            convergence: state.convergence.clone(),
             focus: state.focus,
             identity: RuntimeIdentity::default(),
             is_expanded: state.narrative_expanded,

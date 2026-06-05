@@ -5,6 +5,7 @@ pub mod composer;
 pub mod confidence_rank;
 pub mod core;
 pub mod cross_domain_governance;
+pub mod design_convergence;
 pub mod edit_block;
 pub mod foundation;
 pub mod git_governance;

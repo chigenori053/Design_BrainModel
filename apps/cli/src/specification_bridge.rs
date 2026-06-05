@@ -3,6 +3,7 @@ use serde_yaml::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SpecificationKind {
     Instruction,
+    DraftSpecification,
     DesignSpecification,
 }
 
@@ -24,12 +25,42 @@ pub fn is_design_specification_start(line: &str) -> bool {
 
 fn design_specification_key(line: &str) -> Option<&'static str> {
     let line = line.trim_end();
+    ["system_name", "architecture", "rules"]
+        .into_iter()
+        .find(|key| {
+            let prefix = format!("{key}:");
+            line.starts_with(&prefix)
+        })
+}
+
+pub fn classify_specification(text: &str) -> SpecificationKind {
+    if has_required_design_specification_keys(text) {
+        return SpecificationKind::DesignSpecification;
+    }
+
+    let has_draft_key = text.lines().any(draft_specification_key);
+    if has_draft_key {
+        return SpecificationKind::DraftSpecification;
+    }
+
+    SpecificationKind::Instruction
+}
+
+fn has_required_design_specification_keys(text: &str) -> bool {
+    ["system_name", "architecture", "rules"]
+        .into_iter()
+        .all(|required| {
+            text.lines()
+                .filter_map(design_specification_key)
+                .any(|key| key == required)
+        })
+}
+
+fn draft_specification_key(line: &str) -> bool {
+    let line = line.trim_end();
     [
-        "system_name",
         "goals",
         "constraints",
-        "architecture",
-        "rules",
         "components",
         "interfaces",
         "dependencies",
@@ -40,21 +71,10 @@ fn design_specification_key(line: &str) -> Option<&'static str> {
         "audit",
     ]
     .into_iter()
-    .find(|key| {
+    .any(|key| {
         let prefix = format!("{key}:");
         line.starts_with(&prefix)
     })
-}
-
-pub fn classify_specification(text: &str) -> SpecificationKind {
-    let has_design_key = text
-        .lines()
-        .any(|line| DesignSpecificationRecognizer::is_design_specification_start(line));
-    if has_design_key {
-        return SpecificationKind::DesignSpecification;
-    }
-
-    SpecificationKind::Instruction
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1360,10 +1380,37 @@ mod tests {
 
     #[test]
     fn classifier_yaml_design_spec() {
-        let text = "system_name: DBM\ngoals:\n  - diagnose\n";
+        let text = "system_name: DBM\ngoals:\n  - diagnose\narchitecture:\n  app:\n    responsibilities:\n      - diagnose\nrules:\n  - ApplyGate required\n";
         assert_eq!(
             classify_specification(text),
             SpecificationKind::DesignSpecification
+        );
+    }
+
+    #[test]
+    fn classifier_system_name_without_architecture_and_rules_is_draft() {
+        let text = "system_name: DBM\ngoals:\n  - diagnose\n";
+        assert_eq!(
+            classify_specification(text),
+            SpecificationKind::DraftSpecification
+        );
+    }
+
+    #[test]
+    fn classifier_goals_only_is_draft_specification() {
+        let text = "goals:\n  - DBM_CLIでセルフ改修できるようにしたい\n";
+        assert_eq!(
+            classify_specification(text),
+            SpecificationKind::DraftSpecification
+        );
+    }
+
+    #[test]
+    fn classifier_constraints_only_is_draft_specification() {
+        let text = "constraints:\n  - Preserve governance\n";
+        assert_eq!(
+            classify_specification(text),
+            SpecificationKind::DraftSpecification
         );
     }
 
@@ -1375,13 +1422,7 @@ mod tests {
 
     #[test]
     fn recognizer_primary_keys_start_design_specification() {
-        for line in [
-            "system_name: DBM",
-            "goals:",
-            "constraints:",
-            "architecture:",
-            "rules:",
-        ] {
+        for line in ["system_name: DBM", "architecture:", "rules:"] {
             assert!(
                 DesignSpecificationRecognizer::is_design_specification_start(line),
                 "{line}"
@@ -1390,7 +1431,7 @@ mod tests {
     }
 
     #[test]
-    fn recognizer_secondary_keys_start_design_specification() {
+    fn recognizer_secondary_keys_do_not_start_design_specification() {
         for line in [
             "components:",
             "interfaces:",
@@ -1402,7 +1443,7 @@ mod tests {
             "audit:",
         ] {
             assert!(
-                DesignSpecificationRecognizer::is_design_specification_start(line),
+                !DesignSpecificationRecognizer::is_design_specification_start(line),
                 "{line}"
             );
         }

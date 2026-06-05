@@ -20,6 +20,7 @@ use crate::runtime::coordination::{
 use crate::runtime::governance::{CognitivePolicy, GovernanceMemory, GovernanceState};
 use crate::runtime::runtime_events::DebugEvent;
 use crate::runtime::synthesis::ArchitectureMemory;
+use crate::tui::design_convergence::DesignConvergenceState;
 use crate::tui::input::{PersistentInputHistory, complete_command};
 use crate::tui::runtime::RuntimeShellState;
 use crate::tui::workspace::{WorkspaceProjector, WorkspaceState};
@@ -583,20 +584,9 @@ pub struct SpecificationEditor {
 impl Default for SpecificationEditor {
     fn default() -> Self {
         Self {
-            lines: vec![
-                "system_name: \"\"".to_string(),
-                String::new(),
-                "goals:".to_string(),
-                "  - \"\"".to_string(),
-                "constraints:".to_string(),
-                "  - \"\"".to_string(),
-                "architecture:".to_string(),
-                "  - \"\"".to_string(),
-                "rules:".to_string(),
-                "  - \"\"".to_string(),
-            ],
+            lines: vec![String::new()],
             cursor_row: 0,
-            cursor_col: "system_name: \"\"".len(),
+            cursor_col: 0,
         }
     }
 }
@@ -944,6 +934,7 @@ pub struct TuiState {
     pub chat_scroll: ChatScrollState,
     pub event_queue: EventQueue,
     pub workspace: WorkspaceState,
+    pub convergence: DesignConvergenceState,
     pub pipeline_state: PipelineState,
     pub session: SessionState,
     pub design_scroll: usize,
@@ -1015,6 +1006,7 @@ impl TuiState {
             chat_scroll: ChatScrollState::default(),
             event_queue: EventQueue::default(),
             workspace: WorkspaceState::default(),
+            convergence: DesignConvergenceState::default(),
             pipeline_state: PipelineState::default(),
             session: SessionState::default(),
             design_scroll: 0,
@@ -2804,9 +2796,15 @@ mod tests {
 
     #[test]
     fn backspace_preserves_yaml_key_boundary() {
-        let mut editor = SpecificationEditor::default();
-        // default lines: ["system_name: \"\"", "", "goals:", ...]
-        // cursor を goals 行の先頭に移動
+        let mut editor = SpecificationEditor {
+            lines: vec![
+                "system_name: \"\"".to_string(),
+                String::new(),
+                "goals:".to_string(),
+            ],
+            cursor_row: 0,
+            cursor_col: 0,
+        };
         editor.cursor_row = 2;
         editor.cursor_col = 0;
 
@@ -2871,10 +2869,11 @@ mod tests {
     #[test]
     fn default_specification_template_parses_as_yaml_context() {
         let editor = SpecificationEditor::default();
-        let submitted = ensure_yaml_line_breaks(&editor.text());
 
-        crate::specification_bridge::SpecificationContext::from_yaml(&submitted)
-            .expect("default template should parse");
+        assert_eq!(editor.lines, vec![String::new()]);
+        assert_eq!(editor.cursor_row, 0);
+        assert_eq!(editor.cursor_col, 0);
+        assert!(!editor.text().contains("system_name: \"\""));
     }
 
     #[test]

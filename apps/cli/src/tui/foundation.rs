@@ -273,10 +273,12 @@ pub fn dispatch_input(state: &mut TuiState, input: &str) {
     }
 
     match classify_specification(trimmed) {
-        SpecificationKind::Instruction => state.events.emit(UiEvent::new(
-            UiEventCategory::Runtime,
-            "instruction input is reserved for the existing REPL command flow",
-        )),
+        SpecificationKind::Instruction | SpecificationKind::DraftSpecification => {
+            state.events.emit(UiEvent::new(
+                UiEventCategory::Runtime,
+                "instruction input is reserved for the existing REPL command flow",
+            ))
+        }
         SpecificationKind::DesignSpecification => {
             if let Err(err) = dispatch_design_specification(trimmed, &mut state.events) {
                 state.events.emit(UiEvent::new(

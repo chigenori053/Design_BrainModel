@@ -13,6 +13,7 @@ use crate::specification_bridge::{
 };
 use crate::tui::runtime::RuntimeShellState;
 
+use super::design_convergence::DesignConvergenceEngine;
 use super::runtime_worker::{RuntimeStatus, RuntimeWorkerEvent, spawn_runtime_worker};
 use super::state::{EventQueue, TuiState, UiEvent};
 
@@ -67,49 +68,57 @@ pub fn handle_submit(
     crate::tui::render_trace::record(Box::leak(
         format!("[PLANNER_START] classification={:?}", classification).into_boxed_str(),
     ));
-    if matches!(classification, SpecificationKind::DesignSpecification) {
-        handle_specification_submit(state, input);
-        return;
-    }
+    match classification {
+        SpecificationKind::DraftSpecification => {
+            handle_convergence_submit(state, input);
+        }
+        SpecificationKind::DesignSpecification => {
+            handle_specification_submit(state, input);
+        }
+        SpecificationKind::Instruction if is_design_convergence_intent(&input) => {
+            handle_convergence_submit(state, input);
+        }
+        SpecificationKind::Instruction => {
+            // §7.1 §10.1: Transition to Thinking state before dispatch.
+            // Runtime must never be silent — emit visible thinking event immediately.
+            state.runtime_state = RuntimeShellState::Thinking;
+            state.enqueue_event(UiEvent::Thinking {
+                summary: "processing intent / 意図を処理中".to_string(),
+            });
 
-    // §7.1 §10.1: Transition to Thinking state before dispatch.
-    // Runtime must never be silent — emit visible thinking event immediately.
-    state.runtime_state = RuntimeShellState::Thinking;
-    state.enqueue_event(UiEvent::Thinking {
-        summary: "processing intent / 意図を処理中".to_string(),
-    });
+            // Phase 4.5: build CoreRequest (pass-through).
+            let runtime_input = normalize_runtime_input(&input)
+                .map(|normalized| normalized.command.to_runtime_input())
+                .unwrap_or(input);
+            let request = CoreRequest::new(runtime_input);
+            crate::tui::render_trace::record("[EXECUTOR_START]");
+            let mut response = core.execute(request);
 
-    // Phase 4.5: build CoreRequest (pass-through).
-    let runtime_input = normalize_runtime_input(&input)
-        .map(|normalized| normalized.command.to_runtime_input())
-        .unwrap_or(input);
-    let request = CoreRequest::new(runtime_input);
-    crate::tui::render_trace::record("[EXECUTOR_START]");
-    let mut response = core.execute(request);
+            // §13.1: Empty event protection — execution must always produce visible narrative.
+            if response.events.is_empty() {
+                response.events.push(CoreEvent::Error {
+                    message: "No runtime narrative generated".to_string(),
+                });
+            }
 
-    // §13.1: Empty event protection — execution must always produce visible narrative.
-    if response.events.is_empty() {
-        response.events.push(CoreEvent::Error {
-            message: "No runtime narrative generated".to_string(),
-        });
-    }
+            let success = response.status != crate::core::ExecutionStatus::Failed;
 
-    let success = response.status != crate::core::ExecutionStatus::Failed;
+            // Phase 4.5: sync core_snapshot first so downstream render reads correct state.
+            if let Some(snapshot) = response.core_state {
+                state.core_snapshot = snapshot.clone();
+                state.pipeline_state = snapshot.status.clone();
+            }
 
-    // Phase 4.5: sync core_snapshot first so downstream render reads correct state.
-    if let Some(snapshot) = response.core_state {
-        state.core_snapshot = snapshot.clone();
-        state.pipeline_state = snapshot.status.clone();
-    }
+            apply_core_response(
+                &mut state.event_queue,
+                &mut state.pipeline_state,
+                response.events,
+            );
 
-    apply_core_response(
-        &mut state.event_queue,
-        &mut state.pipeline_state,
-        response.events,
-    );
-
-    if success && let Some(design) = response.design {
-        state.update_design(design);
+            if success && let Some(design) = response.design {
+                state.update_design(design);
+            }
+        }
     }
 }
 
@@ -127,11 +136,54 @@ pub fn handle_submit_async(
     crate::tui::render_trace::record(Box::leak(
         format!("[PLANNER_START] classification={:?}", classification).into_boxed_str(),
     ));
-    if matches!(classification, SpecificationKind::DesignSpecification) {
-        handle_specification_submit(state, input);
-        return;
+    match classification {
+        SpecificationKind::DraftSpecification => {
+            handle_convergence_submit(state, input);
+        }
+        SpecificationKind::Instruction if is_design_convergence_intent(&input) => {
+            handle_convergence_submit(state, input);
+        }
+        SpecificationKind::Instruction => handle_runtime_submit(state, core, input, worker_tx),
+        SpecificationKind::DesignSpecification => {
+            handle_specification_submit(state, input);
+        }
     }
+}
 
+fn handle_convergence_submit(state: &mut TuiState, input: String) {
+    let result = DesignConvergenceEngine::converge(&input, &state.convergence);
+    state.convergence = result.state;
+    state.enqueue_event(UiEvent::Intent {
+        summary: "design convergence started from natural language intent".to_string(),
+    });
+    state.enqueue_event(UiEvent::Planning {
+        summary: "generated Design Specification from convergence state".to_string(),
+    });
+    handle_specification_submit(state, result.generated_spec);
+}
+
+fn is_design_convergence_intent(input: &str) -> bool {
+    let lower = input.to_ascii_lowercase();
+    [
+        "dbm_cli",
+        "design convergence",
+        "設計収束",
+        "セルフ改修",
+        "自己改修",
+        "強化したい",
+        "したい",
+        "できるように",
+    ]
+    .into_iter()
+    .any(|needle| lower.contains(needle))
+}
+
+pub fn handle_runtime_submit(
+    state: &mut TuiState,
+    core: Arc<RuntimeCoreBridge>,
+    input: String,
+    worker_tx: Sender<RuntimeWorkerEvent>,
+) {
     state.runtime_state = RuntimeShellState::Thinking;
     state.enqueue_event(UiEvent::Thinking {
         summary: "processing intent / 意図を処理中".to_string(),
@@ -452,6 +504,11 @@ mod tests {
 goals:
   - Separate input and output
 
+architecture:
+  SpecificationEditor:
+    responsibilities:
+      - Edit explicit design specifications
+
 rules:
   - Runtime must pass through AuditCore
 "#;
@@ -492,11 +549,111 @@ rules:
     }
 
     #[test]
+    fn self_modification_intent_starts_design_convergence() {
+        crate::tui::render_trace::reset();
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+
+        handle_submit(
+            &mut state,
+            &core,
+            "DBM_CLIでセルフ改修したい".to_string(),
+            ".".into(),
+        );
+        state.handle_ui_events();
+
+        assert_eq!(core.seen_input.lock().expect("seen").as_deref(), None);
+        assert_eq!(
+            state
+                .convergence
+                .intent
+                .as_ref()
+                .map(|intent| intent.objective.as_str()),
+            Some("self_modification")
+        );
+        let lines = state.convergence.workspace_lines(&[]);
+        let surface = lines.join("\n");
+        assert!(surface.contains("Intent Input"));
+        assert!(surface.contains("DBM_CLIでセルフ改修したい"));
+        assert!(surface.contains("domain=runtime"));
+        assert!(surface.contains("objective=self_modification"));
+        assert!(surface.contains("target=design_cli"));
+        assert!(surface.contains("Generated Design Specification"));
+        assert!(!lines.iter().any(|line| line.contains("(not started)")));
+        assert!(!lines.iter().any(|line| line.contains("(not generated)")));
+        assert!(
+            state
+                .convergence
+                .log
+                .iter()
+                .any(|entry| entry.kind == "Intent")
+        );
+        assert!(
+            state
+                .convergence
+                .log
+                .iter()
+                .any(|entry| entry.kind == "Question")
+        );
+        assert!(
+            state
+                .convergence
+                .log
+                .iter()
+                .any(|entry| entry.kind == "Decision")
+        );
+        assert!(
+            state
+                .convergence
+                .log
+                .iter()
+                .any(|entry| entry.kind == "Spec")
+        );
+        let trace = crate::tui::render_trace::snapshot().join("\n");
+        assert!(!trace.contains("PAYLOAD_LINE_1 DBM_CLIでセルフ改修"));
+        assert!(trace.contains("PAYLOAD_LINE_1 system_name: DBM"));
+    }
+
+    #[test]
+    fn goals_only_draft_starts_design_convergence() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+
+        handle_submit(
+            &mut state,
+            &core,
+            "goals:\n- DBM_CLIでセルフ改修したい".to_string(),
+            ".".into(),
+        );
+        state.handle_ui_events();
+
+        assert_eq!(core.seen_input.lock().expect("seen").as_deref(), None);
+        assert!(state.convergence.intent.is_some());
+        assert!(state.convergence.generated_spec.is_some());
+    }
+
+    #[test]
+    fn system_name_input_routes_directly_to_specification_analyzer() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+        let spec = "system_name: DBM\n\ngoals:\n  - Self modification\narchitecture:\n  RuntimeCore:\n    responsibilities:\n      - Execute generated plans\nrules:\n  - ApplyGate required";
+
+        handle_submit(&mut state, &core, spec.to_string(), ".".into());
+        state.handle_ui_events();
+
+        assert_eq!(core.seen_input.lock().expect("seen").as_deref(), None);
+        assert!(state.convergence.intent.is_none());
+        assert_eq!(state.workspace.evaluation.status, "Completed");
+        assert_ne!(state.workspace.evaluation.domain, "(none)");
+        assert_eq!(state.workspace.evaluation.progress, 100);
+    }
+
+    #[test]
     fn specification_submit_records_parser_input_dump() {
         crate::tui::render_trace::reset();
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
-        let spec = "system_name: DBM\n\ngoals:\n  - stabilize parser";
+        let spec = "system_name: DBM\n\ngoals:\n  - stabilize parser\narchitecture:\n  Parser:\n    responsibilities:\n      - Parse specifications\nrules:\n  - ApplyGate required";
 
         handle_submit(&mut state, &core, spec.to_string(), ".".into());
 
@@ -507,13 +664,15 @@ rules:
         assert!(trace.contains(&"PAYLOAD_LINE_2"));
         assert!(trace.contains(&"PAYLOAD_LINE_3 goals:"));
         assert!(trace.contains(&"PAYLOAD_LINE_4   - stabilize parser"));
+        assert!(trace.contains(&"PAYLOAD_LINE_5 architecture:"));
+        assert!(trace.contains(&"PAYLOAD_LINE_9 rules:"));
     }
 
     #[test]
     fn command_enter_submit_updates_evaluation_and_analysis_workspaces() {
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
-        let spec = "system_name: DBM_TUI_Test\n\nrules:\n  - Runtime must pass through ApplyGate";
+        let spec = "system_name: DBM_TUI_Test\n\narchitecture:\n  RuntimeCore:\n    responsibilities:\n      - Execute submitted specifications\nrules:\n  - Runtime must pass through ApplyGate";
         state.editor_state.editor.clear();
         for ch in spec.chars() {
             if ch == '\n' {
@@ -532,15 +691,8 @@ rules:
 
         assert_ne!(state.workspace.evaluation.domain, "(none)");
         assert_ne!(state.workspace.evaluation.status, "Recognition");
-        assert!(!state.workspace.analysis_result.diagnosis.is_empty());
-        assert!(!state.workspace.analysis_result.repair_plan.is_empty());
-        assert!(
-            !state
-                .workspace
-                .analysis_result
-                .implementation_plan
-                .is_empty()
-        );
+        assert_eq!(state.workspace.evaluation.status, "Completed");
+        assert_eq!(state.workspace.evaluation.progress, 100);
     }
 
     fn empty_payload() -> UiPayload {

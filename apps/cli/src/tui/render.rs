@@ -14,9 +14,10 @@ use crate::tui::rendering::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PanelCellOwner {
     Header,
-    DesignSpecification,
+    IntentInput,
+    ConvergenceLog,
     AnalysisResult,
-    Evaluation,
+    ExecutionLog,
     Diagnostics,
     Status,
 }
@@ -59,13 +60,10 @@ pub fn panel_overlap_detected(layout: &LayoutMetadata) -> bool {
 pub fn cell_ownership_map(layout: &LayoutMetadata) -> Vec<(u16, u16, PanelCellOwner)> {
     let mut cells = Vec::new();
     push_owned_cells(&mut cells, layout.header, PanelCellOwner::Header);
-    push_owned_cells(
-        &mut cells,
-        layout.runtime,
-        PanelCellOwner::DesignSpecification,
-    );
+    push_owned_cells(&mut cells, layout.runtime, PanelCellOwner::IntentInput);
+    push_owned_cells(&mut cells, layout.input, PanelCellOwner::ConvergenceLog);
     push_owned_cells(&mut cells, layout.diff, PanelCellOwner::AnalysisResult);
-    push_owned_cells(&mut cells, layout.task, PanelCellOwner::Evaluation);
+    push_owned_cells(&mut cells, layout.task, PanelCellOwner::ExecutionLog);
     push_owned_cells(&mut cells, layout.diagnostics, PanelCellOwner::Diagnostics);
     push_owned_cells(&mut cells, layout.status, PanelCellOwner::Status);
     cells
@@ -102,9 +100,10 @@ impl SurfaceProjector {
         let immutable = &projection.frame;
         frame.render_widget(Clear, immutable.layout.viewport);
         render_header(frame, immutable);
-        render_design_specification_pane(frame, immutable);
+        render_intent_input_pane(frame, immutable);
+        render_convergence_log_pane(frame, immutable);
         render_analysis_result_pane(frame, immutable);
-        render_evaluation_pane(frame, immutable);
+        render_execution_log_pane(frame, immutable);
         render_status_line(frame, immutable);
         render_diagnostics_overlay(frame, immutable);
         if let Some(cursor) = immutable.cursor {
@@ -130,28 +129,49 @@ fn render_header(frame: &mut Frame, immutable: &ImmutableFrame) {
     );
 }
 
-fn render_design_specification_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
-    crate::tui::render_trace::record("render_design_specification_pane");
+fn render_intent_input_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_intent_input_pane");
     let area = immutable.layout.runtime;
     frame.render_widget(Clear, area);
     let snapshot = &immutable.snapshot;
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Design Specification ")
+        .title(" Intent Input / Generated Design Spec ")
         .border_style(active_border(snapshot.focus == Focus::Input, false));
 
-    let lines = if snapshot.editor.lines.is_empty() {
-        vec![Line::from("")]
-    } else {
-        snapshot
-            .editor
-            .lines
-            .iter()
-            .cloned()
-            .map(Line::from)
-            .collect::<Vec<_>>()
-    };
+    let lines = snapshot
+        .convergence
+        .workspace_lines(&snapshot.editor.lines)
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
+
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .wrap(Wrap { trim: false }),
+        area,
+    );
+}
+
+fn render_convergence_log_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_convergence_log_pane");
+    let area = immutable.layout.input;
+    frame.render_widget(Clear, area);
+    let snapshot = &immutable.snapshot;
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Convergence Log ")
+        .border_style(active_border(snapshot.focus == Focus::Chat, false));
+
+    let lines = snapshot
+        .convergence
+        .log_lines()
+        .into_iter()
+        .map(Line::from)
+        .collect::<Vec<_>>();
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -202,8 +222,8 @@ fn render_analysis_result_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
     );
 }
 
-fn render_evaluation_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
-    crate::tui::render_trace::record("render_evaluation_pane");
+fn render_execution_log_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
+    crate::tui::render_trace::record("render_execution_log_pane");
     let area = immutable.layout.task;
     if area.width == 0 || area.height == 0 {
         return;
@@ -213,7 +233,7 @@ fn render_evaluation_pane(frame: &mut Frame, immutable: &ImmutableFrame) {
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Evaluation ")
+        .title(" Execution / Verification Log ")
         .border_style(active_border(false, false));
 
     let lines = snapshot
@@ -236,7 +256,7 @@ fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, immutable.layout.status);
     frame.render_widget(
         Paragraph::new(
-            "Design Specification Workbench | Ctrl+D / Ctrl+↩ / ⌘↩ Submit  Esc Clear  ⌘Q Exit",
+            "Design Convergence Workspace | Ctrl+D / Ctrl+↩ / ⌘↩ Submit  Esc Clear  Tab Focus  ⌘Q Exit",
         )
         .style(Style::default().fg(Color::DarkGray)),
         immutable.layout.status,
@@ -432,7 +452,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).expect("terminal");
         full_repaint(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Design Specification"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Generated Design Spec"));
 
         state.append_chat(UiEvent::Pipeline {
             state: "Idle".to_string(),
@@ -441,7 +461,7 @@ mod tests {
         let surface = buffer_text(terminal.backend().buffer());
 
         assert!(!surface.contains("PREVIOUS_FRAME_RESIDUE"));
-        assert!(surface.contains("Design Specification"));
+        assert!(surface.contains("Generated Design Spec"));
         assert!(surface.contains("Analysis Result"));
     }
 
@@ -453,13 +473,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Design Convergence Workspace"));
         assert!(!surface.contains("mutation in progress"));
     }
 
@@ -471,13 +491,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Design Convergence Workspace"));
         assert!(!surface.contains("transaction committed"));
         assert!(!surface.contains("mutation in progress"));
     }
@@ -490,12 +510,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("Evaluation"));
+        assert!(first.contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::PreviewReady;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("Design Specification Workbench"));
+        assert!(second.contains("Design Convergence Workspace"));
         assert!(!second.contains("mutation in progress"));
     }
 
@@ -506,7 +526,7 @@ mod tests {
         let ownership = cell_ownership_map(&layout);
         let runtime_cells = ownership
             .iter()
-            .filter(|(_, _, owner)| *owner == PanelCellOwner::DesignSpecification)
+            .filter(|(_, _, owner)| *owner == PanelCellOwner::IntentInput)
             .count();
         let unique_cells = ownership
             .iter()
@@ -530,13 +550,13 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
-        assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Design Convergence Workspace"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface2 = buffer_text(terminal.backend().buffer());
 
-        assert!(surface2.contains("Design Specification Workbench"));
+        assert!(surface2.contains("Design Convergence Workspace"));
         assert!(!surface2.contains("state=mutation in progress"));
     }
 
@@ -550,13 +570,13 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(buffer_text(terminal.backend().buffer()).contains("Evaluation"));
+        assert!(buffer_text(terminal.backend().buffer()).contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::Idle;
         redraw_without_terminal_clear(&mut terminal, &state);
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Design Convergence Workspace"));
         assert!(!surface.contains("state=mutation in progress"));
     }
 
@@ -593,14 +613,14 @@ mod tests {
 
         redraw_without_terminal_clear(&mut terminal, &state);
         let first = buffer_text(terminal.backend().buffer());
-        assert!(first.contains("Evaluation"));
+        assert!(first.contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::Idle;
         state.active_target = None;
         redraw_without_terminal_clear(&mut terminal, &state);
         let second = buffer_text(terminal.backend().buffer());
 
-        assert!(second.contains("Design Specification Workbench"));
+        assert!(second.contains("Design Convergence Workspace"));
         assert!(!second.contains("state=mutation in progress"));
         assert!(!second.contains("very_long_previous_runtime_target"));
     }
@@ -615,12 +635,12 @@ mod tests {
         let mut terminal = Terminal::new(backend).expect("terminal");
 
         let first = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
-        assert!(first.contains("Evaluation"));
+        assert!(first.contains("Execution / Verification"));
 
         state.runtime_state = RuntimeShellState::Idle;
         let second = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
-        assert!(second.contains("Design Specification Workbench"));
+        assert!(second.contains("Design Convergence Workspace"));
         assert!(!second.contains("state=mutation in progress"));
     }
 
@@ -639,7 +659,7 @@ mod tests {
         let third = surface_after_redraw_without_terminal_clear(&mut terminal, &state);
 
         assert_eq!(second, third);
-        assert!(third.contains("Design Specification Workbench"));
+        assert!(third.contains("Design Convergence Workspace"));
         assert!(!third.contains("state=mutation in progress"));
     }
 
@@ -658,14 +678,14 @@ mod tests {
             .expect("draw");
         let surface = buffer_text(terminal.backend().buffer());
 
-        assert!(surface.contains("Design Specification Workbench"));
+        assert!(surface.contains("Design Convergence Workspace"));
         assert!(surface.contains("Ctrl+D"));
         assert!(surface.contains("Ctrl+↩"));
         assert!(surface.contains("⌘↩ Submit"));
         assert!(surface.contains("Esc Clear"));
         assert!(surface.contains("⌘Q Exit"));
-        assert!(surface.contains("Design Specification"));
-        assert!(surface.contains("Evaluation"));
+        assert!(surface.contains("Generated Design Spec"));
+        assert!(surface.contains("Execution / Verification"));
         assert!(surface.contains("Analysis Result"));
         assert!(!surface.contains("Task Workspace"));
         assert!(!surface.contains(" OUTPUT "));
@@ -874,12 +894,9 @@ mod tests {
 
         let trace = crate::tui::render_trace::snapshot();
         assert!(trace.contains(&"render_root"), "{trace:?}");
-        assert!(
-            trace.contains(&"render_design_specification_pane"),
-            "{trace:?}"
-        );
+        assert!(trace.contains(&"render_intent_input_pane"), "{trace:?}");
         assert!(trace.contains(&"render_analysis_result_pane"), "{trace:?}");
-        assert!(trace.contains(&"render_evaluation_pane"), "{trace:?}");
+        assert!(trace.contains(&"render_execution_log_pane"), "{trace:?}");
         assert!(!trace.contains(&"render_output"), "{trace:?}");
         assert!(!trace.contains(&"render_input"), "{trace:?}");
     }
@@ -888,9 +905,9 @@ mod tests {
     fn runtime_panel_full_redraw() {
         let source = include_str!("render.rs");
         let runtime_fn = source
-            .split("fn render_design_specification_pane")
+            .split("fn render_intent_input_pane")
             .nth(1)
-            .and_then(|rest| rest.split("fn render_analysis_result_pane").next())
+            .and_then(|rest| rest.split("fn render_convergence_log_pane").next())
             .expect("runtime function source");
 
         assert!(runtime_fn.contains("frame.render_widget(Clear, area);"));
@@ -934,9 +951,7 @@ mod tests {
             1
         );
         assert_eq!(
-            render_source
-                .matches("fn render_design_specification_pane")
-                .count(),
+            render_source.matches("fn render_intent_input_pane").count(),
             1
         );
         assert_eq!(
@@ -959,7 +974,7 @@ mod tests {
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
             render_source
-                .matches(".title(\" Design Specification \")")
+                .matches(".title(\" Intent Input / Generated Design Spec \")")
                 .count(),
             1
         );
@@ -974,9 +989,9 @@ mod tests {
                 .expect("production render source"),
         );
         let runtime_fn = source
-            .split("fn render_design_specification_pane")
+            .split("fn render_intent_input_pane")
             .nth(1)
-            .and_then(|rest| rest.split("fn render_analysis_result_pane").next())
+            .and_then(|rest| rest.split("fn render_convergence_log_pane").next())
             .expect("runtime function source");
 
         assert_eq!(
@@ -987,7 +1002,7 @@ mod tests {
         );
         assert_eq!(runtime_fn.matches("frame.render_widget(").count(), 2);
         assert_eq!(runtime_fn.matches("Paragraph::new(lines)").count(), 1);
-        assert_eq!(runtime_fn.matches(".editor").count(), 2);
+        assert_eq!(runtime_fn.matches(".editor").count(), 1);
     }
 
     #[test]
@@ -1002,9 +1017,7 @@ mod tests {
         let combined = format!("{render_source}\n{rendering_source}");
 
         assert_eq!(
-            render_source
-                .matches("fn render_design_specification_pane")
-                .count(),
+            render_source.matches("fn render_intent_input_pane").count(),
             1
         );
         assert!(!combined.contains("runtime_overlay"));

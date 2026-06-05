@@ -474,8 +474,11 @@ fn dispatch_captured_specification<W: Write>(
     pending_specification: &mut Option<SpecificationContext>,
 ) -> Result<(), String> {
     match classify_specification(full_text) {
-        SpecificationKind::Instruction => {
-            eprintln!("[SPEC_CLASSIFIER]\nkind=Instruction");
+        SpecificationKind::Instruction | SpecificationKind::DraftSpecification => {
+            eprintln!(
+                "[SPEC_CLASSIFIER]\nkind={:?}",
+                classify_specification(full_text)
+            );
             let plan = InstructionPlan::from_spec(full_text);
             for line in plan.render_lines() {
                 writeln!(writer, "{line}").map_err(|err| err.to_string())?;
