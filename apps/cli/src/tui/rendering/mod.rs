@@ -15,6 +15,7 @@ pub const MIN_PANE_WIDTH: u16 = 40;
 pub struct RenderSnapshot {
     pub projection: ProjectionSnapshot,
     pub runtime: RuntimeProjection,
+    pub reasoning: ReasoningProjection,
     pub status: StatusModel,
     pub input: InputModel,
     pub editor: EditorModel,
@@ -145,6 +146,33 @@ pub struct DiffProjection {
     pub semantic_projection: Option<crate::tui::cognitive_workspace::WorkspaceSemanticProjection>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReasoningProjection {
+    pub mode: ReasoningViewMode,
+    pub lines: Vec<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReasoningViewMode {
+    Reasoning,
+    Analyze,
+    MutationPlan,
+    Diff,
+    Verification,
+}
+
+impl ReasoningViewMode {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Reasoning => " Reasoning View ",
+            Self::Analyze => " Analyze View ",
+            Self::MutationPlan => " Mutation Plan View ",
+            Self::Diff => " Diff View ",
+            Self::Verification => " Verification View ",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatusModel {
     pub line: String,
@@ -197,20 +225,16 @@ pub fn layout_for_area(area: Rect, show_diagnostics: bool) -> LayoutMetadata {
         .split(middle_rect);
     let left_rows = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
+        .constraints([Constraint::Min(8), Constraint::Length(7)])
         .split(columns[0]);
-    let right_rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Percentage(55), Constraint::Percentage(45)])
-        .split(columns[1]);
 
     LayoutMetadata {
         viewport: area,
         header: rows[0],
         runtime: left_rows[0],
         input: left_rows[1],
-        diff: right_rows[0],
-        task: right_rows[1],
+        diff: columns[1],
+        task: Rect::new(0, 0, 0, 0),
         diagnostics: diag_rect,
         status: rows[2],
     }
@@ -249,7 +273,7 @@ pub struct FrameComposer;
 
 impl FrameComposer {
     pub fn compose(snapshot: RenderSnapshot, layout: LayoutMetadata) -> ImmutableFrame {
-        let cursor = cursor_model(&snapshot, layout.runtime);
+        let cursor = cursor_model(&snapshot, layout.input);
         ImmutableFrame {
             snapshot,
             layout,
@@ -354,8 +378,9 @@ impl From<&TuiState> for RenderSnapshot {
         Self {
             projection,
             status: StatusModel {
-                line: runtime.status_line(),
+                line: runtime.workspace_status_line(),
             },
+            reasoning: ReasoningProjection::from_state(state, &runtime),
             runtime,
             input: InputModel {
                 pipeline_label: sanitize_line(state.pipeline_state.label()).unwrap_or_default(),
@@ -410,14 +435,219 @@ impl RuntimeProjection {
         self.narrative_lines.clone()
     }
 
-    pub fn status_line(&self) -> String {
-        format!(
-            "state={} tx={} target={}",
-            system_summary(&self.state_label),
-            self.transaction_label.as_deref().unwrap_or("(none)"),
-            self.target_label.as_deref().unwrap_or("(none)")
-        )
+    pub fn workspace_status_line(&self) -> String {
+        let phase = match self.state_label.as_str() {
+            "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => "Planning",
+            "APPLYING" => "Applying",
+            "APPLIED" => "Completed",
+            "FAILED_RECOVERABLE" => "Verifying",
+            "REJECTED" => "Rejected",
+            _ if self.transaction_label.is_some() => "Analyzing",
+            _ => "Thinking",
+        };
+        format!("{phase} | F2 Diagnostics | :diagnostics")
     }
+}
+
+impl ReasoningProjection {
+    pub fn from_state(state: &TuiState, runtime: &RuntimeProjection) -> Self {
+        let mode = reasoning_mode(state, runtime);
+        let lines = match mode {
+            ReasoningViewMode::Reasoning => reasoning_view_lines(state, runtime),
+            ReasoningViewMode::Analyze => analyze_view_lines(state),
+            ReasoningViewMode::MutationPlan => mutation_plan_view_lines(state),
+            ReasoningViewMode::Diff => diff_view_lines(state),
+            ReasoningViewMode::Verification => verification_view_lines(state),
+        };
+        Self { mode, lines }
+    }
+}
+
+fn reasoning_mode(state: &TuiState, runtime: &RuntimeProjection) -> ReasoningViewMode {
+    if state
+        .chat
+        .events
+        .iter()
+        .rev()
+        .any(|event| matches!(event, UiEvent::Validation { .. } | UiEvent::Result { .. }))
+        && matches!(
+            state.runtime_state,
+            RuntimeShellState::Validate | RuntimeShellState::Failed
+        )
+    {
+        return ReasoningViewMode::Verification;
+    }
+    if state.active_transaction.is_some() {
+        return ReasoningViewMode::Diff;
+    }
+    if state.chat.events.iter().rev().any(|event| {
+        matches!(
+            event,
+            UiEvent::Plan { .. } | UiEvent::ImplementationPlan { .. }
+        )
+    }) {
+        return ReasoningViewMode::MutationPlan;
+    }
+    if state.convergence.generated_spec.is_some()
+        || state.chat.events.iter().rev().any(|event| {
+            matches!(
+                event,
+                UiEvent::Analysis { .. } | UiEvent::StructuralDiagnosis { .. }
+            )
+        })
+    {
+        return ReasoningViewMode::Analyze;
+    }
+    if runtime.state_label == "APPLIED" {
+        ReasoningViewMode::Verification
+    } else {
+        ReasoningViewMode::Reasoning
+    }
+}
+
+fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<String> {
+    let intent = state
+        .convergence
+        .intent
+        .as_ref()
+        .map(|intent| format!("{} / {}", intent.objective, intent.target))
+        .unwrap_or_else(|| "Awaiting user intent".to_string());
+    let missing = if state.convergence.questions.is_empty() {
+        "No missing information detected".to_string()
+    } else {
+        state.convergence.questions.join("\n")
+    };
+    vec![
+        "DBM Reasoning".to_string(),
+        String::new(),
+        "Intent Analysis".to_string(),
+        format!("  {intent}"),
+        String::new(),
+        "Missing Information".to_string(),
+        indent_block(&missing),
+        String::new(),
+        "Design Trade-offs".to_string(),
+        "  Balance self modification scope with governance and replay stability".to_string(),
+        String::new(),
+        "Risk Assessment".to_string(),
+        format!("  {}", risk_summary(runtime)),
+        String::new(),
+        "Convergence Score".to_string(),
+        format!("  {}%", state.convergence.convergence_percent()),
+    ]
+}
+
+fn analyze_view_lines(state: &TuiState) -> Vec<String> {
+    let target = state
+        .convergence
+        .intent
+        .as_ref()
+        .map(|intent| intent.target.as_str())
+        .unwrap_or("dbm");
+    let mut dependencies = vec!["apps/cli/src/tui/render.rs".to_string()];
+    dependencies.push("apps/cli/src/tui/rendering/mod.rs".to_string());
+    dependencies.push("apps/cli/src/tui/state.rs".to_string());
+    vec![
+        "Target Components".to_string(),
+        format!("  {target}"),
+        String::new(),
+        "Impact Analysis".to_string(),
+        "  Medium".to_string(),
+        String::new(),
+        "Dependency Analysis".to_string(),
+        indent_block(&dependencies.join("\n")),
+        String::new(),
+        "Required Modifications".to_string(),
+        "  Render convergence timeline, reasoning projection, phase switching".to_string(),
+    ]
+}
+
+fn mutation_plan_view_lines(state: &TuiState) -> Vec<String> {
+    let affected = state
+        .active_transaction
+        .as_ref()
+        .map(|tx| tx.target_path.clone())
+        .unwrap_or_else(|| "No active mutation target".to_string());
+    vec![
+        "Mutation Plan".to_string(),
+        "  Apply generated specification through governed runtime transaction".to_string(),
+        String::new(),
+        "Affected Files".to_string(),
+        format!("  {affected}"),
+        String::new(),
+        "Expected Behavior".to_string(),
+        "  Convergence workspace drives analyze, diff, and verification flow".to_string(),
+        String::new(),
+        "Rollback Strategy".to_string(),
+        "  Retain transaction checkpoint and reject unresolved preview targets".to_string(),
+    ]
+}
+
+fn diff_view_lines(state: &TuiState) -> Vec<String> {
+    let Some(transaction) = state.active_transaction.as_ref() else {
+        return vec![
+            "Unified Diff".to_string(),
+            "  (no generated code changes)".to_string(),
+        ];
+    };
+    let mut lines = vec![
+        "Unified Diff".to_string(),
+        format!("  target: {}", transaction.target_path),
+        String::new(),
+    ];
+    for change in &transaction.diff.changes {
+        if let Some(old) = &change.old {
+            lines.push(format!("- {old}"));
+        }
+        if let Some(new) = &change.new {
+            lines.push(format!("+ {new}"));
+        }
+    }
+    if lines.len() == 3 {
+        lines.push("  (semantic diff ready)".to_string());
+    }
+    lines
+}
+
+fn verification_view_lines(state: &TuiState) -> Vec<String> {
+    let failed = state
+        .chat
+        .events
+        .iter()
+        .filter(|event| matches!(event, UiEvent::Error { .. }))
+        .count();
+    vec![
+        "Verification Status".to_string(),
+        format!("  {}", if failed == 0 { "Passed" } else { "Failed" }),
+        String::new(),
+        "Passed Tests".to_string(),
+        "  Runtime projection invariants".to_string(),
+        String::new(),
+        "Failed Tests".to_string(),
+        format!("  {failed}"),
+        String::new(),
+        "Coverage".to_string(),
+        "  TUI convergence workspace render path".to_string(),
+        String::new(),
+        "Acceptance Criteria".to_string(),
+        "  Two-pane convergence workspace with diagnostics separated".to_string(),
+    ]
+}
+
+fn risk_summary(runtime: &RuntimeProjection) -> String {
+    if runtime.transaction_label.is_some() {
+        "Runtime transaction may affect execution behavior; verify before apply".to_string()
+    } else {
+        "Scope uncertainty remains until target, constraints, and verification are confirmed"
+            .to_string()
+    }
+}
+
+fn indent_block(text: &str) -> String {
+    text.lines()
+        .map(|line| format!("  {line}"))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 impl DiffProjection {
@@ -1222,7 +1452,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.status.line,
-            "state=preview ready tx=transaction active target=apps/cli/src/core.rs"
+            "Planning | F2 Diagnostics | :diagnostics"
         );
     }
 

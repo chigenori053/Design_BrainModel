@@ -1126,6 +1126,12 @@ impl TuiState {
                 }
                 return TuiAction::None;
             }
+            KeyCode::F(2) => {
+                self.diagnostic_mode = !self.diagnostic_mode;
+                self.diagnostics.last_mutation =
+                    Some(format!("diagnostic_mode={}", self.diagnostic_mode));
+                return TuiAction::None;
+            }
             _ => {}
         }
 
@@ -1514,6 +1520,13 @@ impl TuiState {
         if matches!(trimmed.as_str(), "/exit" | "/quit") {
             self.editor_state.editor.clear();
             return TuiAction::Quit;
+        }
+        if trimmed == ":diagnostics" {
+            self.editor_state.editor.clear();
+            self.diagnostic_mode = !self.diagnostic_mode;
+            self.diagnostics.last_mutation =
+                Some(format!("diagnostic_mode={}", self.diagnostic_mode));
+            return TuiAction::None;
         }
         if trimmed == "/save design" {
             self.history.push(trimmed);

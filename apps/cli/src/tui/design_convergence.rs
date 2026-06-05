@@ -1,69 +1,91 @@
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct DesignConvergenceState {
     pub raw_intent: Option<String>,
     pub intent: Option<ExtractedIntent>,
     pub questions: Vec<String>,
+    pub answers: Vec<String>,
     pub decisions: Vec<String>,
     pub generated_spec: Option<String>,
+    pub convergence_score: f32,
     pub log: Vec<ConvergenceLogEntry>,
+    pub timeline: Vec<ConvergenceEntry>,
 }
 
+impl Eq for DesignConvergenceState {}
+
 impl DesignConvergenceState {
-    pub fn log_lines(&self) -> Vec<String> {
-        if self.log.is_empty() {
-            return vec!["- waiting for intent".to_string()];
+    pub fn timeline_lines(&self) -> Vec<String> {
+        let entries = if self.timeline.is_empty() {
+            self.legacy_timeline_entries()
+        } else {
+            self.timeline.clone()
+        };
+        if entries.is_empty() {
+            return vec![
+                "User Intent".to_string(),
+                "  (waiting for natural language intent)".to_string(),
+                String::new(),
+                "Convergence".to_string(),
+                format!("  {}%", self.convergence_percent()),
+            ];
         }
-        self.log
-            .iter()
-            .map(|entry| format!("- {}: {}", entry.kind, entry.message))
-            .collect()
+
+        let mut lines = Vec::new();
+        for entry in entries {
+            lines.push(entry.title().to_string());
+            for line in entry.message().lines() {
+                lines.push(format!("  {line}"));
+            }
+            lines.push(String::new());
+        }
+        lines.push("Convergence".to_string());
+        lines.push(format!("  {}%", self.convergence_percent()));
+        lines
+    }
+
+    pub fn input_lines(&self, current_input: &[String]) -> Vec<String> {
+        let mut lines = Vec::new();
+        if current_input.iter().any(|line| !line.trim().is_empty()) {
+            lines.extend(current_input.iter().cloned());
+        } else {
+            lines.push(
+                "(type natural language request, answer, constraint, or verification condition)"
+                    .to_string(),
+            );
+        }
+        lines
     }
 
     pub fn workspace_lines(&self, current_input: &[String]) -> Vec<String> {
-        let mut lines = Vec::new();
-        lines.push("Intent Input".to_string());
-        if current_input.iter().any(|line| !line.trim().is_empty()) {
-            lines.extend(current_input.iter().map(|line| format!("  {line}")));
-        } else if let Some(raw_intent) = &self.raw_intent {
-            lines.extend(raw_intent.lines().map(|line| format!("  {line}")));
-        } else {
-            lines.push("  (type natural language intent)".to_string());
-        }
+        let mut lines = self.timeline_lines();
         lines.push(String::new());
-        lines.push("Design Convergence".to_string());
-        if let Some(intent) = &self.intent {
-            lines.push(format!("  domain={}", intent.domain));
-            lines.push(format!("  objective={}", intent.objective));
-            lines.push(format!("  target={}", intent.target));
-        } else {
-            lines.push("  (not started)".to_string());
-        }
-        if !self.questions.is_empty() {
-            lines.push(String::new());
-            lines.push("Questions".to_string());
-            lines.extend(
-                self.questions
-                    .iter()
-                    .map(|question| format!("  - {question}")),
-            );
-        }
-        if !self.decisions.is_empty() {
-            lines.push(String::new());
-            lines.push("Design Decisions".to_string());
-            lines.extend(
-                self.decisions
-                    .iter()
-                    .map(|decision| format!("  - {decision}")),
-            );
-        }
-        lines.push(String::new());
-        lines.push("Generated Design Specification".to_string());
-        if let Some(spec) = &self.generated_spec {
-            lines.extend(spec.lines().map(|line| format!("  {line}")));
-        } else {
-            lines.push("  (not generated)".to_string());
-        }
+        lines.push("Natural Language Input".to_string());
+        lines.extend(self.input_lines(current_input));
         lines
+    }
+
+    pub fn convergence_percent(&self) -> u8 {
+        self.convergence_score.clamp(0.0, 100.0).round() as u8
+    }
+
+    fn legacy_timeline_entries(&self) -> Vec<ConvergenceEntry> {
+        let mut entries = Vec::new();
+        if let Some(raw_intent) = &self.raw_intent {
+            entries.push(ConvergenceEntry::UserIntent(raw_intent.clone()));
+        }
+        for question in &self.questions {
+            entries.push(ConvergenceEntry::Question(question.clone()));
+        }
+        for answer in &self.answers {
+            entries.push(ConvergenceEntry::Answer(answer.clone()));
+        }
+        for decision in &self.decisions {
+            entries.push(ConvergenceEntry::Decision(decision.clone()));
+        }
+        if let Some(spec) = &self.generated_spec {
+            entries.push(ConvergenceEntry::Specification(spec.clone()));
+        }
+        entries
     }
 }
 
@@ -81,6 +103,40 @@ pub struct ConvergenceLogEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConvergenceEntry {
+    UserIntent(String),
+    Question(String),
+    Answer(String),
+    Decision(String),
+    Specification(String),
+    Analysis(String),
+}
+
+impl ConvergenceEntry {
+    pub fn title(&self) -> &'static str {
+        match self {
+            Self::UserIntent(_) => "User Intent",
+            Self::Question(_) => "Question",
+            Self::Answer(_) => "Answer",
+            Self::Decision(_) => "Decision",
+            Self::Specification(_) => "Generated Specification",
+            Self::Analysis(_) => "Analysis",
+        }
+    }
+
+    pub fn message(&self) -> &str {
+        match self {
+            Self::UserIntent(message)
+            | Self::Question(message)
+            | Self::Answer(message)
+            | Self::Decision(message)
+            | Self::Specification(message)
+            | Self::Analysis(message) => message,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConvergenceResult {
     pub state: DesignConvergenceState,
     pub generated_spec: String,
@@ -92,13 +148,17 @@ impl DesignConvergenceEngine {
     pub fn converge(input: &str, previous: &DesignConvergenceState) -> ConvergenceResult {
         let intent = extract_intent(input);
         let mut questions = detect_gaps(input, &intent);
+        let answers = extract_answers(input);
         let decisions = record_decisions(input, &intent, previous);
         if !questions.is_empty() && answers_scope_question(input) {
             questions.retain(|question| !question.contains("RuntimeCore"));
         }
         let generated_spec = generate_spec(&intent, &decisions);
+        let convergence_score = calculate_convergence_score(input, &questions, &decisions);
 
         let mut log = previous.log.clone();
+        let mut timeline = previous.timeline.clone();
+        timeline.push(ConvergenceEntry::UserIntent(input.trim().to_string()));
         log.push(ConvergenceLogEntry {
             kind: "Intent",
             message: format!(
@@ -107,19 +167,25 @@ impl DesignConvergenceEngine {
             ),
         });
         for question in &questions {
+            timeline.push(ConvergenceEntry::Question(question.clone()));
             log.push(ConvergenceLogEntry {
                 kind: "Question",
                 message: question.clone(),
             });
         }
+        for answer in &answers {
+            timeline.push(ConvergenceEntry::Answer(answer.clone()));
+        }
         for decision in &decisions {
             if !previous.decisions.contains(decision) {
+                timeline.push(ConvergenceEntry::Decision(decision.clone()));
                 log.push(ConvergenceLogEntry {
                     kind: "Decision",
                     message: decision.clone(),
                 });
             }
         }
+        timeline.push(ConvergenceEntry::Specification(generated_spec.clone()));
         log.push(ConvergenceLogEntry {
             kind: "Spec",
             message: "generated design specification for Analyze".to_string(),
@@ -130,13 +196,66 @@ impl DesignConvergenceEngine {
                 raw_intent: Some(input.trim().to_string()),
                 intent: Some(intent),
                 questions,
+                answers,
                 decisions,
                 generated_spec: Some(generated_spec.clone()),
+                convergence_score,
                 log,
+                timeline,
             },
             generated_spec,
         }
     }
+}
+
+fn extract_answers(input: &str) -> Vec<String> {
+    let lower = input.to_ascii_lowercase();
+    let mut answers = Vec::new();
+    if contains_any(
+        &lower,
+        &["runtimecore", "runtime core", "tui", "ui", "両方"],
+    ) {
+        answers.push(input.trim().to_string());
+    }
+    answers
+}
+
+fn calculate_convergence_score(input: &str, questions: &[String], decisions: &[String]) -> f32 {
+    let lower = input.to_ascii_lowercase();
+    let intent_confirmed = !input.trim().is_empty();
+    let scope_confirmed = contains_any(&lower, &["runtimecore", "runtime core", "tui", "ui"])
+        || decisions
+            .iter()
+            .any(|decision| decision.contains("Set target"));
+    let constraints_confirmed = contains_any(
+        &lower,
+        &[
+            "preserve",
+            "維持",
+            "制約",
+            "constraint",
+            "governance",
+            "replay",
+            "audit",
+        ],
+    );
+    let verification_confirmed = contains_any(
+        &lower,
+        &["verify", "verification", "検証", "test", "acceptance"],
+    ) || !questions
+        .iter()
+        .any(|question| question.contains("検証条件"));
+
+    [
+        intent_confirmed,
+        scope_confirmed,
+        constraints_confirmed,
+        verification_confirmed,
+    ]
+    .into_iter()
+    .filter(|confirmed| *confirmed)
+    .count() as f32
+        * 25.0
 }
 
 fn extract_intent(input: &str) -> ExtractedIntent {
