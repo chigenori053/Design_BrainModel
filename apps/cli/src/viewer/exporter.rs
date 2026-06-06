@@ -27,6 +27,7 @@ pub fn export_structure_view(root: &Path) -> Result<StructureViewIR, String> {
             mode: AnalyzeMode::Summary,
             report: false,
             design: false,
+            security: false,
             language: Language::English,
             intent: None,
             json: false,

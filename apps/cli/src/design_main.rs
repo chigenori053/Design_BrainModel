@@ -841,6 +841,7 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
         mode,
         report: parsed.report,
         design: parsed.design,
+        security: parsed.security,
         language: parsed.language,
         intent: parsed.intent,
         json: parsed.json,

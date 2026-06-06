@@ -533,7 +533,9 @@ fn try_run_integration_command_flow(raw_args: &[OsString]) -> Option<i32> {
     }
 
     if let Some(target) = extract_analyze_target(&input) {
-        match run_analyze_engine_command(&target, analyze_detailed_requested(&input)) {
+        let security = analyze_security_requested(&input);
+        let detailed = analyze_detailed_requested(&input);
+        match run_analyze_engine_command(&target, detailed, security) {
             Ok(()) => return Some(0),
             Err(message) => {
                 eprintln!("{message}");
@@ -582,8 +584,22 @@ fn analyze_detailed_requested(input: &str) -> bool {
         .any(|token| token.eq_ignore_ascii_case("--detailed"))
 }
 
-fn run_analyze_engine_command(target: &str, detailed: bool) -> Result<(), String> {
-    let output = if detailed {
+fn analyze_security_requested(input: &str) -> bool {
+    input
+        .split_whitespace()
+        .any(|token| token.eq_ignore_ascii_case("--security"))
+}
+
+fn run_analyze_engine_command(
+    target: &str,
+    detailed: bool,
+    security: bool,
+) -> Result<(), String> {
+    let output = if security && detailed {
+        design_cli::commands::analyze::project::execute_security_analysis_detailed(target)?
+    } else if security {
+        design_cli::commands::analyze::project::execute_security_analysis(target)?
+    } else if detailed {
         design_cli::commands::analyze::project::execute_structure_analysis_detailed(target)?
     } else {
         design_cli::commands::analyze::project::execute_structure_analysis(target)?

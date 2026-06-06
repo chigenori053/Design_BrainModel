@@ -263,6 +263,9 @@ pub struct BoundaryViolation {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ArchitectureStatus {
     Stable,
+    Excellent,
+    Good,
+    Fair,
     Healthy,
     Warning,
     Critical,
@@ -272,6 +275,16 @@ pub enum ArchitectureStatus {
 pub struct ArchitectureHealth {
     pub score: f32,
     pub status: ArchitectureStatus,
+    pub calibration: ArchitectureHealthV2,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct ArchitectureHealthV2 {
+    pub dependency_score: f32,
+    pub responsibility_score: f32,
+    pub architecture_score: f32,
+    pub drift_score: f32,
+    pub final_score: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -397,6 +410,153 @@ pub struct ConvergenceReport {
     pub mutation_impact_models: Vec<MutationImpactModel>,
 }
 
+// ===== Security Architecture Analyzer (v1.4) =====
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityLayer {
+    ExternalInput,
+    Api,
+    Ui,
+    Service,
+    Runtime,
+    Policy,
+    Memory,
+    Storage,
+    System,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecuritySeverity {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustBoundaryViolation {
+    pub source: String,
+    pub target: String,
+    pub source_layer: SecurityLayer,
+    pub target_layer: SecurityLayer,
+    pub severity: SecuritySeverity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PrivilegeViolation {
+    pub source: String,
+    pub target: String,
+    pub source_layer: SecurityLayer,
+    pub target_layer: SecurityLayer,
+    pub severity: SecuritySeverity,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum DangerousPathKind {
+    ExternalInputToRuntime,
+    ExternalInputToFilesystem,
+    ExternalInputToNetwork,
+    ExternalInputToShell,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DangerousPath {
+    pub source: String,
+    pub target_api: String,
+    pub kind: DangerousPathKind,
+    pub severity: SecuritySeverity,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityLayerViolation {
+    pub source: String,
+    pub target: String,
+    pub source_layer: SecurityLayer,
+    pub target_layer: SecurityLayer,
+    pub severity: SecuritySeverity,
+    pub rule: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum AttackSurfaceRisk {
+    Low,
+    Medium,
+    High,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttackSurfaceReport {
+    pub entry_points: usize,
+    pub shell_access: usize,
+    pub filesystem_access: usize,
+    pub network_access: usize,
+    pub risk: AttackSurfaceRisk,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SecurityDrift {
+    pub component: String,
+    pub expected_pattern: String,
+    pub actual_pattern: String,
+    pub description: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecurityRiskScore {
+    pub trust_boundary_score: f32,
+    pub privilege_score: f32,
+    pub dependency_score: f32,
+    pub attack_surface_score: f32,
+    pub final_score: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SecurityClassification {
+    Excellent,
+    Good,
+    Warning,
+    HighRisk,
+    Critical,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecurityProposal {
+    pub title: String,
+    pub reason: String,
+    pub impact: f32,
+    pub confidence: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecurityImpactAnalysis {
+    pub proposal_title: String,
+    pub current_risk: f32,
+    pub predicted_risk: f32,
+    pub impact: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct SecurityArchitectureReport {
+    pub trust_boundary_violations: Vec<TrustBoundaryViolation>,
+    pub privilege_violations: Vec<PrivilegeViolation>,
+    pub dangerous_paths: Vec<DangerousPath>,
+    pub layer_violations: Vec<SecurityLayerViolation>,
+    pub attack_surface: AttackSurfaceReport,
+    pub security_drift: Vec<SecurityDrift>,
+    pub risk_score: SecurityRiskScore,
+    pub classification: SecurityClassification,
+    pub proposals: Vec<SecurityProposal>,
+    pub impact_analysis: Vec<SecurityImpactAnalysis>,
+}
+
+pub struct TrustBoundaryAnalyzer;
+pub struct PrivilegeBoundaryAnalyzer;
+pub struct DangerousDependencyAnalyzer;
+pub struct AttackSurfaceAnalyzer;
+pub struct SecurityDriftAnalyzer;
+
 pub struct DiagnosticReportEngine;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -414,6 +574,21 @@ pub struct ArchitectureHealthBreakdown {
     pub architecture_score: f32,
     pub drift_score: f32,
     pub final_score: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HealthContribution {
+    pub dimension: String,
+    pub score: f32,
+    pub weight: f32,
+    pub contribution: f32,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct HealthTrend {
+    pub previous_score: f32,
+    pub current_score: f32,
+    pub delta: f32,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -495,6 +670,8 @@ pub struct ConvergenceExplanation {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct DetailedDiagnosticReport {
     pub health_breakdown: ArchitectureHealthBreakdown,
+    pub contribution_analysis: Vec<HealthContribution>,
+    pub health_trend: HealthTrend,
     pub health_formula: HealthFormulaReport,
     pub god_objects: Vec<GodObjectReport>,
     pub massive_modules: Vec<MassiveModuleReport>,
@@ -519,6 +696,7 @@ pub struct AnalyzeEngineOutput {
     pub design_drift: DesignDrift,
     pub convergence_report: ConvergenceReport,
     pub detailed_report: DetailedDiagnosticReport,
+    pub security_report: SecurityArchitectureReport,
     pub result: AnalyzeResult,
 }
 
@@ -557,6 +735,13 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &responsibility_analysis,
     );
     let design_drift = analyze_design_drift(&root, &semantic_structure);
+    let previous_health_score = read_previous_health_score(&root);
+    let architecture_analysis = calibrate_architecture_analysis(
+        architecture_analysis,
+        &dependency_analysis,
+        &responsibility_analysis,
+        &design_drift,
+    );
     let convergence_report = analyze_convergence(
         &dependency_analysis,
         &responsibility_analysis,
@@ -569,7 +754,9 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &architecture_analysis,
         &design_drift,
         &convergence_report,
+        previous_health_score,
     );
+    let security_report = analyze_security_architecture(&ast_modules, &semantic_structure);
     let result = build_analyze_result(
         &root,
         &ast_modules,
@@ -591,6 +778,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &design_drift,
         &convergence_report,
         &detailed_report,
+        &security_report,
     )?;
     Ok(AnalyzeEngineOutput {
         root,
@@ -605,6 +793,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         design_drift,
         convergence_report,
         detailed_report,
+        security_report,
         result,
     })
 }
@@ -670,6 +859,17 @@ pub fn render_detailed_analyze_result(output: &AnalyzeEngineOutput) -> String {
     let mut out = render_analyze_result(&output.result);
     let report = &output.detailed_report;
 
+    out.push_str("\n\n=== Architecture Health ===\n\n");
+    out.push_str(&format!(
+        "Dependency\n{:.1}\n\nResponsibility\n{:.1}\n\nArchitecture\n{:.1}\n\nDrift\n{:.1}\n\nFinal\n{:.1}\n\nStatus\n{:?}\n\n",
+        report.health_breakdown.dependency_score,
+        report.health_breakdown.responsibility_score,
+        report.health_breakdown.architecture_score,
+        report.health_breakdown.drift_score,
+        report.health_breakdown.final_score,
+        output.result.status,
+    ));
+
     out.push_str("\n\n=== Health Breakdown ===\n\n");
     out.push_str(&format!(
         "Dependency Score\n{:.1}\n\nResponsibility Score\n{:.1}\n\nArchitecture Score\n{:.1}\n\nDrift Score\n{:.1}\n\nFinal Score\n{:.1}\n\n",
@@ -679,13 +879,25 @@ pub fn render_detailed_analyze_result(output: &AnalyzeEngineOutput) -> String {
         report.health_breakdown.drift_score,
         report.health_breakdown.final_score,
     ));
-    out.push_str("Penalty\n");
-    for penalty in &report.health_formula.penalties {
+    out.push_str("Formula\n");
+    out.push_str(&report.health_formula.formula);
+    out.push_str("\n\n=== Contribution Analysis ===\n\n");
+    for contribution in &report.contribution_analysis {
         out.push_str(&format!(
-            "{}\n{:.1}\n{}\n\n",
-            penalty.label, penalty.value, penalty.reason
+            "{}\nScore\n{:.1}\nWeight\n{:.2}\nContribution\n+{:.1}\n\n",
+            contribution.dimension,
+            contribution.score,
+            contribution.weight,
+            contribution.contribution
         ));
     }
+    out.push_str("=== Health Trend ===\n\n");
+    out.push_str(&format!(
+        "Previous\n{:.1}\n\nCurrent\n{:.1}\n\nDelta\n{:+.1}\n\n",
+        report.health_trend.previous_score,
+        report.health_trend.current_score,
+        report.health_trend.delta
+    ));
 
     out.push_str("=== God Objects ===\n\n");
     if report.god_objects.is_empty() {
@@ -1242,12 +1454,12 @@ fn analyze_architecture(
         })
         .collect::<Vec<_>>();
 
-    let health = compute_architecture_health(
-        dependency.circular_dependencies.len(),
+    let health = compute_architecture_health_v2(
+        dependency,
+        responsibility,
         layer_violations.len(),
         boundary_violations.len(),
-        responsibility.god_objects.len(),
-        dependency.dependency_density,
+        None,
     );
     ArchitectureAnalysis {
         rules,
@@ -1362,9 +1574,12 @@ impl DiagnosticReportEngine {
         architecture: &ArchitectureAnalysis,
         design_drift: &DesignDrift,
         convergence: &ConvergenceReport,
+        previous_health_score: Option<f32>,
     ) -> DetailedDiagnosticReport {
         let health_breakdown =
             build_health_breakdown(dependency, responsibility, architecture, design_drift);
+        let contribution_analysis = build_contribution_analysis(&health_breakdown);
+        let health_trend = build_health_trend(previous_health_score, health_breakdown.final_score);
         let health_formula =
             build_health_formula(&health_breakdown, dependency, responsibility, architecture);
         let god_objects = build_god_object_reports(responsibility);
@@ -1431,6 +1646,8 @@ impl DiagnosticReportEngine {
 
         DetailedDiagnosticReport {
             health_breakdown,
+            contribution_analysis,
+            health_trend,
             health_formula,
             god_objects,
             massive_modules,
@@ -1444,87 +1661,59 @@ impl DiagnosticReportEngine {
 }
 
 fn build_health_breakdown(
-    dependency: &DependencyAnalysis,
-    responsibility: &ResponsibilityAnalysis,
+    _dependency: &DependencyAnalysis,
+    _responsibility: &ResponsibilityAnalysis,
     architecture: &ArchitectureAnalysis,
-    design_drift: &DesignDrift,
+    _design_drift: &DesignDrift,
 ) -> ArchitectureHealthBreakdown {
-    let dependency_score = (100.0
-        - dependency.circular_dependencies.len() as f32 * 8.0
-        - dependency.dependency_density * 6.0)
-        .clamp(0.0, 100.0);
-    let responsibility_score = (100.0
-        - responsibility.god_objects.len() as f32 * 9.0
-        - responsibility.massive_modules.len() as f32 * 4.0)
-        .clamp(0.0, 100.0);
-    let architecture_score = (100.0
-        - architecture.layer_violations.len() as f32 * 10.0
-        - architecture.boundary_violations.len() as f32 * 8.0)
-        .clamp(0.0, 100.0);
-    let drift_score = if design_drift.missing_design_reference {
-        60.0
-    } else {
-        (100.0 - design_drift.intent_drifts.len() as f32 * 12.0).clamp(0.0, 100.0)
-    };
+    let calibration = &architecture.health.calibration;
     ArchitectureHealthBreakdown {
-        dependency_score,
-        responsibility_score,
-        architecture_score,
-        drift_score,
-        final_score: architecture.health.score,
+        dependency_score: calibration.dependency_score,
+        responsibility_score: calibration.responsibility_score,
+        architecture_score: calibration.architecture_score,
+        drift_score: calibration.drift_score,
+        final_score: calibration.final_score,
+    }
+}
+
+fn build_contribution_analysis(breakdown: &ArchitectureHealthBreakdown) -> Vec<HealthContribution> {
+    vec![
+        health_contribution("Dependency", breakdown.dependency_score, 0.30),
+        health_contribution("Responsibility", breakdown.responsibility_score, 0.30),
+        health_contribution("Architecture", breakdown.architecture_score, 0.30),
+        health_contribution("Drift", breakdown.drift_score, 0.10),
+    ]
+}
+
+fn health_contribution(dimension: &str, score: f32, weight: f32) -> HealthContribution {
+    HealthContribution {
+        dimension: dimension.to_string(),
+        score,
+        weight,
+        contribution: score * weight,
+    }
+}
+
+fn build_health_trend(previous_score: Option<f32>, current_score: f32) -> HealthTrend {
+    let previous_score = previous_score.unwrap_or(current_score);
+    HealthTrend {
+        previous_score,
+        current_score,
+        delta: current_score - previous_score,
     }
 }
 
 fn build_health_formula(
     breakdown: &ArchitectureHealthBreakdown,
-    dependency: &DependencyAnalysis,
-    responsibility: &ResponsibilityAnalysis,
-    architecture: &ArchitectureAnalysis,
+    _dependency: &DependencyAnalysis,
+    _responsibility: &ResponsibilityAnalysis,
+    _architecture: &ArchitectureAnalysis,
 ) -> HealthFormulaReport {
-    let penalties = vec![
-        HealthPenalty {
-            label: "Circular Dependencies".to_string(),
-            value: -(dependency.circular_dependencies.len() as f32 * 8.0),
-            reason: "dependency cycles reduce structural stability".to_string(),
-        },
-        HealthPenalty {
-            label: "Dependency Density".to_string(),
-            value: -(dependency.dependency_density * 6.0),
-            reason: "dense dependencies increase blast radius".to_string(),
-        },
-        HealthPenalty {
-            label: "God Objects".to_string(),
-            value: -(responsibility.god_objects.len() as f32 * 9.0),
-            reason: "large multi-responsibility components reduce responsibility quality"
-                .to_string(),
-        },
-        HealthPenalty {
-            label: "Massive Modules".to_string(),
-            value: -(responsibility.massive_modules.len() as f32 * 4.0),
-            reason: "large modules are harder to converge safely".to_string(),
-        },
-        HealthPenalty {
-            label: "Layer Violations".to_string(),
-            value: -(architecture.layer_violations.len() as f32 * 10.0),
-            reason: "layer bypasses break architecture boundaries".to_string(),
-        },
-        HealthPenalty {
-            label: "Boundary Violations".to_string(),
-            value: -(architecture.boundary_violations.len() as f32 * 8.0),
-            reason: "cross-boundary concentration indicates module boundary erosion".to_string(),
-        },
-        HealthPenalty {
-            label: "Design Drift".to_string(),
-            value: breakdown.drift_score - 100.0,
-            reason: "intent drift lowers alignment between implementation and design memory"
-                .to_string(),
-        },
-    ];
     HealthFormulaReport {
         breakdown: breakdown.clone(),
-        penalties,
+        penalties: Vec::new(),
         formula:
-            "final_score = architecture health after dependency, responsibility, layer, boundary, density, and drift penalties"
+            "final = dependency * 0.30 + responsibility * 0.30 + architecture * 0.30 + drift * 0.10"
                 .to_string(),
     }
 }
@@ -1746,8 +1935,13 @@ fn analyze_impacts(
             } else {
                 0.10
             };
-            let health_improvement =
-                predicted_health_improvement(proposal, dependency, responsibility, architecture);
+            let health_improvement = predicted_health_improvement(
+                proposal,
+                dependency,
+                responsibility,
+                architecture,
+                design_drift,
+            );
             let risk = mutation_risk(proposal, design_drift);
             ImpactAnalysis {
                 proposal_title: proposal.proposal.title.clone(),
@@ -1835,14 +2029,8 @@ fn compute_convergence_score(
     responsibility: &ResponsibilityAnalysis,
     design_alignment: &DesignAlignment,
 ) -> ConvergenceScore {
-    let dependency_stability = (100.0
-        - dependency.circular_dependencies.len() as f32 * 8.0
-        - dependency.dependency_density * 6.0)
-        .clamp(0.0, 100.0);
-    let responsibility_quality = (100.0
-        - responsibility.god_objects.len() as f32 * 9.0
-        - responsibility.massive_modules.len() as f32 * 4.0)
-        .clamp(0.0, 100.0);
+    let dependency_stability = dependency_quality_score(dependency);
+    let responsibility_quality = responsibility_quality_score(responsibility);
     let score = (architecture_health * 0.35
         + dependency_stability * 0.25
         + responsibility_quality * 0.25
@@ -1873,14 +2061,43 @@ fn predicted_health_improvement(
     dependency: &DependencyAnalysis,
     responsibility: &ResponsibilityAnalysis,
     architecture: &ArchitectureAnalysis,
+    design_drift: &DesignDrift,
 ) -> f32 {
-    let base = match proposal.mutation_plan.kind.as_str() {
-        "ModuleSplit" => 7.0 + responsibility.god_objects.len() as f32 * 0.4,
-        "DependencyInversion" => 6.0 + dependency.circular_dependencies.len() as f32 * 0.8,
-        "BoundaryAdapter" => 4.5 + architecture.layer_violations.len() as f32 * 0.5,
-        _ => 2.0,
-    };
-    base.min(18.0)
+    let mut virtual_dependency = dependency.clone();
+    let mut virtual_responsibility = responsibility.clone();
+    let mut virtual_layer_violations = architecture.layer_violations.len();
+    let virtual_boundary_violations = architecture.boundary_violations.len();
+
+    match proposal.mutation_plan.kind.as_str() {
+        "ModuleSplit" => {
+            virtual_responsibility
+                .god_objects
+                .retain(|god| god.component != proposal.mutation_plan.target);
+            virtual_responsibility
+                .massive_modules
+                .retain(|module| module.component != proposal.mutation_plan.target);
+        }
+        "DependencyInversion" => {
+            if !virtual_dependency.circular_dependencies.is_empty() {
+                virtual_dependency.circular_dependencies.remove(0);
+            }
+            virtual_dependency.dependency_density =
+                (virtual_dependency.dependency_density * 0.90).max(0.0);
+        }
+        "BoundaryAdapter" => {
+            virtual_layer_violations = virtual_layer_violations.saturating_sub(1);
+        }
+        _ => {}
+    }
+
+    let virtual_health = compute_architecture_health_v2(
+        &virtual_dependency,
+        &virtual_responsibility,
+        virtual_layer_violations,
+        virtual_boundary_violations,
+        Some(design_drift),
+    );
+    (virtual_health.score - architecture.health.score).clamp(-25.0, 25.0)
 }
 
 fn mutation_risk(proposal: &RefactoringProposal, design_drift: &DesignDrift) -> f32 {
@@ -2116,36 +2333,173 @@ fn architecture_allows(
         .unwrap_or(true)
 }
 
-fn compute_architecture_health(
-    circular_dependencies: usize,
+fn calibrate_architecture_analysis(
+    mut architecture: ArchitectureAnalysis,
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    design_drift: &DesignDrift,
+) -> ArchitectureAnalysis {
+    architecture.health = compute_architecture_health_v2(
+        dependency,
+        responsibility,
+        architecture.layer_violations.len(),
+        architecture.boundary_violations.len(),
+        Some(design_drift),
+    );
+    architecture
+}
+
+fn compute_architecture_health_v2(
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
     layer_violations: usize,
     boundary_violations: usize,
-    god_objects: usize,
-    dependency_density: f32,
+    design_drift: Option<&DesignDrift>,
 ) -> ArchitectureHealth {
-    let density_penalty = (dependency_density * 3.0).min(20.0);
-    let mut score = 100.0
-        - circular_dependencies as f32 * 3.0
-        - layer_violations as f32 * 5.0
-        - boundary_violations as f32 * 4.0
-        - god_objects as f32 * 4.0
-        - density_penalty;
-    score = score.clamp(0.0, 100.0);
-    let status = if circular_dependencies == 0
-        && layer_violations == 0
-        && boundary_violations == 0
-        && god_objects == 0
-        && score >= 90.0
-    {
-        ArchitectureStatus::Stable
-    } else if score >= 80.0 {
-        ArchitectureStatus::Healthy
+    let calibration = compute_health_calibration(
+        dependency,
+        responsibility,
+        layer_violations,
+        boundary_violations,
+        design_drift,
+    );
+    let score = calibration.final_score;
+    let status = classify_architecture_health(score);
+    ArchitectureHealth {
+        score,
+        status,
+        calibration,
+    }
+}
+
+fn compute_health_calibration(
+    dependency: &DependencyAnalysis,
+    responsibility: &ResponsibilityAnalysis,
+    layer_violations: usize,
+    boundary_violations: usize,
+    design_drift: Option<&DesignDrift>,
+) -> ArchitectureHealthV2 {
+    let dependency_score = dependency_quality_score(dependency);
+    let responsibility_score = responsibility_quality_score(responsibility);
+    let architecture_score = architecture_quality_score(
+        layer_violations,
+        boundary_violations,
+        dependency.circular_dependencies.len(),
+    );
+    let drift_score = drift_quality_score(design_drift);
+    let final_score = weighted_health_score(
+        dependency_score,
+        responsibility_score,
+        architecture_score,
+        drift_score,
+    );
+    ArchitectureHealthV2 {
+        dependency_score,
+        responsibility_score,
+        architecture_score,
+        drift_score,
+        final_score,
+    }
+}
+
+fn weighted_health_score(
+    dependency_score: f32,
+    responsibility_score: f32,
+    architecture_score: f32,
+    drift_score: f32,
+) -> f32 {
+    (dependency_score * 0.30
+        + responsibility_score * 0.30
+        + architecture_score * 0.30
+        + drift_score * 0.10)
+        .clamp(0.0, 100.0)
+}
+
+fn dependency_quality_score(dependency: &DependencyAnalysis) -> f32 {
+    // Circular dependencies are a critical structural problem — penalize heavily.
+    let cycle_score: f32 = match dependency.circular_dependencies.len() {
+        0 => 100.0,
+        1 => 55.0,
+        2 => 20.0,
+        3..=5 => 8.0,
+        _ => 3.0,
+    };
+    // High hotspot concentration is a secondary concern — small deduction only.
+    let hotspot_penalty: f32 =
+        (dependency.hotspots.len().saturating_sub(25) as f32 * 2.0).min(20.0);
+    (cycle_score - hotspot_penalty).clamp(0.0, 100.0)
+}
+
+fn responsibility_quality_score(responsibility: &ResponsibilityAnalysis) -> f32 {
+    // Use the highest god-object score to represent worst-case severity.
+    let max_god_score = responsibility
+        .god_objects
+        .iter()
+        .map(|g| g.score)
+        .fold(0.0_f32, f32::max);
+    let god_base: f32 = if responsibility.god_objects.is_empty() {
+        100.0
+    } else if max_god_score > 2.0 {
+        // score > 2.0 ≈ 200+ functions — extreme god object
+        15.0
+    } else if max_god_score > 1.5 {
+        35.0
+    } else if max_god_score > 1.0 {
+        55.0
+    } else {
+        75.0
+    };
+    // Additional penalty for each additional god object beyond the first.
+    let extra_god_penalty =
+        ((responsibility.god_objects.len().saturating_sub(1)) as f32 * 8.0).min(25.0);
+    let leakage_penalty =
+        (responsibility.responsibility_leakage.len() as f32 * 5.0).min(15.0);
+    (god_base - extra_god_penalty - leakage_penalty).clamp(0.0, 100.0)
+}
+
+fn architecture_quality_score(
+    layer_violations: usize,
+    boundary_violations: usize,
+    circular_deps: usize,
+) -> f32 {
+    let violation_penalty =
+        layer_violations as f32 * 6.0 + boundary_violations as f32 * 8.0;
+    // Circular dependencies are also an architecture-level structural violation.
+    let cycle_penalty = circular_deps as f32 * 25.0;
+    let total_penalty = violation_penalty + cycle_penalty;
+    (100.0 - total_penalty).clamp(0.0, 100.0)
+}
+
+fn drift_quality_score(design_drift: Option<&DesignDrift>) -> f32 {
+    let Some(design_drift) = design_drift else {
+        // No design reference at all — moderate structural documentation gap.
+        return 75.0;
+    };
+    if design_drift.missing_design_reference {
+        // Repo has no design.md — penalise for absent design documentation.
+        75.0
+    } else {
+        match design_drift.intent_drifts.len() {
+            0 => 100.0,
+            1..=3 => 82.0,
+            4..=10 => 62.0,
+            _ => 35.0,
+        }
+    }
+}
+
+fn classify_architecture_health(score: f32) -> ArchitectureStatus {
+    if score >= 93.0 {
+        ArchitectureStatus::Excellent
+    } else if score >= 70.0 {
+        ArchitectureStatus::Good
     } else if score >= 50.0 {
+        ArchitectureStatus::Healthy
+    } else if score >= 35.0 {
         ArchitectureStatus::Warning
     } else {
         ArchitectureStatus::Critical
-    };
-    ArchitectureHealth { score, status }
+    }
 }
 
 fn semantic_category_map(semantic: &SemanticStructure) -> BTreeMap<String, SemanticCategory> {
@@ -2297,6 +2651,7 @@ fn persist_to_holographic_memory(
     design_drift: &DesignDrift,
     convergence_report: &ConvergenceReport,
     detailed_report: &DetailedDiagnosticReport,
+    security_report: &SecurityArchitectureReport,
 ) -> Result<(), String> {
     let entry = SemanticMemoryEntry {
         id: semantic_memory_id(result),
@@ -2396,8 +2751,50 @@ fn persist_to_holographic_memory(
     )
     .map_err(|err| err.to_string())?;
     fs::write(
+        dir.join("health_trend.json"),
+        serde_json::to_string_pretty(&detailed_report.health_trend)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("health_calibration.json"),
+        serde_json::to_string_pretty(&architecture_analysis.health.calibration)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
         dir.join("hotspots.json"),
         serde_json::to_string_pretty(&detailed_report.dependency_hotspots)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("security_analysis.json"),
+        serde_json::to_string_pretty(security_report).map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("security_report.json"),
+        serde_json::to_string_pretty(&serde_json::json!({
+            "risk_score": security_report.risk_score,
+            "classification": security_report.classification,
+            "trust_boundary_violations": security_report.trust_boundary_violations.len(),
+            "privilege_violations": security_report.privilege_violations.len(),
+            "dangerous_paths": security_report.dangerous_paths.len(),
+            "attack_surface": security_report.attack_surface,
+        }))
+        .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("security_proposals.json"),
+        serde_json::to_string_pretty(&security_report.proposals)
+            .map_err(|err| err.to_string())?,
+    )
+    .map_err(|err| err.to_string())?;
+    fs::write(
+        dir.join("security_risk_score.json"),
+        serde_json::to_string_pretty(&security_report.risk_score)
             .map_err(|err| err.to_string())?,
     )
     .map_err(|err| err.to_string())?;
@@ -2421,6 +2818,16 @@ fn persist_to_holographic_memory(
         serde_json::to_string(&entry).map_err(|err| err.to_string())?
     )
     .map_err(|err| err.to_string())
+}
+
+fn read_previous_health_score(root: &Path) -> Option<f32> {
+    let path = root.join(".dbm/analyze/analyze_result.json");
+    let content = fs::read_to_string(path).ok()?;
+    let value = serde_json::from_str::<serde_json::Value>(&content).ok()?;
+    value
+        .get("architecture_health")
+        .and_then(|score| score.as_f64())
+        .map(|score| score as f32)
 }
 
 fn collect_repository_entries(
@@ -2685,6 +3092,741 @@ fn semantic_memory_id(result: &AnalyzeResult) -> String {
     format!("semantic-memory:{:x}", hasher.finalize())
 }
 
+// ===== Security Architecture Analyzer Implementation =====
+
+pub fn analyze_security_architecture(
+    ast_modules: &[AstModule],
+    semantic: &SemanticStructure,
+) -> SecurityArchitectureReport {
+    let security_layers = build_security_layer_map(semantic, ast_modules);
+    let trust_boundary_violations =
+        TrustBoundaryAnalyzer::analyze(ast_modules, &security_layers);
+    let privilege_violations = PrivilegeBoundaryAnalyzer::analyze(ast_modules, &security_layers);
+    let dangerous_paths = DangerousDependencyAnalyzer::analyze(ast_modules, &security_layers);
+    let layer_violations = detect_security_layer_violations(ast_modules, &security_layers);
+    let attack_surface = AttackSurfaceAnalyzer::analyze(ast_modules, &security_layers);
+    let security_drift = SecurityDriftAnalyzer::analyze(ast_modules, semantic);
+    let risk_score = compute_security_risk_score(
+        &trust_boundary_violations,
+        &privilege_violations,
+        &dangerous_paths,
+        &attack_surface,
+    );
+    let classification = classify_security_score(risk_score.final_score);
+    let proposals = plan_security_proposals(
+        &trust_boundary_violations,
+        &privilege_violations,
+        &dangerous_paths,
+        &security_drift,
+        &attack_surface,
+    );
+    let impact_analysis = compute_security_impact_analysis(&proposals, risk_score.final_score);
+    SecurityArchitectureReport {
+        trust_boundary_violations,
+        privilege_violations,
+        dangerous_paths,
+        layer_violations,
+        attack_surface,
+        security_drift,
+        risk_score,
+        classification,
+        proposals,
+        impact_analysis,
+    }
+}
+
+fn build_security_layer_map(
+    semantic: &SemanticStructure,
+    modules: &[AstModule],
+) -> BTreeMap<String, SecurityLayer> {
+    let mut layers: BTreeMap<String, SecurityLayer> = semantic
+        .components
+        .iter()
+        .map(|c| (c.name.clone(), classify_security_layer_for_component(c)))
+        .collect();
+    for module in modules {
+        if module_has_system_access(module) {
+            layers
+                .entry(module.module_path.clone())
+                .or_insert(SecurityLayer::Service);
+        }
+    }
+    layers
+}
+
+fn classify_security_layer_for_component(component: &SemanticComponent) -> SecurityLayer {
+    let name = component.name.to_ascii_lowercase();
+    if name.contains("input")
+        || name.contains("request")
+        || name.ends_with("_cli")
+        || name.contains("cli_main")
+    {
+        return SecurityLayer::ExternalInput;
+    }
+    match &component.category {
+        SemanticCategory::Controller => SecurityLayer::Api,
+        SemanticCategory::Service => SecurityLayer::Service,
+        SemanticCategory::Repository | SemanticCategory::Storage => SecurityLayer::Storage,
+        SemanticCategory::Engine => SecurityLayer::Runtime,
+        SemanticCategory::Memory => SecurityLayer::Memory,
+        SemanticCategory::Policy => SecurityLayer::Policy,
+        SemanticCategory::Runtime => SecurityLayer::Runtime,
+        SemanticCategory::UI => SecurityLayer::Ui,
+        SemanticCategory::Module => SecurityLayer::Service,
+    }
+}
+
+fn module_has_system_access(module: &AstModule) -> bool {
+    module_has_shell_access(module)
+        || module_has_filesystem_access(module)
+        || module_has_network_access(module)
+}
+
+fn module_has_shell_access(module: &AstModule) -> bool {
+    module.uses.iter().any(|u| {
+        u.contains("std::process") || u.contains("process::Command")
+    })
+}
+
+fn module_has_filesystem_access(module: &AstModule) -> bool {
+    module
+        .uses
+        .iter()
+        .any(|u| u.contains("std::fs") || u.contains("tokio::fs") || u.contains("async_std::fs"))
+}
+
+fn module_has_network_access(module: &AstModule) -> bool {
+    module.uses.iter().any(|u| {
+        u.contains("std::net") || u.contains("tokio::net") || u.contains("async_std::net")
+    })
+}
+
+fn is_external_facing_layer(layer: &SecurityLayer) -> bool {
+    matches!(layer, SecurityLayer::ExternalInput | SecurityLayer::Api | SecurityLayer::Ui)
+}
+
+impl TrustBoundaryAnalyzer {
+    pub fn analyze(
+        modules: &[AstModule],
+        layers: &BTreeMap<String, SecurityLayer>,
+    ) -> Vec<TrustBoundaryViolation> {
+        let mut violations: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut result = Vec::new();
+        for module in modules {
+            let source_layer = layers
+                .get(&module.module_path)
+                .cloned()
+                .unwrap_or(SecurityLayer::Service);
+            if !is_external_facing_layer(&source_layer) {
+                continue;
+            }
+            for dep in &module.uses {
+                let dep_name = normalize_dependency_name(dep);
+                let target_layer = layers
+                    .get(&dep_name)
+                    .cloned()
+                    .unwrap_or(SecurityLayer::Service);
+                let severity = trust_boundary_violation_severity(&source_layer, &target_layer);
+                if let Some(sev) = severity {
+                    if violations.insert((module.module_path.clone(), dep_name.clone())) {
+                        result.push(TrustBoundaryViolation {
+                            source: module.module_path.clone(),
+                            target: dep_name,
+                            source_layer: source_layer.clone(),
+                            target_layer,
+                            severity: sev,
+                        });
+                    }
+                }
+            }
+        }
+        result.sort_by(|a, b| a.source.cmp(&b.source).then(a.target.cmp(&b.target)));
+        result
+    }
+}
+
+fn trust_boundary_violation_severity(
+    source: &SecurityLayer,
+    target: &SecurityLayer,
+) -> Option<SecuritySeverity> {
+    match (source, target) {
+        (SecurityLayer::ExternalInput, SecurityLayer::Storage)
+        | (SecurityLayer::ExternalInput, SecurityLayer::System) => Some(SecuritySeverity::Critical),
+        (SecurityLayer::ExternalInput, SecurityLayer::Runtime)
+        | (SecurityLayer::Api, SecurityLayer::Storage)
+        | (SecurityLayer::Api, SecurityLayer::System) => Some(SecuritySeverity::High),
+        (SecurityLayer::Ui, SecurityLayer::Storage)
+        | (SecurityLayer::Ui, SecurityLayer::System) => Some(SecuritySeverity::High),
+        (SecurityLayer::Api, SecurityLayer::Runtime)
+        | (SecurityLayer::Ui, SecurityLayer::Runtime) => Some(SecuritySeverity::Medium),
+        _ => None,
+    }
+}
+
+impl PrivilegeBoundaryAnalyzer {
+    pub fn analyze(
+        modules: &[AstModule],
+        layers: &BTreeMap<String, SecurityLayer>,
+    ) -> Vec<PrivilegeViolation> {
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut result = Vec::new();
+        for module in modules {
+            let source_layer = layers
+                .get(&module.module_path)
+                .cloned()
+                .unwrap_or(SecurityLayer::Service);
+            if matches!(source_layer, SecurityLayer::Ui | SecurityLayer::Api) {
+                let access_label = if module_has_shell_access(module) {
+                    Some(("Shell", SecuritySeverity::Critical, "std::process"))
+                } else if module_has_filesystem_access(module) {
+                    Some(("Filesystem", SecuritySeverity::High, "std::fs"))
+                } else if module_has_network_access(module) {
+                    Some(("Network", SecuritySeverity::High, "std::net"))
+                } else {
+                    None
+                };
+                if let Some((resource, severity, api)) = access_label {
+                    let key = (module.module_path.clone(), api.to_string());
+                    if seen.insert(key) {
+                        result.push(PrivilegeViolation {
+                            source: module.module_path.clone(),
+                            target: api.to_string(),
+                            source_layer: source_layer.clone(),
+                            target_layer: SecurityLayer::System,
+                            severity,
+                            description: format!(
+                                "{:?} directly accesses {} without Policy boundary",
+                                source_layer, resource
+                            ),
+                        });
+                    }
+                }
+            }
+        }
+        result.sort_by(|a, b| a.source.cmp(&b.source).then(a.target.cmp(&b.target)));
+        result
+    }
+}
+
+impl DangerousDependencyAnalyzer {
+    pub fn analyze(
+        modules: &[AstModule],
+        layers: &BTreeMap<String, SecurityLayer>,
+    ) -> Vec<DangerousPath> {
+        let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+        let mut result = Vec::new();
+        for module in modules {
+            let source_layer = layers
+                .get(&module.module_path)
+                .cloned()
+                .unwrap_or(SecurityLayer::Service);
+            if !is_external_facing_layer(&source_layer) {
+                continue;
+            }
+            if module_has_shell_access(module) {
+                let key = (module.module_path.clone(), "shell".to_string());
+                if seen.insert(key) {
+                    result.push(DangerousPath {
+                        source: module.module_path.clone(),
+                        target_api: "std::process::Command".to_string(),
+                        kind: DangerousPathKind::ExternalInputToShell,
+                        severity: SecuritySeverity::Critical,
+                    });
+                }
+            }
+            if module_has_filesystem_access(module) {
+                let key = (module.module_path.clone(), "filesystem".to_string());
+                if seen.insert(key) {
+                    result.push(DangerousPath {
+                        source: module.module_path.clone(),
+                        target_api: "std::fs".to_string(),
+                        kind: DangerousPathKind::ExternalInputToFilesystem,
+                        severity: SecuritySeverity::High,
+                    });
+                }
+            }
+            if module_has_network_access(module) {
+                let key = (module.module_path.clone(), "network".to_string());
+                if seen.insert(key) {
+                    result.push(DangerousPath {
+                        source: module.module_path.clone(),
+                        target_api: "std::net".to_string(),
+                        kind: DangerousPathKind::ExternalInputToNetwork,
+                        severity: SecuritySeverity::High,
+                    });
+                }
+            }
+        }
+        result.sort_by(|a, b| a.source.cmp(&b.source).then(a.target_api.cmp(&b.target_api)));
+        result
+    }
+}
+
+fn detect_security_layer_violations(
+    modules: &[AstModule],
+    layers: &BTreeMap<String, SecurityLayer>,
+) -> Vec<SecurityLayerViolation> {
+    let mut seen: BTreeSet<(String, String)> = BTreeSet::new();
+    let mut result = Vec::new();
+    for module in modules {
+        let source_layer = layers
+            .get(&module.module_path)
+            .cloned()
+            .unwrap_or(SecurityLayer::Service);
+        for dep in &module.uses {
+            let dep_name = normalize_dependency_name(dep);
+            let target_layer = layers
+                .get(&dep_name)
+                .cloned()
+                .unwrap_or(SecurityLayer::Service);
+            let rule = security_layer_rule(&source_layer, &target_layer);
+            if let Some((rule_text, severity)) = rule {
+                let key = (module.module_path.clone(), dep_name.clone());
+                if seen.insert(key) {
+                    result.push(SecurityLayerViolation {
+                        source: module.module_path.clone(),
+                        target: dep_name,
+                        source_layer: source_layer.clone(),
+                        target_layer,
+                        severity,
+                        rule: rule_text,
+                    });
+                }
+            }
+        }
+    }
+    result.sort_by(|a, b| a.source.cmp(&b.source).then(a.target.cmp(&b.target)));
+    result
+}
+
+fn security_layer_rule(
+    source: &SecurityLayer,
+    target: &SecurityLayer,
+) -> Option<(String, SecuritySeverity)> {
+    match (source, target) {
+        (SecurityLayer::Ui, SecurityLayer::Storage) => Some((
+            "UI must not directly access Storage".to_string(),
+            SecuritySeverity::High,
+        )),
+        (SecurityLayer::Api, SecurityLayer::Storage) => Some((
+            "API must route through Service before Storage".to_string(),
+            SecuritySeverity::High,
+        )),
+        (SecurityLayer::ExternalInput, SecurityLayer::Storage) => Some((
+            "ExternalInput must be validated before reaching Storage".to_string(),
+            SecuritySeverity::Critical,
+        )),
+        (SecurityLayer::ExternalInput, SecurityLayer::Runtime) => Some((
+            "ExternalInput must not directly trigger Runtime execution".to_string(),
+            SecuritySeverity::High,
+        )),
+        (SecurityLayer::Ui, SecurityLayer::System) | (SecurityLayer::Api, SecurityLayer::System) => {
+            Some((
+                "UI/API must not directly access System resources".to_string(),
+                SecuritySeverity::Critical,
+            ))
+        }
+        _ => None,
+    }
+}
+
+impl AttackSurfaceAnalyzer {
+    pub fn analyze(
+        modules: &[AstModule],
+        layers: &BTreeMap<String, SecurityLayer>,
+    ) -> AttackSurfaceReport {
+        let mut entry_points = 0usize;
+        let mut shell_access = 0usize;
+        let mut filesystem_access = 0usize;
+        let mut network_access = 0usize;
+        for module in modules {
+            let layer = layers
+                .get(&module.module_path)
+                .cloned()
+                .unwrap_or(SecurityLayer::Service);
+            if is_external_facing_layer(&layer) {
+                entry_points += module.functions.len();
+            }
+            if module_has_shell_access(module) {
+                shell_access += 1;
+            }
+            if module_has_filesystem_access(module) {
+                filesystem_access += 1;
+            }
+            if module_has_network_access(module) {
+                network_access += 1;
+            }
+        }
+        let risk = compute_attack_surface_risk(
+            entry_points,
+            shell_access,
+            filesystem_access,
+            network_access,
+        );
+        AttackSurfaceReport {
+            entry_points,
+            shell_access,
+            filesystem_access,
+            network_access,
+            risk,
+        }
+    }
+}
+
+fn compute_attack_surface_risk(
+    entry_points: usize,
+    shell_access: usize,
+    filesystem_access: usize,
+    network_access: usize,
+) -> AttackSurfaceRisk {
+    let score = shell_access * 3 + network_access * 2 + filesystem_access + entry_points / 50;
+    if score >= 6 {
+        AttackSurfaceRisk::Critical
+    } else if score >= 3 {
+        AttackSurfaceRisk::High
+    } else if score >= 1 {
+        AttackSurfaceRisk::Medium
+    } else {
+        AttackSurfaceRisk::Low
+    }
+}
+
+impl SecurityDriftAnalyzer {
+    pub fn analyze(modules: &[AstModule], semantic: &SemanticStructure) -> Vec<SecurityDrift> {
+        let mut drifts = Vec::new();
+        let storage_names: BTreeSet<String> = semantic
+            .components
+            .iter()
+            .filter(|c| matches!(c.category, SemanticCategory::Storage | SemanticCategory::Repository))
+            .map(|c| c.name.clone())
+            .collect();
+        for module in modules {
+            let category = semantic
+                .components
+                .iter()
+                .find(|c| c.name == module.module_path)
+                .map(|c| &c.category);
+            if matches!(
+                category,
+                Some(SemanticCategory::UI | SemanticCategory::Controller)
+            ) && module_has_filesystem_access(module)
+            {
+                let gateway = storage_names.iter().next();
+                drifts.push(SecurityDrift {
+                    component: module.module_path.clone(),
+                    expected_pattern: gateway
+                        .map(|g| format!("All writes must use {g}"))
+                        .unwrap_or_else(|| "All writes must use StorageGateway".to_string()),
+                    actual_pattern: format!(
+                        "{} uses std::fs directly",
+                        module.module_path
+                    ),
+                    description: "Direct filesystem access bypasses storage boundary".to_string(),
+                });
+            }
+        }
+        drifts
+    }
+}
+
+fn compute_security_risk_score(
+    trust_violations: &[TrustBoundaryViolation],
+    privilege_violations: &[PrivilegeViolation],
+    dangerous_paths: &[DangerousPath],
+    attack_surface: &AttackSurfaceReport,
+) -> SecurityRiskScore {
+    let trust_boundary_score = (100.0
+        - trust_violations
+            .iter()
+            .map(|v| match v.severity {
+                SecuritySeverity::Critical => 20.0_f32,
+                SecuritySeverity::High => 12.0,
+                SecuritySeverity::Medium => 6.0,
+                SecuritySeverity::Low => 2.0,
+            })
+            .sum::<f32>())
+    .clamp(0.0, 100.0);
+
+    let privilege_score = (100.0
+        - privilege_violations
+            .iter()
+            .map(|v| match v.severity {
+                SecuritySeverity::Critical => 25.0_f32,
+                SecuritySeverity::High => 15.0,
+                SecuritySeverity::Medium => 8.0,
+                SecuritySeverity::Low => 3.0,
+            })
+            .sum::<f32>())
+    .clamp(0.0, 100.0);
+
+    let dependency_score = (100.0
+        - dangerous_paths
+            .iter()
+            .map(|p| match p.severity {
+                SecuritySeverity::Critical => 30.0_f32,
+                SecuritySeverity::High => 18.0,
+                SecuritySeverity::Medium => 8.0,
+                SecuritySeverity::Low => 3.0,
+            })
+            .sum::<f32>())
+    .clamp(0.0, 100.0);
+
+    let attack_surface_score = match attack_surface.risk {
+        AttackSurfaceRisk::Low => 100.0,
+        AttackSurfaceRisk::Medium => 80.0,
+        AttackSurfaceRisk::High => 55.0,
+        AttackSurfaceRisk::Critical => 25.0,
+    };
+
+    let final_score = (trust_boundary_score * 0.30
+        + privilege_score * 0.25
+        + dependency_score * 0.30
+        + attack_surface_score * 0.15)
+        .clamp(0.0, 100.0);
+
+    SecurityRiskScore {
+        trust_boundary_score,
+        privilege_score,
+        dependency_score,
+        attack_surface_score,
+        final_score,
+    }
+}
+
+fn classify_security_score(score: f32) -> SecurityClassification {
+    if score >= 90.0 {
+        SecurityClassification::Excellent
+    } else if score >= 75.0 {
+        SecurityClassification::Good
+    } else if score >= 50.0 {
+        SecurityClassification::Warning
+    } else if score >= 25.0 {
+        SecurityClassification::HighRisk
+    } else {
+        SecurityClassification::Critical
+    }
+}
+
+fn plan_security_proposals(
+    trust_violations: &[TrustBoundaryViolation],
+    privilege_violations: &[PrivilegeViolation],
+    dangerous_paths: &[DangerousPath],
+    security_drift: &[SecurityDrift],
+    _attack_surface: &AttackSurfaceReport,
+) -> Vec<SecurityProposal> {
+    let mut proposals = Vec::new();
+
+    let has_shell = dangerous_paths
+        .iter()
+        .any(|p| matches!(p.kind, DangerousPathKind::ExternalInputToShell));
+    let has_filesystem = dangerous_paths
+        .iter()
+        .any(|p| matches!(p.kind, DangerousPathKind::ExternalInputToFilesystem))
+        || !security_drift.is_empty();
+    let has_network = dangerous_paths
+        .iter()
+        .any(|p| matches!(p.kind, DangerousPathKind::ExternalInputToNetwork));
+    let has_trust_violation = trust_violations
+        .iter()
+        .any(|v| matches!(v.severity, SecuritySeverity::Critical | SecuritySeverity::High));
+    let has_privilege = !privilege_violations.is_empty();
+
+    if has_trust_violation {
+        proposals.push(SecurityProposal {
+            title: "Insert Validation Layer".to_string(),
+            reason: "External input reaches trusted zones without validation".to_string(),
+            impact: 18.0,
+            confidence: 0.92,
+        });
+    }
+    if has_filesystem {
+        proposals.push(SecurityProposal {
+            title: "Introduce Storage Gateway".to_string(),
+            reason: "Direct filesystem access bypasses storage boundary".to_string(),
+            impact: 12.0,
+            confidence: 0.89,
+        });
+    }
+    if has_privilege {
+        proposals.push(SecurityProposal {
+            title: "Add Policy Boundary".to_string(),
+            reason: "UI/API accesses system resources without policy enforcement".to_string(),
+            impact: 10.0,
+            confidence: 0.86,
+        });
+    }
+    if has_shell {
+        proposals.push(SecurityProposal {
+            title: "Move Shell Execution Behind Runtime".to_string(),
+            reason: "Shell access reachable from external input without runtime isolation".to_string(),
+            impact: 22.0,
+            confidence: 0.95,
+        });
+    }
+    if has_network {
+        proposals.push(SecurityProposal {
+            title: "Route Network Access Through Service Layer".to_string(),
+            reason: "Network access reachable from external-facing layer".to_string(),
+            impact: 8.0,
+            confidence: 0.84,
+        });
+    }
+
+    proposals.sort_by(|a, b| b.impact.total_cmp(&a.impact).then(a.title.cmp(&b.title)));
+    proposals
+}
+
+fn compute_security_impact_analysis(
+    proposals: &[SecurityProposal],
+    current_risk: f32,
+) -> Vec<SecurityImpactAnalysis> {
+    let mut cumulative = current_risk;
+    proposals
+        .iter()
+        .map(|proposal| {
+            let predicted = (cumulative + proposal.impact).clamp(0.0, 100.0);
+            let analysis = SecurityImpactAnalysis {
+                proposal_title: proposal.title.clone(),
+                current_risk: cumulative,
+                predicted_risk: predicted,
+                impact: predicted - cumulative,
+            };
+            cumulative = predicted;
+            analysis
+        })
+        .collect()
+}
+
+pub fn render_security_analysis(report: &SecurityArchitectureReport) -> String {
+    let mut out = String::new();
+    out.push_str("=== Security Analysis ===\n\n");
+    out.push_str("Security Score\n");
+    out.push_str(&format!("{:.1}\n\n", report.risk_score.final_score));
+    out.push_str("Status\n");
+    out.push_str(&format!("{:?}\n\n", report.classification));
+    out.push_str("Trust Boundary Violations\n");
+    out.push_str(&format!("{}\n\n", report.trust_boundary_violations.len()));
+    out.push_str("Privilege Violations\n");
+    out.push_str(&format!("{}\n\n", report.privilege_violations.len()));
+    out.push_str("Dangerous Dependency Paths\n");
+    out.push_str(&format!("{}\n\n", report.dangerous_paths.len()));
+    out.push_str("Attack Surface\n");
+    out.push_str(&format!("{:?}\n\n", report.attack_surface.risk));
+    if let Some(proposal) = report.proposals.first() {
+        out.push_str("Top Proposal\n");
+        out.push_str(&format!("{}\n\n", proposal.title));
+        out.push_str("Impact\n");
+        out.push_str(&format!("{:+.1}\n\n", proposal.impact));
+        out.push_str("Confidence\n");
+        out.push_str(&format!("{:.2}\n", proposal.confidence));
+    } else {
+        out.push_str("Top Proposal\nNone\n");
+    }
+    out
+}
+
+pub fn render_security_analysis_detailed(report: &SecurityArchitectureReport) -> String {
+    let mut out = render_security_analysis(report);
+
+    out.push_str("\n\n=== Security Risk Breakdown ===\n\n");
+    out.push_str(&format!(
+        "Trust Boundary\n{:.1}\n\nPrivilege\n{:.1}\n\nDangerous Dependencies\n{:.1}\n\nAttack Surface\n{:.1}\n\nFinal\n{:.1}\n\n",
+        report.risk_score.trust_boundary_score,
+        report.risk_score.privilege_score,
+        report.risk_score.dependency_score,
+        report.risk_score.attack_surface_score,
+        report.risk_score.final_score,
+    ));
+
+    out.push_str("=== Trust Boundary Violations ===\n\n");
+    if report.trust_boundary_violations.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for v in &report.trust_boundary_violations {
+            out.push_str(&format!(
+                "{}\n ↓\n{}\nSeverity\n{:?}\n\n",
+                v.source, v.target, v.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Privilege Violations ===\n\n");
+    if report.privilege_violations.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for v in &report.privilege_violations {
+            out.push_str(&format!(
+                "{}\n ↓\n{}\nDescription\n{}\nSeverity\n{:?}\n\n",
+                v.source, v.target, v.description, v.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Dangerous Dependency Paths ===\n\n");
+    if report.dangerous_paths.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for p in &report.dangerous_paths {
+            out.push_str(&format!(
+                "{}\n ↓\n{}\nKind\n{:?}\nSeverity\n{:?}\n\n",
+                p.source, p.target_api, p.kind, p.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Attack Surface ===\n\n");
+    out.push_str(&format!(
+        "Entry Points\n{}\n\nShell Access\n{}\n\nFilesystem Access\n{}\n\nNetwork Access\n{}\n\nRisk\n{:?}\n\n",
+        report.attack_surface.entry_points,
+        report.attack_surface.shell_access,
+        report.attack_surface.filesystem_access,
+        report.attack_surface.network_access,
+        report.attack_surface.risk,
+    ));
+
+    out.push_str("=== Security Drift ===\n\n");
+    if report.security_drift.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for d in &report.security_drift {
+            out.push_str(&format!(
+                "{}\nExpected\n{}\nActual\n{}\n\n",
+                d.component, d.expected_pattern, d.actual_pattern
+            ));
+        }
+    }
+
+    out.push_str("=== Security Proposals ===\n\n");
+    if report.proposals.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for (i, proposal) in report.proposals.iter().enumerate() {
+            out.push_str(&format!(
+                "{}.\n{}\nImpact\n{:+.1}\nConfidence\n{:.2}\nReason\n{}\n\n",
+                i + 1,
+                proposal.title,
+                proposal.impact,
+                proposal.confidence,
+                proposal.reason
+            ));
+        }
+    }
+
+    out.push_str("=== Security Impact Analysis ===\n\n");
+    for analysis in &report.impact_analysis {
+        out.push_str(&format!(
+            "{}\nCurrent Risk\n{:.1}\n\n{}\n ↓\nPredicted Risk\n{:.1}\n\nImpact\n{:+.1}\n\n",
+            analysis.proposal_title,
+            analysis.current_risk,
+            analysis.proposal_title,
+            analysis.predicted_risk,
+            analysis.impact,
+        ));
+    }
+
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2875,7 +4017,10 @@ mod tests {
         assert!(analysis.health.score < 100.0);
         assert!(matches!(
             analysis.health.status,
-            ArchitectureStatus::Healthy
+            ArchitectureStatus::Excellent
+                | ArchitectureStatus::Good
+                | ArchitectureStatus::Fair
+                | ArchitectureStatus::Healthy
                 | ArchitectureStatus::Warning
                 | ArchitectureStatus::Critical
         ));
@@ -2904,6 +4049,7 @@ mod tests {
             health: ArchitectureHealth {
                 score: 72.3,
                 status: ArchitectureStatus::Warning,
+                calibration: test_health_calibration(72.3),
             },
         };
         let design_drift = DesignDrift {
@@ -2967,7 +4113,7 @@ mod tests {
             }],
             responsibility_leakage: vec![],
         };
-        let architecture = ArchitectureAnalysis {
+        let mut architecture = ArchitectureAnalysis {
             rules: default_architecture_rules(),
             layer_violations: vec![LayerViolation {
                 source: "ui".to_string(),
@@ -2981,8 +4127,9 @@ mod tests {
                 reason: "internal access crosses module boundary".to_string(),
             }],
             health: ArchitectureHealth {
-                score: 7.5,
+                score: 0.0,
                 status: ArchitectureStatus::Critical,
+                calibration: test_health_calibration(0.0),
             },
         };
         let design_drift = DesignDrift {
@@ -2994,8 +4141,14 @@ mod tests {
             }],
             missing_design_reference: false,
         };
+        architecture = calibrate_architecture_analysis(
+            architecture,
+            &dependency,
+            &responsibility,
+            &design_drift,
+        );
         let convergence = ConvergenceReport {
-            architecture_health: 7.5,
+            architecture_health: architecture.health.score,
             convergence_score: ConvergenceScore {
                 score: 78.5,
                 state: ConvergenceState::Unstable,
@@ -3046,9 +4199,20 @@ mod tests {
             &architecture,
             &design_drift,
             &convergence,
+            Some(58.0),
         );
 
-        assert_eq!(report.health_breakdown.final_score, 7.5);
+        assert_eq!(
+            report.health_breakdown.final_score,
+            architecture.health.calibration.final_score
+        );
+        assert_eq!(report.health_trend.previous_score, 58.0);
+        assert_eq!(
+            report.health_trend.delta,
+            report.health_trend.current_score - report.health_trend.previous_score
+        );
+        assert!(report.health_trend.delta.is_finite());
+        assert_eq!(report.contribution_analysis.len(), 4);
         assert_eq!(report.god_objects[0].component, "apps::cli::coding");
         assert_eq!(report.god_objects[0].function_count, 184);
         assert!(
@@ -3065,6 +4229,8 @@ mod tests {
         ));
         assert!(!report.convergence_explanation.reasons.is_empty());
 
+        let output_health_score = architecture.health.score;
+        let output_health_status = architecture.health.status;
         let output = AnalyzeEngineOutput {
             root: PathBuf::from("."),
             repository: RepositorySnapshot {
@@ -3087,6 +4253,7 @@ mod tests {
             design_drift,
             convergence_report: convergence,
             detailed_report: report,
+            security_report: analyze_security_architecture(&[], &SemanticStructure { components: vec![] }),
             result: AnalyzeResult {
                 project_name: "Design_BrainModel".to_string(),
                 modules: 1,
@@ -3106,8 +4273,8 @@ mod tests {
                 layer_violations: 1,
                 boundary_violations: 1,
                 god_objects: 1,
-                architecture_health: 7.5,
-                status: ArchitectureStatus::Critical,
+                architecture_health: output_health_score,
+                status: output_health_status,
                 convergence_score: 78.5,
                 direction: Direction::Improving,
                 top_proposal: Some("Split apps::cli::coding".to_string()),
@@ -3148,6 +4315,16 @@ mod tests {
             uses: uses.into_iter().map(ToString::to_string).collect(),
             impls: vec![],
             calls,
+        }
+    }
+
+    fn test_health_calibration(score: f32) -> ArchitectureHealthV2 {
+        ArchitectureHealthV2 {
+            dependency_score: score,
+            responsibility_score: score,
+            architecture_score: score,
+            drift_score: score,
+            final_score: score,
         }
     }
 }

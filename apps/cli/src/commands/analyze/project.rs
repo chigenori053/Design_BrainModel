@@ -42,6 +42,7 @@ pub struct AnalyzeOptions {
     pub mode: AnalyzeMode,
     pub report: bool,
     pub design: bool,
+    pub security: bool,
     pub language: Language,
     pub intent: Option<IntentProfile>,
     pub json: bool,
@@ -88,6 +89,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
     let mut mode = AnalyzeMode::Summary;
     let mut report = false;
     let mut design = false;
+    let mut security = false;
     let mut language = Language::English;
     let mut intent = None;
     let mut json = false;
@@ -100,6 +102,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
             "--detailed" => mode = AnalyzeMode::Detailed,
             "--report" => report = true,
             "--design" => design = true,
+            "--security" => security = true,
             "--json" => json = true,
             "--design-json" => design_json = true,
             "--lang" => {
@@ -141,6 +144,7 @@ pub fn parse_options(args: &[String]) -> Result<AnalyzeOptions, String> {
         mode,
         report,
         design,
+        security,
         language,
         intent,
         json,
@@ -202,6 +206,22 @@ pub fn execute_structure_analysis_detailed(path: &str) -> Result<String, String>
         path: std::path::PathBuf::from(path),
     })?;
     Ok(analyze_engine::render_detailed_analyze_result(&output))
+}
+
+pub fn execute_security_analysis(path: &str) -> Result<String, String> {
+    let output = analyze_engine::execute(AnalyzeCommand {
+        path: std::path::PathBuf::from(path),
+    })?;
+    Ok(analyze_engine::render_security_analysis(&output.security_report))
+}
+
+pub fn execute_security_analysis_detailed(path: &str) -> Result<String, String> {
+    let output = analyze_engine::execute(AnalyzeCommand {
+        path: std::path::PathBuf::from(path),
+    })?;
+    Ok(analyze_engine::render_security_analysis_detailed(
+        &output.security_report,
+    ))
 }
 
 pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
@@ -747,6 +767,7 @@ mod tests {
             mode: AnalyzeMode::Detailed,
             report: true,
             design: true,
+            security: false,
             language: Language::English,
             intent: Some(IntentProfile::Maintainability),
             json: false,
