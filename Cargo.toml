@@ -98,7 +98,8 @@ members = [
     "tests/pipeline",
     "crates/memory_persistence",
     "crates/execution_hardening",
-    "crates/strategy_engine"
+    "crates/strategy_engine",
+    "crates/mutation_engine"
 ]
 resolver = "2"
 
@@ -191,6 +192,7 @@ execution_core = { path = "crates/execution_core" }
 execution_stability_core = { path = "crates/execution_stability_core" }
 execution_hardening = { path = "crates/execution_hardening" }
 strategy_engine = { path = "crates/strategy_engine" }
+mutation_engine = { path = "crates/mutation_engine" }
 replay_engine = { path = "crates/replay_engine" }
 test_generation_core = { path = "crates/test_generation_core" }
 tensor_ir = { path = "crates/tensor_ir" }

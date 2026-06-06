@@ -31,6 +31,7 @@ pub mod r#loop;
 pub mod memory_admin_main;
 pub mod memory_seed;
 pub mod mlaal;
+pub mod mutation_integration;
 pub mod nl;
 pub mod nl_executor;
 pub mod ops;

@@ -1386,6 +1386,7 @@ dependencies = [
  "memory_engine",
  "memory_persistence",
  "memory_space_core",
+ "mutation_engine",
  "ratatui",
  "runtime_core",
  "runtime_vm",
@@ -3199,6 +3200,16 @@ checksum = "bb85c154ba489f01b25c0d36ae69a87e4a1c73a72631fc6c0eb6dde34a73e44b"
 dependencies = [
  "num-traits",
  "pxfm",
+]
+
+[[package]]
+name = "mutation_engine"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
 ]
 
 [[package]]
