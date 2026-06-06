@@ -194,6 +194,29 @@ impl RuntimeCommandDispatcher {
             "commit" => Some(RuntimeCommand::Commit),
             "rollback" => Some(RuntimeCommand::Rollback),
             "status" => Some(RuntimeCommand::Status),
+            "mutation" => match parts.next() {
+                Some("plan") => {
+                    let target = parts.collect::<Vec<_>>().join(" ");
+                    (!target.is_empty()).then_some(RuntimeCommand::MutationPlan { target })
+                }
+                Some("preview") => {
+                    let mutation_id = parts.next()?.to_string();
+                    Some(RuntimeCommand::MutationPreview { mutation_id })
+                }
+                Some("apply") => {
+                    let mutation_id = parts.next()?.to_string();
+                    Some(RuntimeCommand::MutationApply { mutation_id })
+                }
+                Some("replay") => {
+                    let mutation_id = parts.next()?.to_string();
+                    Some(RuntimeCommand::MutationReplay { mutation_id })
+                }
+                Some("rollback") => {
+                    let mutation_id = parts.next()?.to_string();
+                    Some(RuntimeCommand::MutationRollback { mutation_id })
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
