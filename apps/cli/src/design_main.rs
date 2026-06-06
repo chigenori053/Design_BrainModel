@@ -376,6 +376,8 @@ enum Commands {
         report: bool,
         #[arg(long, default_value_t = false)]
         design: bool,
+        #[arg(long, default_value_t = false)]
+        security: bool,
         #[arg(long, default_value = "ja")]
         lang: String,
         #[arg(long)]
@@ -700,6 +702,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             detailed,
             report,
             design,
+            security,
             lang,
             intent,
             json,
@@ -709,6 +712,7 @@ fn run_cli(cli: Cli) -> Result<(), String> {
             detailed,
             report,
             design,
+            security,
             lang,
             intent,
             json,
@@ -790,6 +794,7 @@ struct UnifiedAnalyzeArgs {
     detailed: bool,
     report: bool,
     design: bool,
+    security: bool,
     lang: String,
     intent: Option<String>,
     json: bool,
@@ -802,6 +807,7 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
         detailed,
         report,
         design,
+        security,
         lang,
         intent,
         json,
@@ -821,6 +827,9 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
     }
     if design {
         forwarded.push("--design".to_string());
+    }
+    if security {
+        forwarded.push("--security".to_string());
     }
     forwarded.push("--lang".to_string());
     forwarded.push(lang);
@@ -847,7 +856,15 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
         json: parsed.json,
         design_json: parsed.design_json,
     };
-    let output = if !options.json && !options.design_json && !options.report && !options.design {
+    let output = if options.security && !options.design_json {
+        if options.json {
+            project::execute_security_analysis_json(&path)?
+        } else if detailed {
+            project::execute_security_analysis_detailed(&path)?
+        } else {
+            project::execute_security_analysis(&path)?
+        }
+    } else if !options.json && !options.design_json && !options.report && !options.design {
         if detailed {
             project::execute_structure_analysis_detailed(&path)?
         } else {
@@ -872,6 +889,20 @@ fn run_unified_analyze(args: UnifiedAnalyzeArgs) -> Result<(), String> {
             deterministic: true,
         },
     )
+}
+
+#[cfg(test)]
+mod security_cli_tests {
+    use super::*;
+
+    #[test]
+    fn analyze_command_accepts_security_flag() {
+        let cli = Cli::try_parse_from(["design_cli", "analyze", ".", "--security"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Commands::Analyze { security: true, .. }
+        ));
+    }
 }
 
 fn run_phase_analyze(

@@ -3702,7 +3702,7 @@ pub fn render_security_analysis(report: &SecurityArchitectureReport) -> String {
     out.push_str("=== Security Analysis ===\n\n");
     out.push_str("Security Score\n");
     out.push_str(&format!("{:.1}\n\n", report.risk_score.final_score));
-    out.push_str("Status\n");
+    out.push_str("Classification\n");
     out.push_str(&format!("{:?}\n\n", report.classification));
     out.push_str("Trust Boundary Violations\n");
     out.push_str(&format!("{}\n\n", report.trust_boundary_violations.len()));
@@ -3762,7 +3762,7 @@ pub fn render_security_analysis_detailed(report: &SecurityArchitectureReport) ->
         }
     }
 
-    out.push_str("=== Dangerous Dependency Paths ===\n\n");
+    out.push_str("=== Dangerous Paths ===\n\n");
     if report.dangerous_paths.is_empty() {
         out.push_str("(none)\n\n");
     } else {
@@ -3770,6 +3770,21 @@ pub fn render_security_analysis_detailed(report: &SecurityArchitectureReport) ->
             out.push_str(&format!(
                 "{}\n ↓\n{}\nKind\n{:?}\nSeverity\n{:?}\n\n",
                 p.source, p.target_api, p.kind, p.severity
+            ));
+        }
+    }
+
+    out.push_str("=== Security Layer Violations ===\n\n");
+    if report.layer_violations.is_empty() {
+        out.push_str("(none)\n\n");
+    } else {
+        for violation in &report.layer_violations {
+            out.push_str(&format!(
+                "{}\n ↓\n{}\nRule\n{}\nSeverity\n{:?}\n\n",
+                violation.source,
+                violation.target,
+                violation.rule,
+                violation.severity
             ));
         }
     }

@@ -224,6 +224,16 @@ pub fn execute_security_analysis_detailed(path: &str) -> Result<String, String> 
     ))
 }
 
+pub fn execute_security_analysis_json(path: &str) -> Result<String, String> {
+    let output = analyze_engine::execute(AnalyzeCommand {
+        path: std::path::PathBuf::from(path),
+    })?;
+    serde_json::to_string_pretty(&serde_json::json!({
+        "security_report": output.security_report,
+    }))
+    .map_err(|err| err.to_string())
+}
+
 pub fn render_output(result: &UnifiedAnalyzeResult, options: &AnalyzeOptions) -> String {
     if options.design_json {
         let snapshot = build_design_snapshot(&result.path, &result.analysis);
@@ -802,5 +812,32 @@ mod tests {
         let opts = parse_options(&[".".to_string(), "--design-json".to_string()]).unwrap();
         assert!(opts.design_json);
         assert!(!opts.json);
+    }
+
+    #[test]
+    fn parse_options_accepts_security() {
+        let opts = parse_options(&[".".to_string(), "--security".to_string()]).unwrap();
+        assert!(opts.security);
+    }
+
+    #[test]
+    fn security_json_contains_report_and_persists_artifacts() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        std::fs::write(dir.path().join("lib.rs"), "pub fn analyze() {}\n").expect("fixture");
+
+        let output =
+            execute_security_analysis_json(dir.path().to_str().expect("utf-8 path")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&output).expect("security json");
+        assert!(parsed.get("security_report").is_some(), "got: {output}");
+
+        let analyze_dir = dir.path().join(".dbm/analyze");
+        for file in [
+            "security_analysis.json",
+            "security_report.json",
+            "security_proposals.json",
+            "security_risk_score.json",
+        ] {
+            assert!(analyze_dir.join(file).is_file(), "missing {file}");
+        }
     }
 }
