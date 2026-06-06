@@ -298,6 +298,10 @@ fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeN
             self::state::RuntimeNarrativeEvent::Analysis { summary } => {
                 self::state::UiEvent::Analysis { summary }
             }
+            self::state::RuntimeNarrativeEvent::AnalyzeResult { projection } => {
+                state.active_target = Some(projection.target.clone());
+                self::state::UiEvent::AnalyzeResult { projection }
+            }
             self::state::RuntimeNarrativeEvent::Planning { summary } => {
                 self::state::UiEvent::Planning { summary }
             }
@@ -324,6 +328,23 @@ fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeN
             }
             self::state::RuntimeNarrativeEvent::Rollback { summary } => {
                 self::state::UiEvent::Rollback { summary }
+            }
+            self::state::RuntimeNarrativeEvent::MutationPlan { projection } => {
+                state.active_target = Some(projection.target.clone());
+                self::state::UiEvent::MutationPlan { projection }
+            }
+            self::state::RuntimeNarrativeEvent::MutationPreview { projection } => {
+                self::state::UiEvent::MutationPreview { projection }
+            }
+            self::state::RuntimeNarrativeEvent::MutationApplied { projection } => {
+                state.active_target = Some(projection.target.clone());
+                self::state::UiEvent::MutationApplied { projection }
+            }
+            self::state::RuntimeNarrativeEvent::MutationReplay { projection } => {
+                self::state::UiEvent::MutationReplay { projection }
+            }
+            self::state::RuntimeNarrativeEvent::MutationRollback { projection } => {
+                self::state::UiEvent::MutationRollback { projection }
             }
             self::state::RuntimeNarrativeEvent::System { summary, target } => {
                 if let Some(target) = target {
@@ -358,6 +379,22 @@ mod tests {
     use crate::runtime::shell::empty_runtime_payload;
     use crate::specification_bridge::{StructuralDiagnosisResult, Violation};
     use crate::tui::runtime::RuntimeShellState;
+    use std::fs;
+
+    fn create_analyze_fixture(root: &std::path::Path) {
+        fs::create_dir_all(root.join("src")).expect("src directory");
+        fs::write(
+            root.join("Cargo.toml"),
+            "[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2024\"\n",
+        )
+        .expect("Cargo.toml");
+        fs::write(
+            root.join("src/lib.rs"),
+            "pub mod service;\npub struct App;\nimpl App { pub fn run() {} }\n",
+        )
+        .expect("lib.rs");
+        fs::write(root.join("src/service.rs"), "pub fn execute() {}\n").expect("service.rs");
+    }
 
     fn runtime_messages(state: &TuiState) -> Vec<String> {
         state
@@ -370,6 +407,7 @@ mod tests {
                 UiEvent::Intent { summary } => Some(summary.clone()),
                 UiEvent::Thinking { summary } => Some(summary.clone()),
                 UiEvent::Analysis { summary } => Some(summary.clone()),
+                UiEvent::AnalyzeResult { projection } => Some(projection.render()),
                 UiEvent::Planning { summary } => Some(summary.clone()),
                 UiEvent::Validation { summary } => Some(summary.clone()),
                 UiEvent::Execution { step } => Some(step.clone()),
@@ -397,6 +435,78 @@ mod tests {
         assert!(projection.contains("runtime idle"), "{projection}");
         assert!(!projection.contains("status: IDLE"), "{projection}");
         assert!(!state.chat.events.is_empty());
+    }
+
+    #[test]
+    fn analyze_workspace_name_runs_engine_persists_results_and_projects_ui_event() {
+        let root = tempfile::tempdir().expect("tempdir");
+        create_analyze_fixture(root.path());
+        let workspace_name = root
+            .path()
+            .file_name()
+            .and_then(|name| name.to_str())
+            .expect("workspace name");
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        assert!(dispatch_runtime_command_to_projection(
+            &mut state,
+            root.path(),
+            &format!("ANALYZE {workspace_name}")
+        ));
+
+        let projection = state.chat.events.iter().find_map(|event| match event {
+            UiEvent::AnalyzeResult { projection } => Some(projection),
+            _ => None,
+        });
+        let projection = projection.expect("analyze result event");
+        assert_eq!(projection.project_name, workspace_name);
+        assert!(!projection.mutation_candidates.is_empty());
+        assert_eq!(
+            state.workspace.analysis_result.analyze_projection.as_ref(),
+            Some(projection)
+        );
+        assert!(
+            root.path()
+                .join(".dbm/analyze/structure_graph.json")
+                .is_file()
+        );
+        assert!(
+            root.path()
+                .join(".dbm/analyze/analyze_result.json")
+                .is_file()
+        );
+        assert!(
+            root.path()
+                .join(".dbm/analyze/semantic_memory.jsonl")
+                .is_file()
+        );
+        let surface = RenderSnapshot::from(&state).reasoning.lines.join("\n");
+        assert!(surface.contains("Analyze Result"), "{surface}");
+        assert!(surface.contains("Mutation Candidates"), "{surface}");
+    }
+
+    #[test]
+    fn analyze_relative_directory_preserves_target() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("apps/cli");
+        create_analyze_fixture(&target);
+        let mut state = TuiState::new(empty_runtime_payload());
+
+        assert!(dispatch_runtime_command_to_projection(
+            &mut state,
+            root.path(),
+            "Analyze apps/cli"
+        ));
+
+        let projection = state.chat.events.iter().find_map(|event| match event {
+            UiEvent::AnalyzeResult { projection } => Some(projection),
+            _ => None,
+        });
+        assert_eq!(
+            projection.map(|projection| projection.target.as_str()),
+            Some("apps/cli")
+        );
+        assert!(target.join(".dbm/analyze/structure_graph.json").is_file());
     }
 
     #[test]

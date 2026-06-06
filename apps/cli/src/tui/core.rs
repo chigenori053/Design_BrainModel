@@ -81,6 +81,7 @@ pub fn handle_submit(
         SpecificationKind::Instruction => {
             // §7.1 §10.1: Transition to Thinking state before dispatch.
             // Runtime must never be silent — emit visible thinking event immediately.
+            state.convergence.record_user_intent(&input);
             state.runtime_state = RuntimeShellState::Thinking;
             state.enqueue_event(UiEvent::Thinking {
                 summary: "processing intent / 意図を処理中".to_string(),
@@ -184,6 +185,7 @@ pub fn handle_runtime_submit(
     input: String,
     worker_tx: Sender<RuntimeWorkerEvent>,
 ) {
+    state.convergence.record_user_intent(&input);
     state.runtime_state = RuntimeShellState::Thinking;
     state.enqueue_event(UiEvent::Thinking {
         summary: "processing intent / 意図を処理中".to_string(),
@@ -573,12 +575,19 @@ rules:
         );
         let lines = state.convergence.workspace_lines(&[]);
         let surface = lines.join("\n");
-        assert!(surface.contains("Intent Input"));
+        let log = state
+            .convergence
+            .log
+            .iter()
+            .map(|entry| entry.message.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(surface.contains("Natural Language Input"));
         assert!(surface.contains("DBM_CLIでセルフ改修したい"));
-        assert!(surface.contains("domain=runtime"));
-        assert!(surface.contains("objective=self_modification"));
-        assert!(surface.contains("target=design_cli"));
-        assert!(surface.contains("Generated Design Specification"));
+        assert!(log.contains("domain=runtime"));
+        assert!(log.contains("objective=self_modification"));
+        assert!(log.contains("target=design_cli"));
+        assert!(surface.contains("Generated Specification"));
         assert!(!lines.iter().any(|line| line.contains("(not started)")));
         assert!(!lines.iter().any(|line| line.contains("(not generated)")));
         assert!(
@@ -676,7 +685,7 @@ rules:
         state.editor_state.editor.clear();
         for ch in spec.chars() {
             if ch == '\n' {
-                state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+                state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
             } else {
                 state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
             }
@@ -742,6 +751,105 @@ rules:
         assert!(
             lines.iter().any(|l| l.starts_with("[THINKING]")),
             "no [THINKING] line found: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn enter_submit_projects_user_intent_and_reasoning_activity() {
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+        state.editor_state.editor.clear();
+        for ch in "hello".chars() {
+            state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let TuiAction::Submit(input) = action else {
+            panic!("expected Enter to create TuiAction::Submit");
+        };
+        handle_submit(&mut state, &core, input, ".".into());
+        state.handle_ui_events();
+
+        assert_eq!(state.convergence.raw_intent.as_deref(), Some("hello"));
+        assert!(
+            state
+                .convergence
+                .timeline_lines()
+                .iter()
+                .any(|line| line.trim() == "hello")
+        );
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line.starts_with("[THINKING]"))
+        );
+        let snapshot = RenderSnapshot::from(&state);
+        assert!(
+            snapshot
+                .reasoning
+                .lines
+                .iter()
+                .any(|line| line.contains("hello"))
+        );
+    }
+
+    #[test]
+    fn enter_submit_reaches_async_runtime_worker_and_projects_response() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "hello".chars() {
+            state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
+        }
+        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
+        let TuiAction::Submit(input) = action else {
+            panic!("expected Enter to create TuiAction::Submit");
+        };
+        let (worker_tx, worker_rx) = std::sync::mpsc::channel();
+
+        handle_submit_async(
+            &mut state,
+            Arc::new(RuntimeCoreBridge::with_defaults()),
+            input,
+            ".".into(),
+            worker_tx,
+        );
+        state.handle_ui_events();
+
+        assert_eq!(state.convergence.raw_intent.as_deref(), Some("hello"));
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line.starts_with("[THINKING]"))
+        );
+
+        let mut runtime_result = None;
+        for _ in 0..3 {
+            let event = worker_rx
+                .recv_timeout(std::time::Duration::from_secs(5))
+                .expect("runtime worker event");
+            if let RuntimeWorkerEvent::Result(result) = event {
+                runtime_result = Some(result);
+                break;
+            }
+        }
+        let result = runtime_result.expect("runtime worker result");
+        apply_runtime_response(&mut state, result.response);
+        state.handle_ui_events();
+
+        assert!(
+            state
+                .flattened_chat_lines()
+                .iter()
+                .any(|line| line.starts_with("[RESULT]") || line.starts_with("[ERROR]"))
+        );
+        assert!(
+            RenderSnapshot::from(&state)
+                .reasoning
+                .lines
+                .iter()
+                .any(|line| line.contains("hello"))
         );
     }
 

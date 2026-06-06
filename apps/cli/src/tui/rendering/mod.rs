@@ -492,7 +492,9 @@ fn reasoning_mode(state: &TuiState, runtime: &RuntimeProjection) -> ReasoningVie
         || state.chat.events.iter().rev().any(|event| {
             matches!(
                 event,
-                UiEvent::Analysis { .. } | UiEvent::StructuralDiagnosis { .. }
+                UiEvent::Analysis { .. }
+                    | UiEvent::AnalyzeResult { .. }
+                    | UiEvent::StructuralDiagnosis { .. }
             )
         })
     {
@@ -511,6 +513,7 @@ fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<St
         .intent
         .as_ref()
         .map(|intent| format!("{} / {}", intent.objective, intent.target))
+        .or_else(|| state.convergence.raw_intent.clone())
         .unwrap_or_else(|| "Awaiting user intent".to_string());
     let missing = if state.convergence.questions.is_empty() {
         "No missing information detected".to_string()
@@ -538,6 +541,9 @@ fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<St
 }
 
 fn analyze_view_lines(state: &TuiState) -> Vec<String> {
+    if let Some(projection) = &state.workspace.analysis_result.analyze_projection {
+        return projection.render().lines().map(str::to_string).collect();
+    }
     let target = state
         .convergence
         .intent
@@ -1044,6 +1050,24 @@ fn runtime_activity_line(event: &UiEvent) -> Option<String> {
         UiEvent::Execution { step } => format!("[Executing] {step}"),
         UiEvent::Runtime { message } => format!("[Executing] {message}"),
         UiEvent::Result { message } => format!("[Completed] {message}"),
+        UiEvent::AnalyzeResult { projection } => {
+            format!("[Completed] analyzed {}", projection.project_name)
+        }
+        UiEvent::MutationPlan { projection } => {
+            format!("[Mutation] plan created for {}", projection.target)
+        }
+        UiEvent::MutationPreview { projection } => {
+            format!("[Mutation] preview created for {}", projection.mutation_id)
+        }
+        UiEvent::MutationApplied { projection } => {
+            format!("[Mutation] applied for {}", projection.target)
+        }
+        UiEvent::MutationReplay { projection } => {
+            format!("[Mutation] replayed {}", projection.mutation_id)
+        }
+        UiEvent::MutationRollback { projection } => {
+            format!("[Mutation] rolled back {}", projection.mutation_id)
+        }
         UiEvent::System { summary } if summary.to_ascii_lowercase().contains("completed") => {
             format!("[Completed] {summary}")
         }
@@ -1084,6 +1108,7 @@ fn render_narrative_event(event: RuntimeNarrativeEvent) -> String {
         RuntimeNarrativeEvent::Intent { summary } => format!("[INTENT] {summary}"),
         RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
         RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
+        RuntimeNarrativeEvent::AnalyzeResult { projection } => projection.render(),
         RuntimeNarrativeEvent::Planning { summary } => format!("[THINKING] {summary}"),
         RuntimeNarrativeEvent::Validation { summary, .. } => format!("[VALIDATION] {summary}"),
         RuntimeNarrativeEvent::Execution { summary, .. } => format!("[EXECUTION] {summary}"),
@@ -1093,6 +1118,11 @@ fn render_narrative_event(event: RuntimeNarrativeEvent) -> String {
         RuntimeNarrativeEvent::Apply { summary, .. }
         | RuntimeNarrativeEvent::Commit { summary } => format!("[APPLY] {summary}"),
         RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
+        RuntimeNarrativeEvent::MutationPlan { projection } => projection.render(),
+        RuntimeNarrativeEvent::MutationPreview { projection } => projection.render(),
+        RuntimeNarrativeEvent::MutationApplied { projection } => projection.render(),
+        RuntimeNarrativeEvent::MutationReplay { projection } => projection.render(),
+        RuntimeNarrativeEvent::MutationRollback { projection } => projection.render(),
         RuntimeNarrativeEvent::System { summary, .. } => format!("[SYSTEM] {summary}"),
         RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
         RuntimeNarrativeEvent::Error { message } => format!("[SYSTEM] runtime error: {message}"),
@@ -1130,6 +1160,7 @@ mod tests {
                 RuntimeNarrativeEvent::Intent { summary } => format!("[INTENT] {summary}"),
                 RuntimeNarrativeEvent::Thinking { summary } => format!("[THINKING] {summary}"),
                 RuntimeNarrativeEvent::Analysis { summary } => format!("[ANALYSIS] {summary}"),
+                RuntimeNarrativeEvent::AnalyzeResult { projection } => projection.render(),
                 RuntimeNarrativeEvent::Planning { summary } => format!("[PLANNING] {summary}"),
                 RuntimeNarrativeEvent::Validation { summary, .. } => {
                     format!("[VALIDATION] {summary}")

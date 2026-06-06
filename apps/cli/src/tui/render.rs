@@ -222,7 +222,7 @@ fn render_status_line(frame: &mut Frame, immutable: &ImmutableFrame) {
     frame.render_widget(Clear, immutable.layout.status);
     frame.render_widget(
         Paragraph::new(format!(
-            "{} | Ctrl+D / Ctrl+Enter Submit  F2 Diagnostics  Tab Focus  Cmd+Q Exit",
+            "{} | Enter Send  Shift+Enter NL  Ctrl+D Send  F2 Diag  Tab Focus  Cmd+Q Exit",
             immutable.snapshot.status.line
         ))
         .style(Style::default().fg(Color::DarkGray)),
@@ -649,7 +649,8 @@ mod tests {
 
         assert!(surface.contains("Design Convergence Workspace"));
         assert!(surface.contains("Ctrl+D"));
-        assert!(surface.contains("Ctrl+Enter"));
+        assert!(surface.contains("Enter Send"));
+        assert!(surface.contains("Shift+Enter NL"));
         assert!(surface.contains("F2 Diagnostics"));
         assert!(surface.contains("Cmd+Q Exit"));
         assert!(surface.contains("Cmd+Q Exit"));

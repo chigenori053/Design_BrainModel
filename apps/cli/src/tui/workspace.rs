@@ -25,6 +25,7 @@ impl Default for EvaluationWorkspace {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnalysisResultWorkspace {
+    pub analyze_projection: Option<crate::tui::state::AnalyzeProjection>,
     pub diagnosis: Vec<String>,
     pub repair_plan: Vec<String>,
     pub implementation_plan: Vec<String>,
@@ -69,6 +70,17 @@ impl WorkspaceProjector {
                 workspace.evaluation.warnings = result.warnings.len();
                 workspace.evaluation.active_task = Some("Structural Diagnosis".to_string());
                 crate::tui::render_trace::record("workspace_diagnosis_projected");
+            }
+            UiEvent::AnalyzeResult { projection } => {
+                workspace.analysis_result.analyze_projection = Some(projection.clone());
+                workspace.analysis_result.diagnosis = projection.findings.clone();
+                workspace.analysis_result.repair_plan = projection.mutation_candidates.clone();
+                workspace.evaluation.domain = projection.project_name.clone();
+                workspace.evaluation.status = "Analyzed".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.violations = projection.dependency_cycles;
+                workspace.evaluation.active_task = None;
+                crate::tui::render_trace::record("workspace_analyze_result_projected");
             }
             UiEvent::RepairPlan { plan } => {
                 workspace.analysis_result.repair_plan = plan
@@ -175,6 +187,9 @@ impl WorkspaceProjector {
 
 impl AnalysisResultWorkspace {
     pub fn lines(&self) -> Vec<String> {
+        if let Some(projection) = &self.analyze_projection {
+            return projection.render().lines().map(str::to_string).collect();
+        }
         let mut lines = Vec::new();
         lines.push("Diagnosis".to_string());
         lines.extend(item_lines(&self.diagnosis));

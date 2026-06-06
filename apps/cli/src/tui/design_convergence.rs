@@ -14,6 +14,21 @@ pub struct DesignConvergenceState {
 impl Eq for DesignConvergenceState {}
 
 impl DesignConvergenceState {
+    pub fn record_user_intent(&mut self, input: &str) {
+        let input = input.trim();
+        if input.is_empty() {
+            return;
+        }
+        self.raw_intent = Some(input.to_string());
+        if !matches!(
+            self.timeline.last(),
+            Some(ConvergenceEntry::UserIntent(previous)) if previous == input
+        ) {
+            self.timeline
+                .push(ConvergenceEntry::UserIntent(input.to_string()));
+        }
+    }
+
     pub fn timeline_lines(&self) -> Vec<String> {
         let entries = if self.timeline.is_empty() {
             self.legacy_timeline_entries()

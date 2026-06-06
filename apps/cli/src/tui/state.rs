@@ -133,6 +133,9 @@ pub enum RuntimeNarrativeEvent {
     Analysis {
         summary: String,
     },
+    AnalyzeResult {
+        projection: AnalyzeProjection,
+    },
     Planning {
         summary: String,
     },
@@ -156,6 +159,21 @@ pub enum RuntimeNarrativeEvent {
     },
     Rollback {
         summary: String,
+    },
+    MutationPlan {
+        projection: MutationProjection,
+    },
+    MutationPreview {
+        projection: PreviewProjection,
+    },
+    MutationApplied {
+        projection: MutationProjection,
+    },
+    MutationReplay {
+        projection: ReplayProjection,
+    },
+    MutationRollback {
+        projection: RollbackProjection,
     },
     System {
         summary: String,
@@ -183,8 +201,14 @@ impl RuntimeNarrativeEvent {
             | Self::Rollback { summary }
             | Self::System { summary, .. } => summary.clone(),
             Self::Preview { target } => format!("changes prepared for {target}"),
+            Self::MutationPlan { projection } => projection.render(),
+            Self::MutationPreview { projection } => projection.render(),
+            Self::MutationApplied { projection } => projection.render(),
+            Self::MutationReplay { projection } => projection.render(),
+            Self::MutationRollback { projection } => projection.render(),
             Self::GovernanceReject { reason } => format!("rejected: {}", reason),
             Self::Error { message } => format!("[ERROR] {}", message),
+            Self::AnalyzeResult { projection } => projection.render(),
         }
     }
 
@@ -195,8 +219,136 @@ impl RuntimeNarrativeEvent {
             | Self::Execution { target, .. }
             | Self::Apply { target, .. }
             | Self::System { target, .. } => target.as_deref(),
+            Self::AnalyzeResult { projection } => Some(projection.target.as_str()),
+            Self::MutationPlan { projection } => Some(projection.target.as_str()),
+            Self::MutationPreview { projection } => Some(projection.mutation_id.as_str()),
+            Self::MutationApplied { projection } => Some(projection.target.as_str()),
             _ => None,
         }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AnalyzeProjection {
+    pub target: String,
+    pub project_name: String,
+    pub module_count: usize,
+    pub dependency_cycles: usize,
+    pub coupling_level: String,
+    pub findings: Vec<String>,
+    pub mutation_candidates: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MutationProjection {
+    pub mutation_id: String,
+    pub target: String,
+    pub operation: String,
+    pub validation_targets: Vec<String>,
+    pub expected_improvements: Vec<String>,
+}
+
+impl MutationProjection {
+    pub fn render(&self) -> String {
+        let mut lines = vec![
+            "Mutation Plan".to_string(),
+            "-------------".to_string(),
+            format!("ID: {}", self.mutation_id),
+            format!("Target: {}", self.target),
+            format!("Operation: {}", self.operation),
+            "Validation Targets".to_string(),
+        ];
+        lines.extend(
+            self.validation_targets
+                .iter()
+                .map(|target| format!("* {target}")),
+        );
+        lines.push("Expected Improvements".to_string());
+        lines.extend(
+            self.expected_improvements
+                .iter()
+                .map(|improvement| format!("* {improvement}")),
+        );
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PreviewProjection {
+    pub mutation_id: String,
+    pub affected_modules: Vec<String>,
+    pub affected_files: Vec<String>,
+    pub structural_impact: String,
+}
+
+impl PreviewProjection {
+    pub fn render(&self) -> String {
+        let mut lines = vec![
+            "Mutation Preview".to_string(),
+            "----------------".to_string(),
+            format!("ID: {}", self.mutation_id),
+            "Affected Modules:".to_string(),
+        ];
+        lines.extend(
+            self.affected_modules
+                .iter()
+                .map(|module| format!("- {module}")),
+        );
+        lines.push("Affected Files:".to_string());
+        lines.extend(self.affected_files.iter().map(|file| format!("- {file}")));
+        lines.push(format!("Structural Impact: {}", self.structural_impact));
+        lines.join("\n")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplayProjection {
+    pub mutation_id: String,
+    pub status: String,
+    pub checksum_matched: bool,
+}
+
+impl ReplayProjection {
+    pub fn render(&self) -> String {
+        format!(
+            "Mutation Replay: {} - {} (Checksum Matched: {})",
+            self.mutation_id, self.status, self.checksum_matched
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RollbackProjection {
+    pub mutation_id: String,
+    pub status: String,
+}
+
+impl RollbackProjection {
+    pub fn render(&self) -> String {
+        format!("Mutation Rollback: {} - {}", self.mutation_id, self.status)
+    }
+}
+
+impl AnalyzeProjection {
+    pub fn render(&self) -> String {
+        let mut lines = vec![
+            "Analyze Result".to_string(),
+            "--------------".to_string(),
+            format!("Project: {}", self.project_name),
+            format!("Modules: {}", self.module_count),
+            format!("Dependency Cycles: {}", self.dependency_cycles),
+            format!("Coupling: {}", self.coupling_level),
+            "Findings".to_string(),
+        ];
+        lines.extend(self.findings.iter().map(|finding| format!("- {finding}")));
+        lines.push("Mutation Candidates".to_string());
+        lines.extend(
+            self.mutation_candidates
+                .iter()
+                .enumerate()
+                .map(|(index, candidate)| format!("{}. {candidate}", index + 1)),
+        );
+        lines.join("\n")
     }
 }
 
@@ -210,6 +362,9 @@ pub enum UiEvent {
     },
     Analysis {
         summary: String,
+    },
+    AnalyzeResult {
+        projection: AnalyzeProjection,
     },
     Planning {
         summary: String,
@@ -246,6 +401,21 @@ pub enum UiEvent {
     },
     Pipeline {
         state: String,
+    },
+    MutationPlan {
+        projection: MutationProjection,
+    },
+    MutationPreview {
+        projection: PreviewProjection,
+    },
+    MutationApplied {
+        projection: MutationProjection,
+    },
+    MutationReplay {
+        projection: ReplayProjection,
+    },
+    MutationRollback {
+        projection: RollbackProjection,
     },
     SpecContext {
         context: crate::specification_bridge::SpecificationContext,
@@ -301,6 +471,7 @@ impl UiEvent {
             Self::Intent { .. } => "INTENT",
             Self::Thinking { .. } => "THINKING",
             Self::Analysis { .. } => "ANALYSIS",
+            Self::AnalyzeResult { .. } => "ANALYZE RESULT",
             Self::Planning { .. } => "PLANNING",
             Self::Validation { .. } => "VALIDATION",
             Self::Editing { .. } => "EDITING",
@@ -312,6 +483,11 @@ impl UiEvent {
             Self::DesignUpdate { .. } => "DESIGN",
             Self::DesignDiff { .. } => "DESIGN DIFF",
             Self::Pipeline { .. } => "PIPELINE",
+            Self::MutationPlan { .. } => "MUTATION PLAN",
+            Self::MutationPreview { .. } => "MUTATION PREVIEW",
+            Self::MutationApplied { .. } => "MUTATION APPLIED",
+            Self::MutationReplay { .. } => "MUTATION REPLAY",
+            Self::MutationRollback { .. } => "MUTATION ROLLBACK",
             Self::SpecContext { .. } => "SPEC_CONTEXT",
             Self::DomainClassification { .. } => "DOMAIN",
             Self::StructuralDiagnosis { .. } => "STRUCTURAL_DIAGNOSIS",
@@ -335,6 +511,7 @@ impl UiEvent {
             Self::Intent { summary } => summary.clone(),
             Self::Thinking { summary } => summary.clone(),
             Self::Analysis { summary } => summary.clone(),
+            Self::AnalyzeResult { projection } => projection.render(),
             Self::Planning { summary } => summary.clone(),
             Self::Validation { summary } => summary.clone(),
             Self::Editing { target, action } => format!("{target}: {action}"),
@@ -351,6 +528,11 @@ impl UiEvent {
             Self::DesignUpdate { summary, score } => format!("Score: {score:.2}\n- {summary}"),
             Self::DesignDiff { changes } => changes.join("\n"),
             Self::Pipeline { state } => state.clone(),
+            Self::MutationPlan { projection } => projection.render(),
+            Self::MutationPreview { projection } => projection.render(),
+            Self::MutationApplied { projection } => projection.render(),
+            Self::MutationReplay { projection } => projection.render(),
+            Self::MutationRollback { projection } => projection.render(),
             Self::SpecContext { context } => format!(
                 "system_name={}\ngoals={}\nconstraints={}\ncomponents={}\nrules={}",
                 context.system_name.as_deref().unwrap_or("(none)"),
@@ -1433,7 +1615,7 @@ impl TuiState {
         }
 
         match key.code {
-            KeyCode::Enter => {
+            KeyCode::Enter if key.modifiers.contains(KeyModifiers::SHIFT) => {
                 self.editor_state.editor.insert_newline();
                 if self.diagnostic_mode {
                     self.diagnostics.last_mutation = Some("insert_newline()".to_string());
@@ -1486,13 +1668,13 @@ impl TuiState {
     }
 
     fn is_submit_key(key: &KeyEvent) -> bool {
-        let command_enter =
-            key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::SUPER);
-        let ctrl_enter =
-            key.code == KeyCode::Enter && key.modifiers.contains(KeyModifiers::CONTROL);
+        let enter = key.code == KeyCode::Enter && !key.modifiers.contains(KeyModifiers::SHIFT);
         let ctrl_d = matches!(key.code, KeyCode::Char('d') | KeyCode::Char('D'))
             && key.modifiers.contains(KeyModifiers::CONTROL);
-        command_enter || ctrl_enter || ctrl_d
+        // Some terminals expose Ctrl+D as the EOT control character without
+        // retaining the CONTROL modifier.
+        let eot = key.code == KeyCode::Char('\u{4}');
+        enter || ctrl_d || eot
     }
 
     fn submit_editor(&mut self) -> TuiAction {
@@ -1911,7 +2093,7 @@ mod tests {
             "system_name: DBM_TUI_Test\n\nrules:\n  - Runtime must pass through ApplyGate";
         for ch in payload.chars() {
             if ch == '\n' {
-                state.handle_key_event(key(KeyCode::Enter));
+                state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
             } else {
                 state.handle_key_event(key(KeyCode::Char(ch)));
             }
@@ -2254,16 +2436,29 @@ mod tests {
     }
 
     #[test]
-    fn enter_inserts_newlines_in_editor() {
+    fn shift_enter_inserts_newlines_in_editor() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
         state.handle_key_event(key(KeyCode::Char('a')));
         for _ in 0..4 {
-            state.handle_key_event(key(KeyCode::Enter));
+            state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
             state.handle_key_event(key(KeyCode::Char('b')));
         }
 
         assert_eq!(state.editor_state.editor.line_count(), 5);
+    }
+
+    #[test]
+    fn plain_enter_submits_without_terminal_modifier_support() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "fix parser bug".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action = state.handle_key_event(key(KeyCode::Enter));
+
+        assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
     }
 
     #[test]
@@ -2316,6 +2511,20 @@ mod tests {
     }
 
     #[test]
+    fn eot_control_character_submits_editor_as_ctrl_d_fallback() {
+        let mut state = TuiState::new(empty_payload());
+        state.editor_state.editor.clear();
+        for ch in "fix parser bug".chars() {
+            state.handle_key_event(key(KeyCode::Char(ch)));
+        }
+
+        let action =
+            state.handle_key_event(KeyEvent::new(KeyCode::Char('\u{4}'), KeyModifiers::NONE));
+
+        assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
+    }
+
+    #[test]
     fn ctrl_enter_submits_editor_as_fallback() {
         let mut state = TuiState::new(empty_payload());
         state.editor_state.editor.clear();
@@ -2330,7 +2539,7 @@ mod tests {
     }
 
     #[test]
-    fn submit_enter_accepts_additional_modifiers() {
+    fn shifted_enter_is_reserved_for_newline() {
         let mut command_state = TuiState::new(empty_payload());
         command_state.editor_state.editor.clear();
         for ch in "command submit".chars() {
@@ -2340,10 +2549,8 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::SUPER | KeyModifiers::SHIFT,
         ));
-        assert_eq!(
-            command_action,
-            TuiAction::Submit("command submit".to_string())
-        );
+        assert_eq!(command_action, TuiAction::None);
+        assert_eq!(command_state.editor_state.editor.line_count(), 2);
 
         let mut ctrl_state = TuiState::new(empty_payload());
         ctrl_state.editor_state.editor.clear();
@@ -2354,7 +2561,8 @@ mod tests {
             KeyCode::Enter,
             KeyModifiers::CONTROL | KeyModifiers::SHIFT,
         ));
-        assert_eq!(ctrl_action, TuiAction::Submit("control submit".to_string()));
+        assert_eq!(ctrl_action, TuiAction::None);
+        assert_eq!(ctrl_state.editor_state.editor.line_count(), 2);
     }
 
     #[test]
@@ -2401,7 +2609,7 @@ mod tests {
         for ch in "abc".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
-        state.handle_key_event(key(KeyCode::Enter));
+        state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
         for ch in "de".chars() {
             state.handle_key_event(key(KeyCode::Char(ch)));
         }
@@ -2485,7 +2693,7 @@ mod tests {
         let spec = "system_name: \"DBM\"\ngoals:\n  - Analyze architecture";
         for ch in spec.chars() {
             if ch == '\n' {
-                state.handle_key_event(key(KeyCode::Enter));
+                state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::SHIFT));
             } else {
                 state.handle_key_event(key(KeyCode::Char(ch)));
             }
