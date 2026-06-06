@@ -132,6 +132,11 @@ fn step_pattern(step: &PlannedStep) -> String {
         PlannedStep::Refactor(_) => "refactor".to_string(),
         PlannedStep::Repair(_) => "repair".to_string(),
         PlannedStep::Apply => "apply".to_string(),
+        PlannedStep::MutationPlan(_) => "mutation_plan".to_string(),
+        PlannedStep::MutationPreview(_) => "mutation_preview".to_string(),
+        PlannedStep::MutationApply(_) => "mutation_apply".to_string(),
+        PlannedStep::MutationReplay(_) => "mutation_replay".to_string(),
+        PlannedStep::MutationRollback(_) => "mutation_rollback".to_string(),
         PlannedStep::Reload => "reload".to_string(),
     }
 }

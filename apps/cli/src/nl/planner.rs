@@ -128,6 +128,46 @@ pub fn to_legacy_plan(command_plan: &CommandPlan) -> Plan {
                     args: Vec::new(),
                 }),
             ),
+            PlannedStep::MutationPlan(target) => (
+                format!("mutation plan for: {}", target),
+                Some(CommandInvocation {
+                    name: "mutation".to_string(),
+                    subcommand: Some("plan".to_string()),
+                    args: vec![target.clone()],
+                }),
+            ),
+            PlannedStep::MutationPreview(id) => (
+                format!("mutation preview: {}", id),
+                Some(CommandInvocation {
+                    name: "mutation".to_string(),
+                    subcommand: Some("preview".to_string()),
+                    args: vec![id.clone()],
+                }),
+            ),
+            PlannedStep::MutationApply(id) => (
+                format!("mutation apply: {}", id),
+                Some(CommandInvocation {
+                    name: "mutation".to_string(),
+                    subcommand: Some("apply".to_string()),
+                    args: vec![id.clone()],
+                }),
+            ),
+            PlannedStep::MutationReplay(id) => (
+                format!("mutation replay: {}", id),
+                Some(CommandInvocation {
+                    name: "mutation".to_string(),
+                    subcommand: Some("replay".to_string()),
+                    args: vec![id.clone()],
+                }),
+            ),
+            PlannedStep::MutationRollback(id) => (
+                format!("mutation rollback: {}", id),
+                Some(CommandInvocation {
+                    name: "mutation".to_string(),
+                    subcommand: Some("rollback".to_string()),
+                    args: vec![id.clone()],
+                }),
+            ),
             PlannedStep::Reload => (
                 "reload IR".to_string(),
                 Some(CommandInvocation {

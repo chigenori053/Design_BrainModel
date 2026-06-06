@@ -137,6 +137,46 @@ fn score_intent(intent: IntentType, features: &SemanticFeatures) -> f32 {
                 (0.12, &["learn", "学習", "rules learn"]),
             ],
         ),
+        IntentType::MutationPlan => weighted_similarity(
+            features,
+            &[
+                (0.50, &["mutation plan", "mutation-plan", "mutationplan"]),
+                (0.30, &["plan mutation", "plan refactoring", "plan split"]),
+                (0.20, &["リファクタリング案", "分割案", "分割計画"]),
+            ],
+        ),
+        IntentType::MutationPreview => weighted_similarity(
+            features,
+            &[
+                (0.50, &["mutation preview", "mutation-preview", "preview mutation"]),
+                (0.30, &["preview plan", "preview refactoring"]),
+                (0.20, &["プレビュー", "変更確認"]),
+            ],
+        ),
+        IntentType::MutationApply => weighted_similarity(
+            features,
+            &[
+                (0.50, &["mutation apply", "apply mutation", "execute mutation"]),
+                (0.30, &["apply plan", "apply refactoring"]),
+                (0.20, &["適用", "実行"]),
+            ],
+        ),
+        IntentType::MutationReplay => weighted_similarity(
+            features,
+            &[
+                (0.50, &["mutation replay", "replay mutation", "replay"]),
+                (0.30, &["re-apply", "replay plan"]),
+                (0.20, &["再実行", "リプレイ"]),
+            ],
+        ),
+        IntentType::MutationRollback => weighted_similarity(
+            features,
+            &[
+                (0.50, &["mutation rollback", "rollback mutation", "rollback"]),
+                (0.30, &["undo mutation", "revert mutation"]),
+                (0.20, &["ロールバック", "差し戻し"]),
+            ],
+        ),
         _ => 0.0,
     };
 

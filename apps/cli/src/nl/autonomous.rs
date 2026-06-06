@@ -403,6 +403,11 @@ fn planned_step_command(step: &PlannedStep) -> String {
             format!("design_cli validate {} --repair", spec.target.display())
         }
         PlannedStep::Apply => "design_cli coding . --apply".to_string(),
+        PlannedStep::MutationPlan(target) => format!("design_cli mutation plan {target}"),
+        PlannedStep::MutationPreview(id) => format!("design_cli mutation preview {id}"),
+        PlannedStep::MutationApply(id) => format!("design_cli mutation apply {id}"),
+        PlannedStep::MutationReplay(id) => format!("design_cli mutation replay {id}"),
+        PlannedStep::MutationRollback(id) => format!("design_cli mutation rollback {id}"),
         PlannedStep::Reload => "design_cli replay . --reload".to_string(),
     }
 }

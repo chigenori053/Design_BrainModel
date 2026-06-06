@@ -720,6 +720,7 @@ fn looks_like_explicit_target_token(token: &str) -> bool {
         return false;
     }
     cleaned.contains('/')
+        || cleaned.contains("::")
         || [".rs", ".toml", ".md", ".json", ".yaml", ".yml", ".txt"]
             .iter()
             .any(|extension| cleaned.ends_with(extension))

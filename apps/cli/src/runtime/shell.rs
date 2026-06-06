@@ -28,7 +28,9 @@ use crate::runtime::synthesis::{
 use crate::tui::model::{TraceStatsViewModel, TraceViewModel, UiPayload};
 use crate::tui::rendering::runtime_semantic_events;
 use crate::tui::runtime::RuntimeShellState;
-use crate::tui::state::{Diff, DiffChunk, RuntimeNarrativeEvent, RuntimeTransaction, TuiState};
+use crate::tui::state::{
+    AnalyzeProjection, Diff, DiffChunk, RuntimeNarrativeEvent, RuntimeTransaction, TuiState,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanonicalTarget {
@@ -112,11 +114,17 @@ pub struct StagedTransaction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeCommandKind {
+    Analyze,
     Preview,
     Apply,
     Commit,
     Rollback,
     Status,
+    MutationPlan,
+    MutationPreview,
+    MutationApply,
+    MutationReplay,
+    MutationRollback,
     Other,
 }
 
@@ -139,11 +147,31 @@ pub struct RuntimeCommandTrace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeCommand {
-    Preview { target: PathBuf },
+    Analyze {
+        target: String,
+    },
+    Preview {
+        target: PathBuf,
+    },
     Apply,
     Commit,
     Rollback,
     Status,
+    MutationPlan {
+        target: String,
+    },
+    MutationPreview {
+        mutation_id: String,
+    },
+    MutationApply {
+        mutation_id: String,
+    },
+    MutationReplay {
+        mutation_id: String,
+    },
+    MutationRollback {
+        mutation_id: String,
+    },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -153,7 +181,11 @@ impl RuntimeCommandDispatcher {
     pub fn parse(input: &str) -> Option<RuntimeCommand> {
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
-        match command {
+        match command.to_ascii_lowercase().as_str() {
+            "analyze" => {
+                let target = parts.collect::<Vec<_>>().join(" ");
+                (!target.is_empty()).then_some(RuntimeCommand::Analyze { target })
+            }
             "preview" => {
                 let target = parts.next().map(PathBuf::from).unwrap_or_default();
                 Some(RuntimeCommand::Preview { target })
@@ -183,14 +215,26 @@ impl RuntimeCommandDispatcher {
             command_id,
             raw_input: input.to_string(),
             runtime_command: match command {
+                RuntimeCommand::Analyze { .. } => RuntimeCommandKind::Analyze,
                 RuntimeCommand::Preview { .. } => RuntimeCommandKind::Preview,
                 RuntimeCommand::Apply => RuntimeCommandKind::Apply,
                 RuntimeCommand::Commit => RuntimeCommandKind::Commit,
                 RuntimeCommand::Rollback => RuntimeCommandKind::Rollback,
                 RuntimeCommand::Status => RuntimeCommandKind::Status,
+                RuntimeCommand::MutationPlan { .. } => RuntimeCommandKind::MutationPlan,
+                RuntimeCommand::MutationPreview { .. } => RuntimeCommandKind::MutationPreview,
+                RuntimeCommand::MutationApply { .. } => RuntimeCommandKind::MutationApply,
+                RuntimeCommand::MutationReplay { .. } => RuntimeCommandKind::MutationReplay,
+                RuntimeCommand::MutationRollback { .. } => RuntimeCommandKind::MutationRollback,
             },
             dispatch_target: match &command {
+                RuntimeCommand::Analyze { target } => target.clone(),
                 RuntimeCommand::Preview { target } => target.display().to_string(),
+                RuntimeCommand::MutationPlan { target } => target.clone(),
+                RuntimeCommand::MutationPreview { mutation_id } => mutation_id.clone(),
+                RuntimeCommand::MutationApply { mutation_id } => mutation_id.clone(),
+                RuntimeCommand::MutationReplay { mutation_id } => mutation_id.clone(),
+                RuntimeCommand::MutationRollback { mutation_id } => mutation_id.clone(),
                 _ => String::new(),
             },
             planner_entered: false,
@@ -205,6 +249,7 @@ impl RuntimeCommandDispatcher {
         };
 
         let events = match command {
+            RuntimeCommand::Analyze { target } => runtime_analyze(workspace_root, &target),
             RuntimeCommand::Preview { target } => {
                 let before_tx_id = state.active_transaction_id.clone();
                 let events = runtime_preview(state, workspace_root, target.clone());
@@ -248,6 +293,21 @@ impl RuntimeCommandDispatcher {
                 events
             }
             RuntimeCommand::Status => runtime_status(state),
+            RuntimeCommand::MutationPlan { target } => {
+                runtime_mutation_plan(state, workspace_root, &target)
+            }
+            RuntimeCommand::MutationPreview { mutation_id } => {
+                runtime_mutation_preview(state, workspace_root, &mutation_id)
+            }
+            RuntimeCommand::MutationApply { mutation_id } => {
+                runtime_mutation_apply(state, workspace_root, &mutation_id)
+            }
+            RuntimeCommand::MutationReplay { mutation_id } => {
+                runtime_mutation_replay(state, workspace_root, &mutation_id)
+            }
+            RuntimeCommand::MutationRollback { mutation_id } => {
+                runtime_mutation_rollback(state, workspace_root, &mutation_id)
+            }
         };
 
         trace.state_after = state.runtime_state;
@@ -255,6 +315,127 @@ impl RuntimeCommandDispatcher {
 
         Some(events)
     }
+}
+
+fn runtime_analyze(workspace_root: &Path, target: &str) -> Vec<RuntimeNarrativeEvent> {
+    let resolved = match resolve_analyze_target(workspace_root, target) {
+        Ok(path) => path,
+        Err(message) => return vec![RuntimeNarrativeEvent::Error { message }],
+    };
+    let output = match crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
+        path: resolved,
+    }) {
+        Ok(output) => output,
+        Err(message) => return vec![RuntimeNarrativeEvent::Error { message }],
+    };
+    let result = &output.result;
+    let findings = analyze_findings(result);
+    let mutation_candidates = output
+        .convergence_report
+        .refactoring_proposals
+        .iter()
+        .take(3)
+        .map(|proposal| proposal.proposal.title.clone())
+        .collect::<Vec<_>>();
+    let mutation_candidates = if mutation_candidates.is_empty() {
+        fallback_mutation_candidates(result)
+    } else {
+        mutation_candidates
+    };
+
+    vec![RuntimeNarrativeEvent::AnalyzeResult {
+        projection: AnalyzeProjection {
+            target: target.to_string(),
+            project_name: result.project_name.clone(),
+            module_count: result.module_count,
+            dependency_cycles: result.circular_dependencies,
+            coupling_level: coupling_level(result),
+            findings,
+            mutation_candidates,
+        },
+    }]
+}
+
+fn resolve_analyze_target(workspace_root: &Path, target: &str) -> Result<PathBuf, String> {
+    let workspace_root = workspace_root
+        .canonicalize()
+        .map_err(|err| format!("cannot resolve workspace root: {err}"))?;
+    let target = target.trim();
+    let workspace_name = workspace_root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or_default();
+    let candidate = if target == "." || target == workspace_name {
+        workspace_root.clone()
+    } else {
+        workspace_root.join(target)
+    };
+    let resolved = candidate
+        .canonicalize()
+        .map_err(|err| format!("analyze target not found: {target} ({err})"))?;
+    if !resolved.starts_with(&workspace_root) {
+        return Err(format!("analyze target is outside workspace: {target}"));
+    }
+    if !resolved.is_dir() {
+        return Err(format!("analyze target is not a directory: {target}"));
+    }
+    Ok(resolved)
+}
+
+fn analyze_findings(result: &crate::analyze_engine::AnalyzeResult) -> Vec<String> {
+    let mut findings = Vec::new();
+    if result.circular_dependencies > 0 {
+        findings.push(format!(
+            "Highest Priority Issue: Dependency Cycles: {}",
+            result.circular_dependencies
+        ));
+    }
+    if result.layer_violations > 0 {
+        findings.push(format!("Layer Violations: {}", result.layer_violations));
+    }
+    if result.boundary_violations > 0 {
+        findings.push(format!(
+            "Boundary Violations: {}",
+            result.boundary_violations
+        ));
+    }
+    if result.god_objects > 0 {
+        findings.push(format!("God Objects: {}", result.god_objects));
+    }
+    if findings.is_empty() {
+        findings.push("No high-priority structural issue detected".to_string());
+    }
+    findings
+}
+
+fn coupling_level(result: &crate::analyze_engine::AnalyzeResult) -> String {
+    let issue_count = result.circular_dependencies
+        + result.layer_violations
+        + result.boundary_violations
+        + result.god_objects;
+    match issue_count {
+        0 => "Low",
+        1..=3 => "Medium",
+        _ => "High",
+    }
+    .to_string()
+}
+
+fn fallback_mutation_candidates(result: &crate::analyze_engine::AnalyzeResult) -> Vec<String> {
+    let mut candidates = Vec::new();
+    if result.circular_dependencies > 0 {
+        candidates.push("Break Dependency Cycle".to_string());
+    }
+    if result.boundary_violations > 0 || result.layer_violations > 0 {
+        candidates.push("Extract Interface".to_string());
+    }
+    if coupling_level(result) == "High" {
+        candidates.push("Reduce Coupling".to_string());
+    }
+    if candidates.is_empty() {
+        candidates.push("Preserve Current Structure".to_string());
+    }
+    candidates
 }
 
 pub fn runtime_preview(
@@ -319,7 +500,63 @@ pub fn runtime_preview_from_intent(
     runtime_preview_internal(state, workspace_root, target.into_path_buf(), true)
 }
 
-fn runtime_preview_internal(
+pub fn runtime_mutation_plan(
+    _state: &mut TuiState,
+    workspace_root: &Path,
+    target: &str,
+) -> Vec<RuntimeNarrativeEvent> {
+    match crate::mutation_integration::MutationEngineDispatcher::plan(workspace_root, target) {
+        Ok(projection) => vec![RuntimeNarrativeEvent::MutationPlan { projection }],
+        Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
+    }
+}
+
+pub fn runtime_mutation_preview(
+    _state: &mut TuiState,
+    workspace_root: &Path,
+    mutation_id: &str,
+) -> Vec<RuntimeNarrativeEvent> {
+    match crate::mutation_integration::MutationEngineDispatcher::preview(workspace_root, mutation_id) {
+        Ok(projection) => vec![RuntimeNarrativeEvent::MutationPreview { projection }],
+        Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
+    }
+}
+
+pub fn runtime_mutation_apply(
+    _state: &mut TuiState,
+    workspace_root: &Path,
+    mutation_id: &str,
+) -> Vec<RuntimeNarrativeEvent> {
+    match crate::mutation_integration::MutationEngineDispatcher::apply(workspace_root, mutation_id) {
+        Ok(projection) => vec![RuntimeNarrativeEvent::MutationApplied { projection }],
+        Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
+    }
+}
+
+pub fn runtime_mutation_replay(
+    _state: &mut TuiState,
+    workspace_root: &Path,
+    mutation_id: &str,
+) -> Vec<RuntimeNarrativeEvent> {
+    match crate::mutation_integration::MutationEngineDispatcher::replay(workspace_root, mutation_id) {
+        Ok(projection) => vec![RuntimeNarrativeEvent::MutationReplay { projection }],
+        Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
+    }
+}
+
+pub fn runtime_mutation_rollback(
+    _state: &mut TuiState,
+    workspace_root: &Path,
+    mutation_id: &str,
+) -> Vec<RuntimeNarrativeEvent> {
+    match crate::mutation_integration::MutationEngineDispatcher::rollback(workspace_root, mutation_id) {
+        Ok(projection) => vec![RuntimeNarrativeEvent::MutationRollback { projection }],
+        Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
+    }
+}
+
+pub fn runtime_preview_internal(
+
     state: &mut TuiState,
     workspace_root: &Path,
     target: PathBuf,
@@ -2127,6 +2364,7 @@ mod tests {
     #[test]
     fn runtime_command_parser_recognizes_owned_commands() {
         for command in [
+            "analyze .",
             "preview",
             "preview src/lib.rs",
             "apply",
@@ -2138,6 +2376,29 @@ mod tests {
         assert!(!RuntimeCommandDispatcher::is_runtime_command(
             "fix parser bug"
         ));
+    }
+
+    #[test]
+    fn analyze_command_is_case_insensitive_and_requires_target() {
+        assert_eq!(
+            RuntimeCommandDispatcher::parse("Analyze Design_BrainModel"),
+            Some(RuntimeCommand::Analyze {
+                target: "Design_BrainModel".to_string(),
+            })
+        );
+        assert_eq!(
+            RuntimeCommandDispatcher::parse("ANALYZE apps/cli"),
+            Some(RuntimeCommand::Analyze {
+                target: "apps/cli".to_string(),
+            })
+        );
+        assert_eq!(
+            RuntimeCommandDispatcher::parse("analyze ."),
+            Some(RuntimeCommand::Analyze {
+                target: ".".to_string(),
+            })
+        );
+        assert_eq!(RuntimeCommandDispatcher::parse("analyze"), None);
     }
 
     // CATEGORY: STATE

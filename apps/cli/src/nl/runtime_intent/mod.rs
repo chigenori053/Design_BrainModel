@@ -9,6 +9,11 @@ pub enum RuntimeIntent {
     Replay,
     GitStatus,
     GitDiff,
+    MutationPlan,
+    MutationPreview,
+    MutationApply,
+    MutationReplay,
+    MutationRollback,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -65,6 +70,31 @@ impl RuntimeIntentCommand {
             RuntimeIntent::Replay => "replay".to_string(),
             RuntimeIntent::GitStatus => "git status".to_string(),
             RuntimeIntent::GitDiff => "git diff".to_string(),
+            RuntimeIntent::MutationPlan => self
+                .target
+                .as_ref()
+                .map(|target| format!("mutation plan {}", target.display()))
+                .unwrap_or_else(|| "mutation plan".to_string()),
+            RuntimeIntent::MutationPreview => self
+                .target
+                .as_ref()
+                .map(|target| format!("mutation preview {}", target.display()))
+                .unwrap_or_else(|| "mutation preview".to_string()),
+            RuntimeIntent::MutationApply => self
+                .target
+                .as_ref()
+                .map(|target| format!("mutation apply {}", target.display()))
+                .unwrap_or_else(|| "mutation apply".to_string()),
+            RuntimeIntent::MutationReplay => self
+                .target
+                .as_ref()
+                .map(|target| format!("mutation replay {}", target.display()))
+                .unwrap_or_else(|| "mutation replay".to_string()),
+            RuntimeIntent::MutationRollback => self
+                .target
+                .as_ref()
+                .map(|target| format!("mutation rollback {}", target.display()))
+                .unwrap_or_else(|| "mutation rollback".to_string()),
         }
     }
 }

@@ -26,6 +26,11 @@ pub enum IntentType {
     ExplainDesignTradeoff,
     MetaPlannerEdit,
     Repair,
+    MutationPlan,
+    MutationPreview,
+    MutationApply,
+    MutationReplay,
+    MutationRollback,
     Unknown,
 }
 
@@ -98,6 +103,11 @@ pub enum PlannedStep {
     Refactor(RefactorSpec),
     Repair(RepairSpec),
     Apply,
+    MutationPlan(String),
+    MutationPreview(String),
+    MutationApply(String),
+    MutationReplay(String),
+    MutationRollback(String),
     Reload,
 }
 

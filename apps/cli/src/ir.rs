@@ -1958,10 +1958,23 @@ fn plan_step_from_planned_step(step: &PlannedStep) -> PlanStepRecord {
             Some(spec.target.clone()),
             vec![spec.request.clone()],
         ),
-        PlannedStep::Repair(spec) => {
-            simple_plan_step("repair", Some(spec.target.clone()), Vec::new())
-        }
+        PlannedStep::Repair(spec) => simple_plan_step("repair", Some(spec.target.clone()), Vec::new()),
         PlannedStep::Apply => simple_plan_step("apply", None, Vec::new()),
+        PlannedStep::MutationPlan(target) => {
+            simple_plan_step("mutation_plan", None, vec![target.clone()])
+        }
+        PlannedStep::MutationPreview(id) => {
+            simple_plan_step("mutation_preview", None, vec![id.clone()])
+        }
+        PlannedStep::MutationApply(id) => {
+            simple_plan_step("mutation_apply", None, vec![id.clone()])
+        }
+        PlannedStep::MutationReplay(id) => {
+            simple_plan_step("mutation_replay", None, vec![id.clone()])
+        }
+        PlannedStep::MutationRollback(id) => {
+            simple_plan_step("mutation_rollback", None, vec![id.clone()])
+        }
         PlannedStep::Reload => simple_plan_step("reload", None, Vec::new()),
     }
 }
@@ -2045,6 +2058,11 @@ fn memory_step_kind(step: &PlannedStep) -> &'static str {
         PlannedStep::Refactor(_) => "refactor",
         PlannedStep::Repair(_) => "repair",
         PlannedStep::Apply => "apply",
+        PlannedStep::MutationPlan(_) => "mutation_plan",
+        PlannedStep::MutationPreview(_) => "mutation_preview",
+        PlannedStep::MutationApply(_) => "mutation_apply",
+        PlannedStep::MutationReplay(_) => "mutation_replay",
+        PlannedStep::MutationRollback(_) => "mutation_rollback",
         PlannedStep::Reload => "reload",
     }
 }
@@ -2088,7 +2106,12 @@ fn memory_tags_for_step(step: &PlannedStep) -> Vec<String> {
         }
         PlannedStep::AlternativeMutationSearch(spec)
         | PlannedStep::DesignDeltaReasoning(spec)
-        | PlannedStep::ExplainDesignTradeoff(spec) => tags.push(spec.clone()),
+        | PlannedStep::ExplainDesignTradeoff(spec)
+        | PlannedStep::MutationPlan(spec)
+        | PlannedStep::MutationPreview(spec)
+        | PlannedStep::MutationApply(spec)
+        | PlannedStep::MutationReplay(spec)
+        | PlannedStep::MutationRollback(spec) => tags.push(spec.clone()),
         PlannedStep::Apply
         | PlannedStep::Reload
         | PlannedStep::Rules
@@ -2371,7 +2394,12 @@ fn memory_query_key(step: &PlannedStep) -> String {
         }
         PlannedStep::AlternativeMutationSearch(spec)
         | PlannedStep::DesignDeltaReasoning(spec)
-        | PlannedStep::ExplainDesignTradeoff(spec) => format!("{}:{spec}", memory_step_kind(step)),
+        | PlannedStep::ExplainDesignTradeoff(spec)
+        | PlannedStep::MutationPlan(spec)
+        | PlannedStep::MutationPreview(spec)
+        | PlannedStep::MutationApply(spec)
+        | PlannedStep::MutationReplay(spec)
+        | PlannedStep::MutationRollback(spec) => format!("{}:{spec}", memory_step_kind(step)),
         PlannedStep::Apply
         | PlannedStep::Reload
         | PlannedStep::Rules
