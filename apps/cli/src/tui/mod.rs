@@ -264,6 +264,24 @@ fn dispatch_runtime_command_to_projection(
         return false;
     }
 
+    let is_mutation_command = matches!(
+        crate::runtime::shell::RuntimeCommandDispatcher::parse(input),
+        Some(
+            crate::runtime::shell::RuntimeCommand::MutationPlan { .. }
+                | crate::runtime::shell::RuntimeCommand::MutationPreview { .. }
+                | crate::runtime::shell::RuntimeCommand::MutationApply { .. }
+                | crate::runtime::shell::RuntimeCommand::MutationReplay { .. }
+                | crate::runtime::shell::RuntimeCommand::MutationRollback { .. }
+        )
+    );
+    if is_mutation_command {
+        state.convergence.record_user_intent(input);
+        state.runtime_state = crate::tui::runtime::RuntimeShellState::Thinking;
+        state.append_chat(UiEvent::Thinking {
+            summary: mutation_thinking_summary(input),
+        });
+    }
+
     let Some(events) =
         crate::runtime::shell::RuntimeCommandDispatcher::dispatch(state, working_dir, input)
     else {
@@ -283,6 +301,17 @@ fn dispatch_runtime_command_to_projection(
     }
     project_runtime_lines(state, events);
     true
+}
+
+fn mutation_thinking_summary(input: &str) -> String {
+    match input.split_whitespace().nth(1).map(str::to_ascii_lowercase) {
+        Some(action) if action == "plan" => "generating mutation plan".to_string(),
+        Some(action) if action == "preview" => "generating mutation preview".to_string(),
+        Some(action) if action == "apply" => "applying mutation".to_string(),
+        Some(action) if action == "replay" => "replaying mutation".to_string(),
+        Some(action) if action == "rollback" => "rolling back mutation".to_string(),
+        _ => "processing mutation command".to_string(),
+    }
 }
 
 fn project_runtime_lines(state: &mut TuiState, events: Vec<self::state::RuntimeNarrativeEvent>) {
@@ -510,6 +539,84 @@ mod tests {
     }
 
     #[test]
+    fn mutation_plan_and_preview_project_intent_thinking_views_and_persistence() {
+        let root = tempfile::tempdir().expect("tempdir");
+        create_analyze_fixture(root.path());
+        fs::create_dir_all(root.path().join("apps/cli/src/runtime")).expect("runtime directory");
+        fs::write(
+            root.path().join("apps/cli/src/runtime/shell.rs"),
+            "pub fn dispatch() {}\n",
+        )
+        .expect("runtime shell fixture");
+        let mut state = TuiState::new(empty_runtime_payload());
+        let input = "mutation plan apps::cli::runtime::shell";
+
+        assert!(dispatch_runtime_command_to_projection(
+            &mut state,
+            root.path(),
+            input
+        ));
+
+        assert_eq!(state.convergence.raw_intent.as_deref(), Some(input));
+        assert!(state.chat.events.iter().any(|event| matches!(
+            event,
+            UiEvent::Thinking { summary } if summary == "generating mutation plan"
+        )));
+        let plan = state
+            .workspace
+            .analysis_result
+            .mutation_plan_projection
+            .as_ref()
+            .expect("mutation plan projection");
+        assert_eq!(plan.target, "apps::cli::runtime::shell");
+        assert!(
+            root.path()
+                .join(".dbm/mutations")
+                .join(&plan.mutation_id)
+                .join("mutation_plan.json")
+                .is_file()
+        );
+        let plan_surface = RenderSnapshot::from(&state).reasoning.lines.join("\n");
+        assert!(plan_surface.contains("Mutation Plan"), "{plan_surface}");
+        assert!(
+            plan_surface.contains("Target: apps::cli::runtime::shell"),
+            "{plan_surface}"
+        );
+
+        let preview_input = format!("mutation preview {}", plan.mutation_id);
+        assert!(dispatch_runtime_command_to_projection(
+            &mut state,
+            root.path(),
+            &preview_input
+        ));
+
+        assert_eq!(
+            state.convergence.raw_intent.as_deref(),
+            Some(preview_input.as_str())
+        );
+        assert!(state.chat.events.iter().any(|event| matches!(
+            event,
+            UiEvent::Thinking { summary } if summary == "generating mutation preview"
+        )));
+        assert!(
+            state
+                .workspace
+                .analysis_result
+                .mutation_preview_projection
+                .is_some()
+        );
+        let preview_surface = RenderSnapshot::from(&state).reasoning.lines.join("\n");
+        assert!(
+            preview_surface.contains("Mutation Preview"),
+            "{preview_surface}"
+        );
+        assert!(
+            preview_surface.contains("Affected Files:"),
+            "{preview_surface}"
+        );
+    }
+
+    #[test]
     fn test_runtime_route_guard_preserves_design_specification_submit_path() {
         let root = tempfile::tempdir().expect("tempdir");
         let mut state = TuiState::new(empty_runtime_payload());
@@ -643,11 +750,8 @@ mod tests {
 
         assert_eq!(snapshot.workspace.evaluation.status, "Completed");
         assert_eq!(snapshot.workspace.evaluation.active_task, None);
-        assert!(activity.contains("[Completed] done"), "{activity}");
-        assert!(
-            activity.contains("[Completed] task 9 completed"),
-            "{activity}"
-        );
+        assert!(activity.contains("処理が完了しました。"), "{activity}");
+        assert!(!activity.contains("[Completed]"), "{activity}");
         assert!(
             trace.contains("[COMPLETED_EVENT]\nrequest_id=9\nstatus=Completed"),
             "{trace}"

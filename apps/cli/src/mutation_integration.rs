@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
 
 use mutation_engine::{
     AnalyzeContext, DependencyEdge, MutationAuditStore, MutationEngine, MutationOperation,
-    MutationPlanner, MutationRequest, MutationTarget,
+    MutationPlanner, MutationRequest, MutationTarget, PatchOperation,
 };
 
 use crate::analyze_engine::{AnalyzeEngineOutput, StructureEdgeKind};
@@ -90,7 +91,7 @@ impl MutationEngineDispatcher {
             operation: MutationOperation::Refactor,
             reason: format!("Refactoring {} requested via TUI", target),
             expected_effect: "Improved structural integrity and reduced coupling".to_string(),
-            patches: Vec::new(),
+            patches: preview_patches_for_target(workspace_root, target)?,
             projected_dependencies: None,
         };
 
@@ -214,4 +215,49 @@ impl MutationEngineDispatcher {
             status: "Rolled back successfully".to_string(),
         })
     }
+}
+
+fn preview_patches_for_target(
+    workspace_root: &Path,
+    target: &str,
+) -> Result<Vec<PatchOperation>, String> {
+    let relative_path = resolve_mutation_target_path(workspace_root, target)
+        .ok_or_else(|| format!("Mutation target not found: {target}"))?;
+    let content = fs::read_to_string(workspace_root.join(&relative_path))
+        .map_err(|err| format!("Mutation target read failed: {err}"))?;
+    Ok(vec![PatchOperation::Write {
+        path: relative_path,
+        content,
+    }])
+}
+
+fn resolve_mutation_target_path(workspace_root: &Path, target: &str) -> Option<PathBuf> {
+    let direct = PathBuf::from(target);
+    if workspace_root.join(&direct).is_file() {
+        return Some(direct);
+    }
+
+    let parts = target.split("::").collect::<Vec<_>>();
+    for source_root in (0..parts.len()).rev() {
+        let mut candidate = PathBuf::new();
+        for part in &parts[..source_root] {
+            candidate.push(part);
+        }
+        candidate.push("src");
+        for part in &parts[source_root..] {
+            candidate.push(part);
+        }
+        candidate.set_extension("rs");
+        if workspace_root.join(&candidate).is_file() {
+            return Some(candidate);
+        }
+
+        let mut module_candidate = candidate;
+        module_candidate.set_extension("");
+        module_candidate.push("mod.rs");
+        if workspace_root.join(&module_candidate).is_file() {
+            return Some(module_candidate);
+        }
+    }
+    None
 }

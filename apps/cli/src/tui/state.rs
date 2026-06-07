@@ -1730,6 +1730,7 @@ impl TuiState {
         crate::tui::render_trace::record(Box::leak(
             format!("[SUBMIT_ACTION_CREATED] input_len={}", submitted.len()).into_boxed_str(),
         ));
+        self.editor_state.editor.clear();
         TuiAction::Submit(submitted)
     }
 
@@ -2082,7 +2083,7 @@ mod tests {
 
         assert_eq!(action, TuiAction::Submit("fix parser bug".to_string()));
         assert_eq!(state.history, vec!["fix parser bug"]);
-        assert_eq!(state.editor_state.editor.text(), "fix parser bug");
+        assert!(state.editor_state.editor.text().is_empty());
     }
 
     #[test]

@@ -26,6 +26,8 @@ impl Default for EvaluationWorkspace {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AnalysisResultWorkspace {
     pub analyze_projection: Option<crate::tui::state::AnalyzeProjection>,
+    pub mutation_plan_projection: Option<crate::tui::state::MutationProjection>,
+    pub mutation_preview_projection: Option<crate::tui::state::PreviewProjection>,
     pub diagnosis: Vec<String>,
     pub repair_plan: Vec<String>,
     pub implementation_plan: Vec<String>,
@@ -81,6 +83,46 @@ impl WorkspaceProjector {
                 workspace.evaluation.violations = projection.dependency_cycles;
                 workspace.evaluation.active_task = None;
                 crate::tui::render_trace::record("workspace_analyze_result_projected");
+            }
+            UiEvent::MutationPlan { projection } => {
+                workspace.analysis_result.mutation_plan_projection = Some(projection.clone());
+                workspace.analysis_result.mutation_preview_projection = None;
+                workspace.evaluation.domain = projection.target.clone();
+                workspace.evaluation.status = "MutationPlanned".to_string();
+                workspace.evaluation.progress = 50;
+                workspace.evaluation.active_task = None;
+                crate::tui::render_trace::record("workspace_mutation_plan_projected");
+            }
+            UiEvent::MutationPreview { projection } => {
+                workspace.analysis_result.mutation_preview_projection = Some(projection.clone());
+                workspace.evaluation.status = "MutationPreview".to_string();
+                workspace.evaluation.progress = 75;
+                workspace.evaluation.active_task = None;
+                crate::tui::render_trace::record("workspace_mutation_preview_projected");
+            }
+            UiEvent::MutationApplied { projection } => {
+                workspace.analysis_result.mutation_plan_projection = Some(projection.clone());
+                workspace.evaluation.status = "MutationApplied".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task = None;
+            }
+            UiEvent::MutationReplay { projection } => {
+                workspace.evaluation.status = "MutationReplayed".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task = None;
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(projection.render());
+            }
+            UiEvent::MutationRollback { projection } => {
+                workspace.evaluation.status = "MutationRolledBack".to_string();
+                workspace.evaluation.progress = 100;
+                workspace.evaluation.active_task = None;
+                workspace
+                    .analysis_result
+                    .execution_trace
+                    .push(projection.render());
             }
             UiEvent::RepairPlan { plan } => {
                 workspace.analysis_result.repair_plan = plan

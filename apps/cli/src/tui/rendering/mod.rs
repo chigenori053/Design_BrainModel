@@ -1,5 +1,8 @@
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 
+use crate::runtime::human_output_projection::{
+    HumanOutputProjection, HumanSemanticEvent, NarrativeEngine, NarrativeSnapshot,
+};
 use crate::tui::cognitive_workspace::RuntimeIdentity;
 use crate::tui::core::resolve_projection_target;
 use crate::tui::design_convergence::DesignConvergenceState;
@@ -134,6 +137,7 @@ pub struct RuntimeProjection {
     pub transaction_label: Option<String>,
     pub diff_projection: DiffProjection,
     pub rejection_label: Option<String>,
+    pub narrative_snapshot: NarrativeSnapshot,
     pub narrative_lines: Vec<String>,
     pub scroll_offset: usize,
 }
@@ -157,6 +161,7 @@ pub enum ReasoningViewMode {
     Reasoning,
     Analyze,
     MutationPlan,
+    MutationPreview,
     Diff,
     Verification,
 }
@@ -167,6 +172,7 @@ impl ReasoningViewMode {
             Self::Reasoning => " Reasoning View ",
             Self::Analyze => " Analyze View ",
             Self::MutationPlan => " Mutation Plan View ",
+            Self::MutationPreview => " Mutation Preview View ",
             Self::Diff => " Diff View ",
             Self::Verification => " Verification View ",
         }
@@ -420,14 +426,16 @@ impl RuntimeProjection {
             transaction_label: resolved_transaction_label(state),
             diff_projection,
             rejection_label,
+            narrative_snapshot: NarrativeSnapshot::default(),
             narrative_lines: Vec::new(),
             scroll_offset: state.chat_scroll.offset,
         };
-        projection.narrative_lines =
-            RuntimeNarrativeReducer::render(runtime_semantic_events_from_projection(&projection));
-        projection
-            .narrative_lines
-            .extend(runtime_activity_lines_from_events(state));
+        let human_events = human_semantic_events_from_state(state)
+            .iter()
+            .map(HumanOutputProjection::project)
+            .collect::<Vec<_>>();
+        projection.narrative_snapshot = NarrativeEngine::summarize(&human_events);
+        projection.narrative_lines = narrative_snapshot_lines(&projection.narrative_snapshot);
         projection
     }
 
@@ -437,16 +445,178 @@ impl RuntimeProjection {
 
     pub fn workspace_status_line(&self) -> String {
         let phase = match self.state_label.as_str() {
-            "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => "Planning",
-            "APPLYING" => "Applying",
-            "APPLIED" => "Completed",
-            "FAILED_RECOVERABLE" => "Verifying",
-            "REJECTED" => "Rejected",
-            _ if self.transaction_label.is_some() => "Analyzing",
-            _ => "Thinking",
+            "PREVIEW_READY" | "READY_TO_APPLY" | "AWAITING_APPLY" => "事前確認可能",
+            "APPLYING" => "変更を適用中",
+            "APPLIED" => "処理完了",
+            "FAILED_RECOVERABLE" => "確認が必要",
+            "REJECTED" => "変更を停止",
+            _ if self.transaction_label.is_some() => "影響範囲を確認中",
+            _ => "入力待機",
         };
         format!("{phase} | F2 Diagnostics | :diagnostics")
     }
+}
+
+fn human_semantic_events_from_state(state: &TuiState) -> Vec<HumanSemanticEvent> {
+    let mut events = Vec::new();
+    let has_plan = state
+        .workspace
+        .analysis_result
+        .mutation_plan_projection
+        .is_some();
+    let has_preview = state
+        .workspace
+        .analysis_result
+        .mutation_preview_projection
+        .is_some()
+        || matches!(
+            state.runtime_state,
+            RuntimeShellState::PreviewReady
+                | RuntimeShellState::AwaitingApply
+                | RuntimeShellState::AwaitConfirmation
+                | RuntimeShellState::Ready
+        );
+    let latest_error = state
+        .chat
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            UiEvent::Error { message } => Some(message.clone()),
+            _ => None,
+        });
+    let has_completion = state
+        .chat
+        .events
+        .iter()
+        .rev()
+        .find_map(|event| match event {
+            UiEvent::Result { .. } => Some(true),
+            UiEvent::System { summary } => Some(summary.to_ascii_lowercase().contains("completed")),
+            UiEvent::Thinking { .. }
+            | UiEvent::Planning { .. }
+            | UiEvent::Execution { .. }
+            | UiEvent::Runtime { .. }
+            | UiEvent::Pipeline { .. }
+            | UiEvent::Error { .. } => Some(false),
+            _ => None,
+        })
+        .unwrap_or(false);
+    let runtime_failed = state.runtime_state == RuntimeShellState::Failed
+        || state.runtime_state.label().contains("HALT")
+        || matches!(
+            state.runtime_state,
+            RuntimeShellState::Rejected
+                | RuntimeShellState::GovernanceRejected
+                | RuntimeShellState::SemanticRejected
+                | RuntimeShellState::ConvergenceRejected
+                | RuntimeShellState::MutationSuppressed
+        );
+
+    if let Some(analyze) = &state.workspace.analysis_result.analyze_projection {
+        events.push(HumanSemanticEvent::AnalyzeCompleted {
+            project_name: Some(analyze.project_name.clone()),
+            primary_areas: primary_project_areas(&analyze.findings),
+        });
+    }
+    if has_plan {
+        events.push(HumanSemanticEvent::MutationPlanCreated);
+    }
+    if state.rejection.is_some() || runtime_failed {
+        events.push(HumanSemanticEvent::ValidationFailed {
+            reason: state
+                .rejection
+                .as_ref()
+                .map(|rejection| rejection.reason.clone())
+                .or_else(|| latest_error.clone()),
+        });
+    } else if has_plan || has_preview || state.active_transaction.is_some() {
+        events.push(HumanSemanticEvent::ValidationPassed);
+    }
+    if has_preview {
+        events.push(HumanSemanticEvent::PreviewGenerated);
+    }
+    if state
+        .chat
+        .events
+        .iter()
+        .any(|event| matches!(event, UiEvent::MutationRollback { .. }))
+    {
+        events.push(HumanSemanticEvent::RollbackCompleted);
+    } else if state.runtime_state == RuntimeShellState::Git
+        || state
+            .chat
+            .events
+            .iter()
+            .any(|event| matches!(event, UiEvent::MutationApplied { .. }))
+    {
+        events.push(HumanSemanticEvent::ApplyCompleted);
+    }
+
+    let runtime_event = match state.runtime_state {
+        RuntimeShellState::Thinking
+        | RuntimeShellState::Analyze
+        | RuntimeShellState::Plan
+        | RuntimeShellState::Validate
+        | RuntimeShellState::Apply
+        | RuntimeShellState::Replay => HumanSemanticEvent::RuntimeRunning,
+        RuntimeShellState::Git => HumanSemanticEvent::RuntimeCompleted,
+        RuntimeShellState::Failed => HumanSemanticEvent::RuntimeFailed {
+            reason: latest_error,
+        },
+        runtime_state
+            if runtime_state.label().contains("HALT")
+                || matches!(
+                    runtime_state,
+                    RuntimeShellState::Rejected
+                        | RuntimeShellState::GovernanceRejected
+                        | RuntimeShellState::SemanticRejected
+                        | RuntimeShellState::ConvergenceRejected
+                        | RuntimeShellState::MutationSuppressed
+                ) =>
+        {
+            HumanSemanticEvent::RuntimeFailed {
+                reason: state
+                    .rejection
+                    .as_ref()
+                    .map(|rejection| rejection.reason.clone()),
+            }
+        }
+        RuntimeShellState::Idle if has_completion => HumanSemanticEvent::RuntimeCompleted,
+        _ => HumanSemanticEvent::RuntimeWaiting,
+    };
+    events.push(runtime_event);
+    events
+}
+
+fn primary_project_areas(findings: &[String]) -> Vec<String> {
+    ["apps", "crates"]
+        .into_iter()
+        .filter(|area| {
+            findings.iter().any(|finding| {
+                finding
+                    .split(|ch: char| !ch.is_alphanumeric() && ch != '_')
+                    .any(|token| token == *area)
+            })
+        })
+        .map(str::to_string)
+        .collect()
+}
+
+fn narrative_snapshot_lines(snapshot: &NarrativeSnapshot) -> Vec<String> {
+    let mut lines = vec![snapshot.headline.clone(), String::new()];
+    lines.extend(snapshot.details.iter().cloned());
+    if !snapshot.next_actions.is_empty() {
+        lines.push(String::new());
+        lines.push("推奨アクション".to_string());
+        lines.extend(
+            snapshot
+                .next_actions
+                .iter()
+                .map(|action| format!("• {action}")),
+        );
+    }
+    lines
 }
 
 impl ReasoningProjection {
@@ -456,6 +626,7 @@ impl ReasoningProjection {
             ReasoningViewMode::Reasoning => reasoning_view_lines(state, runtime),
             ReasoningViewMode::Analyze => analyze_view_lines(state),
             ReasoningViewMode::MutationPlan => mutation_plan_view_lines(state),
+            ReasoningViewMode::MutationPreview => mutation_preview_view_lines(state),
             ReasoningViewMode::Diff => diff_view_lines(state),
             ReasoningViewMode::Verification => verification_view_lines(state),
         };
@@ -479,6 +650,22 @@ fn reasoning_mode(state: &TuiState, runtime: &RuntimeProjection) -> ReasoningVie
     }
     if state.active_transaction.is_some() {
         return ReasoningViewMode::Diff;
+    }
+    if state
+        .workspace
+        .analysis_result
+        .mutation_preview_projection
+        .is_some()
+    {
+        return ReasoningViewMode::MutationPreview;
+    }
+    if state
+        .workspace
+        .analysis_result
+        .mutation_plan_projection
+        .is_some()
+    {
+        return ReasoningViewMode::MutationPlan;
     }
     if state.chat.events.iter().rev().any(|event| {
         matches!(
@@ -569,6 +756,9 @@ fn analyze_view_lines(state: &TuiState) -> Vec<String> {
 }
 
 fn mutation_plan_view_lines(state: &TuiState) -> Vec<String> {
+    if let Some(projection) = &state.workspace.analysis_result.mutation_plan_projection {
+        return projection.render().lines().map(str::to_string).collect();
+    }
     let affected = state
         .active_transaction
         .as_ref()
@@ -587,6 +777,21 @@ fn mutation_plan_view_lines(state: &TuiState) -> Vec<String> {
         "Rollback Strategy".to_string(),
         "  Retain transaction checkpoint and reject unresolved preview targets".to_string(),
     ]
+}
+
+fn mutation_preview_view_lines(state: &TuiState) -> Vec<String> {
+    state
+        .workspace
+        .analysis_result
+        .mutation_preview_projection
+        .as_ref()
+        .map(|projection| projection.render().lines().map(str::to_string).collect())
+        .unwrap_or_else(|| {
+            vec![
+                "Mutation Preview".to_string(),
+                "  (no mutation preview generated)".to_string(),
+            ]
+        })
 }
 
 fn diff_view_lines(state: &TuiState) -> Vec<String> {
@@ -1033,50 +1238,6 @@ fn sanitize_lines(lines: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn runtime_activity_lines_from_events(state: &TuiState) -> Vec<String> {
-    state
-        .chat
-        .events
-        .iter()
-        .filter_map(runtime_activity_line)
-        .collect()
-}
-
-fn runtime_activity_line(event: &UiEvent) -> Option<String> {
-    let line = match event {
-        UiEvent::Thinking { summary } => format!("[Thinking] {summary}"),
-        UiEvent::Planning { summary } => format!("[Planning] {summary}"),
-        UiEvent::Pipeline { state } => format!("[Planning] {state}"),
-        UiEvent::Execution { step } => format!("[Executing] {step}"),
-        UiEvent::Runtime { message } => format!("[Executing] {message}"),
-        UiEvent::Result { message } => format!("[Completed] {message}"),
-        UiEvent::AnalyzeResult { projection } => {
-            format!("[Completed] analyzed {}", projection.project_name)
-        }
-        UiEvent::MutationPlan { projection } => {
-            format!("[Mutation] plan created for {}", projection.target)
-        }
-        UiEvent::MutationPreview { projection } => {
-            format!("[Mutation] preview created for {}", projection.mutation_id)
-        }
-        UiEvent::MutationApplied { projection } => {
-            format!("[Mutation] applied for {}", projection.target)
-        }
-        UiEvent::MutationReplay { projection } => {
-            format!("[Mutation] replayed {}", projection.mutation_id)
-        }
-        UiEvent::MutationRollback { projection } => {
-            format!("[Mutation] rolled back {}", projection.mutation_id)
-        }
-        UiEvent::System { summary } if summary.to_ascii_lowercase().contains("completed") => {
-            format!("[Completed] {summary}")
-        }
-        UiEvent::Error { message } => format!("[Failed] {message}"),
-        _ => return None,
-    };
-    sanitize_line(&line)
-}
-
 fn normalize_narrative_event(event: RuntimeNarrativeEvent) -> RuntimeNarrativeEvent {
     match event {
         RuntimeNarrativeEvent::Intent { summary }
@@ -1174,6 +1335,11 @@ mod tests {
                 RuntimeNarrativeEvent::Apply { summary, .. }
                 | RuntimeNarrativeEvent::Commit { summary } => format!("[APPLY] {summary}"),
                 RuntimeNarrativeEvent::Rollback { summary } => format!("[ROLLBACK] {summary}"),
+                RuntimeNarrativeEvent::MutationPlan { projection } => projection.render(),
+                RuntimeNarrativeEvent::MutationPreview { projection } => projection.render(),
+                RuntimeNarrativeEvent::MutationApplied { projection } => projection.render(),
+                RuntimeNarrativeEvent::MutationReplay { projection } => projection.render(),
+                RuntimeNarrativeEvent::MutationRollback { projection } => projection.render(),
                 RuntimeNarrativeEvent::System { summary, .. } => format!("[SYSTEM] {summary}"),
                 RuntimeNarrativeEvent::GovernanceReject { reason } => format!("[REJECT] {reason}"),
                 RuntimeNarrativeEvent::Error { message } => format!("[ERROR] {message}"),
@@ -1342,7 +1508,7 @@ mod tests {
         assert!(!surface.contains("PREVIEW_READY"));
         assert!(!surface.contains("tx-users-chigenori-development"));
         assert!(!surface.contains("/Users/chigenori/development"));
-        assert!(surface.contains("[EXECUTION] transaction active"));
+        assert!(surface.contains("変更結果を事前確認できます。"));
         assert!(surface.contains("apps/cli/src/main.rs"));
     }
 
@@ -1389,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_panel_shows_runtime_events() {
+    fn runtime_panel_shows_human_status() {
         let mut state = TuiState::new(empty_payload());
         state.append_chat(UiEvent::System {
             summary: "runtime idle".to_string(),
@@ -1397,7 +1563,13 @@ mod tests {
 
         let snapshot = RenderSnapshot::from(&state);
         let lines = snapshot.runtime.runtime_panel_lines(false);
-        assert!(lines.iter().any(|l| l.contains("[SYSTEM] runtime idle")));
+        assert!(
+            lines
+                .iter()
+                .any(|line| line == "次の入力を待機しています。"),
+            "{lines:?}"
+        );
+        assert!(!lines.iter().any(|line| line.contains("[SYSTEM]")));
     }
 
     #[test]
@@ -1483,7 +1655,7 @@ mod tests {
         );
         assert_eq!(
             snapshot.status.line,
-            "Planning | F2 Diagnostics | :diagnostics"
+            "事前確認可能 | F2 Diagnostics | :diagnostics"
         );
     }
 
@@ -1649,7 +1821,7 @@ mod tests {
         let surface = projection_surface(&RenderSnapshot::from(&state));
 
         assert!(!surface.contains("tx-users-secret-runtime-token"));
-        assert!(surface.contains("transaction active"));
+        assert!(surface.contains("次の入力を待機しています。"));
     }
 
     #[test]
@@ -1746,6 +1918,21 @@ mod tests {
             RenderSnapshot::from(&state).projection,
             RenderSnapshot::from(&state).projection
         );
+    }
+
+    #[test]
+    fn preview_runtime_is_projected_as_human_summary() {
+        let mut state = TuiState::new(empty_payload());
+        state.runtime_state = RuntimeShellState::PreviewReady;
+
+        let snapshot = RenderSnapshot::from(&state);
+        let surface = snapshot.runtime.runtime_panel_lines(false).join("\n");
+
+        assert!(surface.contains("変更結果を事前確認できます。"));
+        assert!(surface.contains("• Previewを確認"));
+        assert!(surface.contains("• Applyを実行"));
+        assert!(!surface.contains("PREVIEW_READY"));
+        assert!(!surface.contains("[SYSTEM]"));
     }
 
     fn projection_surface(snapshot: &RenderSnapshot) -> String {

@@ -11,6 +11,7 @@ pub mod event_queue;
 pub mod execution_governance;
 pub mod governance;
 pub mod host_loop;
+pub mod human_output_projection;
 pub mod invariants;
 pub mod logging;
 pub mod persistence;

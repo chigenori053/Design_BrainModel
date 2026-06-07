@@ -142,15 +142,17 @@ fn render_convergence_workspace_pane(frame: &mut Frame, immutable: &ImmutableFra
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Design Convergence Workspace ")
+        .title(" 状況サマリー ")
         .border_style(active_border(snapshot.focus == Focus::Chat, false));
 
-    let lines = snapshot
-        .convergence
-        .timeline_lines()
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+    let mut content = snapshot.runtime.runtime_panel_lines(snapshot.is_expanded);
+    let convergence_lines = snapshot.convergence.timeline_lines();
+    if !convergence_lines.is_empty() {
+        content.push(String::new());
+        content.push("要求と設計の履歴".to_string());
+        content.extend(convergence_lines);
+    }
+    let lines = content.into_iter().map(Line::from).collect::<Vec<_>>();
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -942,9 +944,7 @@ mod tests {
 
         assert!(!panels_source.contains("pub mod runtime"));
         assert_eq!(
-            render_source
-                .matches(".title(\" Design Convergence Workspace \")")
-                .count(),
+            render_source.matches(".title(\" 状況サマリー \")").count(),
             1
         );
     }

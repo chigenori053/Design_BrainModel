@@ -1329,7 +1329,7 @@ rules:
                 .runtime
                 .runtime_panel_lines(false)
                 .iter()
-                .any(|l: &String| l.contains("[INTENT] checking runtime state"))
+                .any(|line: &String| line == "次の入力を待機しています。")
         );
 
         // Simulating a "redraw" by creating a new snapshot

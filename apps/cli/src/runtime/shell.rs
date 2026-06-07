@@ -147,31 +147,17 @@ pub struct RuntimeCommandTrace {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RuntimeCommand {
-    Analyze {
-        target: String,
-    },
-    Preview {
-        target: PathBuf,
-    },
+    Analyze { target: String },
+    Preview { target: PathBuf },
     Apply,
     Commit,
     Rollback,
     Status,
-    MutationPlan {
-        target: String,
-    },
-    MutationPreview {
-        mutation_id: String,
-    },
-    MutationApply {
-        mutation_id: String,
-    },
-    MutationReplay {
-        mutation_id: String,
-    },
-    MutationRollback {
-        mutation_id: String,
-    },
+    MutationPlan { target: String },
+    MutationPreview { mutation_id: String },
+    MutationApply { mutation_id: String },
+    MutationReplay { mutation_id: String },
+    MutationRollback { mutation_id: String },
 }
 
 #[derive(Debug, Clone, Default)]
@@ -524,62 +510,86 @@ pub fn runtime_preview_from_intent(
 }
 
 pub fn runtime_mutation_plan(
-    _state: &mut TuiState,
+    state: &mut TuiState,
     workspace_root: &Path,
     target: &str,
 ) -> Vec<RuntimeNarrativeEvent> {
     match crate::mutation_integration::MutationEngineDispatcher::plan(workspace_root, target) {
-        Ok(projection) => vec![RuntimeNarrativeEvent::MutationPlan { projection }],
+        Ok(projection) => {
+            state.active_target = Some(projection.target.clone());
+            state.runtime_state = RuntimeShellState::Plan;
+            vec![RuntimeNarrativeEvent::MutationPlan { projection }]
+        }
         Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
     }
 }
 
 pub fn runtime_mutation_preview(
-    _state: &mut TuiState,
+    state: &mut TuiState,
     workspace_root: &Path,
     mutation_id: &str,
 ) -> Vec<RuntimeNarrativeEvent> {
-    match crate::mutation_integration::MutationEngineDispatcher::preview(workspace_root, mutation_id) {
-        Ok(projection) => vec![RuntimeNarrativeEvent::MutationPreview { projection }],
+    match crate::mutation_integration::MutationEngineDispatcher::preview(
+        workspace_root,
+        mutation_id,
+    ) {
+        Ok(projection) => {
+            state.runtime_state = RuntimeShellState::PreviewReady;
+            vec![RuntimeNarrativeEvent::MutationPreview { projection }]
+        }
         Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
     }
 }
 
 pub fn runtime_mutation_apply(
-    _state: &mut TuiState,
+    state: &mut TuiState,
     workspace_root: &Path,
     mutation_id: &str,
 ) -> Vec<RuntimeNarrativeEvent> {
-    match crate::mutation_integration::MutationEngineDispatcher::apply(workspace_root, mutation_id) {
-        Ok(projection) => vec![RuntimeNarrativeEvent::MutationApplied { projection }],
+    match crate::mutation_integration::MutationEngineDispatcher::apply(workspace_root, mutation_id)
+    {
+        Ok(projection) => {
+            state.active_target = Some(projection.target.clone());
+            state.runtime_state = RuntimeShellState::Git;
+            vec![RuntimeNarrativeEvent::MutationApplied { projection }]
+        }
         Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
     }
 }
 
 pub fn runtime_mutation_replay(
-    _state: &mut TuiState,
+    state: &mut TuiState,
     workspace_root: &Path,
     mutation_id: &str,
 ) -> Vec<RuntimeNarrativeEvent> {
-    match crate::mutation_integration::MutationEngineDispatcher::replay(workspace_root, mutation_id) {
-        Ok(projection) => vec![RuntimeNarrativeEvent::MutationReplay { projection }],
+    match crate::mutation_integration::MutationEngineDispatcher::replay(workspace_root, mutation_id)
+    {
+        Ok(projection) => {
+            state.runtime_state = RuntimeShellState::Replay;
+            vec![RuntimeNarrativeEvent::MutationReplay { projection }]
+        }
         Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
     }
 }
 
 pub fn runtime_mutation_rollback(
-    _state: &mut TuiState,
+    state: &mut TuiState,
     workspace_root: &Path,
     mutation_id: &str,
 ) -> Vec<RuntimeNarrativeEvent> {
-    match crate::mutation_integration::MutationEngineDispatcher::rollback(workspace_root, mutation_id) {
-        Ok(projection) => vec![RuntimeNarrativeEvent::MutationRollback { projection }],
+    match crate::mutation_integration::MutationEngineDispatcher::rollback(
+        workspace_root,
+        mutation_id,
+    ) {
+        Ok(projection) => {
+            state.runtime_state = RuntimeShellState::Idle;
+            vec![RuntimeNarrativeEvent::MutationRollback { projection }]
+        }
         Err(message) => vec![RuntimeNarrativeEvent::Error { message }],
     }
 }
 
 pub fn runtime_preview_internal(
-
     state: &mut TuiState,
     workspace_root: &Path,
     target: PathBuf,
@@ -2393,6 +2403,11 @@ mod tests {
             "apply",
             "rollback",
             "status",
+            "mutation plan apps::cli::runtime::shell",
+            "mutation preview mut-123",
+            "mutation apply mut-123",
+            "mutation replay mut-123",
+            "mutation rollback mut-123",
         ] {
             assert!(RuntimeCommandDispatcher::is_runtime_command(command));
         }
