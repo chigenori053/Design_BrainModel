@@ -92,6 +92,7 @@ pub struct ReplSemanticState {
     pub last_validation: Option<ValidationState>,
     pub last_apply: Option<ApplyState>,
     pub rollback_checkpoint: Option<RollbackCheckpoint>,
+    pub last_mutation_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1013,22 +1014,113 @@ fn dispatch_normalized_runtime_intent(
                 .capture_runtime_command("preview", &ui.runtime);
             Some(events)
         }
+        RuntimeIntent::MutationPlan
+        | RuntimeIntent::MutationPreview
+        | RuntimeIntent::MutationApply
+        | RuntimeIntent::MutationReplay
+        | RuntimeIntent::MutationRollback => {
+            let runtime_input = match normalized.command.intent {
+                RuntimeIntent::MutationPlan => normalized.command.to_runtime_input(),
+                intent => {
+                    let mutation_id = normalized
+                        .command
+                        .target
+                        .as_ref()
+                        .map(|target| target.display().to_string())
+                        .or_else(|| ui.semantic_state.last_mutation_id.clone());
+                    let Some(mutation_id) = mutation_id else {
+                        return Some(vec![crate::tui::state::RuntimeNarrativeEvent::Error {
+                            message: "unresolved mutation id".to_string(),
+                        }]);
+                    };
+                    mutation_runtime_input(intent, &mutation_id)
+                }
+            };
+            let Some(events) =
+                RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root, &runtime_input)
+            else {
+                let argument = match normalized.command.intent {
+                    RuntimeIntent::MutationPlan => "mutation target",
+                    _ => "mutation id",
+                };
+                return Some(vec![crate::tui::state::RuntimeNarrativeEvent::Error {
+                    message: format!("unresolved {argument}"),
+                }]);
+            };
+            ui.semantic_state.capture_mutation_events(&events);
+            ui.semantic_state
+                .capture_runtime_command(&runtime_input, &ui.runtime);
+            Some(events)
+        }
         _ => None,
     }
 }
 
+fn mutation_runtime_input(intent: RuntimeIntent, mutation_id: &str) -> String {
+    match intent {
+        RuntimeIntent::MutationPreview => format!("mutation preview {mutation_id}"),
+        RuntimeIntent::MutationApply => format!("mutation apply {mutation_id}"),
+        RuntimeIntent::MutationReplay => format!("mutation replay {mutation_id}"),
+        RuntimeIntent::MutationRollback => format!("mutation rollback {mutation_id}"),
+        _ => unreachable!("mutation id routing only supports post-plan intents"),
+    }
+}
+
 fn should_handle_in_precore(_input: &str, normalized: &NormalizedRuntimeInput) -> bool {
-    normalized.source == RuntimeInputSource::ExplicitCommand
-        && normalized.certainty == RuntimeCommandCertainty::Certain
+    matches!(
+        normalized.command.intent,
+        RuntimeIntent::MutationPlan
+            | RuntimeIntent::MutationPreview
+            | RuntimeIntent::MutationApply
+            | RuntimeIntent::MutationReplay
+            | RuntimeIntent::MutationRollback
+    ) || (normalized.source == RuntimeInputSource::ExplicitCommand
+        && normalized.certainty == RuntimeCommandCertainty::Certain)
 }
 
 fn should_try_runtime_intent(input: &str) -> bool {
+    if normalize_runtime_input(input).is_some_and(|normalized| {
+        matches!(
+            normalized.command.intent,
+            RuntimeIntent::MutationPlan
+                | RuntimeIntent::MutationPreview
+                | RuntimeIntent::MutationApply
+                | RuntimeIntent::MutationReplay
+                | RuntimeIntent::MutationRollback
+        )
+    }) {
+        return true;
+    }
     let lower = input.to_lowercase();
     !crate::nl::context_aware_plan_target_resolver::is_plan_only_intent(&lower)
         && !crate::nl::context_aware_plan_target_resolver::has_context_reference(&lower)
 }
 
 impl ReplSemanticState {
+    fn capture_mutation_events(&mut self, events: &[crate::tui::state::RuntimeNarrativeEvent]) {
+        for event in events {
+            let mutation_id = match event {
+                crate::tui::state::RuntimeNarrativeEvent::MutationPlan { projection }
+                | crate::tui::state::RuntimeNarrativeEvent::MutationApplied { projection } => {
+                    Some(projection.mutation_id.as_str())
+                }
+                crate::tui::state::RuntimeNarrativeEvent::MutationPreview { projection } => {
+                    Some(projection.mutation_id.as_str())
+                }
+                crate::tui::state::RuntimeNarrativeEvent::MutationReplay { projection } => {
+                    Some(projection.mutation_id.as_str())
+                }
+                crate::tui::state::RuntimeNarrativeEvent::MutationRollback { projection } => {
+                    Some(projection.mutation_id.as_str())
+                }
+                _ => None,
+            };
+            if let Some(mutation_id) = mutation_id {
+                self.last_mutation_id = Some(mutation_id.to_string());
+            }
+        }
+    }
+
     fn capture_runtime_command(&mut self, input: &str, runtime: &TuiState) {
         let snapshot = RenderSnapshot::from(runtime).projection;
         let rendered_output = runtime
@@ -1661,6 +1753,75 @@ mod tests {
 
         assert_eq!(core.calls(), 0);
         assert!(output.contains("preview ready"), "{output}");
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_routes_natural_language_mutation_plan_to_dispatcher() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn before() {}\n").expect("write");
+        let mut input =
+            io::Cursor::new("src/lib.rs を分割してください。Mutation Plan を作成してください。\n");
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "{output}");
+        assert!(output.contains("Mutation Plan"), "{output}");
+        assert!(output.contains("Target: src/lib.rs"), "{output}");
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_handles_natural_language_mutation_preview_without_core_fallthrough() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn before() {}\n").expect("write");
+        let mut input = io::Cursor::new(
+            "src/lib.rs を分割してください。Mutation Plan を作成してください。\n変更内容を確認してください。\n",
+        );
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "{output}");
+        assert!(output.contains("Mutation Preview"), "{output}");
+        assert!(!output.contains("unresolved mutation id"), "{output}");
+    }
+
+    // CATEGORY: REPL_ROUTING
+    #[test]
+    fn repl_handles_natural_language_mutation_apply_without_core_fallthrough() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join("src/lib.rs");
+        std::fs::create_dir_all(target.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&target, "pub fn before() {}\n").expect("write");
+        let mut input = io::Cursor::new(
+            "src/lib.rs を分割してください。Mutation Plan を作成してください。\n変更を適用してください。\n",
+        );
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core_in_workspace(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "{output}");
+        assert!(output.contains("Mutation Plan"), "{output}");
+        assert!(
+            output.contains("explicit confirmation is required"),
+            "{output}"
+        );
+        assert!(!output.contains("unresolved mutation id"), "{output}");
     }
 
     // CATEGORY: REPL_ROUTING

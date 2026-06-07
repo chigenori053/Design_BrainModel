@@ -52,7 +52,24 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
     let lower = raw.to_ascii_lowercase();
     let sentences = segment_sentences(raw);
 
-    let (intent, source, certainty) = if lower == "git status"
+    let mutation_intent = detect_mutation_runtime_intent(raw, &lower);
+    let (intent, source, certainty) = if let Some(intent) = mutation_intent {
+        let explicit =
+            lower.starts_with("mutation ") || lower == "rollback" || lower.starts_with("rollback ");
+        (
+            intent,
+            if explicit {
+                RuntimeInputSource::ExplicitCommand
+            } else {
+                RuntimeInputSource::NaturalLanguageHeuristic
+            },
+            if explicit {
+                RuntimeCommandCertainty::Certain
+            } else {
+                RuntimeCommandCertainty::Probable
+            },
+        )
+    } else if lower == "git status"
         || raw == "git status を確認"
         || raw == "git status確認"
         || raw == "状態を確認"
@@ -157,12 +174,23 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
         return None;
     };
     let mut aggregation = aggregate_sentences(&sentences, intent);
+    if matches!(
+        intent,
+        RuntimeIntent::MutationPreview
+            | RuntimeIntent::MutationApply
+            | RuntimeIntent::MutationReplay
+            | RuntimeIntent::MutationRollback
+    ) {
+        aggregation.target = explicit_mutation_argument(&lower).map(PathBuf::from);
+    }
     let validated_target = aggregation
         .target
         .as_ref()
         .and_then(validated_authority_target);
-    if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::Analyze)
-        && !aggregation.operations.is_empty()
+    if matches!(
+        intent,
+        RuntimeIntent::Preview | RuntimeIntent::Analyze | RuntimeIntent::MutationPlan
+    ) && !aggregation.operations.is_empty()
         && validated_target.is_none()
         && aggregation.rejection.is_none()
     {
@@ -182,8 +210,59 @@ pub fn normalize_runtime_input(input: &str) -> Option<NormalizedRuntimeInput> {
         rejection: aggregation.rejection,
         source,
         certainty,
-        requires_target: matches!(intent, RuntimeIntent::Preview | RuntimeIntent::Analyze),
+        requires_target: matches!(
+            intent,
+            RuntimeIntent::Preview | RuntimeIntent::Analyze | RuntimeIntent::MutationPlan
+        ),
     })
+}
+
+fn detect_mutation_runtime_intent(raw: &str, lower: &str) -> Option<RuntimeIntent> {
+    if lower.contains("mutation rollback")
+        || lower.starts_with("rollback")
+        || raw.contains("取り消し")
+        || raw.contains("元に戻す")
+    {
+        Some(RuntimeIntent::MutationRollback)
+    } else if lower.contains("mutation replay")
+        || raw.contains("変更履歴")
+        || raw.contains("再実行")
+    {
+        Some(RuntimeIntent::MutationReplay)
+    } else if lower.contains("mutation apply")
+        || raw.trim() == "適用"
+        || raw.contains("変更を適用")
+        || raw.contains("変更を実行")
+        || raw.contains("変更を反映")
+    {
+        Some(RuntimeIntent::MutationApply)
+    } else if lower.contains("mutation preview")
+        || raw.contains("変更内容を確認")
+        || raw.contains("変更予測")
+        || (raw.contains("プレビュー") && !raw.contains("プラン"))
+    {
+        Some(RuntimeIntent::MutationPreview)
+    } else if lower.contains("mutation plan")
+        || raw.contains("ミューテーションプラン")
+        || raw.contains("変更計画")
+        || raw.contains("分割計画")
+        || raw.contains("リファクタリング計画")
+    {
+        Some(RuntimeIntent::MutationPlan)
+    } else {
+        None
+    }
+}
+
+fn explicit_mutation_argument(lower: &str) -> Option<String> {
+    let mut parts = lower.split_whitespace();
+    if parts.next()? != "mutation" {
+        return None;
+    }
+    match parts.next()? {
+        "preview" | "apply" | "replay" | "rollback" => parts.next().map(ToString::to_string),
+        _ => None,
+    }
 }
 
 pub fn target_only_input_target(input: &str) -> Option<PathBuf> {
@@ -333,7 +412,10 @@ struct IntentAggregation {
 }
 
 fn aggregate_sentences(sentences: &[String], intent: RuntimeIntent) -> IntentAggregation {
-    if !matches!(intent, RuntimeIntent::Analyze | RuntimeIntent::Preview) {
+    if !matches!(
+        intent,
+        RuntimeIntent::Analyze | RuntimeIntent::Preview | RuntimeIntent::MutationPlan
+    ) {
         return IntentAggregation {
             target: None,
             operations: Vec::new(),
@@ -352,11 +434,13 @@ fn aggregate_sentences(sentences: &[String], intent: RuntimeIntent) -> IntentAgg
             if extract_header_target(sentence).is_some() {
                 continue; // header sentence defines the target only, not operations
             }
-            if intent == RuntimeIntent::Preview {
+            if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan) {
                 operations.extend(extract_sentence_operations(sentence));
             }
         }
-        if intent == RuntimeIntent::Preview && operations.is_empty() {
+        if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan)
+            && operations.is_empty()
+        {
             operations.push(MutationOperation::Modify);
         }
         return IntentAggregation {
@@ -394,15 +478,19 @@ fn aggregate_sentences(sentences: &[String], intent: RuntimeIntent) -> IntentAgg
                         authority.source_sentence_index = index;
                     }
                 }
-                if intent == RuntimeIntent::Preview {
+                if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan) {
                     operations.extend(unit.operations.clone());
                 }
             }
             SentenceSemanticKind::OperationOnly => {
                 unit.inherited_target = authority.explicit_target.clone();
-                if intent == RuntimeIntent::Preview && authority.explicit_target.is_some() {
+                if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan)
+                    && authority.explicit_target.is_some()
+                {
                     operations.extend(unit.operations.clone());
-                } else if intent == RuntimeIntent::Preview && !unit.operations.is_empty() {
+                } else if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan)
+                    && !unit.operations.is_empty()
+                {
                     return IntentAggregation {
                         target: None,
                         operations: Vec::new(),
@@ -419,7 +507,10 @@ fn aggregate_sentences(sentences: &[String], intent: RuntimeIntent) -> IntentAgg
         debug_assert!(authority.source_sentence_index < sentences.len());
     }
     let target = authority.explicit_target.map(PathBuf::from);
-    if intent == RuntimeIntent::Preview && target.is_some() && operations.is_empty() {
+    if matches!(intent, RuntimeIntent::Preview | RuntimeIntent::MutationPlan)
+        && target.is_some()
+        && operations.is_empty()
+    {
         operations.push(MutationOperation::Modify);
     }
     if !operations.is_empty() && target.is_none() {
@@ -828,6 +919,72 @@ mod tests {
                 .intent,
             RuntimeIntent::Apply
         );
+    }
+
+    #[test]
+    fn routing_mutation_plan_nl_test() {
+        let normalized = normalize_runtime_input(
+            "apps::cli::core を分割してください。\nMutation Plan を作成してください。",
+        )
+        .expect("mutation plan");
+
+        assert_eq!(normalized.command.intent, RuntimeIntent::MutationPlan);
+        assert_eq!(
+            normalized.command.target,
+            Some(PathBuf::from("apps::cli::core"))
+        );
+    }
+
+    #[test]
+    fn routing_mutation_preview_nl_test() {
+        let normalized =
+            normalize_runtime_input("変更内容を確認してください。").expect("mutation preview");
+
+        assert_eq!(normalized.command.intent, RuntimeIntent::MutationPreview);
+    }
+
+    #[test]
+    fn routing_mutation_apply_nl_test() {
+        let normalized =
+            normalize_runtime_input("変更を適用してください。").expect("mutation apply");
+
+        assert_eq!(normalized.command.intent, RuntimeIntent::MutationApply);
+    }
+
+    #[test]
+    fn routes_mutation_replay_and_rollback_before_generic_runtime_intents() {
+        assert_eq!(
+            normalize_runtime_input("変更履歴を再実行してください")
+                .expect("mutation replay")
+                .command
+                .intent,
+            RuntimeIntent::MutationReplay
+        );
+        assert_eq!(
+            normalize_runtime_input("変更を元に戻す")
+                .expect("mutation rollback")
+                .command
+                .intent,
+            RuntimeIntent::MutationRollback
+        );
+    }
+
+    #[test]
+    fn preserves_explicit_mutation_id_for_runtime_dispatch() {
+        for (input, intent) in [
+            ("mutation preview mut-1", RuntimeIntent::MutationPreview),
+            ("mutation apply mut-1", RuntimeIntent::MutationApply),
+            ("mutation replay mut-1", RuntimeIntent::MutationReplay),
+            ("mutation rollback mut-1", RuntimeIntent::MutationRollback),
+        ] {
+            let normalized = normalize_runtime_input(input).expect("mutation command");
+            assert_eq!(normalized.command.intent, intent);
+            assert_eq!(
+                normalized.command.target,
+                Some(PathBuf::from("mut-1")),
+                "{input}"
+            );
+        }
     }
 
     #[test]
