@@ -183,7 +183,12 @@ impl RuntimeCommandDispatcher {
             "mutation" => match parts.next() {
                 Some("plan") => {
                     let target = parts.collect::<Vec<_>>().join(" ");
-                    (!target.is_empty()).then_some(RuntimeCommand::MutationPlan { target })
+                    let target = if target.is_empty() {
+                        ".".to_string()
+                    } else {
+                        target
+                    };
+                    Some(RuntimeCommand::MutationPlan { target })
                 }
                 Some("preview") => {
                     let mutation_id = parts.next()?.to_string();
