@@ -695,6 +695,39 @@ fn reasoning_mode(state: &TuiState, runtime: &RuntimeProjection) -> ReasoningVie
 }
 
 fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<String> {
+    if let Some(intent) = &state.resolved_intent {
+        let mut lines = vec![
+            "DBM Reasoning".to_string(),
+            String::new(),
+            "Intent Resolution".to_string(),
+            format!(
+                "  Primary Goal: {}",
+                crate::intent_resolution::goal_label(intent.primary_goal)
+            ),
+            format!("  Confidence: {:.0}%", intent.confidence * 100.0),
+            format!("  Confirmation Status: {}", intent.confirmation_status()),
+            String::new(),
+            "Recommended Actions".to_string(),
+        ];
+        for candidate in &intent.candidate_actions {
+            lines.push(format!(
+                "  - {} ({:.0}%): {}",
+                crate::intent_resolution::action_label(candidate.action),
+                candidate.confidence * 100.0,
+                candidate.reason
+            ));
+        }
+        if let Some(pending) = &state.pending_confirmation {
+            lines.push(String::new());
+            lines.push("Pending Confirmation".to_string());
+            lines.push(format!(
+                "  Action: {}",
+                crate::intent_resolution::action_label(pending.action)
+            ));
+        }
+        return lines;
+    }
+
     let intent = state
         .convergence
         .intent

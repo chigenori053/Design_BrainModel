@@ -24,6 +24,7 @@ pub mod git_guard;
 pub mod github_guard;
 pub mod holographic_memory_observation;
 pub mod input;
+pub mod intent_resolution;
 pub mod ir;
 pub mod ir_state;
 pub mod ir_sync;

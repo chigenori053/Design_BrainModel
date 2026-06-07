@@ -3,6 +3,9 @@ use std::sync::Arc;
 use std::sync::mpsc::Sender;
 
 pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge};
+use crate::intent_resolution::{
+    ConfirmationEngine, ExecutionRouter, IntentResolutionEngine, RecommendedAction,
+};
 use crate::nl::normalization::normalize_runtime_input;
 use crate::pipeline::PipelineState;
 use crate::runtime::logging::{emit_debug, tui_logging_isolated};
@@ -186,6 +189,54 @@ pub fn handle_runtime_submit(
     worker_tx: Sender<RuntimeWorkerEvent>,
 ) {
     state.convergence.record_user_intent(&input);
+    let trimmed = input.trim();
+
+    if let Some(action) = consume_confirmation_input(state, trimmed) {
+        if let Some(runtime_input) = ExecutionRouter::route(action) {
+            queue_runtime_request(state, core, runtime_input.to_string(), worker_tx);
+        }
+        return;
+    } else if state.pending_confirmation.is_none() && is_confirmation_cancel(trimmed) {
+        return;
+    }
+
+    let resolved = IntentResolutionEngine::resolve(trimmed);
+    state.resolved_intent = Some(resolved.clone());
+    if resolved.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD {
+        state.runtime_state = RuntimeShellState::ClarificationRequired;
+        state.enqueue_event(UiEvent::Intent {
+            summary: ConfirmationEngine::prompt(&resolved),
+        });
+        return;
+    }
+    if let Some(pending) = ConfirmationEngine::pending(&resolved) {
+        state.pending_confirmation = Some(pending.clone());
+        state.runtime_state = RuntimeShellState::AwaitConfirmation;
+        state.enqueue_event(UiEvent::Intent {
+            summary: pending.summary,
+        });
+        return;
+    }
+    if resolved.recommended_action() == RecommendedAction::RunAnalyze {
+        state.enqueue_event(UiEvent::Intent {
+            summary: ConfirmationEngine::prompt(&resolved),
+        });
+        queue_runtime_request(state, core, "analyze".to_string(), worker_tx);
+        return;
+    }
+
+    state.runtime_state = RuntimeShellState::ClarificationRequired;
+    state.enqueue_event(UiEvent::Intent {
+        summary: ConfirmationEngine::prompt(&resolved),
+    });
+}
+
+fn queue_runtime_request(
+    state: &mut TuiState,
+    core: Arc<RuntimeCoreBridge>,
+    input: String,
+    worker_tx: Sender<RuntimeWorkerEvent>,
+) {
     state.runtime_state = RuntimeShellState::Thinking;
     state.enqueue_event(UiEvent::Thinking {
         summary: "processing intent / 意図を処理中".to_string(),
@@ -207,6 +258,38 @@ pub fn handle_runtime_submit(
         )
         .into_boxed_str(),
     ));
+}
+
+fn consume_confirmation_input(state: &mut TuiState, input: &str) -> Option<RecommendedAction> {
+    let pending = state.pending_confirmation.clone()?;
+    let lower = input.to_ascii_lowercase();
+    match lower.as_str() {
+        "y" | "yes" | "はい" | "実行" => {
+            state.pending_confirmation = None;
+            Some(pending.action)
+        }
+        "n" | "no" | "いいえ" | "cancel" | "キャンセル" | "中止" => {
+            state.pending_confirmation = None;
+            state.runtime_state = RuntimeShellState::Idle;
+            state.enqueue_event(UiEvent::Intent {
+                summary: "実行をキャンセルしました。".to_string(),
+            });
+            None
+        }
+        "p" | "preview" | "プレビュー" if pending.action == RecommendedAction::RunMutationApply =>
+        {
+            state.pending_confirmation = None;
+            Some(RecommendedAction::RunMutationPreview)
+        }
+        _ => None,
+    }
+}
+
+fn is_confirmation_cancel(input: &str) -> bool {
+    matches!(
+        input.to_ascii_lowercase().as_str(),
+        "n" | "no" | "いいえ" | "cancel" | "キャンセル" | "中止"
+    )
 }
 
 pub fn apply_runtime_response(state: &mut TuiState, mut response: crate::core::CoreResponse) {

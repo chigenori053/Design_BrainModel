@@ -10,6 +10,9 @@ use std::time::SystemTime;
 use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
+use crate::intent_resolution::{
+    ConfirmationEngine, ExecutionRouter, IntentResolutionEngine, RecommendedAction,
+};
 use crate::nl::normalization::{
     NormalizedRuntimeInput, RuntimeCommandCertainty, RuntimeInputSource,
     RuntimeNormalizationRejection, confirmation_like_target_failure, normalize_runtime_input,
@@ -145,6 +148,7 @@ where
     // DBM-SPECIFICATION-MULTILINE-CAPTURE-VALIDATION-SPEC v1.0 §2: mutable to receive parsed plan
     let mut pending_plan: Option<InstructionPlan> = None;
     let mut pending_specification: Option<SpecificationContext> = None;
+    let mut pending_confirmation: Option<crate::intent_resolution::PendingConfirmation> = None;
 
     print_banner(writer)?;
 
@@ -329,6 +333,54 @@ where
             )?;
             writer.flush().map_err(|err| err.to_string())?;
             continue;
+        }
+
+        if let Some(pending) = pending_confirmation.clone() {
+            match confirmation_response(trimmed, pending.action) {
+                ConfirmationResponse::Execute(action) => {
+                    pending_confirmation = None;
+                    dispatch_repl_action(action, core, workspace_root.as_path(), &mut ui, writer)?;
+                    writer.flush().map_err(|err| err.to_string())?;
+                    continue;
+                }
+                ConfirmationResponse::Cancel => {
+                    pending_confirmation = None;
+                    writeln!(writer, "実行をキャンセルしました。")
+                        .map_err(|err| err.to_string())?;
+                    writer.flush().map_err(|err| err.to_string())?;
+                    continue;
+                }
+                ConfirmationResponse::Unmatched => {}
+            }
+        }
+
+        let resolved = IntentResolutionEngine::resolve(trimmed);
+        if should_intercept_with_intent_layer(&resolved) {
+            if resolved.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD {
+                writeln!(writer, "{}", ConfirmationEngine::prompt(&resolved))
+                    .map_err(|err| err.to_string())?;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
+            if let Some(pending) = ConfirmationEngine::pending(&resolved) {
+                writeln!(writer, "{}", pending.summary).map_err(|err| err.to_string())?;
+                pending_confirmation = Some(pending);
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
+            if resolved.recommended_action() == RecommendedAction::RunAnalyze {
+                writeln!(writer, "{}", ConfirmationEngine::prompt(&resolved))
+                    .map_err(|err| err.to_string())?;
+                dispatch_repl_action(
+                    RecommendedAction::RunAnalyze,
+                    core,
+                    workspace_root.as_path(),
+                    &mut ui,
+                    writer,
+                )?;
+                writer.flush().map_err(|err| err.to_string())?;
+                continue;
+            }
         }
 
         if let Some(args) = parse_repl_memory_log_command(trimmed) {
@@ -911,6 +963,48 @@ pub fn dispatch_repl_input_with_core<W: Write>(
         return Ok(false);
     }
 
+    if let Some(pending) = session.pending_confirmation.clone() {
+        match confirmation_response(trimmed, pending.action) {
+            ConfirmationResponse::Execute(action) => {
+                session.pending_confirmation = None;
+                dispatch_repl_action(action, core, workspace_root.as_path(), &mut ui, writer)?;
+                return Ok(false);
+            }
+            ConfirmationResponse::Cancel => {
+                session.pending_confirmation = None;
+                writeln!(writer, "実行をキャンセルしました。").map_err(|err| err.to_string())?;
+                return Ok(false);
+            }
+            ConfirmationResponse::Unmatched => {}
+        }
+    }
+
+    let resolved = IntentResolutionEngine::resolve(trimmed);
+    if should_intercept_with_intent_layer(&resolved) {
+        if resolved.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD {
+            writeln!(writer, "{}", ConfirmationEngine::prompt(&resolved))
+                .map_err(|err| err.to_string())?;
+            return Ok(false);
+        }
+        if let Some(pending) = ConfirmationEngine::pending(&resolved) {
+            writeln!(writer, "{}", pending.summary).map_err(|err| err.to_string())?;
+            session.pending_confirmation = Some(pending);
+            return Ok(false);
+        }
+        if resolved.recommended_action() == RecommendedAction::RunAnalyze {
+            writeln!(writer, "{}", ConfirmationEngine::prompt(&resolved))
+                .map_err(|err| err.to_string())?;
+            dispatch_repl_action(
+                RecommendedAction::RunAnalyze,
+                core,
+                workspace_root.as_path(),
+                &mut ui,
+                writer,
+            )?;
+            return Ok(false);
+        }
+    }
+
     if let Some(args) = parse_repl_memory_log_command(trimmed) {
         match crate::commands::memory::dispatch_memory_command(&args) {
             Ok(out) => writeln!(writer, "{}", out.message).map_err(|err| err.to_string())?,
@@ -949,6 +1043,57 @@ pub fn dispatch_repl_input_with_core<W: Write>(
         writer,
     )?;
     Ok(false)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ConfirmationResponse {
+    Execute(RecommendedAction),
+    Cancel,
+    Unmatched,
+}
+
+fn confirmation_response(input: &str, pending: RecommendedAction) -> ConfirmationResponse {
+    match input.to_ascii_lowercase().as_str() {
+        "y" | "yes" | "はい" | "実行" => ConfirmationResponse::Execute(pending),
+        "n" | "no" | "いいえ" | "cancel" | "キャンセル" | "中止" => {
+            ConfirmationResponse::Cancel
+        }
+        "p" | "preview" | "プレビュー" if pending == RecommendedAction::RunMutationApply => {
+            ConfirmationResponse::Execute(RecommendedAction::RunMutationPreview)
+        }
+        _ => ConfirmationResponse::Unmatched,
+    }
+}
+
+fn should_intercept_with_intent_layer(resolved: &crate::intent_resolution::ResolvedIntent) -> bool {
+    resolved.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD
+        || resolved.requires_confirmation
+        || resolved.recommended_action() == RecommendedAction::RunAnalyze
+}
+
+fn dispatch_repl_action<W: Write>(
+    action: RecommendedAction,
+    core: &dyn CoreExecutor,
+    workspace_root: &Path,
+    ui: &mut ReplUiState,
+    writer: &mut W,
+) -> Result<(), String> {
+    let Some(runtime_input) = ExecutionRouter::route(action) else {
+        return Ok(());
+    };
+    if let Some(events) =
+        RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root, runtime_input)
+    {
+        ui.semantic_state.capture_mutation_events(&events);
+        ui.semantic_state
+            .capture_runtime_command(runtime_input, &ui.runtime);
+        for event in events {
+            writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
+        }
+        return Ok(());
+    }
+    handle_submit(runtime_input.to_string(), workspace_root, core, ui, writer)?;
+    Ok(())
 }
 
 fn dispatch_normalized_runtime_intent(
@@ -2418,6 +2563,36 @@ rules:
             0,
             "Core should not be called for the second /end"
         );
+    }
+
+    #[test]
+    fn repl_confirmation_y_executes_pending_action() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "この変更を適用して\nY\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+
+        assert_eq!(core.calls(), 1);
+    }
+
+    #[test]
+    fn repl_confirmation_n_discards_pending_action() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "この変更を適用して\nN\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert_eq!(core.calls(), 0, "{output}");
+        assert!(output.contains("実行をキャンセルしました。"), "{output}");
     }
 }
 // DBM clarification execution guarantee

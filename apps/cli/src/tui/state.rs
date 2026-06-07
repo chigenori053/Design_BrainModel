@@ -7,6 +7,7 @@ use strategy_engine::ExecutionPlanCandidate;
 pub use crate::core::{
     Constraint, CoreState, DesignDocument, Diff, DiffChunk, ReasonUnit, StructureTree,
 };
+use crate::intent_resolution::{PendingConfirmation, ResolvedIntent};
 use crate::nl::language::detect_runtime_language;
 use crate::nl::normalization::normalize_runtime_input;
 use crate::nl::planner::InstructionPlan;
@@ -1127,6 +1128,8 @@ pub struct TuiState {
     history_cursor: Option<usize>,
     pub persistent_history: Option<PersistentInputHistory>,
     pub runtime_state: RuntimeShellState,
+    pub resolved_intent: Option<ResolvedIntent>,
+    pub pending_confirmation: Option<PendingConfirmation>,
     pub active_target: Option<String>,
     pub active_transaction_id: Option<String>,
     pub active_transaction: Option<RuntimeTransaction>,
@@ -1199,6 +1202,8 @@ impl TuiState {
             history_cursor: None,
             persistent_history: None,
             runtime_state: RuntimeShellState::Idle,
+            resolved_intent: None,
+            pending_confirmation: None,
             active_target: None,
             active_transaction_id: None,
             active_transaction: None,

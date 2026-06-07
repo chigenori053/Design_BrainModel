@@ -5,6 +5,7 @@ use crate::design_delta::{
     DesignGraph, MutationCandidate, MutationPlan, MutationSearchResult, RationalityScore,
     TradeoffExplanation,
 };
+use crate::intent_resolution::PendingConfirmation;
 use crate::plan::Plan;
 use crate::state::{Context, Mode, State};
 
@@ -59,6 +60,8 @@ pub struct AgentSession {
     pub transcript: Vec<String>,
     /// タスクリスト（Phase4で使用）
     pub tasks: Vec<Task>,
+    /// Intent Resolution Layer が実行前確認を要求した保留アクション。
+    pub pending_confirmation: Option<PendingConfirmation>,
 }
 
 impl AgentSession {
