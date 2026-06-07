@@ -11,7 +11,8 @@ use crate::core::{
     CoreEvent, CoreExecutor, CoreRequest, CoreState, DesignDocument, RuntimeCoreBridge,
 };
 use crate::intent_resolution::{
-    ConfirmationEngine, ExecutionRouter, IntentResolutionEngine, RecommendedAction,
+    ConfirmationEngine, ExecutionContext, ExecutionRouter, IntentResolutionEngine,
+    RecommendedAction, ResolvedIntent,
 };
 use crate::nl::normalization::{
     NormalizedRuntimeInput, RuntimeCommandCertainty, RuntimeInputSource,
@@ -149,6 +150,7 @@ where
     let mut pending_plan: Option<InstructionPlan> = None;
     let mut pending_specification: Option<SpecificationContext> = None;
     let mut pending_confirmation: Option<crate::intent_resolution::PendingConfirmation> = None;
+    let mut pending_resolved_intent: Option<ResolvedIntent> = None;
 
     print_banner(writer)?;
 
@@ -339,12 +341,24 @@ where
             match confirmation_response(trimmed, pending.action) {
                 ConfirmationResponse::Execute(action) => {
                     pending_confirmation = None;
-                    dispatch_repl_action(action, core, workspace_root.as_path(), &mut ui, writer)?;
+                    let resolved = pending_resolved_intent
+                        .take()
+                        .unwrap_or_else(|| IntentResolutionEngine::resolve(trimmed));
+                    dispatch_repl_action(
+                        action,
+                        trimmed,
+                        resolved,
+                        core,
+                        workspace_root.as_path(),
+                        &mut ui,
+                        writer,
+                    )?;
                     writer.flush().map_err(|err| err.to_string())?;
                     continue;
                 }
                 ConfirmationResponse::Cancel => {
                     pending_confirmation = None;
+                    pending_resolved_intent = None;
                     writeln!(writer, "実行をキャンセルしました。")
                         .map_err(|err| err.to_string())?;
                     writer.flush().map_err(|err| err.to_string())?;
@@ -365,6 +379,7 @@ where
             if let Some(pending) = ConfirmationEngine::pending(&resolved) {
                 writeln!(writer, "{}", pending.summary).map_err(|err| err.to_string())?;
                 pending_confirmation = Some(pending);
+                pending_resolved_intent = Some(resolved);
                 writer.flush().map_err(|err| err.to_string())?;
                 continue;
             }
@@ -373,6 +388,8 @@ where
                     .map_err(|err| err.to_string())?;
                 dispatch_repl_action(
                     RecommendedAction::RunAnalyze,
+                    trimmed,
+                    resolved,
                     core,
                     workspace_root.as_path(),
                     &mut ui,
@@ -967,11 +984,24 @@ pub fn dispatch_repl_input_with_core<W: Write>(
         match confirmation_response(trimmed, pending.action) {
             ConfirmationResponse::Execute(action) => {
                 session.pending_confirmation = None;
-                dispatch_repl_action(action, core, workspace_root.as_path(), &mut ui, writer)?;
+                let resolved = session
+                    .pending_resolved_intent
+                    .take()
+                    .unwrap_or_else(|| IntentResolutionEngine::resolve(trimmed));
+                dispatch_repl_action(
+                    action,
+                    trimmed,
+                    resolved,
+                    core,
+                    workspace_root.as_path(),
+                    &mut ui,
+                    writer,
+                )?;
                 return Ok(false);
             }
             ConfirmationResponse::Cancel => {
                 session.pending_confirmation = None;
+                session.pending_resolved_intent = None;
                 writeln!(writer, "実行をキャンセルしました。").map_err(|err| err.to_string())?;
                 return Ok(false);
             }
@@ -989,6 +1019,7 @@ pub fn dispatch_repl_input_with_core<W: Write>(
         if let Some(pending) = ConfirmationEngine::pending(&resolved) {
             writeln!(writer, "{}", pending.summary).map_err(|err| err.to_string())?;
             session.pending_confirmation = Some(pending);
+            session.pending_resolved_intent = Some(resolved);
             return Ok(false);
         }
         if resolved.recommended_action() == RecommendedAction::RunAnalyze {
@@ -996,6 +1027,8 @@ pub fn dispatch_repl_input_with_core<W: Write>(
                 .map_err(|err| err.to_string())?;
             dispatch_repl_action(
                 RecommendedAction::RunAnalyze,
+                trimmed,
+                resolved,
                 core,
                 workspace_root.as_path(),
                 &mut ui,
@@ -1073,11 +1106,20 @@ fn should_intercept_with_intent_layer(resolved: &crate::intent_resolution::Resol
 
 fn dispatch_repl_action<W: Write>(
     action: RecommendedAction,
+    user_input: &str,
+    resolved_intent: ResolvedIntent,
     core: &dyn CoreExecutor,
     workspace_root: &Path,
     ui: &mut ReplUiState,
     writer: &mut W,
 ) -> Result<(), String> {
+    let context = ExecutionContext {
+        user_input: user_input.to_string(),
+        resolved_intent,
+        workspace_path: workspace_root.to_path_buf(),
+    };
+    let result = ExecutionRouter::execute(action, &context);
+    writeln!(writer, "{}", result.narrative).map_err(|err| err.to_string())?;
     let Some(runtime_input) = ExecutionRouter::route(action) else {
         return Ok(());
     };
@@ -2577,6 +2619,41 @@ rules:
             .expect("repl");
 
         assert_eq!(core.calls(), 1);
+    }
+
+    #[test]
+    fn repl_confirmation_y_executes_mutation_plan_route() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "apps::cli::core を整理したい\nY\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(output.contains("変更計画を生成しています。"), "{output}");
+        assert_eq!(core.calls(), 0, "{output}");
+    }
+
+    #[test]
+    fn repl_confirmation_y_executes_security_route() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let script = "セキュリティ監査を実施して\nY\n";
+        let mut input = io::Cursor::new(script);
+        let mut output = Vec::new();
+        let core = CountingCore::new();
+
+        run_repl_with_core(temp.path().to_path_buf(), &mut input, &mut output, &core)
+            .expect("repl");
+        let output = String::from_utf8(output).expect("utf8");
+
+        assert!(
+            output.contains("セキュリティ監査を開始しました。"),
+            "{output}"
+        );
+        assert_eq!(core.calls(), 1, "{output}");
     }
 
     #[test]

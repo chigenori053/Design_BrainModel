@@ -706,6 +706,10 @@ fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<St
             ),
             format!("  Confidence: {:.0}%", intent.confidence * 100.0),
             format!("  Confirmation Status: {}", intent.confirmation_status()),
+            format!(
+                "  Execution State: {}",
+                crate::intent_resolution::execution_state_label(state.execution_state)
+            ),
             String::new(),
             "Recommended Actions".to_string(),
         ];
@@ -724,6 +728,11 @@ fn reasoning_view_lines(state: &TuiState, runtime: &RuntimeProjection) -> Vec<St
                 "  Action: {}",
                 crate::intent_resolution::action_label(pending.action)
             ));
+        }
+        if let Some(narrative) = &state.execution_narrative {
+            lines.push(String::new());
+            lines.push("Execution Narrative".to_string());
+            lines.extend(narrative.lines().map(|line| format!("  {line}")));
         }
         return lines;
     }

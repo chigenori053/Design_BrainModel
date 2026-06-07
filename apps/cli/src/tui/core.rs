@@ -4,7 +4,8 @@ use std::sync::mpsc::Sender;
 
 pub use crate::core::{CoreEvent, CoreExecutor, CoreRequest, RuntimeCoreBridge};
 use crate::intent_resolution::{
-    ConfirmationEngine, ExecutionRouter, IntentResolutionEngine, RecommendedAction,
+    ConfirmationEngine, ExecutionContext, ExecutionRouter, ExecutionState, ExecutionStatus,
+    IntentResolutionEngine, RecommendedAction,
 };
 use crate::nl::normalization::normalize_runtime_input;
 use crate::pipeline::PipelineState;
@@ -192,9 +193,7 @@ pub fn handle_runtime_submit(
     let trimmed = input.trim();
 
     if let Some(action) = consume_confirmation_input(state, trimmed) {
-        if let Some(runtime_input) = ExecutionRouter::route(action) {
-            queue_runtime_request(state, core, runtime_input.to_string(), worker_tx);
-        }
+        execute_confirmed_action(state, core, action, trimmed.to_string(), worker_tx);
         return;
     } else if state.pending_confirmation.is_none() && is_confirmation_cancel(trimmed) {
         return;
@@ -211,6 +210,8 @@ pub fn handle_runtime_submit(
     }
     if let Some(pending) = ConfirmationEngine::pending(&resolved) {
         state.pending_confirmation = Some(pending.clone());
+        state.execution_state = ExecutionState::PendingConfirmation;
+        state.execution_narrative = Some(pending.summary.clone());
         state.runtime_state = RuntimeShellState::AwaitConfirmation;
         state.enqueue_event(UiEvent::Intent {
             summary: pending.summary,
@@ -221,7 +222,13 @@ pub fn handle_runtime_submit(
         state.enqueue_event(UiEvent::Intent {
             summary: ConfirmationEngine::prompt(&resolved),
         });
-        queue_runtime_request(state, core, "analyze".to_string(), worker_tx);
+        execute_confirmed_action(
+            state,
+            core,
+            RecommendedAction::RunAnalyze,
+            trimmed.to_string(),
+            worker_tx,
+        );
         return;
     }
 
@@ -229,6 +236,37 @@ pub fn handle_runtime_submit(
     state.enqueue_event(UiEvent::Intent {
         summary: ConfirmationEngine::prompt(&resolved),
     });
+}
+
+fn execute_confirmed_action(
+    state: &mut TuiState,
+    core: Arc<RuntimeCoreBridge>,
+    action: RecommendedAction,
+    user_input: String,
+    worker_tx: Sender<RuntimeWorkerEvent>,
+) {
+    let resolved_intent = state
+        .resolved_intent
+        .clone()
+        .unwrap_or_else(|| IntentResolutionEngine::resolve(&user_input));
+    let context = ExecutionContext {
+        user_input,
+        resolved_intent,
+        workspace_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+    };
+    let result = ExecutionRouter::execute(action, &context);
+    state.execution_narrative = Some(result.narrative.clone());
+    state.execution_state = match result.status {
+        ExecutionStatus::Completed => ExecutionState::Running,
+        ExecutionStatus::Failed => ExecutionState::Failed,
+        ExecutionStatus::WaitingConfirmation => ExecutionState::PendingConfirmation,
+    };
+    state.enqueue_event(UiEvent::Execution {
+        step: result.narrative,
+    });
+    if let Some(runtime_input) = ExecutionRouter::route(action) {
+        queue_runtime_request(state, core, runtime_input.to_string(), worker_tx);
+    }
 }
 
 fn queue_runtime_request(
@@ -302,6 +340,11 @@ pub fn apply_runtime_response(state: &mut TuiState, mut response: crate::core::C
         });
     }
     let success = response.status != crate::core::ExecutionStatus::Failed;
+    state.execution_state = if success {
+        ExecutionState::Completed
+    } else {
+        ExecutionState::Failed
+    };
 
     if let Some(snapshot) = response.core_state {
         state.core_snapshot = snapshot.clone();

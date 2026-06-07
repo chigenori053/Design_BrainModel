@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -41,6 +42,35 @@ pub struct PendingConfirmation {
     pub action: RecommendedAction,
     pub summary: String,
     pub expires_at: Option<SystemTime>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ExecutionContext {
+    pub user_input: String,
+    pub resolved_intent: ResolvedIntent,
+    pub workspace_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExecutionResult {
+    pub status: ExecutionStatus,
+    pub narrative: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionStatus {
+    Completed,
+    Failed,
+    WaitingConfirmation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionState {
+    Idle,
+    PendingConfirmation,
+    Running,
+    Completed,
+    Failed,
 }
 
 pub struct IntentResolutionEngine;
@@ -130,17 +160,17 @@ impl IntentResolutionEngine {
         if has_refactor_signal(&normalized) && has_target_signal(&normalized) {
             return resolved(
                 IntentGoal::Mutation,
-                0.70,
+                0.76,
                 vec![
+                    candidate(
+                        RecommendedAction::GenerateMutationPlan,
+                        0.76,
+                        "構造改善の計画生成に該当する可能性があります",
+                    ),
                     candidate(
                         RecommendedAction::RunAnalyze,
                         0.70,
                         "対象整理の前に構造分析が有効です",
-                    ),
-                    candidate(
-                        RecommendedAction::GenerateMutationPlan,
-                        0.65,
-                        "構造改善の計画生成に該当する可能性があります",
                     ),
                 ],
             );
@@ -253,14 +283,54 @@ impl ConfirmationEngine {
 pub struct ExecutionRouter;
 
 impl ExecutionRouter {
+    pub fn execute(action: RecommendedAction, context: &ExecutionContext) -> ExecutionResult {
+        if context.resolved_intent.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD
+            || action == RecommendedAction::RequestClarification
+        {
+            return ExecutionResult {
+                status: ExecutionStatus::WaitingConfirmation,
+                narrative: "追加情報が必要なため、実行を保留しています。".to_string(),
+            };
+        }
+
+        let Some(_runtime_input) = Self::route(action) else {
+            return ExecutionResult {
+                status: ExecutionStatus::Failed,
+                narrative: "実行可能なルートを決定できませんでした。".to_string(),
+            };
+        };
+
+        ExecutionResult {
+            status: ExecutionStatus::Completed,
+            narrative: execution_narrative(action),
+        }
+    }
+
     pub fn route(action: RecommendedAction) -> Option<&'static str> {
         match action {
-            RecommendedAction::RunAnalyze => Some("analyze"),
+            RecommendedAction::RunAnalyze => Some("analyze ."),
             RecommendedAction::GenerateMutationPlan => Some("mutation plan"),
             RecommendedAction::RunMutationPreview => Some("mutation preview"),
             RecommendedAction::RunMutationApply => Some("mutation apply"),
             RecommendedAction::RunSecurityAudit => Some("security audit"),
             RecommendedAction::RequestClarification => None,
+        }
+    }
+}
+
+fn execution_narrative(action: RecommendedAction) -> String {
+    match action {
+        RecommendedAction::RunAnalyze => {
+            "構造分析を開始しました。\n\nAnalyze Engine を実行しています。".to_string()
+        }
+        RecommendedAction::GenerateMutationPlan => "変更計画を生成しています。".to_string(),
+        RecommendedAction::RunMutationPreview => "変更影響を評価しています。".to_string(),
+        RecommendedAction::RunMutationApply => {
+            "変更を適用しています。\n\n構造安定性を評価しています。".to_string()
+        }
+        RecommendedAction::RunSecurityAudit => "セキュリティ監査を開始しました。".to_string(),
+        RecommendedAction::RequestClarification => {
+            "追加情報が必要なため、実行を保留しています。".to_string()
         }
     }
 }
@@ -347,6 +417,16 @@ pub fn action_label(action: RecommendedAction) -> &'static str {
         RecommendedAction::RunMutationApply => "Mutation Apply",
         RecommendedAction::RunSecurityAudit => "Security Audit",
         RecommendedAction::RequestClarification => "Clarification",
+    }
+}
+
+pub fn execution_state_label(state: ExecutionState) -> &'static str {
+    match state {
+        ExecutionState::Idle => "Idle",
+        ExecutionState::PendingConfirmation => "PendingConfirmation",
+        ExecutionState::Running => "Running",
+        ExecutionState::Completed => "Completed",
+        ExecutionState::Failed => "Failed",
     }
 }
 
@@ -446,7 +526,11 @@ mod tests {
         let intent = IntentResolutionEngine::resolve("apps::cli::core を整理したい");
         assert_eq!(intent.primary_goal, IntentGoal::Mutation);
         assert!(intent.candidate_actions.len() >= 2);
-        assert!(intent.confidence < IntentResolutionEngine::CLARIFICATION_THRESHOLD);
+        assert_eq!(
+            intent.recommended_action(),
+            RecommendedAction::GenerateMutationPlan
+        );
+        assert!(intent.requires_confirmation);
     }
 
     #[test]
@@ -471,11 +555,41 @@ mod tests {
     fn execution_router_maps_confirmed_actions() {
         assert_eq!(
             ExecutionRouter::route(RecommendedAction::RunAnalyze),
-            Some("analyze")
+            Some("analyze .")
         );
         assert_eq!(
             ExecutionRouter::route(RecommendedAction::RequestClarification),
             None
         );
+    }
+
+    #[test]
+    fn execution_router_executes_analyze_route() {
+        let resolved_intent = IntentResolutionEngine::resolve("プロジェクト構造分析してほしい");
+        let context = ExecutionContext {
+            user_input: "プロジェクト構造分析してほしい".to_string(),
+            resolved_intent,
+            workspace_path: PathBuf::from("."),
+        };
+
+        let result = ExecutionRouter::execute(RecommendedAction::RunAnalyze, &context);
+
+        assert_eq!(result.status, ExecutionStatus::Completed);
+        assert!(result.narrative.contains("Analyze Engine"));
+    }
+
+    #[test]
+    fn execution_router_routes_security_audit() {
+        let resolved_intent = IntentResolutionEngine::resolve("セキュリティ監査を実施して");
+        let context = ExecutionContext {
+            user_input: "セキュリティ監査を実施して".to_string(),
+            resolved_intent,
+            workspace_path: PathBuf::from("."),
+        };
+
+        let result = ExecutionRouter::execute(RecommendedAction::RunSecurityAudit, &context);
+
+        assert_eq!(result.status, ExecutionStatus::Completed);
+        assert!(result.narrative.contains("セキュリティ監査"));
     }
 }
