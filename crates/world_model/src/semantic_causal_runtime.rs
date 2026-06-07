@@ -50,6 +50,7 @@ pub struct EntityState {
     pub entity_id: String,
     pub semantic_role: String,
     pub current_state: String,
+    pub metadata: BTreeMap<String, String>,
     pub canonical_ref: Option<CanonicalReuseRef>,
 }
 
@@ -77,6 +78,7 @@ impl EntityState {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CausalState {
     pub edges: Vec<CausalPropagationEdge>,
+    pub seed_history: Vec<String>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -557,6 +559,9 @@ fn stable_world_signature(world_state: &CausalRuntimeState) -> String {
             "entity:{}:{}:{}",
             entity.entity_id, entity.semantic_role, entity.current_state
         ));
+        for (key, value) in &entity.metadata {
+            parts.push(format!("metadata:{}:{}:{}", entity.entity_id, key, value));
+        }
     }
     for constraint in &world_state.environmental_constraints {
         parts.push(format!(

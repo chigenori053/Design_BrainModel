@@ -13,12 +13,14 @@ fn sample_world() -> CausalRuntimeState {
                 entity_id: "runtime".into(),
                 semantic_role: "executor".into(),
                 current_state: "ready".into(),
+                metadata: Default::default(),
                 canonical_ref: None,
             },
             EntityState {
                 entity_id: "database".into(),
                 semantic_role: "executor".into(),
                 current_state: "ready".into(),
+                metadata: Default::default(),
                 canonical_ref: None,
             },
         ],
@@ -33,6 +35,7 @@ fn sample_world() -> CausalRuntimeState {
                 target_state: "validated".into(),
                 causal_weight: 0.95,
             }],
+            seed_history: Vec::new(),
         },
     )
 }
@@ -67,6 +70,7 @@ fn world_model_entities_share_canonical_identity_for_same_meaning() {
         entity_id: "runtime-a".into(),
         semantic_role: "executor".into(),
         current_state: "ready".into(),
+        metadata: Default::default(),
         canonical_ref: None,
     }
     .resolve_canonical_identity(&mut resolver, ReuseScope::Global);
@@ -74,6 +78,7 @@ fn world_model_entities_share_canonical_identity_for_same_meaning() {
         entity_id: "runtime-b".into(),
         semantic_role: "executor".into(),
         current_state: "ready".into(),
+        metadata: Default::default(),
         canonical_ref: None,
     }
     .resolve_canonical_identity(&mut resolver, ReuseScope::Global);
