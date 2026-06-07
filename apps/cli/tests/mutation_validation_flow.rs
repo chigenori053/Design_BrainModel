@@ -95,6 +95,9 @@ fn contradictory_prediction_rejects_apply_without_changing_files() {
         .expect_err("contradictory prediction must reject apply");
 
     assert!(error.contains("causal validation gate"), "{error}");
+    assert!(error.contains("主な原因"), "{error}");
+    assert!(error.contains("影響が予測される領域"), "{error}");
+    assert!(error.contains("推奨事項"), "{error}");
     assert_eq!(
         fs::read_to_string(workspace.path().join("src/lib.rs")).unwrap(),
         "pub fn before() {}\n"

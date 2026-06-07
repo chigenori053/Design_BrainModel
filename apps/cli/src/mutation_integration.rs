@@ -7,7 +7,9 @@ use mutation_engine::{
     MutationPlan, MutationPlanner, MutationPreview, MutationRequest, MutationTarget,
     PatchOperation,
 };
-use world_model::{MutationValidationGate, PredictionResult, ValidationDecision};
+use world_model::{
+    MutationValidationGate, PredictionExplainer, PredictionResult, ValidationDecision,
+};
 use world_model_core::{Action, WorldState};
 
 use design_domain::{Architecture, Dependency, DependencyKind, DesignUnit, DesignUnitId};
@@ -186,10 +188,12 @@ impl MutationEngineDispatcher {
 
         let prediction = predict_mutation_preview(&context, &plan, previewed.preview_data());
         let decision = MutationValidationGate::decide(&prediction);
+        let explanation = PredictionExplainer::explain(&prediction);
+        let narrative = MutationValidationGate::narrative(decision, &explanation);
         if decision == ValidationDecision::Reject {
             return Err(format!(
                 "Mutation rejected by causal validation gate:\n{}",
-                MutationValidationGate::narrative(decision)
+                narrative
             ));
         }
 
@@ -198,7 +202,7 @@ impl MutationEngineDispatcher {
             .map_err(|e| format!("Apply failed: {e}"))?;
 
         let mut expected_improvements = vec!["Mutation applied successfully".to_string()];
-        expected_improvements.push(MutationValidationGate::narrative(decision).to_string());
+        expected_improvements.push(narrative);
         expected_improvements.extend(prediction.warnings);
 
         Ok(MutationProjection {

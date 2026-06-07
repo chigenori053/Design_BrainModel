@@ -16,7 +16,9 @@ pub use execution_model::{
 pub use geometry_model::{graph_layout_score, layout_balance_score, spatial_constraint_score};
 pub use math_model::{algebraic_stability, constraint_solver_score, logic_verification_score};
 pub use mutation_validation::{
-    CausalStabilityLevel, MutationValidationGate, PredictionResult, ValidationDecision,
+    AffectedEntity, CausalStabilityLevel, CauseCategory, CauseSeverity, MutationValidationGate,
+    PredictionCause, PredictionExplainer, PredictionExplanation, PredictionResult,
+    RecommendationGenerator, ValidationDecision,
 };
 pub use semantic_causal_runtime::{
     CausalPropagationEdge, CausalPropagationGraph, CausalRuntimeState, CausalStability,
