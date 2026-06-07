@@ -1,11 +1,16 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use mutation_engine::{
     AnalyzeContext, DependencyEdge, MutationAuditStore, MutationEngine, MutationOperation,
-    MutationPlanner, MutationRequest, MutationTarget, PatchOperation,
+    MutationPlan, MutationPlanner, MutationPreview, MutationRequest, MutationTarget,
+    PatchOperation,
 };
+use world_model::{MutationValidationGate, PredictionResult, ValidationDecision};
+use world_model_core::{Action, WorldState};
+
+use design_domain::{Architecture, Dependency, DependencyKind, DesignUnit, DesignUnitId};
 
 use crate::analyze_engine::{AnalyzeEngineOutput, StructureEdgeKind};
 use crate::tui::state::{
@@ -72,10 +77,11 @@ pub struct MutationEngineDispatcher;
 
 impl MutationEngineDispatcher {
     pub fn plan(workspace_root: &Path, target: &str) -> Result<MutationProjection, String> {
-        let analyze_output = crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
-            path: workspace_root.to_path_buf(),
-        })
-        .map_err(|e| format!("Analyze failed: {e}"))?;
+        let analyze_output =
+            crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
+                path: workspace_root.to_path_buf(),
+            })
+            .map_err(|e| format!("Analyze failed: {e}"))?;
 
         let context = mutation_context_from_analyze(&analyze_output);
         let planner = MutationPlanner;
@@ -125,10 +131,11 @@ impl MutationEngineDispatcher {
             .map_err(|e| format!("Plan not found: {e}"))?;
 
         // Plan -> Validate -> Preview
-        let analyze_output = crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
-            path: workspace_root.to_path_buf(),
-        })
-        .map_err(|e| format!("Analyze failed: {e}"))?;
+        let analyze_output =
+            crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
+                path: workspace_root.to_path_buf(),
+            })
+            .map_err(|e| format!("Analyze failed: {e}"))?;
         let context = mutation_context_from_analyze(&analyze_output);
 
         let preview = engine
@@ -162,30 +169,44 @@ impl MutationEngineDispatcher {
         let plan = store
             .load_plan(mutation_id)
             .map_err(|e| format!("Plan not found: {e}"))?;
-        let analyze_output = crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
-            path: workspace_root.to_path_buf(),
-        })
-        .map_err(|e| format!("Analyze failed: {e}"))?;
+        let analyze_output =
+            crate::analyze_engine::execute(crate::analyze_engine::AnalyzeCommand {
+                path: workspace_root.to_path_buf(),
+            })
+            .map_err(|e| format!("Analyze failed: {e}"))?;
         let context = mutation_context_from_analyze(&analyze_output);
 
         let previewed = engine
-            .plan(plan)
+            .plan(plan.clone())
             .map_err(|e| format!("Failed to initialize plan: {e}"))?
             .validate(&context)
             .map_err(|e| format!("Validation failed: {e}"))?
             .preview()
             .map_err(|e| format!("Preview failed: {e}"))?;
 
+        let prediction = predict_mutation_preview(&context, &plan, previewed.preview_data());
+        let decision = MutationValidationGate::decide(&prediction);
+        if decision == ValidationDecision::Reject {
+            return Err(format!(
+                "Mutation rejected by causal validation gate:\n{}",
+                MutationValidationGate::narrative(decision)
+            ));
+        }
+
         let _record = previewed
             .apply(None)
             .map_err(|e| format!("Apply failed: {e}"))?;
+
+        let mut expected_improvements = vec!["Mutation applied successfully".to_string()];
+        expected_improvements.push(MutationValidationGate::narrative(decision).to_string());
+        expected_improvements.extend(prediction.warnings);
 
         Ok(MutationProjection {
             mutation_id: mutation_id.to_string(),
             target: "Workspace".to_string(),
             operation: "Apply".to_string(),
             validation_targets: vec![],
-            expected_improvements: vec!["Mutation applied successfully".to_string()],
+            expected_improvements,
         })
     }
 
@@ -203,7 +224,10 @@ impl MutationEngineDispatcher {
         })
     }
 
-    pub fn rollback(workspace_root: &Path, mutation_id: &str) -> Result<RollbackProjection, String> {
+    pub fn rollback(
+        workspace_root: &Path,
+        mutation_id: &str,
+    ) -> Result<RollbackProjection, String> {
         let engine = mutation_engine::MutationRollbackEngine::new(workspace_root);
 
         engine
@@ -214,6 +238,67 @@ impl MutationEngineDispatcher {
             mutation_id: mutation_id.to_string(),
             status: "Rolled back successfully".to_string(),
         })
+    }
+}
+
+pub fn predict_mutation_preview(
+    context: &AnalyzeContext,
+    plan: &MutationPlan,
+    preview: &MutationPreview,
+) -> PredictionResult {
+    let state = structure_world_state(context, plan, preview);
+    MutationValidationGate::predict(&state)
+}
+
+fn structure_world_state(
+    context: &AnalyzeContext,
+    plan: &MutationPlan,
+    preview: &MutationPreview,
+) -> WorldState {
+    let mut node_names = context.nodes.iter().cloned().collect::<BTreeSet<_>>();
+    let dependencies = plan
+        .projected_dependencies
+        .as_ref()
+        .unwrap_or(&context.dependencies);
+    for dependency in dependencies {
+        node_names.insert(dependency.from.clone());
+        node_names.insert(dependency.to.clone());
+    }
+
+    let mut architecture = Architecture::seeded();
+    let mut ids = BTreeMap::new();
+    for (index, name) in node_names.into_iter().enumerate() {
+        let id = index as u64 + 1;
+        ids.insert(name.clone(), id);
+        architecture.add_design_unit(DesignUnit::new(id, name));
+    }
+    for dependency in dependencies {
+        let (Some(from), Some(to)) = (ids.get(&dependency.from), ids.get(&dependency.to)) else {
+            continue;
+        };
+        architecture.dependencies.push(Dependency {
+            from: DesignUnitId(*from),
+            to: DesignUnitId(*to),
+            kind: DependencyKind::Calls,
+        });
+        architecture.graph.edges.push((*from, *to));
+    }
+
+    let mut state = WorldState::from_architecture(0, architecture, Vec::new());
+    state.features.push(preview.files.len() as f64);
+    state.history.push(action_for(plan.operation));
+    state
+}
+
+fn action_for(operation: MutationOperation) -> Action {
+    match operation {
+        MutationOperation::Create => Action::AddDesignUnit {
+            name: "mutation_preview".to_string(),
+            layer: design_domain::Layer::Service,
+        },
+        MutationOperation::Delete => Action::RemoveDesignUnit,
+        MutationOperation::Move | MutationOperation::Refactor => Action::SplitStructure,
+        MutationOperation::Rename | MutationOperation::Update => Action::MergeStructure,
     }
 }
 

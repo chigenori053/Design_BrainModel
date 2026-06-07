@@ -53,6 +53,8 @@ memory_persistence = { workspace = true }
 mutation_engine = { workspace = true }
 memory_space_core = { workspace = true }
 world_model_core = { workspace = true }
+world_model = { workspace = true }
+design_domain = { workspace = true }
 crossterm = { workspace = true }
 ctrlc = "3.4"
 ratatui = { workspace = true }

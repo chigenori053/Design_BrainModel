@@ -2,6 +2,7 @@ pub mod causal_adapter;
 pub mod execution_model;
 pub mod geometry_model;
 pub mod math_model;
+pub mod mutation_validation;
 pub mod semantic_causal_runtime;
 pub mod simulation_engine;
 pub mod stable_v03;
@@ -14,6 +15,9 @@ pub use execution_model::{
 };
 pub use geometry_model::{graph_layout_score, layout_balance_score, spatial_constraint_score};
 pub use math_model::{algebraic_stability, constraint_solver_score, logic_verification_score};
+pub use mutation_validation::{
+    CausalStabilityLevel, MutationValidationGate, PredictionResult, ValidationDecision,
+};
 pub use semantic_causal_runtime::{
     CausalPropagationEdge, CausalPropagationGraph, CausalRuntimeState, CausalStability,
     ConsequenceSimulation, EntityState, EnvironmentSync, IdentityPersistence, SemanticCausalEngine,

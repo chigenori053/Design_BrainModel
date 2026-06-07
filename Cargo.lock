@@ -1375,6 +1375,7 @@ dependencies = [
  "core_types",
  "crossterm",
  "ctrlc",
+ "design_domain",
  "design_reasoning",
  "design_search_engine",
  "fs_extra",
@@ -1402,6 +1403,7 @@ dependencies = [
  "uuid",
  "viewer_core",
  "wait-timeout",
+ "world_model",
  "world_model_core",
 ]
 
