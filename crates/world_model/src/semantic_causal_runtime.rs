@@ -6,14 +6,14 @@ use core_types::{
 use design_domain::Constraint;
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct WorldState {
+pub struct CausalRuntimeState {
     pub entities: Vec<EntityState>,
     pub environmental_constraints: Vec<Constraint>,
     pub causal_state: CausalState,
     pub world_signature: String,
 }
 
-impl WorldState {
+impl CausalRuntimeState {
     pub fn new(
         entities: Vec<EntityState>,
         environmental_constraints: Vec<Constraint>,
@@ -36,7 +36,9 @@ impl WorldState {
                 .then(left.semantic_role.cmp(&right.semantic_role))
                 .then(left.current_state.cmp(&right.current_state))
         });
-        self.causal_state.edges.sort_by(CausalEdge::cmp_stable);
+        self.causal_state
+            .edges
+            .sort_by(CausalPropagationEdge::cmp_stable);
         self.environmental_constraints
             .sort_by(|left, right| left.name.cmp(&right.name));
         self.world_signature = stable_world_signature(self);
@@ -74,17 +76,17 @@ impl EntityState {
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct CausalState {
-    pub edges: Vec<CausalEdge>,
+    pub edges: Vec<CausalPropagationEdge>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct SemanticCausalEngine {
-    pub causal_graph: CausalGraph,
+    pub causal_graph: CausalPropagationGraph,
     pub consequence_predictor: ConsequencePredictor,
 }
 
 impl SemanticCausalEngine {
-    pub fn new(causal_graph: CausalGraph) -> Self {
+    pub fn new(causal_graph: CausalPropagationGraph) -> Self {
         Self {
             causal_graph,
             consequence_predictor: ConsequencePredictor,
@@ -93,7 +95,7 @@ impl SemanticCausalEngine {
 
     pub fn predict(
         &self,
-        world_state: &WorldState,
+        world_state: &CausalRuntimeState,
         action: &str,
         runtime_identity_hash: impl Into<String>,
         sync: &EnvironmentSync,
@@ -107,7 +109,7 @@ impl SemanticCausalEngine {
         projected_world_state
             .causal_state
             .edges
-            .sort_by(CausalEdge::cmp_stable);
+            .sort_by(CausalPropagationEdge::cmp_stable);
 
         let propagation_path = self
             .consequence_predictor
@@ -137,17 +139,17 @@ impl SemanticCausalEngine {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct CausalGraph {
-    pub edges: Vec<CausalEdge>,
+pub struct CausalPropagationGraph {
+    pub edges: Vec<CausalPropagationEdge>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ConsequencePredictor;
 
 impl ConsequencePredictor {
-    fn propagate(&self, world_state: &mut WorldState, action: &str) -> Vec<String> {
+    fn propagate(&self, world_state: &mut CausalRuntimeState, action: &str) -> Vec<String> {
         let mut edges = world_state.causal_state.edges.clone();
-        edges.sort_by(CausalEdge::cmp_stable);
+        edges.sort_by(CausalPropagationEdge::cmp_stable);
         let mut propagation_path = Vec::new();
 
         for edge in edges {
@@ -172,13 +174,13 @@ impl ConsequencePredictor {
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
-pub struct CausalEdge {
+pub struct CausalPropagationEdge {
     pub source_state: String,
     pub target_state: String,
     pub causal_weight: f64,
 }
 
-impl CausalEdge {
+impl CausalPropagationEdge {
     fn cmp_stable(left: &Self, right: &Self) -> std::cmp::Ordering {
         left.source_state
             .cmp(&right.source_state)
@@ -189,7 +191,7 @@ impl CausalEdge {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ConsequenceSimulation {
-    pub projected_world_state: WorldState,
+    pub projected_world_state: CausalRuntimeState,
     pub projected_runtime_state: ProjectionSnapshot,
     pub projected_risk: RiskLevel,
     pub propagation_path: Vec<String>,
@@ -235,7 +237,7 @@ pub struct EnvironmentSync {
 }
 
 impl EnvironmentSync {
-    pub fn synchronized(world_state: &WorldState, last_world_update: u64) -> Self {
+    pub fn synchronized(world_state: &CausalRuntimeState, last_world_update: u64) -> Self {
         Self {
             sync_state: SyncState::Synchronized,
             last_world_update,
@@ -251,7 +253,7 @@ impl EnvironmentSync {
         }
     }
 
-    pub fn is_synchronized_with(&self, world_state: &WorldState) -> bool {
+    pub fn is_synchronized_with(&self, world_state: &CausalRuntimeState) -> bool {
         self.sync_state == SyncState::Synchronized
             && self.synchronized_world_signature == world_state.world_signature
     }
@@ -270,7 +272,7 @@ pub struct SemanticWorldCompression {
 }
 
 impl SemanticWorldCompression {
-    pub fn compress(world_state: &WorldState) -> Self {
+    pub fn compress(world_state: &CausalRuntimeState) -> Self {
         let mut groups: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
         for entity in &world_state.entities {
             groups
@@ -296,7 +298,7 @@ impl SemanticWorldCompression {
         }
     }
 
-    pub fn preserves_semantic_causality(&self, world_state: &WorldState) -> bool {
+    pub fn preserves_semantic_causality(&self, world_state: &CausalRuntimeState) -> bool {
         let compressed_entities: usize = self
             .compressed_world_groups
             .iter()
@@ -327,7 +329,11 @@ pub struct CausalStability {
 }
 
 impl CausalStability {
-    pub fn measure(before: &WorldState, after: &WorldState, graph: &CausalGraph) -> Self {
+    pub fn measure(
+        before: &CausalRuntimeState,
+        after: &CausalRuntimeState,
+        graph: &CausalPropagationGraph,
+    ) -> Self {
         let causal_entropy = causal_entropy(graph);
         let entity_count = before.entities.len().max(1) as f64;
         let changed_entities = before
@@ -376,14 +382,14 @@ pub struct IdentityPersistence {
 }
 
 impl IdentityPersistence {
-    pub fn establish(seed: &str, world_state: &WorldState) -> Self {
+    pub fn establish(seed: &str, world_state: &CausalRuntimeState) -> Self {
         Self {
             persistent_identity_hash: stable_hash_hex(seed),
             world_lineage: vec![world_state.world_signature.clone()],
         }
     }
 
-    pub fn transition(&self, world_state: &WorldState) -> Self {
+    pub fn transition(&self, world_state: &CausalRuntimeState) -> Self {
         let mut world_lineage = self.world_lineage.clone();
         world_lineage.push(world_state.world_signature.clone());
         Self {
@@ -405,7 +411,7 @@ pub struct WorldAttentionField {
 }
 
 impl WorldAttentionField {
-    pub fn allocate(world_state: &WorldState, stability: &CausalStability) -> Self {
+    pub fn allocate(world_state: &CausalRuntimeState, stability: &CausalStability) -> Self {
         let mut entity_saliency = HashMap::new();
         let mut relevance: BTreeMap<String, f64> = BTreeMap::new();
         for edge in &world_state.causal_state.edges {
@@ -467,7 +473,7 @@ impl WorldReplayReconstruction {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct FuturePredictionVisibility {
     pub future_consequence_path: Vec<String>,
-    pub causal_propagation: Vec<CausalEdge>,
+    pub causal_propagation: Vec<CausalPropagationEdge>,
     pub instability_forecast: CausalStability,
     pub world_compression_lineage: Vec<WorldGroup>,
     pub human_approval_required: bool,
@@ -496,7 +502,7 @@ pub enum SemanticRuntimeError {
     FutureInstabilityOverflow { stability: CausalStability },
 }
 
-fn causal_entropy(graph: &CausalGraph) -> f64 {
+fn causal_entropy(graph: &CausalPropagationGraph) -> f64 {
     if graph.edges.is_empty() {
         return 0.0;
     }
@@ -505,7 +511,7 @@ fn causal_entropy(graph: &CausalGraph) -> f64 {
     (average_causal_uncertainty(graph) + contradiction).clamp(0.0, 1.0)
 }
 
-fn average_causal_uncertainty(graph: &CausalGraph) -> f64 {
+fn average_causal_uncertainty(graph: &CausalPropagationGraph) -> f64 {
     if graph.edges.is_empty() {
         return 0.0;
     }
@@ -519,7 +525,7 @@ fn average_causal_uncertainty(graph: &CausalGraph) -> f64 {
     (1.0 - average_weight).clamp(0.0, 1.0)
 }
 
-fn contradiction_ratio(graph: &CausalGraph) -> f64 {
+fn contradiction_ratio(graph: &CausalPropagationGraph) -> f64 {
     let mut targets_by_source: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     for edge in &graph.edges {
         targets_by_source
@@ -544,7 +550,7 @@ fn contradiction_ratio(graph: &CausalGraph) -> f64 {
     }
 }
 
-fn stable_world_signature(world_state: &WorldState) -> String {
+fn stable_world_signature(world_state: &CausalRuntimeState) -> String {
     let mut parts = Vec::new();
     for entity in &world_state.entities {
         parts.push(format!(

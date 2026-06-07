@@ -1,12 +1,13 @@
 use core_types::{CanonicalReuseResolver, ReuseScope};
 use design_domain::Constraint;
 use world_model::semantic_causal_runtime::{
-    CausalEdge, CausalGraph, CausalState, EntityState, EnvironmentSync, IdentityPersistence,
-    RiskLevel, SemanticCausalEngine, SemanticRuntimeError, SemanticWorldCompression, WorldState,
+    CausalPropagationEdge, CausalPropagationGraph, CausalRuntimeState, CausalState, EntityState,
+    EnvironmentSync, IdentityPersistence, RiskLevel, SemanticCausalEngine, SemanticRuntimeError,
+    SemanticWorldCompression,
 };
 
-fn sample_world() -> WorldState {
-    WorldState::new(
+fn sample_world() -> CausalRuntimeState {
+    CausalRuntimeState::new(
         vec![
             EntityState {
                 entity_id: "runtime".into(),
@@ -27,7 +28,7 @@ fn sample_world() -> WorldState {
             max_dependencies: Some(4),
         }],
         CausalState {
-            edges: vec![CausalEdge {
+            edges: vec![CausalPropagationEdge {
                 source_state: "ready".into(),
                 target_state: "validated".into(),
                 causal_weight: 0.95,
@@ -40,7 +41,7 @@ fn sample_world() -> WorldState {
 fn phase_g_same_causal_state_produces_same_future_prediction() {
     let world = sample_world();
     let sync = EnvironmentSync::synchronized(&world, 1);
-    let engine = SemanticCausalEngine::new(CausalGraph {
+    let engine = SemanticCausalEngine::new(CausalPropagationGraph {
         edges: world.causal_state.edges.clone(),
     });
 
@@ -86,7 +87,7 @@ fn world_model_entities_share_canonical_identity_for_same_meaning() {
 #[test]
 fn phase_g_stale_world_state_denies_execution() {
     let world = sample_world();
-    let engine = SemanticCausalEngine::new(CausalGraph {
+    let engine = SemanticCausalEngine::new(CausalPropagationGraph {
         edges: world.causal_state.edges.clone(),
     });
 
@@ -116,7 +117,7 @@ fn phase_g_identity_persists_across_world_mutation_lineage() {
     let world = sample_world();
     let base_identity = IdentityPersistence::establish("runtime_seed", &world);
     let sync = EnvironmentSync::synchronized(&world, 1);
-    let engine = SemanticCausalEngine::new(CausalGraph {
+    let engine = SemanticCausalEngine::new(CausalPropagationGraph {
         edges: world.causal_state.edges.clone(),
     });
     let simulation = engine
@@ -141,14 +142,14 @@ fn phase_g_identity_persists_across_world_mutation_lineage() {
 fn phase_g_future_instability_overflow_halts_prediction() {
     let world = sample_world();
     let sync = EnvironmentSync::synchronized(&world, 1);
-    let engine = SemanticCausalEngine::new(CausalGraph {
+    let engine = SemanticCausalEngine::new(CausalPropagationGraph {
         edges: vec![
-            CausalEdge {
+            CausalPropagationEdge {
                 source_state: "ready".into(),
                 target_state: "validated".into(),
                 causal_weight: 0.1,
             },
-            CausalEdge {
+            CausalPropagationEdge {
                 source_state: "ready".into(),
                 target_state: "collapsed".into(),
                 causal_weight: 0.1,
