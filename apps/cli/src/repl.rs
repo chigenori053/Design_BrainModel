@@ -1120,15 +1120,15 @@ fn dispatch_repl_action<W: Write>(
     };
     let result = ExecutionRouter::execute(action, &context);
     writeln!(writer, "{}", result.narrative).map_err(|err| err.to_string())?;
-    let Some(runtime_input) = ExecutionRouter::route(action) else {
+    let Some(runtime_input) = ExecutionRouter::route_with_context(action, &context) else {
         return Ok(());
     };
     if let Some(events) =
-        RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root, runtime_input)
+        RuntimeCommandDispatcher::dispatch(&mut ui.runtime, workspace_root, &runtime_input)
     {
         ui.semantic_state.capture_mutation_events(&events);
         ui.semantic_state
-            .capture_runtime_command(runtime_input, &ui.runtime);
+            .capture_runtime_command(&runtime_input, &ui.runtime);
         for event in events {
             writeln!(writer, "{}", event.render()).map_err(|err| err.to_string())?;
         }

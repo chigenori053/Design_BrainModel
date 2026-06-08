@@ -289,18 +289,33 @@ fn extract_intent(input: &str) -> ExtractedIntent {
     } else {
         "product"
     };
-    let target = if contains_any(&lower, &["cli", "tui", "dbm_cli"]) {
-        "design_cli"
+    let target = if let Some(target) = extract_explicit_target(input) {
+        target
+    } else if contains_any(&lower, &["cli", "tui", "dbm_cli"]) {
+        "design_cli".to_string()
     } else if contains_any(&lower, &["runtimecore", "runtime core"]) {
-        "runtime_core"
+        "runtime_core".to_string()
     } else {
-        "dbm"
+        "dbm".to_string()
     };
     ExtractedIntent {
         domain: domain.to_string(),
         objective: objective.to_string(),
-        target: target.to_string(),
+        target,
     }
+}
+
+fn extract_explicit_target(input: &str) -> Option<String> {
+    input.split_whitespace().find_map(|token| {
+        let target = token.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                ',' | '.' | ':' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}'
+            )
+        });
+        (target.contains("::") || target.starts_with("apps/") || target.starts_with("crates/"))
+            .then(|| target.to_string())
+    })
 }
 
 fn detect_gaps(input: &str, intent: &ExtractedIntent) -> Vec<String> {
@@ -466,6 +481,28 @@ mod tests {
             result
                 .generated_spec
                 .contains("Analyze must use generated Design Specification")
+        );
+    }
+
+    #[test]
+    fn explicit_module_target_is_preserved_in_convergence() {
+        let result =
+            DesignConvergenceEngine::converge("apps::cli::core を整理したい", &Default::default());
+
+        assert_eq!(
+            result
+                .state
+                .intent
+                .as_ref()
+                .map(|intent| intent.target.as_str()),
+            Some("apps::cli::core")
+        );
+        assert!(
+            result
+                .state
+                .decisions
+                .iter()
+                .any(|decision| decision == "Set target to apps::cli::core")
         );
     }
 }

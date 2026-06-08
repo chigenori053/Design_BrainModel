@@ -2444,6 +2444,16 @@ mod tests {
         assert_eq!(RuntimeCommandDispatcher::parse("analyze"), None);
     }
 
+    #[test]
+    fn mutation_plan_command_preserves_explicit_target() {
+        assert_eq!(
+            RuntimeCommandDispatcher::parse("mutation plan apps::cli::core"),
+            Some(RuntimeCommand::MutationPlan {
+                target: "apps::cli::core".to_string(),
+            })
+        );
+    }
+
     // CATEGORY: STATE
     #[test]
     fn preview_never_enters_edit_mode() {

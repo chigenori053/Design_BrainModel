@@ -157,7 +157,15 @@ pub fn handle_submit_async(
 
 fn handle_convergence_submit(state: &mut TuiState, input: String) {
     let result = DesignConvergenceEngine::converge(&input, &state.convergence);
+    let target_hint = result
+        .state
+        .intent
+        .as_ref()
+        .map(|intent| intent.target.clone());
     state.convergence = result.state;
+    let mut resolved = IntentResolutionEngine::resolve(&input);
+    resolved.target_hint = target_hint;
+    state.resolved_intent = Some(resolved);
     state.enqueue_event(UiEvent::Intent {
         summary: "design convergence started from natural language intent".to_string(),
     });
@@ -264,7 +272,7 @@ fn execute_confirmed_action(
     state.enqueue_event(UiEvent::Execution {
         step: result.narrative,
     });
-    if let Some(runtime_input) = ExecutionRouter::route(action) {
+    if let Some(runtime_input) = ExecutionRouter::route_with_context(action, &context) {
         queue_runtime_request(state, core, runtime_input.to_string(), worker_tx);
     }
 }

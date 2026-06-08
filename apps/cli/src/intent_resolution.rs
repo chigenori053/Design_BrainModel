@@ -35,6 +35,7 @@ pub struct ResolvedIntent {
     pub confidence: f32,
     pub candidate_actions: Vec<ActionCandidate>,
     pub requires_confirmation: bool,
+    pub target_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -79,6 +80,7 @@ impl IntentResolutionEngine {
     pub const CLARIFICATION_THRESHOLD: f32 = 0.75;
 
     pub fn resolve(input: &str) -> ResolvedIntent {
+        let target_hint = extract_target_hint(input);
         let normalized = normalize(input);
         if normalized.is_empty() {
             return resolved(
@@ -93,17 +95,27 @@ impl IntentResolutionEngine {
         }
 
         if has_any(&normalized, &["y", "yes", "はい", "実行", "apply", "承認"]) {
-            return resolved(IntentGoal::RuntimeOperation, 0.90, Vec::new());
+            return resolved_with_target(
+                IntentGoal::RuntimeOperation,
+                0.90,
+                Vec::new(),
+                target_hint,
+            );
         }
         if has_any(
             &normalized,
             &["n", "no", "いいえ", "cancel", "キャンセル", "中止"],
         ) {
-            return resolved(IntentGoal::RuntimeOperation, 0.90, Vec::new());
+            return resolved_with_target(
+                IntentGoal::RuntimeOperation,
+                0.90,
+                Vec::new(),
+                target_hint,
+            );
         }
 
         if has_security_signal(&normalized) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::SecurityReview,
                 0.88,
                 vec![candidate(
@@ -111,11 +123,12 @@ impl IntentResolutionEngine {
                     0.88,
                     "安全性確認を示す語が含まれています",
                 )],
+                target_hint,
             );
         }
 
         if has_apply_signal(&normalized) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::Mutation,
                 0.92,
                 vec![
@@ -130,11 +143,12 @@ impl IntentResolutionEngine {
                         "適用前確認が安全です",
                     ),
                 ],
+                target_hint,
             );
         }
 
         if has_mutation_preview_signal(&normalized) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::Mutation,
                 0.88,
                 vec![candidate(
@@ -142,11 +156,12 @@ impl IntentResolutionEngine {
                     0.88,
                     "変更プレビューを示す語が含まれています",
                 )],
+                target_hint,
             );
         }
 
         if has_analyze_signal(&normalized) && !has_refactor_signal(&normalized) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::Analyze,
                 0.96,
                 vec![candidate(
@@ -154,11 +169,12 @@ impl IntentResolutionEngine {
                     0.96,
                     "構造分析を示す語が含まれています",
                 )],
+                target_hint,
             );
         }
 
         if has_refactor_signal(&normalized) && has_target_signal(&normalized) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::Mutation,
                 0.76,
                 vec![
@@ -173,11 +189,12 @@ impl IntentResolutionEngine {
                         "対象整理の前に構造分析が有効です",
                     ),
                 ],
+                target_hint,
             );
         }
 
         if has_any(&normalized, &["validate", "validation", "検証", "確認して"]) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::Validation,
                 0.82,
                 vec![candidate(
@@ -185,6 +202,7 @@ impl IntentResolutionEngine {
                     0.60,
                     "検証には現状分析が必要です",
                 )],
+                target_hint,
             );
         }
 
@@ -192,7 +210,7 @@ impl IntentResolutionEngine {
             &normalized,
             &["教えて", "知りたい", "what", "how", "なに", "何"],
         ) {
-            return resolved(
+            return resolved_with_target(
                 IntentGoal::InformationRequest,
                 0.78,
                 vec![candidate(
@@ -200,10 +218,11 @@ impl IntentResolutionEngine {
                     0.70,
                     "情報要求のため実行対象を確認します",
                 )],
+                target_hint,
             );
         }
 
-        resolved(
+        resolved_with_target(
             IntentGoal::Unknown,
             0.35,
             vec![
@@ -218,6 +237,7 @@ impl IntentResolutionEngine {
                     "改善計画生成が候補です",
                 ),
             ],
+            target_hint,
         )
     }
 }
@@ -293,7 +313,7 @@ impl ExecutionRouter {
             };
         }
 
-        let Some(_runtime_input) = Self::route(action) else {
+        let Some(_runtime_input) = Self::route_with_context(action, context) else {
             return ExecutionResult {
                 status: ExecutionStatus::Failed,
                 narrative: "実行可能なルートを決定できませんでした。".to_string(),
@@ -309,11 +329,27 @@ impl ExecutionRouter {
     pub fn route(action: RecommendedAction) -> Option<&'static str> {
         match action {
             RecommendedAction::RunAnalyze => Some("analyze ."),
-            RecommendedAction::GenerateMutationPlan => Some("mutation plan"),
+            RecommendedAction::GenerateMutationPlan => None,
             RecommendedAction::RunMutationPreview => Some("mutation preview"),
             RecommendedAction::RunMutationApply => Some("mutation apply"),
             RecommendedAction::RunSecurityAudit => Some("security audit"),
             RecommendedAction::RequestClarification => None,
+        }
+    }
+
+    pub fn route_with_context(
+        action: RecommendedAction,
+        context: &ExecutionContext,
+    ) -> Option<String> {
+        match action {
+            RecommendedAction::GenerateMutationPlan => context
+                .resolved_intent
+                .target_hint
+                .as_deref()
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .map(|target| format!("mutation plan {target}")),
+            _ => Self::route(action).map(str::to_string),
         }
     }
 }
@@ -359,6 +395,15 @@ fn resolved(
     confidence: f32,
     candidate_actions: Vec<ActionCandidate>,
 ) -> ResolvedIntent {
+    resolved_with_target(primary_goal, confidence, candidate_actions, None)
+}
+
+fn resolved_with_target(
+    primary_goal: IntentGoal,
+    confidence: f32,
+    candidate_actions: Vec<ActionCandidate>,
+    target_hint: Option<String>,
+) -> ResolvedIntent {
     let requires_confirmation = candidate_actions
         .first()
         .map(|candidate| ConfirmationEngine::requires_confirmation(candidate.action))
@@ -368,6 +413,7 @@ fn resolved(
         confidence,
         candidate_actions,
         requires_confirmation,
+        target_hint,
     }
 }
 
@@ -436,6 +482,27 @@ fn normalize(input: &str) -> String {
         .to_ascii_lowercase()
         .replace("::", "/")
         .replace('　', " ")
+}
+
+fn extract_target_hint(input: &str) -> Option<String> {
+    input.split_whitespace().find_map(|token| {
+        let trimmed = token.trim_matches(|ch: char| {
+            matches!(
+                ch,
+                ',' | '.' | ':' | ';' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}'
+            )
+        });
+        if trimmed.contains("::")
+            || trimmed.starts_with("apps/")
+            || trimmed.starts_with("crates/")
+            || trimmed.starts_with("apps::")
+            || trimmed.starts_with("crates::")
+        {
+            Some(trimmed.to_string())
+        } else {
+            None
+        }
+    })
 }
 
 fn has_any(input: &str, needles: &[&str]) -> bool {
@@ -525,12 +592,43 @@ mod tests {
     fn refactor_like_input_returns_multiple_candidates() {
         let intent = IntentResolutionEngine::resolve("apps::cli::core を整理したい");
         assert_eq!(intent.primary_goal, IntentGoal::Mutation);
+        assert_eq!(intent.target_hint.as_deref(), Some("apps::cli::core"));
         assert!(intent.candidate_actions.len() >= 2);
         assert_eq!(
             intent.recommended_action(),
             RecommendedAction::GenerateMutationPlan
         );
         assert!(intent.requires_confirmation);
+    }
+
+    #[test]
+    fn execution_router_routes_mutation_plan_with_target_hint() {
+        let resolved_intent = IntentResolutionEngine::resolve("apps::cli::core を整理したい");
+        let context = ExecutionContext {
+            user_input: "apps::cli::core を整理したい".to_string(),
+            resolved_intent,
+            workspace_path: PathBuf::from("."),
+        };
+
+        assert_eq!(
+            ExecutionRouter::route_with_context(RecommendedAction::GenerateMutationPlan, &context),
+            Some("mutation plan apps::cli::core".to_string())
+        );
+    }
+
+    #[test]
+    fn execution_router_does_not_fallback_mutation_plan_without_target() {
+        let resolved_intent = IntentResolutionEngine::resolve("整理したい");
+        let context = ExecutionContext {
+            user_input: "整理したい".to_string(),
+            resolved_intent,
+            workspace_path: PathBuf::from("."),
+        };
+
+        assert_eq!(
+            ExecutionRouter::route_with_context(RecommendedAction::GenerateMutationPlan, &context),
+            None
+        );
     }
 
     #[test]

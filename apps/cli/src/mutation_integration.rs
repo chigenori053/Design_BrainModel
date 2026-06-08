@@ -94,12 +94,14 @@ impl MutationEngineDispatcher {
             MutationTarget::File(PathBuf::from(target))
         };
 
+        let patches = preview_patches_for_target(workspace_root, target)?;
+        let affected_files = affected_files_from_patches(&patches);
         let request = MutationRequest {
             target: mutation_target,
             operation: MutationOperation::Refactor,
             reason: format!("Refactoring {} requested via TUI", target),
             expected_effect: "Improved structural integrity and reduced coupling".to_string(),
-            patches: preview_patches_for_target(workspace_root, target)?,
+            patches,
             projected_dependencies: None,
         };
 
@@ -114,6 +116,7 @@ impl MutationEngineDispatcher {
         Ok(MutationProjection {
             mutation_id: plan.id,
             target: target.to_string(),
+            affected_files,
             operation: "Refactor".to_string(),
             validation_targets: vec![
                 "Dependency Cycles".to_string(),
@@ -208,6 +211,7 @@ impl MutationEngineDispatcher {
         Ok(MutationProjection {
             mutation_id: mutation_id.to_string(),
             target: "Workspace".to_string(),
+            affected_files: affected_files_from_patches(&plan.patches),
             operation: "Apply".to_string(),
             validation_targets: vec![],
             expected_improvements,
@@ -318,6 +322,16 @@ fn preview_patches_for_target(
         path: relative_path,
         content,
     }])
+}
+
+fn affected_files_from_patches(patches: &[PatchOperation]) -> Vec<String> {
+    patches
+        .iter()
+        .flat_map(|patch| patch.affected_paths())
+        .map(|path| path.display().to_string())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect()
 }
 
 fn resolve_mutation_target_path(workspace_root: &Path, target: &str) -> Option<PathBuf> {

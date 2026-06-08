@@ -244,6 +244,7 @@ pub struct AnalyzeProjection {
 pub struct MutationProjection {
     pub mutation_id: String,
     pub target: String,
+    pub affected_files: Vec<String>,
     pub operation: String,
     pub validation_targets: Vec<String>,
     pub expected_improvements: Vec<String>,
@@ -257,8 +258,14 @@ impl MutationProjection {
             format!("ID: {}", self.mutation_id),
             format!("Target: {}", self.target),
             format!("Operation: {}", self.operation),
-            "Validation Targets".to_string(),
+            "Affected Files".to_string(),
         ];
+        if self.affected_files.is_empty() {
+            lines.push(format!("* {}", self.target));
+        } else {
+            lines.extend(self.affected_files.iter().map(|file| format!("* {file}")));
+        }
+        lines.push("Validation Targets".to_string());
         lines.extend(
             self.validation_targets
                 .iter()
