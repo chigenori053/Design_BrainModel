@@ -8,6 +8,10 @@ use serde::{Deserialize, Serialize};
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum HolographicMemoryObservationEvent {
     MemoryInserted,
+    MemoryReinforced,
+    CanonicalMemorySelected,
+    MemoryConflictDetected,
+    GlobalDuplicateDetected,
     RecallExecuted,
     DuplicateCandidateDetected,
     RecallConflictDetected,
@@ -19,7 +23,6 @@ pub enum DuplicateClass {
     None,
     ExactDuplicate,
     SemanticDuplicate,
-    NearDuplicate,
     ConflictCandidate,
 }
 
@@ -148,12 +151,12 @@ pub fn classify_duplicate(
 ) -> DuplicateClass {
     if source_input_hash_matches {
         DuplicateClass::ExactDuplicate
-    } else if resonance_score >= 0.80 && recall_result_differs {
+    } else if canonical_key_matches && resonance_score < 0.40 {
         DuplicateClass::ConflictCandidate
-    } else if canonical_key_matches {
+    } else if canonical_key_matches || resonance_score >= 0.92 {
         DuplicateClass::SemanticDuplicate
-    } else if resonance_score >= 0.80 {
-        DuplicateClass::NearDuplicate
+    } else if recall_result_differs {
+        DuplicateClass::ConflictCandidate
     } else {
         DuplicateClass::None
     }
@@ -178,7 +181,6 @@ pub fn parse_duplicate_class(value: &str) -> Option<DuplicateClass> {
         "none" => Some(DuplicateClass::None),
         "exact" | "exactduplicate" => Some(DuplicateClass::ExactDuplicate),
         "semantic" | "semanticduplicate" => Some(DuplicateClass::SemanticDuplicate),
-        "near" | "nearduplicate" => Some(DuplicateClass::NearDuplicate),
         "conflict" | "conflictcandidate" => Some(DuplicateClass::ConflictCandidate),
         _ => None,
     }
@@ -226,17 +228,21 @@ mod tests {
     }
 
     #[test]
-    fn near_duplicate_is_classified() {
+    fn high_resonance_is_semantic_duplicate() {
         assert_eq!(
             classify_duplicate(false, false, 0.9, false),
-            DuplicateClass::NearDuplicate
+            DuplicateClass::None
+        );
+        assert_eq!(
+            classify_duplicate(false, false, 0.93, false),
+            DuplicateClass::SemanticDuplicate
         );
     }
 
     #[test]
     fn conflict_candidate_is_classified() {
         assert_eq!(
-            classify_duplicate(false, false, 0.9, true),
+            classify_duplicate(false, true, 0.3, false),
             DuplicateClass::ConflictCandidate
         );
     }

@@ -325,12 +325,23 @@ struct IrBackedMemoryStore<'a> {
 impl MemoryStore for IrBackedMemoryStore<'_> {
     fn query(&self, step: &PlannedStep, step_index: usize) -> Result<MemoryContext, String> {
         let events = self.store.list_execution_events(self.session_id)?;
+        self.store.ensure_global_memory_migrated()?;
         let query_tags = memory_tags_for_step(step);
         let query_embedding = self.store.query_embedding(step, step_index, &query_tags);
-        let mut recalled = stored_memories_from_events(&events)
-            .into_values()
+        let session_memories = stored_memories_from_events(&events);
+        let canonical_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                &self.store.workspace_root,
+            );
+        let mut recalled = canonical_store
+            .load_canonical()?
+            .into_iter()
+            .map(|record| (record.canonical.reinforcement_count, record.entry))
             .filter_map(|entry| {
-                if entry.metadata.step_index >= step_index {
+                let (reinforcement_count, entry) = entry;
+                if session_memories.contains_key(&entry.memory_id)
+                    && entry.metadata.step_index >= step_index
+                {
                     return None;
                 }
                 let overlap = tag_overlap(&query_tags, &entry.metadata.tags);
@@ -346,7 +357,7 @@ impl MemoryStore for IrBackedMemoryStore<'_> {
                         age_steps,
                         Some(&query_embedding),
                         Some(&embedding),
-                    ),
+                    ) + reinforcement_weight(reinforcement_count),
                     entry,
                 ))
             })
@@ -368,7 +379,7 @@ impl MemoryStore for IrBackedMemoryStore<'_> {
             .map(|(_, entry)| entry)
             .take(DEFAULT_MEMORY_TOP_K)
             .collect::<Vec<_>>();
-        append_recall_observation(&entries);
+        append_recall_observation(&self.store.workspace_root, &entries);
         Ok(MemoryContext { entries })
     }
 
@@ -1487,14 +1498,20 @@ impl IRPersistenceStore {
                 "IR violation: memory '{memory_id}' was never stored — MemoryStored must precede MemoryOutcomeRecorded"
             ));
         }
-        self.append_execution_event(
+        let event_id = self.append_execution_event(
             session_id,
             IRExecutionEventPayload::MemoryOutcomeRecorded(MemoryOutcomePayload {
                 step_id,
-                memory_id,
+                memory_id: memory_id.clone(),
                 outcome,
             }),
-        )
+        )?;
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                &self.workspace_root,
+            );
+        global_store.update_entry(&memory_id, |entry| apply_memory_outcome(entry, outcome))?;
+        Ok(event_id)
     }
 
     pub fn store_execution_memory(
@@ -1504,14 +1521,65 @@ impl IRPersistenceStore {
         step_index: usize,
         result: &StepExecutionResultPayload,
     ) -> Result<MemoryEntry, String> {
+        self.ensure_global_memory_migrated()?;
         let memory = IrBackedMemoryStore {
             store: self,
             session_id,
         }
         .store(step, step_index, result)?;
-        append_memory_insert_observations(self, session_id, &memory);
-        self.emit_memory_stored(session_id, result.step_id, step_index, memory.clone())?;
-        Ok(memory)
+        let source_hash = memory_source_hash(&memory);
+        let canonical_key = memory_canonical_key(&memory);
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                &self.workspace_root,
+            );
+        let insertion = global_store.insert(
+            memory,
+            source_hash,
+            canonical_key,
+            crate::holographic_memory_observation::now_secs(),
+        )?;
+        append_memory_insert_observations(&self.workspace_root, &insertion);
+        let canonical_entry = insertion.canonical.entry;
+        self.emit_memory_stored(
+            session_id,
+            result.step_id,
+            step_index,
+            canonical_entry.clone(),
+        )?;
+        Ok(canonical_entry)
+    }
+
+    fn ensure_global_memory_migrated(&self) -> Result<(), String> {
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                &self.workspace_root,
+            );
+        if global_store.index_path().exists() || global_store.canonical_path().exists() {
+            return Ok(());
+        }
+        let mut memories = Vec::new();
+        if self.sessions_dir().exists() {
+            let mut session_paths = fs::read_dir(self.sessions_dir())
+                .map_err(|err| err.to_string())?
+                .map(|entry| entry.map(|entry| entry.path()))
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|err| err.to_string())?;
+            session_paths.sort();
+            for session_path in session_paths {
+                let path = session_path.join("execution_events.jsonl");
+                let events = self.read_jsonl::<IRExecutionEventRecord>(&path)?;
+                memories.extend(stored_memories_from_events(&events).into_values());
+            }
+        }
+        memories.sort_by(|left, right| {
+            left.metadata
+                .timestamp
+                .cmp(&right.metadata.timestamp)
+                .then_with(|| left.memory_id.cmp(&right.memory_id))
+        });
+        global_store.migrate(memories, memory_source_hash, memory_canonical_key)?;
+        Ok(())
     }
 
     pub fn list_execution_events(
@@ -2167,68 +2235,69 @@ fn apply_memory_outcome(entry: &mut MemoryEntry, outcome: MemoryOutcome) {
 }
 
 fn append_memory_insert_observations(
-    store: &IRPersistenceStore,
-    session_id: &str,
-    memory: &MemoryEntry,
+    workspace_root: &Path,
+    insertion: &crate::global_holographic_memory::CanonicalInsertResult,
 ) {
     use crate::holographic_memory_observation::{
         DuplicateClass, HolographicMemoryLogStore, HolographicMemoryObservationEvent,
-        classify_duplicate,
     };
 
-    let source_hash = memory_source_hash(memory);
-    let canonical_key = memory_canonical_key(memory);
-    let existing = store
-        .list_execution_events(session_id)
-        .map(|events| stored_memories_from_events(&events))
-        .unwrap_or_default();
-    let mut duplicate_ids = Vec::new();
-    let mut duplicate_class = DuplicateClass::None;
-    for existing_memory in existing.values() {
-        let existing_source_hash = memory_source_hash(existing_memory);
-        let existing_canonical_key = memory_canonical_key(existing_memory);
-        let class = classify_duplicate(
-            existing_source_hash == source_hash,
-            existing_canonical_key == canonical_key,
-            memory_resonance(memory, existing_memory),
-            false,
-        );
-        if class != DuplicateClass::None {
-            duplicate_ids.push(existing_memory.memory_id.clone());
-            duplicate_class = class;
-            break;
+    let memory = &insertion.canonical.entry;
+    let canonical = &insertion.canonical.canonical;
+    let duplicate_ids = if insertion.duplicate_class == DuplicateClass::None {
+        Vec::new()
+    } else {
+        vec![
+            insertion
+                .conflicting_canonical_id
+                .clone()
+                .unwrap_or_else(|| canonical.canonical_id.clone()),
+        ]
+    };
+    let primary_event = match insertion.duplicate_class {
+        DuplicateClass::None => HolographicMemoryObservationEvent::MemoryInserted,
+        DuplicateClass::ConflictCandidate => {
+            HolographicMemoryObservationEvent::MemoryConflictDetected
         }
-    }
-
+        _ => HolographicMemoryObservationEvent::MemoryReinforced,
+    };
     let log = memory_observation_log(
-        HolographicMemoryObservationEvent::MemoryInserted,
+        primary_event,
         memory,
-        source_hash.clone(),
-        canonical_key.clone(),
+        canonical.source_hash.clone(),
+        canonical.canonical_key.clone(),
         duplicate_ids.clone(),
-        duplicate_class.clone(),
-        0.0,
+        insertion.duplicate_class.clone(),
+        insertion.resonance,
     );
-    let log_store = HolographicMemoryLogStore::default_for_workspace(
-        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    );
+    let log_store = HolographicMemoryLogStore::default_for_workspace(workspace_root);
     let _ = log_store.append(log);
 
-    if duplicate_class != DuplicateClass::None {
+    if insertion.duplicate_class != DuplicateClass::None {
         let duplicate_log = memory_observation_log(
-            HolographicMemoryObservationEvent::DuplicateCandidateDetected,
+            HolographicMemoryObservationEvent::GlobalDuplicateDetected,
             memory,
-            source_hash,
-            canonical_key,
+            canonical.source_hash.clone(),
+            canonical.canonical_key.clone(),
             duplicate_ids,
-            duplicate_class,
-            0.93,
+            insertion.duplicate_class.clone(),
+            insertion.resonance,
         );
         let _ = log_store.append(duplicate_log);
     }
+    let canonical_log = memory_observation_log(
+        HolographicMemoryObservationEvent::CanonicalMemorySelected,
+        memory,
+        canonical.source_hash.clone(),
+        canonical.canonical_key.clone(),
+        vec![canonical.canonical_id.clone()],
+        insertion.duplicate_class.clone(),
+        insertion.resonance,
+    );
+    let _ = log_store.append(canonical_log);
 }
 
-fn append_recall_observation(entries: &[MemoryEntry]) {
+fn append_recall_observation(workspace_root: &Path, entries: &[MemoryEntry]) {
     use crate::holographic_memory_observation::{
         DuplicateClass, HolographicMemoryLogStore, HolographicMemoryObservationEvent,
     };
@@ -2248,9 +2317,7 @@ fn append_recall_observation(entries: &[MemoryEntry]) {
         DuplicateClass::None,
         0.0,
     );
-    let store = HolographicMemoryLogStore::default_for_workspace(
-        &std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
-    );
+    let store = HolographicMemoryLogStore::default_for_workspace(workspace_root);
     let _ = store.append(log);
 }
 
@@ -2264,6 +2331,11 @@ fn memory_observation_log(
     resonance_score: f32,
 ) -> crate::holographic_memory_observation::HolographicMemoryObservationLog {
     let created_at = crate::holographic_memory_observation::now_secs();
+    let selected_as_canonical = matches!(
+        event_type,
+        crate::holographic_memory_observation::HolographicMemoryObservationEvent::CanonicalMemorySelected
+            | crate::holographic_memory_observation::HolographicMemoryObservationEvent::CanonicalCandidateSelected
+    );
     crate::holographic_memory_observation::HolographicMemoryObservationLog {
         event_id: crate::holographic_memory_observation::observation_event_id(
             &event_type,
@@ -2282,7 +2354,7 @@ fn memory_observation_log(
         last_used_at: Some(memory.metadata.timestamp),
         duplicate_candidate_ids,
         duplicate_class,
-        selected_as_canonical: false,
+        selected_as_canonical,
         rejected_reason: None,
     }
 }
@@ -2299,16 +2371,6 @@ fn memory_canonical_key(memory: &MemoryEntry) -> String {
     let mut tags = memory.metadata.tags.clone();
     tags.sort();
     tags.join(":")
-}
-
-fn memory_resonance(left: &MemoryEntry, right: &MemoryEntry) -> f32 {
-    let Some(left_embedding) = left.embedding.as_ref() else {
-        return 0.0;
-    };
-    let Some(right_embedding) = right.embedding.as_ref() else {
-        return 0.0;
-    };
-    cosine_similarity(left_embedding, right_embedding)
 }
 
 fn embedding_score(
@@ -2332,6 +2394,10 @@ fn memory_score(
     let hybrid_score = SYMBOLIC_WEIGHT * symbolic_score
         + EMBEDDING_WEIGHT * embedding_score(query_embedding, entry_embedding);
     decayed_score(hybrid_score * entry.metadata.relevance, age_steps)
+}
+
+fn reinforcement_weight(reinforcement_count: u64) -> f32 {
+    (reinforcement_count.max(1) as f32).ln_1p()
 }
 
 fn stored_memories_from_events(events: &[IRExecutionEventRecord]) -> HashMap<String, MemoryEntry> {
@@ -2488,6 +2554,22 @@ mod tests {
         let store = IRPersistenceStore::new(dir.path());
         let recovered = store.recover_or_create().expect("recover");
         (dir, store, recovered.state)
+    }
+
+    fn add_session(store: &IRPersistenceStore, session_id: &str) {
+        store
+            .write_json(
+                &store.session_record_path(session_id),
+                &IRSessionRecord {
+                    session_id: session_id.to_string(),
+                    created_at: now_ts(),
+                    workspace_root: store.workspace_root.clone(),
+                    current_target: Some(PathBuf::from(".")),
+                    last_checkpoint_step: 0,
+                    last_step_index: 0,
+                },
+            )
+            .expect("session");
     }
 
     fn apply_transition(
@@ -3492,7 +3574,7 @@ mod tests {
 
     #[test]
     fn memory_outcome_is_recorded() {
-        let (_dir, store, baseline) = store();
+        let (dir, store, baseline) = store();
         let entry = store
             .store_execution_memory(
                 &baseline.session_id,
@@ -3530,6 +3612,13 @@ mod tests {
                         && payload.outcome == MemoryOutcome::CompileSuccess
             )
         }));
+        let canonical =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                dir.path(),
+            )
+            .load_canonical()
+            .expect("canonical");
+        assert_eq!(canonical[0].entry.success_count, MEMORY_COUNT_SCALE);
     }
 
     #[test]
@@ -3682,5 +3771,98 @@ mod tests {
         for h in handles {
             h.join().expect("thread must not panic");
         }
+    }
+
+    #[test]
+    fn duplicate_detection_crosses_session_boundaries_and_recall_is_canonical() {
+        let (dir, store, baseline) = store();
+        add_session(&store, "session-b");
+        let step = PlannedStep::Analyze(PathBuf::from("src/lib.rs"));
+        let result_a = StepExecutionResultPayload {
+            step_id: Uuid::new_v4(),
+            stdout: Some("same global memory".into()),
+            stderr: None,
+            structured_output: None,
+            artifacts: Vec::new(),
+        };
+        let mut result_b = result_a.clone();
+        result_b.step_id = Uuid::new_v4();
+
+        let first = store
+            .store_execution_memory(&baseline.session_id, &step, 0, &result_a)
+            .expect("first");
+        let second = store
+            .store_execution_memory("session-b", &step, 0, &result_b)
+            .expect("second");
+
+        assert_eq!(first.memory_id, second.memory_id);
+        let global =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                dir.path(),
+            );
+        let canonical = global.load_canonical().expect("canonical");
+        assert_eq!(canonical.len(), 1);
+        assert_eq!(canonical[0].canonical.reinforcement_count, 2);
+
+        let recalled = store
+            .query_memory_context("session-b", &step, 1)
+            .expect("recall");
+        assert_eq!(recalled.entries.len(), 1);
+        assert_eq!(recalled.entries[0].memory_id, first.memory_id);
+
+        let logs =
+            crate::holographic_memory_observation::HolographicMemoryLogStore::default_for_workspace(
+                dir.path(),
+            )
+            .read_all()
+            .expect("logs");
+        assert!(logs.iter().any(|log| {
+            log.event_type
+                == crate::holographic_memory_observation::HolographicMemoryObservationEvent::MemoryReinforced
+                && log.duplicate_class
+                    == crate::holographic_memory_observation::DuplicateClass::ExactDuplicate
+        }));
+        assert!(logs.iter().any(|log| {
+            log.event_type
+                == crate::holographic_memory_observation::HolographicMemoryObservationEvent::GlobalDuplicateDetected
+        }));
+    }
+
+    #[test]
+    fn legacy_session_memory_is_migrated_before_recall() {
+        let (dir, store, baseline) = store();
+        let legacy = MemoryEntry {
+            memory_id: "mem:legacy".to_string(),
+            source_event: Uuid::new_v4(),
+            memory_type: MemoryType::SemanticHint,
+            content: serde_json::json!({ "summary": "legacy global memory" }),
+            embedding: Some(deterministic_embedding("legacy global memory")),
+            success_count: 0,
+            failure_count: 0,
+            metadata: MemoryMetadata {
+                timestamp: 1,
+                step_index: 0,
+                relevance: 1.0,
+                tags: vec!["design_delta_reasoning".to_string()],
+            },
+        };
+        store
+            .emit_memory_stored(&baseline.session_id, legacy.source_event, 0, legacy.clone())
+            .expect("legacy event");
+
+        let recalled = store
+            .query_memory_context(
+                &baseline.session_id,
+                &PlannedStep::DesignDeltaReasoning("legacy global memory".to_string()),
+                1,
+            )
+            .expect("recall");
+
+        assert_eq!(recalled.entries, vec![legacy]);
+        assert!(
+            dir.path()
+                .join(".dbm/memory/global_memory_index.json")
+                .exists()
+        );
     }
 }

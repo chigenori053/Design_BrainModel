@@ -22,6 +22,7 @@ pub mod executor;
 pub mod git;
 pub mod git_guard;
 pub mod github_guard;
+pub mod global_holographic_memory;
 pub mod holographic_memory_observation;
 pub mod input;
 pub mod intent_resolution;
