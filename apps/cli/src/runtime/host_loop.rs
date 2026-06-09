@@ -20,7 +20,7 @@ pub fn run_runtime_loop_stdio() -> Result<(), String> {
     run_runtime_loop(
         &mut reader,
         &mut writer,
-        std::env::current_dir().unwrap_or_else(|_| ".".into()),
+        core_types::WorkspaceRoot::discover(),
     )
 }
 
@@ -33,6 +33,7 @@ where
     R: BufRead,
     W: Write,
 {
+    let workspace_root = core_types::WorkspaceRoot::discover_from(&workspace_root);
     let mut state = TuiState::new(empty_payload());
     state.runtime_state = initial_runtime_state();
     state.enable_persistent_history(workspace_root.join(".dbm/cli_history"));

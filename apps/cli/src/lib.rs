@@ -66,6 +66,7 @@ pub mod ui;
 pub mod verify_cli;
 pub mod viewer;
 pub mod world_renderer_interface;
+pub mod workspace_root;
 
 pub(crate) mod debug;
 pub(crate) mod step0;

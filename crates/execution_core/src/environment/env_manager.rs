@@ -30,8 +30,6 @@ pub fn normalize_working_directory(path: PathBuf) -> PathBuf {
     if path.is_absolute() {
         path
     } else {
-        std::env::current_dir()
-            .unwrap_or_else(|_| PathBuf::from("."))
-            .join(path)
+        core_types::WorkspaceRoot::discover().join(path)
     }
 }

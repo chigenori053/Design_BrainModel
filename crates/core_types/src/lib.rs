@@ -925,3 +925,8 @@ mod canonical_reuse_tests {
         assert_eq!(second.confidence, 1.0);
     }
 }
+mod workspace_root;
+
+pub use workspace_root::{
+    DBM_WORKSPACE_ROOT, WorkspaceMigrationReport, WorkspaceRoot,
+};

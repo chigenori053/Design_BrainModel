@@ -699,13 +699,9 @@ fn normalize_execution_target(target: &str) -> String {
     }
     let path = std::path::Path::new(trimmed);
     if path.is_absolute() {
-        std::env::current_dir()
+        path.strip_prefix(core_types::WorkspaceRoot::discover())
             .ok()
-            .and_then(|cwd| {
-                path.strip_prefix(cwd)
-                    .ok()
-                    .map(|relative| relative.display().to_string())
-            })
+            .map(|relative| relative.display().to_string())
             .unwrap_or_else(|| trimmed.to_string())
     } else {
         trimmed.to_string()

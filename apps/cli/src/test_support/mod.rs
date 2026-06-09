@@ -37,7 +37,7 @@ pub struct CurrentDirGuard<'a> {
 impl CurrentDirGuard<'_> {
     pub fn enter(root: &Path) -> Self {
         let lock = current_dir_lock();
-        let previous = std::env::current_dir().expect("cwd");
+        let previous = core_types::WorkspaceRoot::invocation_dir();
         std::env::set_current_dir(root).expect("set cwd");
         Self {
             _lock: lock,

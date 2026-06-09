@@ -593,8 +593,9 @@ impl Clone for IRPersistenceStore {
 
 impl IRPersistenceStore {
     pub fn new(workspace_root: impl AsRef<Path>) -> Self {
+        let workspace_root = core_types::WorkspaceRoot::discover_from(workspace_root.as_ref());
         Self {
-            workspace_root: workspace_root.as_ref().to_path_buf(),
+            workspace_root,
             cache: StepStateCache::new(),
             embedding_cache: Mutex::new(HashMap::new()),
             query_embedding_cache: Mutex::new(HashMap::new()),

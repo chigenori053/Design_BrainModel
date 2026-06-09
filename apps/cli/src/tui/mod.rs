@@ -54,9 +54,8 @@ pub fn run_tui(payload: UiPayload, diagnostic: bool) -> Result<(), String> {
 
     let mut state = TuiState::new(payload);
     state.diagnostic_mode = diagnostic;
-    if let Ok(root) = std::env::current_dir() {
-        state.enable_persistent_history(root.join(".dbm/cli_history"));
-    }
+    let root = core_types::WorkspaceRoot::discover();
+    state.enable_persistent_history(root.join(".dbm/cli_history"));
     let core = Arc::new(RuntimeCoreBridge::with_defaults());
     let result = run_event_loop(&mut renderer, &mut state, core);
     renderer.shutdown();
@@ -100,7 +99,7 @@ fn run_event_loop(
                     TuiAction::Submit(input) => {
                         crate::tui::render_trace::record("[EVENT_LOOP_RECEIVED_SUBMIT]");
                         crate::tui::render_trace::record("submit_action_received");
-                        let working_dir = std::env::current_dir().unwrap_or_else(|_| ".".into());
+                        let working_dir = core_types::WorkspaceRoot::discover();
                         let routed =
                             dispatch_runtime_command_to_projection(state, &working_dir, &input);
                         if !routed {
@@ -115,9 +114,8 @@ fn run_event_loop(
                         }
                     }
                     TuiAction::SaveDesign => {
-                        let path = std::env::current_dir()
-                            .unwrap_or_else(|_| ".".into())
-                            .join("dbm_design.md");
+                        let path =
+                            core_types::WorkspaceRoot::discover().join("dbm_design.md");
                         match std::fs::write(&path, state.design_doc.rendered.join("\n")) {
                             Ok(_) => state.enqueue_event(self::state::UiEvent::Result {
                                 message: format!("Design saved: {}", path.display()),

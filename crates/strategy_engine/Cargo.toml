@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+core_types = { workspace = true }
 execution_core = { workspace = true }
 execution_stability_core = { workspace = true }
 execution_hardening = { workspace = true }

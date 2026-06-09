@@ -73,6 +73,7 @@ pub struct GlobalHolographicMemoryStore {
 
 impl GlobalHolographicMemoryStore {
     pub fn default_for_workspace(workspace_root: &Path) -> Self {
+        let workspace_root = core_types::WorkspaceRoot::discover_from(workspace_root);
         Self {
             root: workspace_root.join(".dbm/memory"),
         }
@@ -94,6 +95,10 @@ impl GlobalHolographicMemoryStore {
         self.root.join("memory_conflicts.jsonl")
     }
 
+    pub fn archived_path(&self) -> PathBuf {
+        self.root.join("archived_canonical_memory.jsonl")
+    }
+
     pub fn load_canonical(&self) -> Result<Vec<CanonicalMemoryRecord>, String> {
         read_jsonl(&self.canonical_path())
     }
@@ -104,6 +109,13 @@ impl GlobalHolographicMemoryStore {
         }
         let body = fs::read_to_string(self.index_path()).map_err(|err| err.to_string())?;
         serde_json::from_str(&body).map_err(|err| err.to_string())
+    }
+
+    pub fn rebuild_index(&self) -> Result<GlobalMemoryIndex, String> {
+        let records = self.load_canonical()?;
+        let index = self.rebuild_index_with_history(&records)?;
+        self.persist(&records, &index)?;
+        Ok(index)
     }
 
     pub fn insert(
@@ -225,7 +237,7 @@ impl GlobalHolographicMemoryStore {
         if expired.is_empty() {
             return Ok(0);
         }
-        let archive_path = self.root.join("archived_canonical_memory.jsonl");
+        let archive_path = self.archived_path();
         for record in &expired {
             append_jsonl(&archive_path, record)?;
         }
@@ -380,7 +392,8 @@ impl GlobalHolographicMemoryStore {
         write_jsonl(&self.canonical_path(), records)?;
         write_json(&self.index_path(), index)?;
         ensure_jsonl_exists(&self.reinforcement_path())?;
-        ensure_jsonl_exists(&self.conflicts_path())
+        ensure_jsonl_exists(&self.conflicts_path())?;
+        ensure_jsonl_exists(&self.archived_path())
     }
 }
 
@@ -485,7 +498,7 @@ where
 
 fn write_jsonl<T: Serialize>(path: &Path, records: &[T]) -> Result<(), String> {
     ensure_parent(path)?;
-    let temporary = path.with_extension("jsonl.tmp");
+    let temporary = temporary_path(path);
     let mut file = File::create(&temporary).map_err(|err| err.to_string())?;
     for record in records {
         let line = serde_json::to_string(record).map_err(|err| err.to_string())?;
@@ -507,7 +520,7 @@ fn append_jsonl<T: Serialize>(path: &Path, record: &T) -> Result<(), String> {
 
 fn write_json<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
     ensure_parent(path)?;
-    let temporary = path.with_extension("json.tmp");
+    let temporary = temporary_path(path);
     let body = serde_json::to_vec_pretty(value).map_err(|err| err.to_string())?;
     fs::write(&temporary, body).map_err(|err| err.to_string())?;
     fs::rename(temporary, path).map_err(|err| err.to_string())
@@ -528,6 +541,14 @@ fn ensure_jsonl_exists(path: &Path) -> Result<(), String> {
         .open(path)
         .map(|_| ())
         .map_err(|err| err.to_string())
+}
+
+fn temporary_path(path: &Path) -> PathBuf {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("data");
+    path.with_extension(format!("{extension}.{}.tmp", std::process::id()))
 }
 
 #[cfg(test)]
@@ -682,5 +703,30 @@ mod tests {
         assert!(store.index_path().exists());
         assert!(store.reinforcement_path().exists());
         assert!(store.conflicts_path().exists());
+        assert!(store.archived_path().exists());
+    }
+
+    #[test]
+    fn subdirectory_input_still_uses_workspace_memory_root() {
+        let dir = tempdir().expect("tempdir");
+        core_types::WorkspaceRoot::ensure_layout(dir.path()).expect("layout");
+        let nested = dir.path().join("apps/cli/src");
+        fs::create_dir_all(&nested).expect("nested");
+        let store = GlobalHolographicMemoryStore::default_for_workspace(&nested);
+        store
+            .insert(
+                memory("mem-a", "alpha", vec![1.0, 0.0], 1),
+                "hash-a".to_string(),
+                "key-a".to_string(),
+                1,
+            )
+            .expect("insert");
+
+        assert!(
+            dir.path()
+                .join(".dbm/memory/canonical_memory.jsonl")
+                .exists()
+        );
+        assert!(!nested.join(".dbm").exists());
     }
 }

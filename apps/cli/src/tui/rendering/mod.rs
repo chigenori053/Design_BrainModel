@@ -1162,11 +1162,9 @@ fn semantic_label(raw: &str) -> Option<String> {
     let display = if path.is_absolute() {
         semantic_workspace_relative_path(path)
             .or_else(|| {
-                std::env::current_dir().ok().and_then(|cwd| {
-                    path.strip_prefix(cwd)
-                        .ok()
-                        .map(|relative| relative.to_path_buf())
-                })
+                path.strip_prefix(core_types::WorkspaceRoot::discover())
+                    .ok()
+                    .map(|relative| relative.to_path_buf())
             })
             .unwrap_or_else(|| compressed_absolute_path(path))
     } else {
@@ -1534,8 +1532,7 @@ mod tests {
     #[test]
     fn runtime_internal_state_is_not_exposed() {
         let mut state = TuiState::new(empty_payload());
-        let absolute_target = std::env::current_dir()
-            .expect("cwd")
+        let absolute_target = core_types::WorkspaceRoot::discover()
             .join("apps/cli/src/main.rs");
         state.active_target = Some(absolute_target.display().to_string());
         state.append_chat(UiEvent::Preview {
@@ -1844,8 +1841,7 @@ mod tests {
     #[test]
     fn absolute_paths_are_not_projected() {
         let mut state = TuiState::new(empty_payload());
-        let target = std::env::current_dir()
-            .expect("cwd")
+        let target = core_types::WorkspaceRoot::discover()
             .join("apps/cli/src/main.rs");
         state.active_target = Some(target.display().to_string());
 

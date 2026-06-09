@@ -407,7 +407,7 @@ fn execute_confirmed_action(
     let context = ExecutionContext {
         user_input,
         resolved_intent,
-        workspace_path: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+        workspace_path: core_types::WorkspaceRoot::discover(),
     };
     let result = ExecutionRouter::execute(action, &context);
     state.execution_narrative = Some(result.narrative.clone());

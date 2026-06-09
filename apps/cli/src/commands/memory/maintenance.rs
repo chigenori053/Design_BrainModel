@@ -65,7 +65,12 @@ fn handle_dedup(args: &[String]) -> Result<Output, CommandError> {
         ).to_string()));
     }
 
-    let effective_store_path = store_path.unwrap_or_else(|| ".dbm/memory_store.json".to_string());
+    let effective_store_path = store_path.unwrap_or_else(|| {
+        core_types::WorkspaceRoot::discover()
+            .join(".dbm/memory_store.json")
+            .display()
+            .to_string()
+    });
     let store_file = std::path::Path::new(&effective_store_path);
 
     // ストアを読み込む (ファイルが存在しない場合は空のストアで続行)
@@ -85,7 +90,7 @@ fn handle_dedup(args: &[String]) -> Result<Output, CommandError> {
     };
 
     // スナップショット保存先
-    let snapshot_dir = std::path::PathBuf::from(".dbm/snapshots");
+    let snapshot_dir = core_types::WorkspaceRoot::discover().join(".dbm/snapshots");
 
     // メモリ一覧を取り出して重複排除を実行
     let mut memories: Vec<_> = store.list().to_vec();

@@ -67,6 +67,7 @@ impl HolographicMemoryLogStore {
     }
 
     pub fn default_for_workspace(root: &Path) -> Self {
+        let root = core_types::WorkspaceRoot::discover_from(root);
         Self::new(root.join(".dbm/logs/holographic_memory_observation.jsonl"))
     }
 
@@ -189,6 +190,7 @@ pub fn parse_duplicate_class(value: &str) -> Option<DuplicateClass> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use core_types::WorkspaceRoot;
 
     fn sample(class: DuplicateClass, memory_id: &str) -> HolographicMemoryObservationLog {
         HolographicMemoryObservationLog {
@@ -278,5 +280,24 @@ mod tests {
         let store = HolographicMemoryLogStore::new(path);
 
         assert!(store.read_all().expect("read").is_empty());
+    }
+
+    #[test]
+    fn subdirectory_input_still_uses_workspace_log_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        WorkspaceRoot::ensure_layout(dir.path()).expect("layout");
+        let nested = dir.path().join("apps/cli/src");
+        fs::create_dir_all(&nested).expect("nested");
+        let store = HolographicMemoryLogStore::default_for_workspace(&nested);
+        store
+            .append(sample(DuplicateClass::None, "mem_001"))
+            .expect("append");
+
+        assert!(
+            dir.path()
+                .join(".dbm/logs/holographic_memory_observation.jsonl")
+                .exists()
+        );
+        assert!(!nested.join(".dbm").exists());
     }
 }

@@ -975,7 +975,7 @@ impl CoreExecutor for RuntimeCoreBridge {
         current_state.session_context.trace_load();
         self.resolve_canonical_followup(&raw_input, &current_state, has_context);
         let context = ExecutionContext {
-            working_dir: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            working_dir: core_types::WorkspaceRoot::discover(),
             pipeline_state: current_state.status.clone(),
             design_snapshot: current_state.design.clone(),
             current_proposals: Some(current_state.proposals.clone()),

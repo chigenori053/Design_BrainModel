@@ -7,7 +7,10 @@ use crate::holographic_memory_observation::{
 pub fn handle_log(args: &[String]) -> Result<Output, CommandError> {
     let (filter, json, verbose, store_path) = parse_log_args(args)?;
     let store = HolographicMemoryLogStore::new(
-        store_path.unwrap_or_else(|| ".dbm/logs/holographic_memory_observation.jsonl".into()),
+        store_path.unwrap_or_else(|| {
+            core_types::WorkspaceRoot::discover()
+                .join(".dbm/logs/holographic_memory_observation.jsonl")
+        }),
     );
     let logs = store
         .query(filter)

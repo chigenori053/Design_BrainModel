@@ -1187,6 +1187,9 @@ dependencies = [
 [[package]]
 name = "core_types"
 version = "1.0.0"
+dependencies = [
+ "tempfile",
+]
 
 [[package]]
 name = "cpufeatures"
@@ -1840,6 +1843,9 @@ dependencies = [
 [[package]]
 name = "execution_core"
 version = "0.1.0"
+dependencies = [
+ "core_types",
+]
 
 [[package]]
 name = "execution_graph"
@@ -3078,6 +3084,7 @@ dependencies = [
 name = "memory_persistence"
 version = "0.1.0"
 dependencies = [
+ "core_types",
  "memory_engine",
  "serde",
  "serde_json",
@@ -3208,6 +3215,7 @@ dependencies = [
 name = "mutation_engine"
 version = "0.1.0"
 dependencies = [
+ "core_types",
  "serde",
  "serde_json",
  "sha2",
@@ -4939,6 +4947,7 @@ checksum = "a2eb9349b6444b326872e140eb1cf5e7c522154d69e7a0ffb0fb81c06b37543f"
 name = "strategy_engine"
 version = "0.1.0"
 dependencies = [
+ "core_types",
  "execution_core",
  "execution_hardening",
  "execution_stability_core",

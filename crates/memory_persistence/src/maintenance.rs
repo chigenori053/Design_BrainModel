@@ -306,7 +306,7 @@ pub fn run_dedup(
     // apply: ロールバックスナップショットを保存してから削除
     let snapshot_dir_path = snapshot_dir
         .map(|p| p.to_path_buf())
-        .unwrap_or_else(|| std::path::PathBuf::from(".dbm/snapshots"));
+        .unwrap_or_else(|| core_types::WorkspaceRoot::discover().join(".dbm/snapshots"));
 
     let snapshot_path = save_rollback_snapshot(memories, &snapshot_dir_path)?;
 

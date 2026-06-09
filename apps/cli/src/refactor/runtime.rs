@@ -203,7 +203,7 @@ pub fn execute_transactional_safe_apply(
         return None;
     }
 
-    let root = std::env::current_dir().ok()?;
+    let root = core_types::WorkspaceRoot::discover();
     let sandbox_relative = transactional_sandbox_relative_path()?;
     let sandbox_root = root.join(&sandbox_relative);
 
@@ -262,7 +262,7 @@ pub fn promote_sandbox_to_workspace(
         return None;
     }
 
-    let root = std::env::current_dir().ok()?;
+    let root = core_types::WorkspaceRoot::discover();
     let sandbox_root = root.join(&tx.sandbox_root);
     if !sandbox_root.exists() {
         return Some(PromoteResult {
@@ -323,7 +323,7 @@ pub fn generate_git_commit_preview(promote: &PromoteResult) -> Option<GitCommitP
         return None;
     }
 
-    let root = std::env::current_dir().ok()?;
+    let root = core_types::WorkspaceRoot::discover();
     let current_branch = git_current_branch(&root).unwrap_or_default();
     let protected_branch = is_protected_branch_name(&current_branch);
     let changed_files = promote.written_files.clone();

@@ -719,6 +719,7 @@ pub struct SemanticMemoryEntry {
 
 pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
     let root = resolve_repository_path(&command.path);
+    let workspace_root = core_types::WorkspaceRoot::discover_from(&root);
     let scanner = RepositoryScanner;
     let repository = scanner.scan(&root)?;
     let files = repository.rust_files.clone();
@@ -735,7 +736,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &responsibility_analysis,
     );
     let design_drift = analyze_design_drift(&root, &semantic_structure);
-    let previous_health_score = read_previous_health_score(&root);
+    let previous_health_score = read_previous_health_score(&workspace_root);
     let architecture_analysis = calibrate_architecture_analysis(
         architecture_analysis,
         &dependency_analysis,
@@ -767,7 +768,7 @@ pub fn execute(command: AnalyzeCommand) -> Result<AnalyzeEngineOutput, String> {
         &convergence_report,
     );
     persist_to_holographic_memory(
-        &root,
+        &workspace_root,
         &result,
         &repository,
         &graph,
@@ -2881,10 +2882,9 @@ fn resolve_repository_path(path: &Path) -> PathBuf {
     if path.exists() {
         return path.to_path_buf();
     }
-    if let Ok(current) = std::env::current_dir()
-        && current.file_name() == path.file_name()
-    {
-        return current;
+    let workspace_root = core_types::WorkspaceRoot::discover();
+    if workspace_root.file_name() == path.file_name() {
+        return workspace_root;
     }
     path.to_path_buf()
 }
@@ -4341,5 +4341,26 @@ mod tests {
             drift_score: score,
             final_score: score,
         }
+    }
+
+    #[test]
+    fn nested_analysis_persists_only_to_canonical_workspace() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        core_types::WorkspaceRoot::ensure_layout(dir.path()).expect("layout");
+        let nested = dir.path().join("apps/cli");
+        fs::create_dir_all(nested.join("src")).expect("source");
+        fs::write(nested.join("src/lib.rs"), "pub fn analyze_me() {}\n").expect("rust");
+
+        execute(AnalyzeCommand {
+            path: nested.clone(),
+        })
+        .expect("analyze");
+
+        assert!(
+            dir.path()
+                .join(".dbm/analyze/semantic_memory.jsonl")
+                .exists()
+        );
+        assert!(!nested.join(".dbm").exists());
     }
 }

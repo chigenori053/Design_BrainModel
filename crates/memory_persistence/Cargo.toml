@@ -7,6 +7,7 @@ edition = "2024"
 contract_strict = []
 
 [dependencies]
+core_types = { workspace = true }
 memory_engine = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

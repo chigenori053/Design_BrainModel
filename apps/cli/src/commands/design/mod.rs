@@ -77,7 +77,7 @@ pub fn history_dir(root: &Path) -> PathBuf {
 
 pub fn resolve_root(arg: Option<&str>) -> PathBuf {
     arg.map(PathBuf::from)
-        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
+        .unwrap_or_else(core_types::WorkspaceRoot::discover)
 }
 
 // ── Design document I/O ─────────────────────────────────────────────────────

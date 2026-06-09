@@ -227,7 +227,7 @@ pub fn run_goal_loop(
         let workspace_root = session
             .workspace_root
             .clone()
-            .or_else(|| std::env::current_dir().ok());
+            .or_else(|| Some(core_types::WorkspaceRoot::discover()));
         if let Some(workspace_root) = workspace_root
             && let Ok(recovered) = restore_or_initialize_ir_state(&workspace_root)
         {

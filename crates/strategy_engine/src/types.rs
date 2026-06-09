@@ -217,7 +217,7 @@ impl Default for ExecutionContext {
         Self {
             deterministic: true,
             timeout_ms: 0,
-            repo_root: std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")),
+            repo_root: core_types::WorkspaceRoot::discover(),
         }
     }
 }

@@ -94,6 +94,8 @@ pub enum RuntimeCommand {
 
 #[derive(Subcommand, Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkspaceCommand {
+    Root,
+    Verify,
     Snapshot,
     Graph,
     Boundaries,
@@ -148,6 +150,10 @@ fn main() {
     if root_help_requested(&raw_args) {
         print_product_help();
         return;
+    }
+    if let Err(err) = design_cli::workspace_root::initialize_workspace() {
+        eprintln!("workspace initialization failed: {err}");
+        std::process::exit(1);
     }
     if repl_entrypoint_requested(&raw_args) {
         let repl_args = repl_entrypoint_args(&raw_args);
@@ -221,8 +227,7 @@ fn main() {
     }
 
     if let Commands::Git(args) = command {
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace_root = core_types::WorkspaceRoot::discover();
         let (code, output) =
             design_cli::runtime::shell::runtime_apply_git_command(&workspace_root, &args.args);
         println!(
@@ -238,8 +243,7 @@ fn main() {
     }
 
     if let Commands::Github(args) | Commands::Gh(args) = command {
-        let workspace_root =
-            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let workspace_root = core_types::WorkspaceRoot::discover();
         let (code, output) =
             design_cli::runtime::shell::runtime_apply_github_command(&workspace_root, &args.args);
         println!(
@@ -1041,7 +1045,7 @@ fn validate_coding_target(root: &Path, target: Option<&Path>) -> Result<Option<P
 }
 
 fn run_runtime_repl() {
-    let workspace_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let workspace_root = core_types::WorkspaceRoot::discover();
     if let Err(err) = design_cli::repl::run_repl_stdio(workspace_root) {
         eprintln!("{err}");
         std::process::exit(1);
@@ -1149,7 +1153,7 @@ fn run_self_command(command: SelfCommand) -> Result<(), String> {
     };
     use design_cli::runtime::workspace_awareness::workspace_topology_snapshot;
 
-    let root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let root = core_types::WorkspaceRoot::discover();
     let workspace = workspace_topology_snapshot(&root);
     let transaction = self_mutation_transaction(&workspace);
 
@@ -1207,9 +1211,22 @@ fn run_workspace_command(command: WorkspaceCommand) -> Result<(), String> {
         workspace_dependency_graph, workspace_semantic_map, workspace_topology_snapshot,
     };
 
-    let root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let root = core_types::WorkspaceRoot::discover();
+    if command == WorkspaceCommand::Root {
+        println!("Workspace Root:\n{}", root.display());
+        return Ok(());
+    }
+    if command == WorkspaceCommand::Verify {
+        let verification = design_cli::workspace_root::verify_workspace(&root);
+        println!(
+            "{}",
+            design_cli::workspace_root::render_workspace_verification(&verification)
+        );
+        return Ok(());
+    }
     let snapshot = workspace_topology_snapshot(&root);
     match command {
+        WorkspaceCommand::Root | WorkspaceCommand::Verify => unreachable!(),
         WorkspaceCommand::Snapshot => {
             println!("{}", render_workspace_snapshot(&snapshot));
             Ok(())
@@ -1328,6 +1345,8 @@ fn runtime_core_input(command: RuntimeCommand) -> String {
 
 fn workspace_core_input(command: Option<WorkspaceCommand>) -> String {
     match command {
+        Some(WorkspaceCommand::Root) => "workspace root".to_string(),
+        Some(WorkspaceCommand::Verify) => "workspace verify".to_string(),
         Some(WorkspaceCommand::Snapshot) => "workspace snapshot".to_string(),
         Some(WorkspaceCommand::Graph) => "workspace graph".to_string(),
         Some(WorkspaceCommand::Boundaries) => "workspace boundaries".to_string(),

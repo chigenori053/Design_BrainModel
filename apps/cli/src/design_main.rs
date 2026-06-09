@@ -586,6 +586,10 @@ fn main() {
     })
     .expect("Error setting Ctrl-C handler");
 
+    if let Err(err) = crate::workspace_root::initialize_workspace() {
+        eprintln!("workspace initialization failed: {err}");
+        std::process::exit(1);
+    }
     if let Err(err) = run() {
         let err_json = json!({
             "error": {

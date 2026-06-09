@@ -256,8 +256,7 @@ pub fn run_with_args(args: Vec<OsString>) -> Result<(), String> {
         },
     };
 
-    let cwd = std::env::current_dir().map_err(|err| format!("failed to resolve cwd: {err}"))?;
-    let store = VerifyStore::new(cwd);
+    let store = VerifyStore::new(core_types::WorkspaceRoot::discover());
     let mut session = store.load_session()?;
     session.mode = cli.mode;
 
@@ -823,8 +822,7 @@ fn plan_for_determinism_input(input: &str) -> Result<ExecutionPlan, String> {
         ));
     }
 
-    let cwd = std::env::current_dir().map_err(|err| format!("failed to resolve cwd: {err}"))?;
-    let session = AgentSession::with_root(cwd);
+    let session = AgentSession::with_root(core_types::WorkspaceRoot::discover());
     let conversation = ConversationState::default();
     Ok(
         planner_v2::plan_input(trimmed, &session, &conversation)

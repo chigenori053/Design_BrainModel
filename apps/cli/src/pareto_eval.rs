@@ -68,9 +68,7 @@ pub fn run_pareto_eval(
     let raw = match fs::read_to_string(input_path) {
         Ok(v) => v,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-            let cwd = std::env::current_dir()
-                .map(|p| p.display().to_string())
-                .unwrap_or_else(|_| "<unknown cwd>".to_string());
+            let cwd = core_types::WorkspaceRoot::discover().display().to_string();
             let candidates = find_candidate_json_files().join(", ");
             return Err(format!(
                 "failed to read input json {input_path}: {e}\ncurrent_dir={cwd}\njson_candidates={candidates}\nexample: cargo run -p design_cli -- pareto-eval /path/to/input.json -o {out_path}"

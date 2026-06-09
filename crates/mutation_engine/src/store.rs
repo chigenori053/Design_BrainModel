@@ -17,8 +17,9 @@ pub struct MutationAuditStore {
 
 impl MutationAuditStore {
     pub fn new(workspace: impl AsRef<Path>) -> Self {
+        let workspace = core_types::WorkspaceRoot::discover_from(workspace.as_ref());
         Self {
-            root: workspace.as_ref().join(".dbm").join("mutations"),
+            root: workspace.join(".dbm").join("mutations"),
         }
     }
 
@@ -111,4 +112,38 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), MutationErro
     fs::write(&temporary, bytes)?;
     fs::rename(temporary, path)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use crate::{MutationOperation, MutationPlan, MutationTarget};
+
+    #[test]
+    fn subdirectory_input_still_uses_workspace_mutation_root() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        core_types::WorkspaceRoot::ensure_layout(dir.path()).expect("layout");
+        let nested = dir.path().join("apps/cli/src");
+        fs::create_dir_all(&nested).expect("nested");
+        let store = MutationAuditStore::new(&nested);
+        let plan = MutationPlan {
+            id: "mutation-1".to_string(),
+            target: MutationTarget::File(PathBuf::from("src/lib.rs")),
+            operation: MutationOperation::Refactor,
+            reason: "test".to_string(),
+            expected_effect: "test".to_string(),
+            patches: Vec::new(),
+            design_intent: Vec::new(),
+            projected_dependencies: None,
+        };
+
+        store.persist_plan(&plan).expect("persist");
+
+        assert!(
+            dir.path()
+                .join(".dbm/mutations/mutation-1/mutation_plan.json")
+                .exists()
+        );
+        assert!(!nested.join(".dbm").exists());
+    }
 }

@@ -104,14 +104,11 @@ pub fn handle_run_dsl(input: PathBuf) -> Result<(), String> {
     })?;
     let dsl = load_and_validate(&canonical_input)?;
     let plan = build_plan(&canonical_input, &dsl)?;
-    execute_plan(
-        &std::env::current_dir().map_err(|err| err.to_string())?,
-        &plan,
-    )
+    execute_plan(&core_types::WorkspaceRoot::discover(), &plan)
 }
 
 pub fn handle_replay(run_id: &str) -> Result<(), String> {
-    let workspace_root = std::env::current_dir().map_err(|err| err.to_string())?;
+    let workspace_root = core_types::WorkspaceRoot::discover();
     let path = workspace_root
         .join(".dbm")
         .join("runs")

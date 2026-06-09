@@ -1880,9 +1880,9 @@ fn normalize_target_path(path: &str) -> String {
     }
     let path = Path::new(trimmed);
     let display = if path.is_absolute() {
-        std::env::current_dir()
+        path.strip_prefix(core_types::WorkspaceRoot::discover())
             .ok()
-            .and_then(|cwd| path.strip_prefix(cwd).ok().map(Path::to_path_buf))
+            .map(Path::to_path_buf)
             .or_else(|| semantic_workspace_relative_path(path))
             .unwrap_or_else(|| path.to_path_buf())
     } else {
