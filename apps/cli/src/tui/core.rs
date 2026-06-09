@@ -64,7 +64,7 @@ pub fn handle_submit(
     state: &mut TuiState,
     core: &dyn CoreExecutor,
     input: String,
-    _working_dir: PathBuf,
+    working_dir: PathBuf,
 ) {
     crate::tui::render_trace::record("[RUNTIME_DISPATCH] start");
     let _event = emit_debug("UI", "Input received", DebugLevel::Debug);
@@ -74,13 +74,13 @@ pub fn handle_submit(
     ));
     match classification {
         SpecificationKind::DraftSpecification => {
-            handle_convergence_submit(state, input);
+            handle_convergence_submit(state, input, working_dir);
         }
         SpecificationKind::DesignSpecification => {
             handle_specification_submit(state, input);
         }
         SpecificationKind::Instruction if is_design_convergence_intent(&input) => {
-            handle_convergence_submit(state, input);
+            handle_convergence_submit(state, input, working_dir);
         }
         SpecificationKind::Instruction => {
             // §7.1 §10.1: Transition to Thinking state before dispatch.
@@ -131,7 +131,7 @@ pub fn handle_submit_async(
     state: &mut TuiState,
     core: Arc<RuntimeCoreBridge>,
     input: String,
-    _working_dir: PathBuf,
+    working_dir: PathBuf,
     worker_tx: Sender<RuntimeWorkerEvent>,
 ) {
     crate::tui::render_trace::record("[HANDLE_SUBMIT_ASYNC_ENTER]");
@@ -143,10 +143,10 @@ pub fn handle_submit_async(
     ));
     match classification {
         SpecificationKind::DraftSpecification => {
-            handle_convergence_submit(state, input);
+            handle_convergence_submit(state, input, working_dir);
         }
         SpecificationKind::Instruction if is_design_convergence_intent(&input) => {
-            handle_convergence_submit(state, input);
+            handle_convergence_submit(state, input, working_dir);
         }
         SpecificationKind::Instruction => handle_runtime_submit(state, core, input, worker_tx),
         SpecificationKind::DesignSpecification => {
@@ -155,7 +155,7 @@ pub fn handle_submit_async(
     }
 }
 
-fn handle_convergence_submit(state: &mut TuiState, input: String) {
+fn handle_convergence_submit(state: &mut TuiState, input: String, workspace_path: PathBuf) {
     let result = DesignConvergenceEngine::converge(&input, &state.convergence);
     let target_hint = result
         .state
@@ -165,7 +165,7 @@ fn handle_convergence_submit(state: &mut TuiState, input: String) {
     state.convergence = result.state;
     let mut resolved = IntentResolutionEngine::resolve(&input);
     resolved.target_hint = target_hint;
-    state.resolved_intent = Some(resolved);
+    state.resolved_intent = Some(resolved.clone());
     state.enqueue_event(UiEvent::Intent {
         summary: "design convergence started from natural language intent".to_string(),
     });
@@ -173,6 +173,153 @@ fn handle_convergence_submit(state: &mut TuiState, input: String) {
         summary: "generated Design Specification from convergence state".to_string(),
     });
     handle_specification_submit(state, result.generated_spec);
+    trigger_convergence_mutation_plan(state, input, resolved, workspace_path);
+}
+
+fn trigger_convergence_mutation_plan(
+    state: &mut TuiState,
+    input: String,
+    resolved_intent: crate::intent_resolution::ResolvedIntent,
+    workspace_path: PathBuf,
+) {
+    if resolved_intent
+        .target_hint
+        .as_deref()
+        .map(str::trim)
+        .filter(|target| !target.is_empty())
+        .is_none()
+    {
+        return;
+    }
+
+    let context = ExecutionContext {
+        user_input: input,
+        resolved_intent,
+        workspace_path: workspace_path.clone(),
+    };
+    let result = ExecutionRouter::execute(RecommendedAction::GenerateMutationPlan, &context);
+    state.execution_narrative = Some(result.narrative.clone());
+    state.execution_state = match result.status {
+        ExecutionStatus::Completed => ExecutionState::Running,
+        ExecutionStatus::Failed => ExecutionState::Failed,
+        ExecutionStatus::WaitingConfirmation => ExecutionState::PendingConfirmation,
+    };
+    state.enqueue_event(UiEvent::Execution {
+        step: result.narrative,
+    });
+    if result.status != ExecutionStatus::Completed {
+        return;
+    }
+
+    let Some(runtime_input) =
+        ExecutionRouter::route_with_context(RecommendedAction::GenerateMutationPlan, &context)
+    else {
+        return;
+    };
+    crate::tui::render_trace::record(Box::leak(
+        format!("[CONVERGENCE_RUNTIME_ROUTE] {runtime_input}").into_boxed_str(),
+    ));
+    let workspace_root = if workspace_path.as_os_str().is_empty() {
+        PathBuf::from(".")
+    } else {
+        workspace_path
+    };
+    let Some(events) = crate::runtime::shell::RuntimeCommandDispatcher::dispatch(
+        state,
+        &workspace_root,
+        &runtime_input,
+    ) else {
+        state.execution_state = ExecutionState::Failed;
+        state.enqueue_event(UiEvent::Error {
+            message: format!("runtime route failed: {runtime_input}"),
+        });
+        return;
+    };
+    project_runtime_narrative_events(state, events);
+    state.execution_state = ExecutionState::Completed;
+}
+
+fn project_runtime_narrative_events(
+    state: &mut TuiState,
+    events: Vec<crate::tui::state::RuntimeNarrativeEvent>,
+) {
+    for event in events {
+        let ui_event = match event {
+            crate::tui::state::RuntimeNarrativeEvent::Intent { summary } => {
+                UiEvent::Intent { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Thinking { summary } => {
+                UiEvent::Thinking { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Analysis { summary } => {
+                UiEvent::Analysis { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::AnalyzeResult { projection } => {
+                state.active_target = Some(projection.target.clone());
+                UiEvent::AnalyzeResult { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Planning { summary } => {
+                UiEvent::Planning { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Validation { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
+                UiEvent::Validation { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Execution { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
+                UiEvent::Execution { step: summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Preview { target } => UiEvent::Preview {
+                diff: vec![format!("target: {target}")],
+            },
+            crate::tui::state::RuntimeNarrativeEvent::Apply { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
+                UiEvent::Apply { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Commit { summary } => {
+                UiEvent::Apply { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Rollback { summary } => {
+                UiEvent::Rollback { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::MutationPlan { projection } => {
+                state.active_target = Some(projection.target.clone());
+                UiEvent::MutationPlan { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::MutationPreview { projection } => {
+                UiEvent::MutationPreview { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::MutationApplied { projection } => {
+                state.active_target = Some(projection.target.clone());
+                UiEvent::MutationApplied { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::MutationReplay { projection } => {
+                UiEvent::MutationReplay { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::MutationRollback { projection } => {
+                UiEvent::MutationRollback { projection }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::System { summary, target } => {
+                if let Some(target) = target {
+                    state.active_target = Some(target);
+                }
+                UiEvent::System { summary }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::GovernanceReject { reason } => {
+                UiEvent::Reject { reason }
+            }
+            crate::tui::state::RuntimeNarrativeEvent::Error { message } => {
+                UiEvent::Error { message }
+            }
+        };
+        state.enqueue_event(ui_event);
+    }
 }
 
 fn is_design_convergence_intent(input: &str) -> bool {
@@ -856,6 +1003,84 @@ rules:
         }
     }
 
+    fn mutation_target_fixture(root: &std::path::Path) {
+        std::fs::create_dir_all(root.join("apps/cli/src")).expect("fixture target directory");
+        std::fs::write(
+            root.join("apps/cli/src/core.rs"),
+            "pub fn core_entry() {}\n",
+        )
+        .expect("fixture core file");
+        std::fs::write(root.join("Cargo.toml"), "[workspace]\nmembers = []\n")
+            .expect("fixture cargo file");
+    }
+
+    #[test]
+    fn convergence_submit_bridges_to_mutation_projection() {
+        let root = tempfile::tempdir().expect("tempdir");
+        mutation_target_fixture(root.path());
+        let mut state = TuiState::new(empty_payload());
+        let core = FakeCore::default();
+
+        handle_submit(
+            &mut state,
+            &core,
+            "apps::cli::core を整理したい".to_string(),
+            root.path().to_path_buf(),
+        );
+        state.handle_ui_events();
+
+        assert_eq!(
+            state
+                .convergence
+                .intent
+                .as_ref()
+                .map(|intent| intent.target.as_str()),
+            Some("apps::cli::core")
+        );
+        assert!(
+            state
+                .convergence
+                .decisions
+                .iter()
+                .any(|decision| decision == "Set target to apps::cli::core")
+        );
+        assert_eq!(state.execution_state, ExecutionState::Completed);
+        assert_eq!(state.runtime_state, RuntimeShellState::Plan);
+        assert_eq!(state.workspace.evaluation.status, "MutationPlanned");
+
+        let projection = state
+            .workspace
+            .analysis_result
+            .mutation_plan_projection
+            .as_ref()
+            .expect("mutation projection");
+        assert_eq!(projection.target, "apps::cli::core");
+        assert!(
+            projection
+                .affected_files
+                .iter()
+                .any(|file| file == "apps/cli/src/core.rs")
+        );
+        assert!(!projection.mutation_id.is_empty());
+        assert!(!projection.expected_improvements.is_empty());
+
+        let plan_surface = RenderSnapshot::from(&state).reasoning.lines.join("\n");
+        assert!(plan_surface.contains("Mutation Plan"), "{plan_surface}");
+        assert!(
+            plan_surface.contains("Target: apps::cli::core"),
+            "{plan_surface}"
+        );
+        assert!(plan_surface.contains("Affected Files:"), "{plan_surface}");
+        assert!(
+            plan_surface.contains("apps/cli/src/core.rs"),
+            "{plan_surface}"
+        );
+        assert!(
+            !plan_surface.contains("No active mutation target"),
+            "{plan_surface}"
+        );
+    }
+
     // ─── §14.1 Interactive Runtime Tests ────────────────────────────────────
 
     /// §14.1 — Every submit produces at least one visible runtime event.
@@ -893,7 +1118,8 @@ rules:
         let mut state = TuiState::new(empty_payload());
         let core = FakeCore::default();
         state.editor_state.editor.clear();
-        for ch in "hello".chars() {
+        let submitted_text = "プロジェクト構造分析";
+        for ch in submitted_text.chars() {
             state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
         }
 
@@ -904,7 +1130,10 @@ rules:
         handle_submit(&mut state, &core, input, ".".into());
         state.handle_ui_events();
 
-        assert_eq!(state.convergence.raw_intent.as_deref(), Some("hello"));
+        assert_eq!(
+            state.convergence.raw_intent.as_deref(),
+            Some(submitted_text)
+        );
         assert!(
             state
                 .convergence
@@ -931,26 +1160,23 @@ rules:
     #[test]
     fn enter_submit_reaches_async_runtime_worker_and_projects_response() {
         let mut state = TuiState::new(empty_payload());
-        state.editor_state.editor.clear();
-        for ch in "hello".chars() {
-            state.handle_key_event(KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE));
-        }
-        let action = state.handle_key_event(KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE));
-        let TuiAction::Submit(input) = action else {
-            panic!("expected Enter to create TuiAction::Submit");
-        };
+        let submitted_text = "プロジェクト構造分析してほしい";
+        let resolved = IntentResolutionEngine::resolve(submitted_text);
+        assert_eq!(resolved.recommended_action(), RecommendedAction::RunAnalyze);
         let (worker_tx, worker_rx) = std::sync::mpsc::channel();
 
-        handle_submit_async(
+        handle_runtime_submit(
             &mut state,
             Arc::new(RuntimeCoreBridge::with_defaults()),
-            input,
-            ".".into(),
+            submitted_text.to_string(),
             worker_tx,
         );
         state.handle_ui_events();
 
-        assert_eq!(state.convergence.raw_intent.as_deref(), Some("hello"));
+        assert_eq!(
+            state.convergence.raw_intent.as_deref(),
+            Some(submitted_text)
+        );
         assert!(
             state
                 .flattened_chat_lines()

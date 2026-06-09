@@ -258,7 +258,7 @@ impl MutationProjection {
             format!("ID: {}", self.mutation_id),
             format!("Target: {}", self.target),
             format!("Operation: {}", self.operation),
-            "Affected Files".to_string(),
+            "Affected Files:".to_string(),
         ];
         if self.affected_files.is_empty() {
             lines.push(format!("* {}", self.target));
