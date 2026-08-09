@@ -883,6 +883,39 @@ impl RuntimeCoreBridge {
         product.last_canonical_status = canonical_status;
         product.canonical_event_count = product.canonical_event_count.saturating_add(events.len());
     }
+
+    /// `workspace_root` に保存された `CanonicalReuseResolver` のスナップショットで
+    /// followup resolver の内容を置き換える。保存済みスナップショットがなければ
+    /// 何もしない (デフォルトの空リゾルバのまま)。
+    ///
+    /// これはオプトインの呼び出しであり、`new`/`with_defaults`/`new_with_limits` 自体は
+    /// 常にディスクI/Oを行わない (テスト・組み込み用途での決定的な挙動を保つため)。
+    /// 実運用の CLI エントリポイント (one-shot コマンド, REPL) が明示的に呼び出す。
+    pub fn load_followup_resolver(&self, workspace_root: &Path) {
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                workspace_root,
+            );
+        let loaded = global_store.load_or_new_canonical_reuse_resolver();
+        *self
+            .followup_resolver
+            .lock()
+            .expect("followup resolver lock")
+            .resolver_mut() = loaded;
+    }
+
+    /// 現在の followup resolver の状態を `workspace_root` 配下へ保存する。
+    ///
+    /// [`load_followup_resolver`](Self::load_followup_resolver) と対にして呼び出すことで、
+    /// プロセス再起動をまたいだ canonical dedup / followup 解決を可能にする。
+    pub fn persist_followup_resolver(&self, workspace_root: &Path) -> Result<(), String> {
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                workspace_root,
+            );
+        let resolver = self.followup_resolver.lock().expect("followup resolver lock");
+        global_store.save_canonical_reuse_resolver(resolver.resolver())
+    }
 }
 
 fn canonical_history_from_state(state: &CoreState) -> Vec<String> {
@@ -9725,6 +9758,61 @@ mod tests {
         assert!(
             !spec.raw_text.contains("PHASE-B"),
             "raw_text must NOT contain second spec ID (Isolation)"
+        );
+    }
+
+    /// `CanonicalReuseResolver` の永続化: `load_followup_resolver` /
+    /// `persist_followup_resolver` を挟むと、プロセス再起動 (新しい `RuntimeCoreBridge`
+    /// インスタンス) をまたいでも同じ入力が canonical reuse として検出される。
+    ///
+    /// `with_defaults`/`new_with_limits` 自体は常に空のリゾルバから始まる
+    /// (ディスクI/Oを行わない) ので、他の既存テストの決定的な挙動には影響しない。
+    #[test]
+    fn followup_resolver_persists_across_bridge_restart() {
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let workspace_root = tempdir.path().to_path_buf();
+        let input = "analyze the workspace structure for followup persistence";
+
+        let first = RuntimeCoreBridge::with_defaults();
+        first.load_followup_resolver(&workspace_root);
+        first.execute(request(input));
+        assert_eq!(
+            first.diagnostics_snapshot().followup_status,
+            "created",
+            "first bridge, first occurrence of this input must create a new canonical entry"
+        );
+        first
+            .persist_followup_resolver(&workspace_root)
+            .expect("persist followup resolver");
+
+        let resolver_path =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                &workspace_root,
+            )
+            .canonical_reuse_resolver_path();
+        assert!(
+            resolver_path.exists(),
+            "persist_followup_resolver must write a snapshot to disk"
+        );
+
+        // 新しい RuntimeCoreBridge インスタンスはプロセス再起動を模す:
+        // デフォルトでは空のリゾルバから始まるが、明示的にロードすると
+        // ディスク上の状態を引き継ぐ。
+        let second = RuntimeCoreBridge::with_defaults();
+        second.execute(request(input));
+        assert_eq!(
+            second.diagnostics_snapshot().followup_status,
+            "created",
+            "without an explicit load, a fresh bridge must not see prior canonical state"
+        );
+
+        let third = RuntimeCoreBridge::with_defaults();
+        third.load_followup_resolver(&workspace_root);
+        third.execute(request(input));
+        assert_eq!(
+            third.diagnostics_snapshot().followup_status,
+            "reused",
+            "after loading the persisted snapshot, the same input must be reused as canonical"
         );
     }
 }

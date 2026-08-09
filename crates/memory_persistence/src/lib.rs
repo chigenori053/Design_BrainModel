@@ -20,8 +20,9 @@ pub use maintenance::{
     is_protected, run_dedup, save_rollback_snapshot,
 };
 pub use optimizer::{
-    DUPLICATE_THRESHOLD, DecisionAction, DecisionEngine, DecisionEvidence, DecisionPolicy,
-    IngestResult, SimilarityProfile, UNIQUE_THRESHOLD, UpgradeGate,
+    DEFAULT_CONFLICT_THRESHOLD, DEFAULT_SEMANTIC_DUPLICATE_THRESHOLD, DUPLICATE_THRESHOLD,
+    DecisionAction, DecisionEngine, DecisionEvidence, DecisionPolicy, IngestResult, MemoryPolicy,
+    SimilarityProfile, UNIQUE_THRESHOLD, UpgradeGate,
 };
 pub use persistence_store::{IngestAuditEntry, OptimizationStats, PersistentMemoryStore};
 pub use similarity::{combined_similarity, cosine_similarity, jaccard_similarity};

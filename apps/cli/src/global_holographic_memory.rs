@@ -8,9 +8,6 @@ use serde::{Deserialize, Serialize};
 use crate::holographic_memory_observation::DuplicateClass;
 use crate::ir::MemoryEntry;
 
-pub const SEMANTIC_DUP_THRESHOLD: f32 = 0.92;
-pub const CONFLICT_THRESHOLD: f32 = 0.40;
-
 pub type CanonicalMemoryId = String;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,14 +66,28 @@ pub struct CanonicalInsertResult {
 #[derive(Debug, Clone)]
 pub struct GlobalHolographicMemoryStore {
     root: PathBuf,
+    policy: memory_persistence::MemoryPolicy,
 }
 
 impl GlobalHolographicMemoryStore {
     pub fn default_for_workspace(workspace_root: &Path) -> Self {
+        Self::with_policy(workspace_root, memory_persistence::MemoryPolicy::default())
+    }
+
+    /// カスタム判別ポリシーでストアを構築する。
+    ///
+    /// 系統B (`PersistentMemoryStore` の `DecisionEngine`) と同じ `MemoryPolicy` を
+    /// 渡すことで、重複/衝突閾値の管理場所を一元化できる。
+    pub fn with_policy(workspace_root: &Path, policy: memory_persistence::MemoryPolicy) -> Self {
         let workspace_root = core_types::WorkspaceRoot::discover_from(workspace_root);
         Self {
             root: workspace_root.join(".dbm/memory"),
+            policy,
         }
+    }
+
+    pub fn policy(&self) -> &memory_persistence::MemoryPolicy {
+        &self.policy
     }
 
     pub fn canonical_path(&self) -> PathBuf {
@@ -97,6 +108,22 @@ impl GlobalHolographicMemoryStore {
 
     pub fn archived_path(&self) -> PathBuf {
         self.root.join("archived_canonical_memory.jsonl")
+    }
+
+    /// `memory_persistence::PersistentMemoryStore` の JSON スナップショット保存先。
+    ///
+    /// canonical/index/reinforcement と同じ `.dbm/memory` ルート配下に置くことで、
+    /// 判別エンジン (DecisionEngine) が実行時に書き込まれる記憶と同じ場所を見るようにする。
+    pub fn persistent_store_path(&self) -> PathBuf {
+        self.root.join("memory_store.json")
+    }
+
+    /// `core_types::CanonicalReuseResolver` のスナップショット保存先。
+    ///
+    /// 同じ `.dbm/memory` ルート配下に置くことで、プロセス再起動をまたいだ
+    /// canonical dedup (followup 解決) の索引が単一の記憶ルートに統合される。
+    pub fn canonical_reuse_resolver_path(&self) -> PathBuf {
+        self.root.join("canonical_reuse_resolver.json")
     }
 
     pub fn load_canonical(&self) -> Result<Vec<CanonicalMemoryRecord>, String> {
@@ -147,7 +174,7 @@ impl GlobalHolographicMemoryStore {
         {
             let existing_canonical_id = canonical_id.clone();
             let resonance = memory_resonance(&memory, &records[position].entry);
-            if resonance < CONFLICT_THRESHOLD {
+            if resonance < self.policy.conflict_threshold {
                 return self.insert_conflict(
                     &mut records,
                     &mut index,
@@ -175,7 +202,7 @@ impl GlobalHolographicMemoryStore {
             .enumerate()
             .filter_map(|(position, record)| {
                 let resonance = memory_resonance(&memory, &record.entry);
-                (resonance >= SEMANTIC_DUP_THRESHOLD).then_some((position, resonance))
+                (resonance >= self.policy.semantic_duplicate_threshold).then_some((position, resonance))
             })
             .max_by(|left, right| left.1.total_cmp(&right.1))
         {
@@ -394,6 +421,30 @@ impl GlobalHolographicMemoryStore {
         ensure_jsonl_exists(&self.reinforcement_path())?;
         ensure_jsonl_exists(&self.conflicts_path())?;
         ensure_jsonl_exists(&self.archived_path())
+    }
+
+    /// `core_types::CanonicalReuseResolver` をディスクへ保存する (アトミック書き込み)。
+    ///
+    /// プロセス再起動をまたいでも canonical dedup / followup 解決の索引が
+    /// 引き継がれるようにする。
+    pub fn save_canonical_reuse_resolver(
+        &self,
+        resolver: &core_types::CanonicalReuseResolver,
+    ) -> Result<(), String> {
+        write_json(&self.canonical_reuse_resolver_path(), &resolver.to_snapshot())
+    }
+
+    /// ディスクに保存済みのスナップショットがあれば復元し、なければ空のリゾルバを返す。
+    /// 破損したスナップショットも (エラーにせず) 空のリゾルバにフォールバックする。
+    pub fn load_or_new_canonical_reuse_resolver(&self) -> core_types::CanonicalReuseResolver {
+        let path = self.canonical_reuse_resolver_path();
+        let Ok(body) = fs::read_to_string(&path) else {
+            return core_types::CanonicalReuseResolver::new();
+        };
+        match serde_json::from_str(&body) {
+            Ok(snapshot) => core_types::CanonicalReuseResolver::from_snapshot(snapshot),
+            Err(_) => core_types::CanonicalReuseResolver::new(),
+        }
     }
 }
 
@@ -662,6 +713,54 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    /// `MemoryPolicy` (系統B と共有する設定) を差し替えると、系統D の
+    /// セマンティック重複判定 (canonical_key が異なる記憶間のフォールバック走査) の
+    /// 挙動が実際に変わることを確認する。閾値が構造体上に存在するだけで
+    /// 判定に反映されていない、という統合漏れを防ぐための回帰テスト。
+    #[test]
+    fn semantic_duplicate_threshold_is_driven_by_shared_memory_policy() {
+        let mut alpha = memory("mem-alpha", "alpha", vec![1.0, 0.0], 1);
+        alpha.metadata.tags = vec!["key-a".to_string()];
+        let mut beta = memory("mem-beta", "beta", vec![0.95, 0.3122], 2);
+        beta.metadata.tags = vec!["key-b".to_string()];
+        // cosine(alpha, beta) ≈ 0.950: DEFAULT (0.92) 以上・厳格化後 (0.999) 未満
+        let cosine = memory_resonance(&alpha, &beta);
+        assert!(
+            (0.92..0.999).contains(&cosine),
+            "test fixture must sit strictly between the two thresholds under test, got {cosine}"
+        );
+
+        // デフォルトポリシー (0.92) では canonical_key が異なっていても
+        // resonance が十分高いのでセマンティック重複として reinforce される。
+        let default_dir = tempdir().expect("tempdir");
+        let default_store = GlobalHolographicMemoryStore::default_for_workspace(default_dir.path());
+        default_store
+            .insert(alpha.clone(), "hash-alpha".to_string(), "key-a".to_string(), 1)
+            .expect("first");
+        let default_result = default_store
+            .insert(beta.clone(), "hash-beta".to_string(), "key-b".to_string(), 2)
+            .expect("second");
+        assert_eq!(default_result.duplicate_class, DuplicateClass::SemanticDuplicate);
+        assert_eq!(default_store.load_canonical().expect("canonical").len(), 1);
+
+        // 閾値を 0.999 に厳格化したポリシーでは、同じ埋め込みペアはもう
+        // セマンティック重複とみなされず、別の canonical として保存される。
+        let strict_dir = tempdir().expect("tempdir");
+        let mut strict_policy = memory_persistence::MemoryPolicy::default();
+        strict_policy.semantic_duplicate_threshold = 0.999;
+        let strict_store =
+            GlobalHolographicMemoryStore::with_policy(strict_dir.path(), strict_policy.clone());
+        assert_eq!(strict_store.policy(), &strict_policy);
+        strict_store
+            .insert(alpha, "hash-alpha".to_string(), "key-a".to_string(), 1)
+            .expect("first");
+        let strict_result = strict_store
+            .insert(beta, "hash-beta".to_string(), "key-b".to_string(), 2)
+            .expect("second");
+        assert_eq!(strict_result.duplicate_class, DuplicateClass::None);
+        assert_eq!(strict_store.load_canonical().expect("canonical").len(), 2);
     }
 
     #[test]

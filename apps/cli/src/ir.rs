@@ -17,7 +17,7 @@ use crate::service::dto::{ActionKind, IRState, SessionAppliedDiff};
 
 const CHECKPOINT_INTERVAL: usize = 5;
 const DEFAULT_MEMORY_TOP_K: usize = 5;
-const EMBEDDING_DIMENSION: usize = 8;
+const EMBEDDING_DIMENSION: usize = 64;
 const SYMBOLIC_WEIGHT: f32 = 1.0;
 const EMBEDDING_WEIGHT: f32 = 1.0;
 const MEMORY_COUNT_SCALE: u32 = 2;
@@ -1528,27 +1528,37 @@ impl IRPersistenceStore {
             session_id,
         }
         .store(step, step_index, result)?;
-        let source_hash = memory_source_hash(&memory);
-        let canonical_key = memory_canonical_key(&memory);
-        let global_store =
-            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
-                &self.workspace_root,
-            );
-        let insertion = global_store.insert(
-            memory,
-            source_hash,
-            canonical_key,
-            crate::holographic_memory_observation::now_secs(),
-        )?;
-        append_memory_insert_observations(&self.workspace_root, &insertion);
-        let canonical_entry = insertion.canonical.entry;
+
+        // 永続化ゲート: セッションローカルな IR 実行ログには常に記録するが、
+        // 情報量ゼロの記憶はセッションを跨ぐグローバル記憶 (系統D/系統B) へは昇格しない。
+        let stored_entry = if is_memorable(result) {
+            let source_hash = memory_source_hash(&memory);
+            let canonical_key = memory_canonical_key(&memory);
+            let global_store =
+                crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                    &self.workspace_root,
+                );
+            let insertion = global_store.insert(
+                memory,
+                source_hash,
+                canonical_key,
+                crate::holographic_memory_observation::now_secs(),
+            )?;
+            append_memory_insert_observations(&self.workspace_root, &insertion);
+            let canonical_entry = insertion.canonical.entry;
+            ingest_into_persistent_store(&global_store, &canonical_entry)?;
+            canonical_entry
+        } else {
+            memory
+        };
+
         self.emit_memory_stored(
             session_id,
             result.step_id,
             step_index,
-            canonical_entry.clone(),
+            stored_entry.clone(),
         )?;
-        Ok(canonical_entry)
+        Ok(stored_entry)
     }
 
     fn ensure_global_memory_migrated(&self) -> Result<(), String> {
@@ -2360,6 +2370,34 @@ fn memory_observation_log(
     }
 }
 
+/// 系統D (GlobalHolographicMemoryStore) / 系統B (PersistentMemoryStore) への
+/// 昇格に値するかどうかを判定する永続化ゲート。
+///
+/// セッションローカルな IR 実行ログには常に記録されるため、リプレイや
+/// `MemoryOutcomeRecorded` の前提となる「MemoryStored が先行する」不変条件は
+/// このゲートの結果に関わらず維持される。
+///
+/// 現状の判定基準は「情報量ゼロでないこと」のみ: stdout・stderr・
+/// structured_output・artifacts が全て空の記憶は、想起しても何も得られないため
+/// グローバル記憶への昇格に値しない。成否や機密性による選別は将来の拡張点とし、
+/// 根拠のない基準を今ここで決め打ちしない。
+fn is_memorable(result: &StepExecutionResultPayload) -> bool {
+    let has_stdout = result
+        .stdout
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty());
+    let has_stderr = result
+        .stderr
+        .as_deref()
+        .is_some_and(|text| !text.trim().is_empty());
+    let has_structured_output = result
+        .structured_output
+        .as_ref()
+        .is_some_and(|value| !value.is_null());
+    let has_artifacts = !result.artifacts.is_empty();
+    has_stdout || has_stderr || has_structured_output || has_artifacts
+}
+
 fn memory_source_hash(memory: &MemoryEntry) -> String {
     sha256_hex(
         serde_json::to_string(&memory.content)
@@ -2372,6 +2410,38 @@ fn memory_canonical_key(memory: &MemoryEntry) -> String {
     let mut tags = memory.metadata.tags.clone();
     tags.sort();
     tags.join(":")
+}
+
+/// D 系統 (GlobalHolographicMemoryStore) が確定させた canonical entry を、
+/// B 系統 (memory_persistence::PersistentMemoryStore) の判別エンジンにも通す。
+///
+/// これにより実行系で書き込まれる記憶は必ず DecisionEngine の
+/// ユニーク判定・アップグレード・重複排除を経由し、`.dbm/memory/memory_store.json`
+/// に単一の記憶ルートとして蓄積される。
+fn ingest_into_persistent_store(
+    global_store: &crate::global_holographic_memory::GlobalHolographicMemoryStore,
+    entry: &MemoryEntry,
+) -> Result<(), String> {
+    let path = global_store.persistent_store_path();
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|err| err.to_string())?;
+    }
+    let mut store = memory_persistence::PersistentMemoryStore::load_or_new(&path)
+        .map_err(|err| err.to_string())?;
+    store.ingest(&memory_entry_to_persistence_record(entry));
+    store.save(&path).map_err(|err| err.to_string())
+}
+
+fn memory_entry_to_persistence_record(entry: &MemoryEntry) -> memory_engine::MemoryRecord {
+    let text = serde_json::to_string(&entry.content).unwrap_or_default();
+    memory_engine::MemoryRecord {
+        id: entry.memory_id.clone(),
+        text,
+        tags: entry.metadata.tags.clone(),
+        embedding: entry.embedding.clone(),
+        architecture: None,
+        relations: Vec::new(),
+    }
 }
 
 fn embedding_score(
@@ -2487,11 +2557,13 @@ fn deterministic_embedding(text: &str) -> Embedding {
     normalize_embedding(embedding)
 }
 
+/// `memory_engine::tokenize_mixed_script` を用いる。
+///
+/// CJK (日本語など) は単語間にスペースがないため、単純な英数字境界分割では
+/// 文全体が単一トークンに退化してしまう。共有トークナイザは CJK ランを
+/// 文字 bigram に分解するため、日本語の実行内容からも意味のある埋め込みが作れる。
 fn tokenize_embedding_source(text: &str) -> Vec<String> {
-    text.split(|ch: char| !ch.is_alphanumeric())
-        .filter(|token| !token.is_empty())
-        .map(|token| token.to_lowercase())
-        .collect()
+    memory_engine::tokenize_mixed_script(text)
 }
 
 fn normalize_embedding(mut embedding: Embedding) -> Embedding {
@@ -3160,6 +3232,140 @@ mod tests {
         }));
     }
 
+    /// store_execution_memory は GlobalHolographicMemoryStore (系統D) だけでなく
+    /// PersistentMemoryStore (系統B, DecisionEngine) にも同じ記憶を通す。
+    /// 単一の記憶ルート `.dbm/memory/memory_store.json` に統合されていることを確認する。
+    #[test]
+    fn store_execution_memory_ingests_into_persistent_store() {
+        let (dir, store, baseline) = store();
+        let step_id = Uuid::new_v4();
+        store
+            .store_execution_memory(
+                &baseline.session_id,
+                &PlannedStep::Analyze(PathBuf::from("src/lib.rs")),
+                0,
+                &StepExecutionResultPayload {
+                    step_id,
+                    stdout: Some("analysis complete".into()),
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            )
+            .expect("store execution memory");
+
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                dir.path(),
+            );
+        let persistent_path = global_store.persistent_store_path();
+        assert_eq!(
+            persistent_path.parent(),
+            global_store.canonical_path().parent(),
+            "persistent store must share the same .dbm/memory root as the canonical store"
+        );
+        assert!(
+            persistent_path.exists(),
+            "PersistentMemoryStore snapshot must be written on store_execution_memory"
+        );
+
+        let persistent_store = memory_persistence::PersistentMemoryStore::load(&persistent_path)
+            .expect("load persistent store");
+        assert_eq!(persistent_store.memory_count(), 1);
+        assert_eq!(
+            persistent_store.stats().total_stored,
+            1,
+            "first ingest of a unique memory must be StoreNew"
+        );
+        assert_eq!(persistent_store.list()[0].source_count, 1);
+        assert!(
+            persistent_store.list()[0]
+                .abstract_tags
+                .contains(&"analyze".to_string()),
+            "tags from the IR memory entry must carry over: {:?}",
+            persistent_store.list()[0].abstract_tags
+        );
+    }
+
+    /// 永続化ゲート: stdout/stderr/structured_output/artifacts が全て空の
+    /// 結果は、情報量ゼロのためグローバル記憶 (系統D/系統B) へは昇格しない。
+    #[test]
+    fn empty_result_is_not_promoted_to_global_memory() {
+        let (dir, store, baseline) = store();
+        store
+            .store_execution_memory(
+                &baseline.session_id,
+                &PlannedStep::Rules,
+                0,
+                &StepExecutionResultPayload {
+                    step_id: Uuid::new_v4(),
+                    stdout: None,
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            )
+            .expect("store execution memory");
+
+        let global_store =
+            crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+                dir.path(),
+            );
+        let canonical = global_store.load_canonical().expect("canonical");
+        assert!(
+            canonical.is_empty(),
+            "empty-content memory must not be promoted to the canonical store, got {canonical:?}"
+        );
+        assert!(
+            !global_store.persistent_store_path().exists(),
+            "empty-content memory must not be ingested into the persistent store"
+        );
+    }
+
+    /// 永続化ゲートを通過しなくても、セッションローカルな IR 実行ログには
+    /// 引き続き記録される (MemoryStored → MemoryOutcomeRecorded の不変条件を維持する)。
+    #[test]
+    fn empty_result_is_still_recorded_in_session_local_log() {
+        let (_dir, store, baseline) = store();
+        let step_id = Uuid::new_v4();
+        let entry = store
+            .store_execution_memory(
+                &baseline.session_id,
+                &PlannedStep::Rules,
+                0,
+                &StepExecutionResultPayload {
+                    step_id,
+                    stdout: None,
+                    stderr: None,
+                    structured_output: None,
+                    artifacts: Vec::new(),
+                },
+            )
+            .expect("store execution memory");
+
+        let events = store
+            .list_execution_events(&baseline.session_id)
+            .expect("events");
+        assert!(events.iter().any(|event| {
+            matches!(
+                &event.payload,
+                IRExecutionEventPayload::MemoryStored(payload)
+                    if payload.memory_id == entry.memory_id
+            )
+        }));
+
+        // MemoryOutcomeRecorded は先行する MemoryStored を前提とする不変条件が
+        // ゲート後も成立することを確認する。
+        store
+            .emit_memory_outcome(
+                &baseline.session_id,
+                step_id,
+                &entry.memory_id,
+                MemoryOutcome::CompileSuccess,
+            )
+            .expect("outcome recording must succeed even for gated-out memories");
+    }
+
     #[test]
     fn memory_context_reconstructed_from_ir() {
         let (dir, store, baseline) = store();
@@ -3433,6 +3639,31 @@ mod tests {
 
         assert_eq!(lhs, rhs);
         assert!(lhs.entries[0].embedding.is_some());
+    }
+
+    /// 埋め込みの元になるトークナイザが `is_alphanumeric` 境界分割だけだった頃は、
+    /// 単語間にスペースがない日本語テキストが 1 つの巨大トークンに退化し、
+    /// 意味的に近い文同士でも埋め込みがほぼ無関係になっていた。
+    /// 共有トークナイザ (CJK bigram フォールバック) 導入後は、関連する日本語テキスト同士の
+    /// コサイン類似度が無関係なテキストより明確に高くなることを確認する。
+    #[test]
+    fn deterministic_embedding_distinguishes_japanese_text() {
+        let related_a = deterministic_embedding("ユーザー管理APIの設計を実装した");
+        let related_b = deterministic_embedding("ユーザー管理APIの設計を修正した");
+        let unrelated = deterministic_embedding("ネットワークソケットの低レベル通信層");
+
+        let related_sim = cosine_similarity(&related_a, &related_b);
+        let unrelated_sim = cosine_similarity(&related_a, &unrelated);
+
+        assert!(
+            related_sim > unrelated_sim,
+            "related Japanese texts should be more similar than unrelated ones: \
+             related={related_sim}, unrelated={unrelated_sim}"
+        );
+        assert!(
+            related_sim > 0.3,
+            "related Japanese texts should share meaningful embedding overlap, got {related_sim}"
+        );
     }
 
     #[test]

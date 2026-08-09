@@ -359,15 +359,72 @@ impl InMemoryEngine {
 }
 
 fn normalized_terms(text: &str, tags: &[String]) -> Vec<String> {
-    let mut terms = text
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|term| !term.is_empty())
-        .map(|term| term.to_ascii_lowercase())
-        .collect::<Vec<_>>();
-    terms.extend(tags.iter().map(|tag| tag.to_ascii_lowercase()));
+    let mut terms = tokenize_mixed_script(text);
+    terms.extend(tags.iter().map(|tag| tag.to_lowercase()));
     terms.sort();
     terms.dedup();
     terms
+}
+
+/// 混在スクリプト (ASCII/Latin + CJK) 対応トークナイザ。
+///
+/// ASCII/Latin 系の単語は非英数字境界 (スペース・記号) で分割する。
+/// 日本語などの CJK スクリプトは単語間にスペースがなく、境界分割だけでは
+/// 文全体が単一トークンに退化して部分一致が検出できなくなるため、
+/// 文字 bigram (2 文字の重複窓) に分解して部分一致を可能にする。
+///
+/// この関数は `memory_engine` (recall 用語スコアリング) と
+/// `memory_persistence` (永続化記憶の類似度判定) の双方から共有され、
+/// 記憶パイプライン全体でトークン化の挙動を統一する。
+pub fn tokenize_mixed_script(text: &str) -> Vec<String> {
+    let mut tokens = Vec::new();
+    let mut ascii_buf = String::new();
+    let mut cjk_buf: Vec<char> = Vec::new();
+
+    for c in text.chars() {
+        if is_cjk(c) {
+            flush_ascii_word(&mut ascii_buf, &mut tokens);
+            cjk_buf.extend(c.to_lowercase());
+        } else if c.is_alphanumeric() {
+            flush_cjk_run(&mut cjk_buf, &mut tokens);
+            ascii_buf.push(c);
+        } else {
+            flush_ascii_word(&mut ascii_buf, &mut tokens);
+            flush_cjk_run(&mut cjk_buf, &mut tokens);
+        }
+    }
+    flush_ascii_word(&mut ascii_buf, &mut tokens);
+    flush_cjk_run(&mut cjk_buf, &mut tokens);
+    tokens
+}
+
+fn flush_ascii_word(buf: &mut String, tokens: &mut Vec<String>) {
+    if !buf.is_empty() {
+        tokens.push(buf.to_lowercase());
+        buf.clear();
+    }
+}
+
+fn flush_cjk_run(buf: &mut Vec<char>, tokens: &mut Vec<String>) {
+    if buf.len() == 1 {
+        tokens.push(buf[0].to_string());
+    } else {
+        for pair in buf.windows(2) {
+            tokens.push(pair.iter().collect());
+        }
+    }
+    buf.clear();
+}
+
+/// ひらがな・カタカナ・CJK 統合漢字 (拡張 A 含む) を CJK スクリプトとみなす。
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32,
+        0x3040..=0x30FF   // ひらがな + カタカナ
+        | 0x3400..=0x4DBF // CJK 拡張 A
+        | 0x4E00..=0x9FFF // CJK 統合漢字
+        | 0xF900..=0xFAFF // CJK 互換漢字
+        | 0xFF66..=0xFF9F // 半角カタカナ
+    )
 }
 
 fn score_record(query_terms: &[String], record: &MemoryRecord) -> f64 {

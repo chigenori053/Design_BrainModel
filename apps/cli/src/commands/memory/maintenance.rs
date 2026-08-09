@@ -61,20 +61,22 @@ fn handle_dedup(args: &[String]) -> Result<Output, CommandError> {
             "  memory maintenance dedup --audit     # 監査ログ付きドライラン\n",
             "\n",
             "Options:\n",
-            "  --store <path>  永続化ストアのパス (省略時: .dbm/memory_store.json)",
+            "  --store <path>  永続化ストアのパス (省略時: .dbm/memory/memory_store.json)",
         ).to_string()));
     }
 
     let effective_store_path = store_path.unwrap_or_else(|| {
-        core_types::WorkspaceRoot::discover()
-            .join(".dbm/memory_store.json")
-            .display()
-            .to_string()
+        crate::global_holographic_memory::GlobalHolographicMemoryStore::default_for_workspace(
+            &core_types::WorkspaceRoot::discover(),
+        )
+        .persistent_store_path()
+        .display()
+        .to_string()
     });
     let store_file = std::path::Path::new(&effective_store_path);
 
     // ストアを読み込む (ファイルが存在しない場合は空のストアで続行)
-    let store = PersistentMemoryStore::load_or_new(store_file)
+    let mut store = PersistentMemoryStore::load_or_new(store_file)
         .map_err(|e| CommandError::ExecutionError(format!("ストア読み込みエラー: {e}")))?;
 
     if store.memory_count() == 0 {
@@ -99,58 +101,15 @@ fn handle_dedup(args: &[String]) -> Result<Output, CommandError> {
 
     // apply 時はストアに反映して保存
     if result.applied {
-        // 現状: 削除後のメモリ一覧を JSON で直接書き戻す
-        // (PersistentMemoryStore は memories の直接設定 API を未公開のため)
-        // TODO: PersistentMemoryStore に replace_memories(&[GeneralizedMemory]) を追加する
-        write_memories_to_store(store_file, &memories, &result)
+        store.replace_memories(memories);
+        store
+            .save(store_file)
             .map_err(|e| CommandError::ExecutionError(format!("ストア書き込みエラー: {e}")))?;
     }
 
     // 出力を組み立てる
     let output = format_dedup_output(&result, &effective_store_path, dry_run, apply, audit);
     Ok(Output::text(output))
-}
-
-/// 重複排除の実行後にストアファイルを更新する。
-///
-/// PersistentMemoryStore が memories の直接操作 API を持たないため、
-/// スナップショット形式のサブセット (memories のみ) を差し替えて書き直す。
-fn write_memories_to_store(
-    store_file: &std::path::Path,
-    memories: &[memory_persistence::GeneralizedMemory],
-    _result: &memory_persistence::MaintenanceDedupResult,
-) -> std::io::Result<()> {
-    // 既存のストアを読み込んで memories だけ入れ替える
-    let json_orig = std::fs::read_to_string(store_file).unwrap_or_else(|_| "{}".to_string());
-
-    let mut snapshot: serde_json::Value = serde_json::from_str(&json_orig)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-    let memories_json = serde_json::to_value(memories)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-    if let Some(obj) = snapshot.as_object_mut() {
-        obj.insert("memories".to_string(), memories_json);
-        // saved_epoch を更新
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        obj.insert(
-            "saved_epoch".to_string(),
-            serde_json::Value::Number(now.into()),
-        );
-    }
-
-    let updated_json = serde_json::to_string_pretty(&snapshot)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()))?;
-
-    // アトミック書き込み
-    let tmp = store_file.with_extension("json.tmp");
-    std::fs::write(&tmp, &updated_json)?;
-    std::fs::rename(&tmp, store_file)?;
-
-    Ok(())
 }
 
 fn format_dedup_output(
@@ -366,5 +325,76 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ))
+    }
+
+    fn ingest_record(
+        store: &mut PersistentMemoryStore,
+        id: &str,
+        text: &str,
+        tags: &[&str],
+        embed: &[f32],
+    ) {
+        store.ingest(&memory_engine::MemoryRecord {
+            id: id.to_string(),
+            text: text.to_string(),
+            tags: tags.iter().map(|t| t.to_string()).collect(),
+            embedding: Some(embed.to_vec()),
+            architecture: None,
+            relations: Vec::new(),
+        });
+    }
+
+    /// `--apply` が `replace_memories` 経由でストアファイルへ実際に反映されることを
+    /// 確認する回帰テスト。以前は生 JSON パッチで書き戻していたが、
+    /// `PersistentMemoryStore::replace_memories` + `save` に置き換えた。
+    #[test]
+    fn memory_maintenance_dedup_apply_removes_duplicates_and_persists_via_replace_memories() {
+        let tmp = tempfile_path("dedup_apply_real_duplicates");
+
+        // タグが完全一致 (ExactSpectrumHash 重複) だが内容の異なる2件を用意する。
+        // embedding を直交させ、text を大きく変えることで DecisionEngine が両方を
+        // StoreNew と判定するようにする (ingest 時点では重複排除されない)。
+        let mut store = PersistentMemoryStore::new();
+        ingest_record(
+            &mut store,
+            "r1",
+            "alpha content about rest api design work",
+            &["shared-tag"],
+            &[1.0, 0.0],
+        );
+        ingest_record(
+            &mut store,
+            "r2",
+            "beta content about database schema migration",
+            &["shared-tag"],
+            &[0.0, 1.0],
+        );
+        assert_eq!(store.memory_count(), 2, "fixture must ingest as two unique entries");
+        store.save(&tmp).expect("save fixture store");
+
+        let mut session = AgentSession::new();
+        let args = vec![
+            "dedup".to_string(),
+            "--apply".to_string(),
+            "--store".to_string(),
+            tmp.display().to_string(),
+        ];
+        let out = handle_maintenance(&args, &mut session).unwrap();
+        assert!(out.message.contains("適用済み"), "output was: {}", out.message);
+        assert!(out.message.contains("削除件数: 1"), "output was: {}", out.message);
+
+        // ストアファイルに実際に反映されていること (replace_memories + save)。
+        let reloaded = PersistentMemoryStore::load(&tmp).expect("reload store after apply");
+        assert_eq!(
+            reloaded.memory_count(),
+            1,
+            "exactly one duplicate must have been removed from disk"
+        );
+        assert!(
+            reloaded.get_by_id("gm_r1_0000").is_some(),
+            "the older entry must be kept"
+        );
+
+        let _ = std::fs::remove_file(&tmp);
     }
 }

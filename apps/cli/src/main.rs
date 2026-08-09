@@ -1098,8 +1098,15 @@ fn runtime_intent(command: &Commands) -> Option<RuntimeIntent> {
 
 fn run_core_command(input: String) {
     let core = RuntimeCoreBridge::with_defaults();
+    // one-shot invocation ごとにプロセスが終了するため、canonical dedup の索引
+    // (CanonicalReuseResolver) をディスクから読み込み・書き戻して継続性を持たせる。
+    let workspace_root = core_types::WorkspaceRoot::discover();
+    core.load_followup_resolver(&workspace_root);
     let request = CoreRequest::new(input);
     let response = core.execute(request);
+    if let Err(err) = core.persist_followup_resolver(&workspace_root) {
+        eprintln!("[WARN] failed to persist canonical reuse resolver: {err}");
+    }
 
     for event in response.events {
         match event {

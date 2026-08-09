@@ -1188,6 +1188,8 @@ dependencies = [
 name = "core_types"
 version = "1.0.0"
 dependencies = [
+ "serde",
+ "serde_json",
  "tempfile",
 ]
 

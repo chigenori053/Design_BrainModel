@@ -265,6 +265,15 @@ impl PersistentMemoryStore {
         before - self.memories.len()
     }
 
+    /// 記憶一覧を丸ごと置き換える。
+    ///
+    /// `stats` / `audit_log` / `policy` はそのまま維持し、`memories` のみを差し替える。
+    /// `list()` で取り出した記憶を外部の重複排除処理 (例: `run_dedup`) で加工した結果を
+    /// 書き戻す用途を想定している。生の JSON スナップショットを直接パッチする必要がなくなる。
+    pub fn replace_memories(&mut self, memories: Vec<GeneralizedMemory>) {
+        self.memories = memories;
+    }
+
     /// 監査ログをクリアする。
     pub fn clear_audit_log(&mut self) {
         self.audit_log.clear();
@@ -440,6 +449,57 @@ mod tests {
         let result = store.ingest(&r2);
         assert!(result.is_stored());
         assert_eq!(store.memory_count(), 2);
+    }
+
+    /// `replace_memories` はメンテナンス処理 (dedup など) の結果を
+    /// `stats`/`audit_log` を保持したまま `memories` だけ差し替える。
+    /// 生の JSON スナップショットを直接パッチする必要をなくすための API。
+    #[test]
+    fn replace_memories_swaps_list_and_preserves_stats_and_audit_log() {
+        let mut store = PersistentMemoryStore::new();
+        let r1 = record("r1", "REST API design", &["api"], &[1.0, 0.0]);
+        let r2 = record("r2", "DB schema", &["db"], &[0.0, 1.0]);
+        store.ingest(&r1);
+        store.ingest(&r2);
+        assert_eq!(store.memory_count(), 2);
+
+        let stats_before = store.stats().clone();
+        let audit_len_before = store.audit_log().len();
+
+        // dedup のような外部処理を模して、r1 だけ残した一覧に差し替える。
+        let kept = vec![store.list()[0].clone()];
+        store.replace_memories(kept);
+
+        assert_eq!(store.memory_count(), 1);
+        assert_eq!(store.list()[0].id, "gm_r1_0000");
+        // stats / audit_log は replace_memories の対象外なのでそのまま。
+        assert_eq!(store.stats(), &stats_before);
+        assert_eq!(store.audit_log().len(), audit_len_before);
+    }
+
+    /// `replace_memories` で入れ替えた内容が `save`/`load` を経由しても保持されることを確認する。
+    #[test]
+    fn replace_memories_then_save_and_load_round_trips() {
+        let tmp = std::env::temp_dir().join(format!(
+            "memory_persistence_replace_{}.json",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+
+        let mut store = PersistentMemoryStore::new();
+        store.ingest(&record("r1", "REST API design", &["api"], &[1.0, 0.0]));
+        store.ingest(&record("r2", "DB schema", &["db"], &[0.0, 1.0]));
+        let kept: Vec<_> = store.list().iter().take(1).cloned().collect();
+        store.replace_memories(kept);
+        store.save(&tmp).expect("save failed");
+
+        let loaded = PersistentMemoryStore::load(&tmp).expect("load failed");
+        assert_eq!(loaded.memory_count(), 1);
+        assert_eq!(loaded.list()[0].id, store.list()[0].id);
+
+        let _ = std::fs::remove_file(tmp);
     }
 
     #[test]

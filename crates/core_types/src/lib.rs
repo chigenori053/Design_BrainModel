@@ -397,10 +397,12 @@ mod tests {
 }
 use std::collections::{BTreeMap, BTreeSet};
 
+use serde::{Deserialize, Serialize};
+
 pub type CanonicalId = String;
 pub type AliasId = String;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Fingerprint(pub String);
 
 impl Fingerprint {
@@ -425,7 +427,7 @@ fn fnv1a_update(mut hash: u64, bytes: &[u8]) -> u64 {
     hash
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ReuseDomain {
     FollowupContext,
     HolographicMemory,
@@ -437,7 +439,7 @@ pub enum ReuseDomain {
     Preview,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ReuseScope {
     Global,
     Session(String),
@@ -445,7 +447,7 @@ pub enum ReuseScope {
     Local(String),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum ReuseLifecycle {
     Active,
     Merged,
@@ -453,7 +455,7 @@ pub enum ReuseLifecycle {
     Archived,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CanonicalReuseRef {
     pub canonical_id: CanonicalId,
     pub domain: ReuseDomain,
@@ -521,6 +523,17 @@ pub struct CanonicalResolution {
     pub canonical_ref: CanonicalReuseRef,
     pub match_kind: CanonicalMatchKind,
     pub events: Vec<CanonicalReuseEvent>,
+}
+
+/// `CanonicalReuseResolver` のディスク保存形式。
+///
+/// `refs` と `aliases` はいずれも `String` キーの `BTreeMap` なので JSON として
+/// そのままシリアライズできる (タプル/enum キーの3つのインデックスは含まない)。
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct CanonicalReuseResolverSnapshot {
+    pub refs: BTreeMap<CanonicalId, CanonicalReuseRef>,
+    pub aliases: BTreeMap<AliasId, CanonicalId>,
+    pub next_id: u64,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -605,6 +618,60 @@ impl CanonicalReuseResolver {
 
     pub fn canonical_for_alias(&self, alias_id: &str) -> Option<&CanonicalId> {
         self.aliases.get(alias_id)
+    }
+
+    /// ディスク保存可能なスナップショットに変換する。
+    ///
+    /// `source_index` / `semantic_index` / `trajectory_index` は各 `CanonicalReuseRef`
+    /// が持つフィンガープリントから一意に再構築できるため、スナップショットには含めない
+    /// (JSON のオブジェクトキーはタプル/enum を直接表現できないという制約も回避できる)。
+    pub fn to_snapshot(&self) -> CanonicalReuseResolverSnapshot {
+        CanonicalReuseResolverSnapshot {
+            refs: self.refs.clone(),
+            aliases: self.aliases.clone(),
+            next_id: self.next_id,
+        }
+    }
+
+    /// スナップショットから復元する。3 つのインデックスは `refs` から再構築する。
+    pub fn from_snapshot(snapshot: CanonicalReuseResolverSnapshot) -> Self {
+        let mut source_index = BTreeMap::new();
+        let mut semantic_index = BTreeMap::new();
+        let mut trajectory_index = BTreeMap::new();
+        for (canonical_id, reuse_ref) in &snapshot.refs {
+            source_index.insert(
+                (
+                    reuse_ref.domain,
+                    reuse_ref.scope.clone(),
+                    reuse_ref.source_fingerprint.clone(),
+                ),
+                canonical_id.clone(),
+            );
+            semantic_index.insert(
+                (
+                    reuse_ref.domain,
+                    reuse_ref.scope.clone(),
+                    reuse_ref.semantic_fingerprint.clone(),
+                ),
+                canonical_id.clone(),
+            );
+            trajectory_index.insert(
+                (
+                    reuse_ref.domain,
+                    reuse_ref.scope.clone(),
+                    reuse_ref.trajectory_fingerprint.clone(),
+                ),
+                canonical_id.clone(),
+            );
+        }
+        Self {
+            refs: snapshot.refs,
+            source_index,
+            semantic_index,
+            trajectory_index,
+            aliases: snapshot.aliases,
+            next_id: snapshot.next_id,
+        }
     }
 
     fn create_new(
@@ -849,6 +916,49 @@ mod canonical_reuse_tests {
         CanonicalMatchKind, CanonicalReuseInput, CanonicalReuseResolver, ReuseDecision,
         ReuseDomain, ReuseScope, resolve_followup_context,
     };
+
+    /// スナップショットの save/load を経由しても、既存 canonical との重複判定
+    /// (再起動をまたいだ dedup) が壊れないことを確認する。
+    #[test]
+    fn snapshot_round_trip_preserves_dedup_across_restart() {
+        let mut resolver = CanonicalReuseResolver::new();
+        let created = resolver.resolve(CanonicalReuseInput::new(
+            ReuseDomain::HolographicMemory,
+            "Save canonical memory",
+        ));
+        assert_eq!(created.decision, ReuseDecision::Create);
+
+        // プロセス再起動を模して、スナップショット経由で新しいリゾルバを作る。
+        let snapshot = resolver.to_snapshot();
+        let json = serde_json::to_string(&snapshot).expect("serialize snapshot");
+        let restored_snapshot =
+            serde_json::from_str(&json).expect("deserialize snapshot");
+        let mut restored = CanonicalReuseResolver::from_snapshot(restored_snapshot);
+
+        // 再起動後のリゾルバでも同じ入力は重複として検出され、
+        // 同じ canonical_id が再利用される。
+        let reused = restored.resolve(CanonicalReuseInput::new(
+            ReuseDomain::HolographicMemory,
+            "  save   canonical MEMORY ",
+        ));
+        assert_eq!(reused.decision, ReuseDecision::Reuse);
+        assert_eq!(reused.match_kind, CanonicalMatchKind::ExactSource);
+        assert_eq!(
+            reused.canonical_ref.canonical_id,
+            created.canonical_ref.canonical_id
+        );
+
+        // next_id も引き継がれるため、再起動後の新規作成は ID が衝突しない。
+        let novel = restored.resolve(CanonicalReuseInput::new(
+            ReuseDomain::HolographicMemory,
+            "an entirely different memory",
+        ));
+        assert_eq!(novel.decision, ReuseDecision::Create);
+        assert_ne!(
+            novel.canonical_ref.canonical_id,
+            created.canonical_ref.canonical_id
+        );
+    }
 
     #[test]
     fn exact_duplicate_reuses_existing_canonical_identity() {

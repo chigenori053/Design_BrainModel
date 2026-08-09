@@ -42,6 +42,37 @@ fn store_recall_retrieve_is_consistent() {
     assert_eq!(retrieved[0].id, "pattern-api");
 }
 
+/// `normalized_terms` が `is_ascii_alphanumeric` で分割していた頃は、日本語テキストが
+/// 1 文字ずつ区切られて単語が残らず、日本語 intent での recall が常にスコア 0 になっていた。
+/// Unicode 対応後は日本語クエリでも語の重複を検出できることを確認する。
+#[test]
+fn recall_matches_japanese_intent_text() {
+    let engine = InMemoryEngine::default();
+    engine.store(MemoryRecord {
+        id: "pattern-user-management".to_string(),
+        text: "ユーザー管理APIの設計".to_string(),
+        tags: vec!["api".to_string()],
+        embedding: None,
+        architecture: None,
+        relations: Vec::new(),
+    });
+
+    let recalled = engine.recall(RecallInput {
+        intent: IntentState {
+            raw: "ユーザー管理の設計をしたい".to_string(),
+            tokens: vec!["ユーザー".to_string(), "管理".to_string()],
+        },
+        limit: 3,
+    });
+
+    assert_eq!(
+        recalled.records.len(),
+        1,
+        "expected the Japanese memory to be recalled, got {recalled:?}"
+    );
+    assert_eq!(recalled.records[0].record.id, "pattern-user-management");
+}
+
 #[test]
 fn memory_engine_is_thread_safe_for_parallel_recall() {
     let engine = Arc::new(InMemoryEngine::default());

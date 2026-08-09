@@ -166,6 +166,42 @@ impl DecisionPolicy {
     }
 }
 
+// ── 記憶パイプライン全体の統合ポリシー ───────────────────────────────────────────
+
+/// 系統D (GlobalHolographicMemoryStore) が埋め込みコサイン単独で重複/衝突を
+/// 判定する際に使う閾値のデフォルト値。系統B の `DecisionPolicy` とはスコアリング
+/// 次元が異なる (単一指標 vs 加重和) ため、そのまま同じ数値を共有はできないが、
+/// 値の置き場所を一元化することでパラメータの独立ドリフトを防ぐ。
+pub const DEFAULT_SEMANTIC_DUPLICATE_THRESHOLD: f32 = 0.92;
+pub const DEFAULT_CONFLICT_THRESHOLD: f32 = 0.40;
+
+/// 記憶パイプライン全体 (系統B: PersistentMemoryStore の判別エンジンと
+/// 系統D: GlobalHolographicMemoryStore の重複/衝突判定) が共有する設定の入れ物。
+///
+/// 各系統は異なるアルゴリズムを使う (B は tag/embedding/text の多基準加重和、
+/// D は埋め込みコサインの単一指標) ため判定ロジック自体は統合しないが、
+/// 閾値をこの一箇所にまとめることで、系統ごとに独立してチューニングされて
+/// 乖離していく問題を防ぐ。
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct MemoryPolicy {
+    /// 系統B: DecisionEngine の判定ポリシー
+    pub decision: DecisionPolicy,
+    /// 系統D: 埋め込みコサインがこれ以上ならセマンティック重複として reinforce する
+    pub semantic_duplicate_threshold: f32,
+    /// 系統D: 埋め込みコサインがこれ未満なら衝突候補として別 canonical を作る
+    pub conflict_threshold: f32,
+}
+
+impl Default for MemoryPolicy {
+    fn default() -> Self {
+        Self {
+            decision: DecisionPolicy::default(),
+            semantic_duplicate_threshold: DEFAULT_SEMANTIC_DUPLICATE_THRESHOLD,
+            conflict_threshold: DEFAULT_CONFLICT_THRESHOLD,
+        }
+    }
+}
+
 // ── 意思決定結果 ────────────────────────────────────────────────────────────────
 
 /// 意思決定の根拠情報
@@ -392,16 +428,18 @@ pub enum DecisionAction {
 /// テキスト間の単語レベル重複率を計算する。
 ///
 /// 両テキストのユニーク単語集合の Jaccard 類似度を返す。
+///
+/// トークン化は `memory_engine::tokenize_mixed_script` を用いる。
+/// ASCII/Latin は単語境界で、CJK (日本語など) は文字 bigram で分割するため、
+/// 単語間にスペースがない言語でも部分一致を検出できる。
 pub fn text_word_overlap(a: &str, b: &str) -> f32 {
-    let words_a: std::collections::BTreeSet<String> = a
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| w.len() >= 2)
-        .map(|w| w.to_ascii_lowercase())
+    let words_a: std::collections::BTreeSet<String> = memory_engine::tokenize_mixed_script(a)
+        .into_iter()
+        .filter(|w| w.chars().count() >= 2)
         .collect();
-    let words_b: std::collections::BTreeSet<String> = b
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|w| w.len() >= 2)
-        .map(|w| w.to_ascii_lowercase())
+    let words_b: std::collections::BTreeSet<String> = memory_engine::tokenize_mixed_script(b)
+        .into_iter()
+        .filter(|w| w.chars().count() >= 2)
         .collect();
     if words_a.is_empty() && words_b.is_empty() {
         return 0.0;
@@ -548,5 +586,19 @@ mod tests {
         let sim = text_word_overlap(a, b);
         assert!(sim > 0.0 && sim < 1.0);
         assert_eq!(text_word_overlap(a, b), text_word_overlap(b, a));
+    }
+
+    /// `is_ascii_alphanumeric` を分割基準にすると、非 ASCII 文字 (日本語など) は
+    /// 1 文字ずつ区切り文字とみなされ、単語が一つも残らず overlap が常に 0 になっていた。
+    /// Unicode 対応 (`is_alphanumeric`) への統一後は日本語テキストでも重複を検出できる。
+    #[test]
+    fn text_word_overlap_detects_japanese_overlap() {
+        let a = "REST APIのユーザー管理設計";
+        let b = "ユーザー管理のGraphQL設計";
+        let sim = text_word_overlap(a, b);
+        assert!(
+            sim > 0.0,
+            "expected non-zero overlap for Japanese text, got {sim}"
+        );
     }
 }
