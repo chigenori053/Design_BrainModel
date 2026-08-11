@@ -164,4 +164,22 @@ Dangerous → denied or requires explicit control
 
 ## License
 
-TBD
+**All rights reserved.** No license is granted at this time.
+
+This project is undergoing **architectural redesign** on ReasonScript + MRA Base. The current implementation is an incomplete product and does not reflect the intended final architecture.
+
+The source is published **for reading and evaluation only**. If you are interested
+in using or building on this project, please open an issue to discuss it.
+
+Third-party dependencies retain their own licenses.
+
+---
+
+**全権利留保。** 現時点ではライセンスを付与していません。
+
+本プロジェクトは ReasonScript + MRA Base による**アーキテクチャ再設計**を予定しています。現在の実装は未完成プロダクトであり、最終的な設計を反映したものではありません。
+
+コードは**閲覧・評価のためにのみ**公開しています。利用や派生をご希望の場合は、
+Issue でご相談ください。
+
+サードパーティ依存関係は、それぞれ固有のライセンスに従います。
