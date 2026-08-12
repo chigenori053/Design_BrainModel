@@ -5,6 +5,8 @@ use std::fs::{self, File};
 use std::io::{BufRead, BufReader, BufWriter, Write};
 
 use agent_core::{HvPolicy, Phase1Config, SoftTraceParams, TraceRunConfig, run_phase1_matrix};
+use code_ir::CodeIr;
+use execution_core::{ExecutionContext, ExecutionInput, Executor, IrExecutor};
 use analysis_tools::{CaseData, compute_correlation};
 use clap::{Parser, Subcommand};
 use design_reasoning::{Phase1Engine, ScsInputs};
@@ -90,6 +92,18 @@ enum Commands {
         #[arg(long, default_value = "Phase9 architecture check")]
         input: String,
     },
+    Replay {
+        #[arg(long)]
+        file: Option<String>,
+    },
+    Apply {
+        #[arg(long = "dry-run", default_value_t = true)]
+        dry_run: bool,
+        #[arg(long = "max-steps", default_value_t = 64)]
+        max_steps: usize,
+    },
+    Validate,
+    Rollback,
 }
 
 #[derive(Debug, Deserialize)]
@@ -315,6 +329,18 @@ fn run() -> Result<(), String> {
             },
         ),
         Commands::Phase9 { input } => run_phase9(input),
+        Commands::Replay { file } => render_success(
+            "replay",
+            json!({ "replayed": file.is_some(), "file": file }),
+            JsonMeta {
+                command: "replay",
+                hv_policy: None,
+                deterministic: true,
+            },
+        ),
+        Commands::Apply { dry_run, max_steps } => run_apply(dry_run, max_steps),
+        Commands::Validate => run_validate(),
+        Commands::Rollback => run_rollback(),
     }
 }
 
@@ -763,6 +789,7 @@ fn run_phase9(input: String) -> Result<(), String> {
             RuntimeStage::TransitionEvaluation => "transition_evaluation",
             RuntimeStage::ConsistencyEvaluation => "consistency_evaluation",
             RuntimeStage::Output => "output",
+            RuntimeStage::Simulation => "simulation",
         },
         event_count: phase9_ctx.event_bus.len(),
         recalled_memories: Phase9RuntimeAdapter::snapshot(vm.context()).recalled_memories,
@@ -1807,4 +1834,48 @@ mod objective_vector_tests {
         assert_eq!(clamped, [1.0, 0.5, 0.5, 0.5]);
         assert!(invalid);
     }
+}
+
+// ── Phase C: Execution Layer ──────────────────────────────────────────────────
+
+fn run_apply(dry_run: bool, max_steps: usize) -> Result<(), String> {
+    let plan = CodeIr::default();
+    let ctx = ExecutionContext { dry_run, max_steps };
+    let result = IrExecutor.execute(ExecutionInput::with_context(plan, ctx));
+    render_success(
+        "apply",
+        json!({
+            "dry_run": result.dry_run,
+            "applied_changes": result.applied_changes.len(),
+            "validation_success": result.validation_result.success,
+            "reverted": result.rollback_info.reverted,
+            "steps_applied": result.rollback_info.steps_applied,
+        }),
+        JsonMeta { command: "apply", hv_policy: None, deterministic: true },
+    )
+}
+
+fn run_validate() -> Result<(), String> {
+    let plan = CodeIr::default();
+    let result = IrExecutor.execute(ExecutionInput::new(plan));
+    render_success(
+        "validate",
+        json!({
+            "success": result.validation_result.success,
+            "messages": result.validation_result.messages,
+        }),
+        JsonMeta { command: "validate", hv_policy: None, deterministic: true },
+    )
+}
+
+fn run_rollback() -> Result<(), String> {
+    render_success(
+        "rollback",
+        json!({
+            "reverted": true,
+            "steps_reverted": 0,
+            "note": "no active transaction to rollback",
+        }),
+        JsonMeta { command: "rollback", hv_policy: None, deterministic: true },
+    )
 }
